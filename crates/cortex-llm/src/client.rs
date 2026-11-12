@@ -425,7 +425,8 @@ async fn attempt(
 
     let mut decoder = inner.protocol.decoder(request, &inner.provider);
     let mut parser = SseParser::new();
-    let mut begun = false;
+    // The limit on the first event, until there is one.
+    let mut first_event = Some(first_event);
     let failed = |sink: &EventSink, error: ProviderError| {
         let id = sink.known_request_id().map(str::to_owned);
         Attempt::Failed(if error.request_id.is_none() {
@@ -436,22 +437,8 @@ async fn attempt(
     };
 
     loop {
-        let chunk = if begun {
-            // From the first event on, the limit is on silence.
-            let mut idle = inner.timer.sleep(idle_limit);
-            match race(body.next(), cancel, &mut idle).await {
-                Raced::TimedOut => {
-                    let error = timed_out(
-                        code::IDLE_TIMEOUT,
-                        idle_limit,
-                        "The response stream sent nothing",
-                    );
-                    return failed(&sink, error);
-                }
-                other => other,
-            }
-        } else {
-            match race(body.next(), cancel, &mut first_event).await {
+        let chunk = match first_event.as_mut() {
+            Some(limit) => match race(body.next(), cancel, limit).await {
                 Raced::TimedOut => {
                     let error = timed_out(
                         code::FIRST_EVENT_TIMEOUT,
@@ -460,17 +447,33 @@ async fn attempt(
                     );
                     return failed(&sink, error);
                 }
-                other => other,
+                Raced::Cancelled => return Attempt::Cancelled,
+                Raced::Done(chunk) => chunk,
+            },
+            // From the first event on, the limit is on silence.
+            None => {
+                let mut idle = inner.timer.sleep(idle_limit);
+                match race(body.next(), cancel, &mut idle).await {
+                    Raced::TimedOut => {
+                        let error = timed_out(
+                            code::IDLE_TIMEOUT,
+                            idle_limit,
+                            "The response stream sent nothing",
+                        );
+                        return failed(&sink, error);
+                    }
+                    Raced::Cancelled => return Attempt::Cancelled,
+                    Raced::Done(chunk) => chunk,
+                }
             }
         };
         let bytes = match chunk {
-            Raced::Cancelled | Raced::TimedOut => return Attempt::Cancelled,
-            Raced::Done(None) => break,
-            Raced::Done(Some(Err(error))) if error.kind == TransportErrorKind::Cancelled => {
+            None => break,
+            Some(Err(error)) if error.kind == TransportErrorKind::Cancelled => {
                 return Attempt::Cancelled;
             }
-            Raced::Done(Some(Err(error))) => return failed(&sink, error.into()),
-            Raced::Done(Some(Ok(bytes))) => bytes,
+            Some(Err(error)) => return failed(&sink, error.into()),
+            Some(Ok(bytes)) => bytes,
         };
 
         parser.push(&bytes);
@@ -495,7 +498,9 @@ async fn attempt(
         if let Some(ended) = forwarded.ended {
             return ended;
         }
-        begun |= forwarded.any;
+        if forwarded.any {
+            first_event = None;
+        }
     }
 
     // The body is over. A decoder may have been holding something back.
