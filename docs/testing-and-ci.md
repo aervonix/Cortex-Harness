@@ -24,7 +24,7 @@ Tiers 1 to 3 are separated by where the test lives and by nextest filters, not b
 
 **No real waiting in tests.** This is rule 12 of the [build plan](build-plan.md).
 
-- Timeouts, retries, backoff, cooldowns, debouncing and anything else that depends on time passing are tested with time that is paused or simulated: the async runtime's test clock, which jumps to the next timer as soon as every task is idle, or the fake clock from `cortex-testkit` for code that takes time from the clock trait in `cortex-base`. A test of a 30-second timeout takes microseconds.
+- Timeouts, retries, backoff, cooldowns, debouncing and anything else that depends on time passing are tested with time that is paused or simulated: the async runtime's test clock, which jumps to the next timer as soon as every task is idle, or the fake clock for code that takes time from the clock trait in `cortex-base`. A test of a 30-second timeout takes microseconds. The fake clock is defined in `cortex-base`, beside the trait, because that crate tests itself with it and cannot depend on the test kit; the test kit re-exports it. Its `sleep` returns at once, moves its time forward and records what was asked, so blocking code that waits and retries (the replace of a locked file) is tested for how long it would have waited.
 - Production code never reads the system clock or sleeps directly. It goes through the runtime's timers or the clock trait, which is what makes the rule possible to follow.
 - A test never calls `std::thread::sleep`. Clippy's disallowed-methods list bans it everywhere, tests included.
 - Tier 3 cannot pause time, because the code under test is another process. It waits on a condition with a deadline (output seen, file present, process gone), never on a fixed delay, and the helper for that is in `cortex-testkit`.
@@ -41,6 +41,17 @@ Tiers 1 to 3 are separated by where the test lives and by nextest filters, not b
 - The tier totals are the sum of the tests' own times, not the wall time of the run. `cargo xtask ci test` reads them from nextest's JUnit report after the run, prints them with the share of the budget used, and writes them to the CI job's summary page.
 - **A tier over its budget is a warning; a tier over one and a half times its budget is a failure.** Both are annotations on the pull request. The gap is there because hosted runners vary by tens of percent from one run to the next, and more on Windows (the same build took 60 to 82 s on four Windows runners in step 2). A failure at exactly the budget would turn a tier that is near its limit into red builds at random, which teaches people to re-run instead of to fix. The warning is the signal to act; the failure is for a tier that is over on any runner. The limits on a single test stay hard failures: they are several times what a healthy test takes.
 - A test over its slow mark needs a reason or moves to tier 6.
+
+**Property tests** use no property-testing crate. The pattern was set in step 4 (`crates/cortex-base/src/cases.rs`), and steps 6, 10 and 12 follow it. The test kit takes the helper over when it is built, so that every crate uses one copy.
+
+- A property is a function from a generated input to "fine" or "what was wrong". A generator is a function from a random-number generator to an input. `check(name, cases, generate, property)` runs the property on that many inputs.
+- **Every run is the same.** Each case draws from the seeded generator of `cortex-base` with a seed made from the property's name and the case number. There is no randomness between runs or machines, so a property test cannot be flaky.
+- **A failure prints the property, the seed, the case number and the input.** `CORTEX_PROPERTY_SEED=<seed>` runs that one case again, alone.
+- **`CORTEX_PROPERTY_SCALE=<n>` multiplies every property's number of cases.** Pull requests run at 1, which keeps the properties of one crate to well under a second of the unit tier's 20. The `nightly` workflow runs tiers 1 and 2 at 50. The first time this was tried it found a case the default count had not (a wrong expectation in a wrapping test), which is the point of it. The limit on one test still holds at any scale: at 50 the slowest property of step 4 takes 1.8 s on the desktop, and at 300 it passes the 10 s limit.
+- **There is no shrinking,** so generators prefer small inputs, and an input is printed whole. In exchange the helper is 60 lines, adds no dependency and nothing to the build.
+- **Small spaces are checked exhaustively** in addition, where that is possible: every sequence of up to six path steps from a small alphabet, every split of a byte stream into two and into three chunks.
+
+What was weighed against it: proptest, which shrinks failing inputs and has a library of generators, and which would add about fifteen packages to every crate's test build, on both OSes, for the life of the project.
 
 ## Deterministic agent tests without a network
 
@@ -82,11 +93,11 @@ Every row is a test, or a group of tests, that runs on the Windows job.
 
 | Area | What is checked |
 |---|---|
-| Paths | Both separators accepted; case-insensitive comparison; device names and UNC paths rejected; long paths; `~` expansion. |
+| Paths | Both separators accepted; case-insensitive comparison; device names and UNC paths rejected; long paths; `~` expansion. Built in step 4 (`crates/cortex-base/tests/it/paths_windows.rs`), with these further cases: trailing dots and spaces and alternate data streams rejected; drive-relative and root-relative paths rejected; a directory link and a junction that leave the workspace resolve to their targets; a short (8.3) name resolves to the same path as the long one. The junction is made by `mklink`, so that test is a system test. |
 | Shells | PowerShell 7, Windows PowerShell and `cmd.exe`: quoting, merged output, exit status, the model being told which shell it has. Git Bash where the runner has it. |
 | Line endings | CRLF and mixed files survive `edit` and `write` byte for byte outside the edited lines; `.gitattributes` keeps fixtures exact. |
 | Process trees | A command with a grandchild is fully gone after cancellation, after timeout, and after the harness is killed (Job Objects). |
-| Files in use | Replacing a file another process holds open retries and then fails cleanly. |
+| Files in use | Replacing a file another process holds open retries and then fails cleanly. Built in step 4 (`crates/cortex-base/tests/it/atomic.rs`): a file held with no sharing fails after seven attempts and half a second of waiting, all of it on the fake clock, with the file unchanged and no temporary file left; a file let go during the retries is replaced. |
 | Terminal | ConPTY end-to-end tests of the TUI: key release events ignored, new-line keys, resize, restoration. |
 | Script shims | A `.cmd`-shim MCP server and hook command start with arguments intact; unsafe arguments are refused. |
 | Permissions on files | Session, credential and state files are readable only by the user. |
@@ -322,7 +333,7 @@ With the `dev` profile's optimised dependencies the cold Windows column would be
 | Workflow | When | What it runs now | What later steps add |
 |---|---|---|---|
 | `main` (`.github/workflows/main.yml`) | After each merge to the main branch, and by hand | `cargo xtask size --check` for Linux x86-64 and Windows x86-64: a build of the published profile (`dist`), the binary's size checked against its budget ([performance-budgets.md](performance-budgets.md)), and the number of crates in the build. Each run keeps its record as an artifact, and shows it on its summary page. | Tier 4 performance checks on both OSes with stored baselines (step 20), and a comparison of the size and the crate count with the run before. |
-| `nightly` (`.github/workflows/nightly.yml`) | Every night at 03:17 UTC, and by hand | `cargo xtask advisories` (`cargo deny check advisories`); `cargo xtask unused` (cargo-machete); and `cargo xtask size --check` for every release target, each on a runner of its own architecture: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-pc-windows-msvc`. | Tier 6: fuzzing for a fixed time (from step 5), the long-session memory test. Tier 5 where a key is configured. |
+| `nightly` (`.github/workflows/nightly.yml`) | Every night at 03:17 UTC, and by hand | `cargo xtask advisories` (`cargo deny check advisories`); `cargo xtask unused` (cargo-machete); `cargo xtask size --check` for every release target, each on a runner of its own architecture: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-pc-windows-msvc`; and, since step 4, tiers 1 and 2 on Linux with fifty times the property-test cases ("Property tests", above). | Tier 6: fuzzing for a fixed time (from step 5), the long-session memory test. Tier 5 where a key is configured. |
 | `release` | On a version tag | Not built yet. | Builds, checks and publishes binaries with checksums. |
 | `live` | By hand | Not built yet. | Tier 5 and fixture recording. Uses a protected environment for secrets. |
 

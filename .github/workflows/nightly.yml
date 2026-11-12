@@ -1,7 +1,8 @@
-# Every night: the checks that do not belong on a pull request. In this first
-# form, the advisory check, the unused-dependency check and a release build
-# for every release target. Later steps add fuzzing, the long-session memory
-# test and the live smoke tests (tiers 5 and 6).
+# Every night: the checks that do not belong on a pull request. So far, the
+# advisory check, the unused-dependency check, a release build for every
+# release target, and the property tests with many more cases than a pull
+# request runs. Later steps add fuzzing, the long-session memory test and
+# the live smoke tests (tiers 5 and 6).
 #
 # It does not block anything. When it fails, the `report` job opens an issue,
 # or adds a comment to the one that is open. The layout and the reasons are
@@ -103,9 +104,31 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  # The property tests of tiers 1 and 2, with fifty times the cases a pull
+  # request checks (docs/testing-and-ci.md, "Property tests"). A failure
+  # prints the seed of the failing case, which runs it alone at a desk. On
+  # Linux only: the properties are of pure logic, the Windows path rules are
+  # among them on every OS, and the workflow keeps to one Windows job.
+  properties:
+    if: ${{ !inputs.force_failure }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CORTEX_PROPERTY_SCALE: "50"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest@0.9.151
+      - name: Tiers 1 and 2, with more property cases
+        run: cargo run --locked --quiet --package xtask -- test --locked --profile fast
+
   # The only job with a token that can write, and all it can write is issues.
   report:
-    needs: [dependencies, release]
+    needs: [dependencies, release, properties]
     if: ${{ failure() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -47,12 +47,31 @@ The two phases exist so the permission engine, the sandbox and the scheduler can
 - When content is cut, the full output is written to an artifact file in the session directory, and the result ends with a notice that states what was cut and how to get the rest (the artifact path, which the read and search tools accept). In the TUI the full output is one key press away.
 - Truncation happens once, when the result is created. A stored result is never shortened later (invariant 1).
 
-**Paths.** Tools take paths relative to the workspace root, or absolute paths.
+**Paths.** Tools take paths relative to the workspace root, absolute paths, or paths that begin with `~` for the home directory. One resolver in `cortex-base` reads all of them, by the rules below. It was built in step 4.
 
-- Both `/` and `\` are accepted as separators on Windows. Paths shown to the model use `/`.
-- A path is resolved to a canonical absolute form before any check. Symbolic links are resolved, and the permission check applies to the target.
-- On Windows, comparison is case-insensitive, and device names (`NUL`, `CON`, `\\.\…`) and UNC paths are rejected unless configuration allows the specific share.
-- Paths outside the workspace are allowed only by permission (see [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)).
+- Both `/` and `\` are accepted as separators on Windows. Paths shown to the model use `/`: relative to the workspace when inside it, absolute otherwise.
+- A path is resolved to a canonical absolute form before any check. Symbolic links, and on Windows junctions, are resolved, and the permission check applies to the target. The part of a path that exists is replaced by its real location, spelled as the file system spells it. The part that does not exist yet (a file about to be created) is kept as written.
+- `..` means what the OS makes it mean. On Linux it is the parent of the real directory, so `link/..` is the parent of the link's target. On Windows it is resolved as text before anything is opened.
+- On Windows, comparison is case-insensitive and the on-disk spelling is kept. Short names (`PROGRA~1`) resolve to the long ones, so a rule on the long name cannot be dodged through the short one.
+- Paths outside the workspace are allowed only by permission (see [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)). Resolving one is not an error: the resolver says where it leads and that it is outside.
+
+**A path that could mean two things is refused, not guessed at,** by the reasoning of [decision 0028](../decisions/0028-enforced-values-fail-closed.md): a permission rule is matched against a path, so a second spelling of a protected file is a way round the rule. Each refusal has its own error, written for the model.
+
+| Refused | Where | Why |
+|---|---|---|
+| An empty path, or one with a NUL character | Everywhere | Neither names a file. |
+| A path, or a real location, that is not valid Unicode | Everywhere | Rules match text, and a lossy conversion would make two different files look alike. The refusal is of that one path: a directory walk reports the entry and goes on. |
+| A symbolic link whose target does not exist | Everywhere | Writing "through" it would create a file at a place the path does not show. |
+| Device names: `NUL`, `CON`, `PRN`, `AUX`, `COM1` to `COM9`, `LPT1` to `LPT9` (and `0`, and the superscript digits), `CONIN$`, `CONOUT$`, with any extension | Windows | They are devices in every directory. |
+| The device and extended-length forms, `\\.\…` and `\\?\…` | Windows | They bypass the rules that the rest of this list depends on. |
+| A name that ends with a dot or a space | Windows | Windows drops them: `secret.env.` opens `secret.env`. |
+| A colon in a name, and `< > " \| ? *` and control characters | Windows | A colon selects an alternate data stream: `secret.env::$DATA` is the content of `secret.env`. The rest are wildcards or not allowed in names. |
+| `C:name` and `\name` | Windows | They are relative to a current directory or drive that nobody stated. |
+| A network path, `\\server\share\…`, unless configuration allows that server and share | Windows | Reaching for a share sends the account's credentials to whoever answers. The refusal is made on the text, before the network is asked anything. A drive letter mapped to a share is refused the same way, on the resolved path. |
+
+The Windows rows apply on Windows only. On Linux `notes:2026` and `name.` are ordinary file names.
+
+**What resolution does not promise.** Resolving a path and opening it are two steps, and the file system can change between them: a directory can be swapped for a link after the check. The harness opens the location it checked, never the text it was given, which closes the gap for everything that is not actively racing it. A process that is racing it is the sandbox's to confine ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)).
 
 **Text files.** Tools read and write UTF-8. A file that is not valid UTF-8 is refused by the editing tools with a message that says so. Line endings and a byte-order mark are detected on read and preserved on write.
 
@@ -60,7 +79,11 @@ The two phases exist so the permission engine, the sandbox and the scheduler can
 
 **Checkpoints.** Before a tool changes or creates a file, the previous content (or the fact that the file did not exist) is saved in the session's checkpoint store. The checkpoints of one turn form that turn's snapshot. This is what lets edits apply without asking: every one of them can be undone (see [07-sessions-and-context.md](07-sessions-and-context.md)).
 
-**Atomic writes.** New content goes to a temporary file in the same directory, is flushed, and is renamed over the target. On Windows the replace is retried briefly when another process holds the file open, and fails with a clear message if it stays locked. File permissions are preserved.
+**Atomic writes.** New content goes to a temporary file in the same directory, is flushed, and is renamed over the target. On Windows the replace is retried briefly when another process holds the file open (six more attempts over half a second), and fails with a clear message if it stays locked. File permissions are preserved: the new file takes the mode of the one it replaces, and the temporary file is private until it does.
+
+- A target marked read-only is refused, on both OSes. A rename would otherwise replace a file its owner had protected on Linux, and fail on Windows.
+- A symbolic link is written through: the file it points to is replaced, and the link stays.
+- Not preserved: hard links (the file's other names keep the old content), the owner of a file that belonged to someone else, and on Windows the hidden and system attributes and any access rules set on the file itself, as opposed to inherited from its directory.
 
 ## `read`
 
@@ -281,6 +304,11 @@ Tools that are not built in (MCP tools and extension tools) are not declared to 
 | Locked files | Replace is retried briefly, then fails with the reason. |
 | Long paths | Handled internally with extended-length paths. Not shown to the model. |
 | Reserved names and device paths | Rejected. |
+| Trailing dots and spaces, alternate data streams | Rejected. |
+| Drive-relative and root-relative paths (`C:name`, `\name`) | Rejected. |
+| Network paths | Rejected unless the server and share are allowed in configuration. |
+| Junctions and directory links | Resolved like symbolic links. The check applies to the target. |
+| Short (8.3) names | Resolved to the long name. |
 | Script shims (`.cmd`, `.bat`) | Never executed directly with untrusted arguments. See [12-extensions.md](12-extensions.md). |
 
 Each row has tests that run on the Windows CI job (see [../testing-and-ci.md](../testing-and-ci.md)).

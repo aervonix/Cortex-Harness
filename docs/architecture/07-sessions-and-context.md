@@ -50,7 +50,7 @@ epoch 1                                   epoch 2
 
 - The data directory follows the platform convention (`$XDG_DATA_HOME/cortex-harness` on Linux, `%LOCALAPPDATA%\cortex-harness` on Windows) and is configurable.
 - The project key is derived from the canonical workspace path.
-- Session ids are time-ordered, so sorting by id sorts by creation time.
+- Session ids are time-ordered, so sorting by id sorts by creation time. An id is `s_` and 22 characters: ten for the creation time in milliseconds and twelve random ones, in a 32-character alphabet of digits and lowercase letters that sorts as the numbers do (`cortex-base`, `id`). Lowercase only, because the id is a directory name and Windows ignores case. Ids made by one process never go backwards, even within a millisecond or after the clock is set back.
 - Files are created with owner-only permissions.
 
 JSONL files were chosen over a database. The comparison and the measured cost of bundling SQLite are in [decision 0006](../decisions/0006-session-storage.md).
