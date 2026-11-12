@@ -18,7 +18,7 @@ use crate::open::open_enum;
 open_enum! {
     /// A speed tier, by name. Which ones a model offers is in its
     /// [`ModelInfo`](crate::model::ModelInfo).
-    pub enum Speed {
+    pub enum Speed, other = Other("A tier with a provider's own name, such as `flex` or `priority`. What it is comes from the model's offer for it, never from the name.") {
         /// The provider's normal processing, at the model's normal prices.
         /// Every model has it, and it is what a request runs at when nothing
         /// else is asked for.

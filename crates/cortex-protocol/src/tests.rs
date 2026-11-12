@@ -535,7 +535,7 @@ fn usage_carries_the_speed_a_request_ran_at() {
         "tokens": {"input": 10, "cache_read": 0, "cache_write": 0, "output": 5},
         "billing": "unknown",
     }));
-    assert_eq!(flex.speed, Speed::Unknown("flex".to_owned()));
+    assert_eq!(flex.speed, Speed::Other("flex".to_owned()));
 }
 
 #[test]
