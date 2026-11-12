@@ -163,7 +163,7 @@ The allow-list that `cargo deny` enforces is in [../testing-and-ci.md](../testin
 
 ## What was not measured
 
-- **Windows.** No build times or sizes on Windows. The C-based candidates (ring, QuickJS, Lua, SQLite) are the ones most likely to differ. The repo skeleton step measures CI on both OSes with the real set.
-- **A hosted runner.** See the method. The CI estimate in [../testing-and-ci.md](../testing-and-ci.md) is built from these numbers with a stated margin.
+- **Windows.** No build times or sizes on Windows in this spike. The repo skeleton step has since built the planned set on a hosted Windows runner, ring and QuickJS included: the numbers are in [../testing-and-ci.md](../testing-and-ci.md). Binary size on Windows is still not measured.
+- **A hosted runner.** Not in this spike. The repo skeleton step measured both hosted runners, and its numbers replaced the estimate in [../testing-and-ci.md](../testing-and-ci.md). Against this page's estimate of about 30 s for the first release's set, a hosted Linux runner took 42 to 45 s and a Windows runner 77 s with unoptimised dependencies, so the working assumption above ("about double on Linux and more on Windows") was fair for that case. What the estimate did not include is the dev profile's `opt-level = 1` for dependencies: with it the same builds took 129 s and 259 s. The method above does not record an optimisation level for dependencies, and its figures match the unoptimised case.
 - **Our own code.** The harness's crates add build time and size on top. The budgets leave room for it; the performance pass measures it.
 - **Alternative linkers and code generators.** The default was fast enough on Linux. The skeleton step tries the faster linker on Windows if the measured time needs it.

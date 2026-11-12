@@ -99,13 +99,13 @@ The size budget is where the vision's features meet the footprint goal most dire
 
 | Budget | Limit | Measured basis |
 |---|---|---|
-| Blocking pull-request checks, wall time per OS | < 5 min | See the phase table in [testing-and-ci.md](testing-and-ci.md). |
-| Clean dev build of the workspace, Linux runner | ≤ 2 min | Third-party dependencies alone: 15 to 27 s on 4 desktop cores, plus about 3 s for the script engine; roughly double on a runner. |
-| Clean dev build of the workspace, Windows runner | ≤ 3.5 min | Not measured. Step 2 measures it. |
+| Blocking pull-request checks, wall time per OS | < 5 min | Measured in step 2 for the skeleton: 23 s on Linux and 48 to 74 s on Windows, with a cold or a warm cache. The tables are in [testing-and-ci.md](testing-and-ci.md). |
+| Clean build of the workspace in the `ci` profile, Linux runner | ≤ 2 min | Measured in step 2: the planned third-party set alone takes 42 to 45 s. In the `dev` profile, which optimises dependencies, it takes 129 s; that is why CI has a profile of its own. |
+| Clean build of the workspace in the `ci` profile, Windows runner | ≤ 3.5 min | Measured in step 2: the planned third-party set alone takes 77 s, after 32 to 35 s of fetching sources. In the `dev` profile it takes 259 s. |
 | Clean release build (`release` profile), 4 desktop cores | ≤ 3 min | Core dependency set: 37 s. With the optional parts: 76 s. The script engine adds about 9 s. |
 | `cargo check` after an edit in a leaf crate, desktop | ≤ 2 s | |
-| Rebuild and relink the binary after an edit, desktop | ≤ 5 s | Relinking the full dependency set with a trivial change: 0.4 s. |
-| No-op build | ≤ 0.5 s | 0.13 s. |
+| Rebuild and relink the binary after an edit, desktop | ≤ 5 s | Relinking the full dependency set with a trivial change: 0.4 s on the desktop, 0.54 s on a Linux runner, 1.5 s on a Windows runner. |
+| No-op build | ≤ 0.5 s | 0.13 s with the full dependency set. 0.03 s for the skeleton. |
 | Tiers 1 and 2 test time | ≤ 60 s on a runner, ≤ 30 s on a desktop | |
 | Tier 3 test time | ≤ 60 s Linux runner, ≤ 90 s Windows runner | |
 

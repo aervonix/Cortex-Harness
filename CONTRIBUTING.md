@@ -19,7 +19,7 @@ Everything goes through the `xtask` crate: `cargo xtask <command>`, or `./x <com
 |---|---|
 | `cargo xtask check` | The static checks (tier 0): `fmt`, `rules`, `clippy`, `deny`. `cargo xtask check clippy` runs one of them. Every step runs even if an earlier one fails, and the timings are printed at the end. |
 | `cargo xtask test` | All tests. Arguments go to `cargo nextest run`: `cargo xtask test --profile fast` runs tiers 1 and 2 only, `cargo xtask test -p cortex-cli` one crate. |
-| `cargo xtask ci` | Exactly what the blocking CI jobs run: the static checks, then tiers 1 to 3 in the `ci` profile. Run it before opening a pull request. |
+| `cargo xtask ci` | Exactly what the blocking CI jobs run: the static checks, then tiers 1 to 3. Run it before opening a pull request. It builds with cargo's `ci` profile, as CI does, so its first run builds the dependencies once more, unoptimised, into `target/ci`. |
 | `cargo xtask rules` | The repo-rule checks alone (see below). |
 | `cargo xtask fmt` | Formats the workspace. |
 | `cargo xtask alias` | Builds `cortex` and puts its alias `cx` beside it in the target directory. |
