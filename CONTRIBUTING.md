@@ -32,6 +32,7 @@ Everything goes through the `xtask` crate: `cargo xtask <command>`, or `./x <com
 ```
 crates/cortex-*    the product, one crate per job (docs/architecture/01-workspace.md)
 crates/cortex-cli  the `cortex` binary; `cx` is a link to it
+catalog/           the model catalog, embedded in the binary by cortex-llm's build script
 xtask/             developer commands; not shipped
 docs/              the specification
 docs/protocol/     generated: the protocol's JSON Schema and TypeScript declarations

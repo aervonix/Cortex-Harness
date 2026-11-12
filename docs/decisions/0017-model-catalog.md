@@ -18,7 +18,8 @@ The harness needs facts about each model that provider APIs mostly do not serve:
 
 ## Decision
 
-- `catalog/models.toml` in the repo is the source of truth. A build step compiles it into the binary.
+- `catalog/models.toml` in the repo is the source of truth. A build step compiles it into the binary. As built in step 5: the build script of `cortex-llm` turns the TOML into JSON, the crate embeds the JSON and reads it on first use. The shipped crate therefore needs no TOML reader, only the JSON one it links already, and the catalog costs nothing at start-up (18 to 24 µs when first used, for the first four models). The script changes the syntax and nothing else; whether an entry is valid is checked by the crate, and a test loads the built-in catalog, so a bad entry fails the tests and cannot be merged.
+- Every entry says where its facts were read and when. A fact the provider's documentation does not state is left out of the entry. Nothing is taken from another tool's catalog.
 - `xtask catalog update` drafts changes from provider list endpoints and from models.dev (MIT-licensed data). A maintainer reviews the diff.
 - Users add or override entries in configuration.
 - `cortex models refresh` overlays live limits and capabilities from a provider's list endpoint, only when the user runs it.
