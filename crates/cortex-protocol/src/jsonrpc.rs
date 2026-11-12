@@ -343,6 +343,8 @@ impl Message {
     }
 }
 
+/// In the schema the envelopes are named `JsonRpc…`, because the
+/// conversation model has a `Message` of its own.
 #[cfg(feature = "schema")]
 mod schema {
     use std::borrow::Cow;
@@ -365,7 +367,7 @@ mod schema {
 
     impl JsonSchema for ErrorObject {
         fn schema_name() -> Cow<'static, str> {
-            "ErrorObject".into()
+            "JsonRpcError".into()
         }
         fn json_schema(generator: &mut SchemaGenerator) -> Schema {
             let data = generator.subschema_for::<crate::error::ErrorData>();
@@ -390,7 +392,7 @@ mod schema {
 
     impl JsonSchema for Request {
         fn schema_name() -> Cow<'static, str> {
-            "Request".into()
+            "JsonRpcRequest".into()
         }
         fn json_schema(generator: &mut SchemaGenerator) -> Schema {
             let id = generator.subschema_for::<RequestId>();
@@ -410,7 +412,7 @@ mod schema {
 
     impl JsonSchema for Notification {
         fn schema_name() -> Cow<'static, str> {
-            "Notification".into()
+            "JsonRpcNotification".into()
         }
         fn json_schema(_: &mut SchemaGenerator) -> Schema {
             json_schema!({
@@ -428,7 +430,7 @@ mod schema {
 
     impl JsonSchema for Response {
         fn schema_name() -> Cow<'static, str> {
-            "Response".into()
+            "JsonRpcResponse".into()
         }
         fn json_schema(generator: &mut SchemaGenerator) -> Schema {
             let id = generator.subschema_for::<RequestId>();
@@ -449,7 +451,7 @@ mod schema {
 
     impl JsonSchema for Message {
         fn schema_name() -> Cow<'static, str> {
-            "Message".into()
+            "JsonRpcMessage".into()
         }
         fn json_schema(generator: &mut SchemaGenerator) -> Schema {
             let request = generator.subschema_for::<Request>();

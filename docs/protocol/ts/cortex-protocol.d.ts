@@ -428,16 +428,6 @@ export interface ErrorData {
 /** What sort of failure an error is. It decides whether the harness retries, which exit code a headless run ends with, and what a client should offer the user. */
 export type ErrorKind = "usage" | "config" | "auth" | "provider" | "transient" | "model_stop" | "permission" | "limit" | "context_overflow" | "tool" | "interrupted" | "internal" | (string & {});
 
-/** The error member of a failed response. */
-export interface ErrorObject {
-  /** A JSON-RPC error code. -32000 for every application error. */
-  code: number;
-  /** For an application error (code -32000), an ErrorData. Otherwise optional detail. */
-  data?: ErrorData | unknown;
-  /** One sentence for a person. */
-  message: string;
-}
-
 /** One event of a session. */
 export type Event = ({
     type: "turn.started";
@@ -620,6 +610,42 @@ export interface ItemStarted {
   tool?: string | null;
 }
 
+/** The error member of a failed response. */
+export interface JsonRpcError {
+  /** A JSON-RPC error code. -32000 for every application error. */
+  code: number;
+  /** For an application error (code -32000), an ErrorData. Otherwise optional detail. */
+  data?: ErrorData | unknown;
+  /** One sentence for a person. */
+  message: string;
+}
+
+/** Any JSON-RPC message: one JSON object per line. */
+export type JsonRpcMessage = JsonRpcRequest | JsonRpcNotification | JsonRpcResponse;
+
+/** A JSON-RPC notification: a message that gets no answer. */
+export interface JsonRpcNotification {
+  jsonrpc: "2.0";
+  method: string;
+  params?: unknown;
+}
+
+/** A JSON-RPC request: the receiver must answer it with a response that has the same id. */
+export interface JsonRpcRequest {
+  id: RequestId;
+  jsonrpc: "2.0";
+  method: string;
+  params?: unknown;
+}
+
+/** The answer to a JSON-RPC request. It has `result` or `error`, never both. */
+export interface JsonRpcResponse {
+  error?: JsonRpcError;
+  id: RequestId | null;
+  jsonrpc: "2.0";
+  result?: unknown;
+}
+
 /** Everything a session is allowed to do, as one value. */
 export interface Lease {
   /** When the lease ends. */
@@ -679,11 +705,8 @@ export interface McpStatusResult {
   servers: Array<ComponentStatus>;
 }
 
-/** Any JSON-RPC message: one JSON object per line. */
-export type Message = Request | Notification | Response;
-
 /** One message of a conversation. */
-export interface Message2 {
+export interface Message {
   /** For an assistant message: what produced it. */
   origin?: Origin | null;
   /** Its content, in order. */
@@ -797,13 +820,6 @@ export interface NoticeItem {
 
 /** Why the harness added a notice to the conversation. */
 export type NoticeSource = "instructions" | "plan" | "repetition" | "verification" | "limit" | "harness" | (string & {});
-
-/** A JSON-RPC notification: a message that gets no answer. */
-export interface Notification {
-  jsonrpc: "2.0";
-  method: string;
-  params?: unknown;
-}
 
 /** What produced an assistant message. Raw blocks are valid only for replay to the same protocol, and to a model that can read them. */
 export interface Origin {
@@ -1116,14 +1132,6 @@ export interface ReasoningPart {
   text?: string;
 }
 
-/** A JSON-RPC request: the receiver must answer it with a response that has the same id. */
-export interface Request {
-  id: RequestId;
-  jsonrpc: "2.0";
-  method: string;
-  params?: unknown;
-}
-
 /** The id that ties a response to its request: a number or a string, chosen by the side that sends the request. */
 export type RequestId = number | string;
 
@@ -1165,14 +1173,6 @@ export interface RequestUsage {
 
 /** How a request from the server to its clients was settled. */
 export type Resolution = "answered" | "timed_out" | "cancelled" | (string & {});
-
-/** The answer to a JSON-RPC request. It has `result` or `error`, never both. */
-export interface Response {
-  error?: ErrorObject;
-  id: RequestId | null;
-  jsonrpc: "2.0";
-  result?: unknown;
-}
 
 /** Notice: a request failed and will be tried again. */
 export interface RetryNotice {

@@ -31,6 +31,12 @@ use crate::{PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS, SessionEvent};
 
 const TRANSCRIPT: &str = include_str!("../tests/golden/v1-session.jsonl");
 
+/// Values of the types that do not travel inside a method or an event (a
+/// lease, a conversation message, the less common approval details), one per
+/// line as `{"type": …, "value": …}`. With the transcript, every type of the
+/// protocol is in a golden file; a test in `xtask` checks that none is missing.
+const VALUES: &str = include_str!("../tests/golden/v1-values.jsonl");
+
 fn transcript() -> Vec<Value> {
     TRANSCRIPT
         .lines()
@@ -116,6 +122,20 @@ fn the_golden_transcript_round_trips_exactly() {
     let written = replay(&lines);
     for (line, again) in lines.iter().zip(&written) {
         assert_eq!(again, line, "\n  read:    {line}\n  written: {again}");
+    }
+}
+
+#[test]
+fn the_golden_values_round_trip_exactly() {
+    for line in VALUES.lines() {
+        let entry: Value = serde_json::from_str(line).expect("a line of the values file is JSON");
+        let value = entry["value"].clone();
+        match entry["type"].as_str() {
+            Some("Lease") => drop(round_trip::<Lease>(value)),
+            Some("Message") => drop(round_trip::<crate::Message>(value)),
+            Some("ApprovalDetail") => drop(round_trip::<ApprovalDetail>(value)),
+            other => panic!("the values file names a type this test does not read: {other:?}"),
+        }
     }
 }
 
