@@ -17,7 +17,7 @@ Four rules hold for all of them.
 
 | Event | Fields | Used for |
 |---|---|---|
-| Request | time, provider, model, role, project key, session, variant ids, tokens by class, cost as priced at that moment, billing kind (metered, subscription, unknown), time to first token, tokens per second, stop reason, retries | The usage view ([18-usage.md](18-usage.md)), cost and cache views, routing, per-model choices. |
+| Request | time, provider, model, role, the speed tier it ran at, project key, session, variant ids, tokens by class, cost as priced at that moment for that speed, billing kind (metered, subscription, unknown), time to first token, tokens per second, stop reason, retries | The usage view ([18-usage.md](18-usage.md)), cost and cache views, routing, per-model choices. |
 | Context | per request: token estimates by source (system prompt, each instruction file, profile, repository map, tool definitions by origin, history by item kind), and where the cached prefix first differed when the cache missed | The context profiler ([15-efficiency.md](15-efficiency.md)). |
 | Tool call | tool, model, variant ids, outcome (ok, invalid arguments, failed, denied), duration | Tool-schema and edit-format success rates. |
 | Edit | model, edit format, matching tier used, outcome | Choosing the edit format per model. |

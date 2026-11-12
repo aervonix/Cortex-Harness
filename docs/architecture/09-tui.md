@@ -321,7 +321,7 @@ Every binding can be changed in `[keys]`. Bindings are looked up through a key m
 | `/sessions` | Opens the session picker: resume, switch, fork. |
 | `/rewind` | Picks an earlier point to continue from, with or without restoring files. |
 | `/undo` | Restores the files changed by the last turn and steps back before it. |
-| `/model`, `/effort` | Pickers for the model and reasoning level. |
+| `/model`, `/effort` | Pickers for the model and reasoning level. When the current model offers a fast speed ([04-providers.md](04-providers.md), "Speed tiers"), the `/effort` picker also has a fast-mode toggle on `Tab`, with the hint `tab - fast mode`. When the model offers none, neither the toggle nor the hint is shown. The owner asked for this on 2026-11-12 ([decision 0027](../decisions/0027-speed-tiers.md)). In that picker `Enter` accepts the level, because `Tab` is the toggle. |
 | `/mode` | Picks the level (the permission mode). |
 | `/lease` | After the first release: grants, shows, extends or ends a task lease ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)). |
 | `/permissions` | Lists and removes stored approvals. |

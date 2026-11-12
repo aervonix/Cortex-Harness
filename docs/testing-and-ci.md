@@ -56,7 +56,7 @@ Tiers 1 to 3 are separated by where the test lives and by nextest filters, not b
 
 **Replays at every chunk boundary.** Stream decoders are tested by replaying each fixture split at every byte offset, which catches the bugs that only appear when a network read ends in the middle of a token.
 
-**Golden transcripts.** Sequences of protocol messages from released versions are kept and replayed against current types, to catch accidental breaking changes to the RPC protocol.
+**Golden transcripts.** Sequences of protocol messages from released versions are kept and replayed against current types, to catch accidental breaking changes to the RPC protocol. The first one, written by hand in step 3, is `crates/cortex-protocol/tests/golden/v1-session.jsonl`: every method, every event type and every kind of item, part, delta, notice and plan edit of protocol version 1. Three tests use it: each line must read into its typed form and write back as the same JSON; the same must hold after a field no version knows is added to every object; and each line must be valid against the generated schema ([architecture/11-rpc-protocol.md](architecture/11-rpc-protocol.md)). A transcript is not edited to make a test pass.
 
 **No paid API in CI.** Pull-request jobs have no secrets. The scripted fakes and fixtures cover everything that blocks.
 
@@ -104,7 +104,7 @@ Four jobs in parallel, in `.github/workflows/ci.yml`. Wall time is the slowest j
 
 | Job | Runner | Runs |
 |---|---|---|
-| `lint-linux` | `ubuntu-latest` | `cargo xtask check`: `cargo fmt --all --check`; the repo rules; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo deny check licenses bans sources`. |
+| `lint-linux` | `ubuntu-latest` | `cargo xtask check`: `cargo fmt --all --check`; the repo rules; the generated files (the protocol's schema and TypeScript declarations are what the types generate); `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo deny check licenses bans sources`. |
 | `lint-windows` | `windows-latest` | `cargo xtask check clippy`. Formatting, the repo rules and cargo-deny give the same answer on every OS and run once. Clippy runs on both, because code compiled only for Windows is otherwise never linted. |
 | `test-linux` | `ubuntu-latest` | `cargo xtask ci test`: build the tests, run tiers 1 to 3 (`cargo nextest run --workspace --locked --cargo-profile ci --profile ci`), check the tier budgets. |
 | `test-windows` | `windows-latest` | The same. |
@@ -131,6 +131,7 @@ Settings common to all jobs:
 - The decision is made inside each job, not in a separate job that the others wait for. All four checks therefore always report, so they can be required by branch protection as they are, with no gate job, and a pull request that does touch code pays about a second for the question.
 - **The repo rules still run on a documentation-only pull request, deliberately.** The check for home-directory paths and the check of `docs/dependencies.md` exist mostly for documentation, and skipping them on exactly the pull requests that write prose would open the hole they close. This compiles `xtask`, which is five small crates, and nothing else.
 - Anything else in the change set (a manifest, a workflow, an asset, a source file) runs everything. So does every push to the main branch and every scheduled or manual run.
+- **The generated protocol files under `docs/protocol/` count as code.** They are checked against the Rust types by a test, so a pull request that touches them runs the tests, wherever else its changes are.
 
 **nextest configuration** (`.config/nextest.toml`):
 
@@ -272,16 +273,24 @@ With the `dev` profile's optimised dependencies the cold Windows column would be
 
 ### Not blocking
 
-None of these exists yet. `main` and `nightly` arrive in their first form in step 3 of the [build plan](build-plan.md), with the checks that need no product code (advisories, unused dependencies, release builds, binary size, crate count), and later steps add their tiers to them. `release` and `live` arrive with the steps that need them. The blocking workflow also runs on every push to the main branch and twice a week on a schedule: those runs are what write the caches and keep them from expiring.
+`main` and `nightly` exist in their first form since step 3 of the [build plan](build-plan.md), with the checks that need no product code. Later steps add their tiers to them. `release` and `live` arrive with the steps that need them. The blocking workflow also runs on every push to the main branch and twice a week on a schedule: those runs are what write the caches and keep them from expiring.
 
-| Workflow | When | What |
-|---|---|---|
-| `main` | After each merge to the main branch | Tier 4 performance checks on both OSes with stored baselines; a release-profile build and the binary-size check. |
-| `nightly` | Nightly | Tier 6: fuzzing for a fixed time, long-session memory test, release builds for every target, `cargo deny check advisories`, unused-dependency check, tier 5 where a key is configured. |
-| `release` | On a version tag | Builds, checks and publishes binaries with checksums. |
-| `live` | By hand | Tier 5 and fixture recording. Uses a protected environment for secrets. |
+| Workflow | When | What it runs now | What later steps add |
+|---|---|---|---|
+| `main` (`.github/workflows/main.yml`) | After each merge to the main branch, and by hand | `cargo xtask size --check` for Linux x86-64 and Windows x86-64: a build of the published profile (`dist`), the binary's size checked against its budget ([performance-budgets.md](performance-budgets.md)), and the number of crates in the build. Each run keeps its record as an artifact, and shows it on its summary page. | Tier 4 performance checks on both OSes with stored baselines (step 20), and a comparison of the size and the crate count with the run before. |
+| `nightly` (`.github/workflows/nightly.yml`) | Every night at 03:17 UTC, and by hand | `cargo xtask advisories` (`cargo deny check advisories`); `cargo xtask unused` (cargo-machete); and `cargo xtask size --check` for every release target, each on a runner of its own architecture: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-pc-windows-msvc`. | Tier 6: fuzzing for a fixed time (from step 5), the long-session memory test. Tier 5 where a key is configured. |
+| `release` | On a version tag | Not built yet. | Builds, checks and publishes binaries with checksums. |
+| `live` | By hand | Not built yet. | Tier 5 and fixture recording. Uses a protected environment for secrets. |
 
-A failure in a non-blocking workflow opens or updates an issue. It does not block merging, and it is not ignored: the performance and size checks have owners named in the workflow.
+- **The jobs call `cargo xtask`,** like the blocking ones, so the same commands run at a desk.
+- **No build cache.** Nobody waits for these runs, and the blocking workflow's caches keep the repository's whole 10 GB.
+- **One Windows job each.** Hosted Windows runners queue when a repository starts many of them ("What grows the time", above).
+
+**A failure opens or updates an issue.** It does not block merging, and it is not ignored. Each workflow ends with a `report` job that runs only when another job failed. It looks for an open issue titled "The `<workflow>` workflow failed", with the label `ci-failure`. If there is none it opens one; if there is one it adds a comment. Either way the text names the run, the jobs that did not succeed, the trigger and the commit. A person closes the issue when the cause is fixed, and the next failure opens a new one. The steps are in `.github/actions/report-failure`.
+
+**Only the `report` job can write, and only issues.** Every workflow's token is read-only at the top level. A workflow that runs on pull requests can write nothing and uses no secret. In a workflow that does not, the job named `report` may have `issues: write`, and nothing else may have any write permission: the job that holds a token that can write runs no code from the build, and the jobs that build and run code hold a token that cannot write. `cargo xtask rules` checks all of it.
+
+**Testing the report.** Both workflows take a `force_failure` input when started by hand, which makes the first job fail at once. `gh workflow run nightly.yml --ref <branch> -f force_failure=true` exercises the whole path without waiting for a real failure. Close the issue it opens.
 
 ## Lints and formatting
 
@@ -299,8 +308,11 @@ A failure in a non-blocking workflow opens or updates an issue. It does not bloc
 
 - no file contains an absolute home-directory path (every file is scanned, binary files included);
 - the crate dependency rules of [architecture/01-workspace.md](architecture/01-workspace.md), read from `cargo metadata`, and the manifest conventions (the `cortex-` prefix, `publish = false`, shared lints, no doc tests, one integration-test binary);
+- `cortex-protocol` depends on serde and serde_json and nothing else, and on schemars only as an optional dependency behind its `schema` feature;
 - `docs/dependencies.md` agrees with the manifests;
-- workflow actions are pinned by commit hash, and the blocking workflow uses no secret and no token that can write.
+- workflow actions are pinned by commit hash; every workflow's token is read-only; a workflow that runs on pull requests uses no secret and can write nothing; and the only write permission anywhere is `issues: write` on the `report` job of a workflow that does not run on pull requests ("Not blocking", above).
+
+`cargo xtask check` also has a `generated` step: the protocol's JSON Schema and TypeScript declarations in `docs/protocol/` must be what the types in `cortex-protocol` generate. A test makes the same comparison on both OSes. `cargo xtask schema` regenerates them.
 
 ## Dependency hygiene
 
@@ -308,9 +320,9 @@ A failure in a non-blocking workflow opens or updates an issue. It does not bloc
 - **Sources.** crates.io only. No git dependencies.
 - **Bans.** OpenSSL bindings, native-TLS, and anything that needs CMake or NASM. Duplicate versions of the same crate are warnings that the weekly update pull request is expected to clear.
 - **Advisories.** Checked nightly and on every lockfile change. A new advisory against an unchanged lockfile must not block unrelated pull requests, so it is not in the blocking set.
-- **Unused dependencies.** Checked nightly.
+- **Unused dependencies.** Checked nightly, with cargo-machete. It reads the sources and needs no build, so it is a heuristic: a dependency used only in a way it cannot see is declared in the manifest, under `[package.metadata.cargo-machete]`, with the reason.
 - **The dependency list.** `docs/dependencies.md` names every direct dependency, its owner crate, its purpose and its measured cost. A tier 0 check fails when it and the manifests disagree.
-- **Crate count.** The number of crates in a release build is recorded on the main branch. An increase of more than five in one change needs a line in the pull request saying why.
+- **Crate count.** The number of crates in a release build is recorded on the main branch by the `main` workflow (every crate cargo compiles for the binary, ours included, with build dependencies and without development ones). An increase of more than five in one change needs a line in the pull request saying why.
 - **Updates.** One grouped pull request a week.
 - **The lockfile is committed.**
 
@@ -333,6 +345,8 @@ The commands, all through `cargo xtask` (or `./x`):
 
 | Command | Runs |
 |---|---|
-| `check` | The static checks: `fmt`, `rules`, `clippy`, `deny`. All of them run even when one fails, and the time of each is printed. |
+| `check` | The static checks: `fmt`, `rules`, `generated`, `clippy`, `deny`. All of them run even when one fails, and the time of each is printed. |
 | `test` | All tests. Arguments go to nextest: `--profile fast` for tiers 1 and 2. |
 | `ci` | What the blocking jobs run: `check`, then the tests in the `ci` profiles, then the tier budgets. |
+| `schema` | Regenerates the protocol's JSON Schema and TypeScript declarations in `docs/protocol/`. `schema --check` only compares. `gen` regenerates every generated file, which today is the same thing. |
+| `size`, `unused`, `advisories` | What the non-blocking workflows run: the `dist` build with its size and crate count (`--check` fails over the budget, `--target` names the target), cargo-machete, and `cargo deny check advisories`. |

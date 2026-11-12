@@ -17,11 +17,13 @@ Everything goes through the `xtask` crate: `cargo xtask <command>`, or `./x <com
 
 | Command | What it does |
 |---|---|
-| `cargo xtask check` | The static checks (tier 0): `fmt`, `rules`, `clippy`, `deny`. `cargo xtask check clippy` runs one of them. Every step runs even if an earlier one fails, and the timings are printed at the end. |
+| `cargo xtask check` | The static checks (tier 0): `fmt`, `rules`, `generated`, `clippy`, `deny`. `cargo xtask check clippy` runs one of them. Every step runs even if an earlier one fails, and the timings are printed at the end. |
 | `cargo xtask test` | All tests. Arguments go to `cargo nextest run`: `cargo xtask test --profile fast` runs tiers 1 and 2 only, `cargo xtask test -p cortex-cli` one crate. |
 | `cargo xtask ci` | Exactly what the blocking CI jobs run: the static checks, then tiers 1 to 3. Run it before opening a pull request. It builds with cargo's `ci` profile, as CI does, so its first run builds the dependencies once more, unoptimised, into `target/ci`. |
 | `cargo xtask rules` | The repo-rule checks alone (see below). |
 | `cargo xtask fmt` | Formats the workspace. |
+| `cargo xtask schema` | Regenerates the protocol's JSON Schema and TypeScript declarations in `docs/protocol/` from the types in `cortex-protocol`. Run it after any change to those types and commit the result. `--check` only compares. |
+| `cargo xtask size`, `unused`, `advisories` | What the non-blocking workflows run: the `dist` build with its binary size and crate count, the unused-dependency check (needs [cargo-machete](https://github.com/bnjbvr/cargo-machete)), and the advisory check. |
 | `cargo xtask alias` | Builds `cortex` and puts its alias `cx` beside it in the target directory. |
 
 ## Layout
@@ -31,9 +33,13 @@ crates/cortex-*    the product, one crate per job (docs/architecture/01-workspac
 crates/cortex-cli  the `cortex` binary; `cx` is a link to it
 xtask/             developer commands; not shipped
 docs/              the specification
+docs/protocol/     generated: the protocol's JSON Schema and TypeScript declarations
 assets/            the logo
+AGENTS.md          the rules for agents; CLAUDE.md is one line that includes it
 .config/nextest.toml, clippy.toml, deny.toml, rustfmt.toml, rust-toolchain.toml
-.github/workflows/ci.yml
+.github/workflows/ci.yml             the blocking checks
+.github/workflows/main.yml           after each merge: release build, size, crate count
+.github/workflows/nightly.yml        nightly: advisories, unused dependencies, every release target
 ```
 
 A crate may depend only on the workspace crates that [docs/architecture/01-workspace.md](docs/architecture/01-workspace.md) lists for it. `cargo xtask rules` checks this from `cargo metadata`. If the design has to change, change that page and the table in `xtask/src/rules/crate_graph.rs` in the same pull request.
@@ -89,7 +95,10 @@ Clippy treats `#[test]` functions and `#[cfg(test)]` modules as tests. Helper fu
 - **A file contains an absolute home-directory path.** Write `~` or a path relative to the repository. Every file is scanned, binary files included.
 - **A crate depends on a workspace crate it must not**, a heavy third-party crate is used outside its owner crate, or a manifest breaks the conventions above.
 - **`docs/dependencies.md` and the manifests disagree.**
-- **A workflow uses an action that is not pinned by commit hash**, or the blocking workflow uses a secret or a token that can write.
+- **`cortex-protocol` depends on anything but serde and serde_json**, other than schemars behind its `schema` feature.
+- **A workflow uses an action that is not pinned by commit hash**; a workflow that runs on pull requests uses a secret or a token that can write; or any job other than the `report` job of a non-blocking workflow has a write permission, or that job has one other than `issues: write`.
+
+`cargo xtask check` also fails, in its `generated` step, when the files in `docs/protocol/` are not what the protocol types generate. Run `cargo xtask schema`.
 
 ## Dependencies
 
@@ -104,7 +113,8 @@ Four jobs block a pull request: `lint-linux`, `lint-windows`, `test-linux` and `
 - A step is not done until its tests pass on both OSes.
 - Nothing that blocks uses a secret or a paid API.
 - Only the main branch writes the build caches. A pull request reads them.
-- A pull request that touches only `docs/**` and `*.md` skips the Rust build and tests. Its four checks still report, and the Linux lint job still runs the repo rules, because those rules are mostly about documentation.
+- A pull request that touches only `docs/**` and `*.md` skips the Rust build and tests. Its four checks still report, and the Linux lint job still runs the repo rules, because those rules are mostly about documentation. The generated files in `docs/protocol/` are the exception: they count as code.
+- Two workflows do not block: `main`, after each merge, and `nightly`. When one fails it opens an issue labelled `ci-failure`, or adds a comment to the open one. Close the issue when the cause is fixed.
 - A change that makes the blocking checks slower than their budget moves the slow part to a non-blocking tier, or raises it for a decision. The limit is not loosened quietly.
 
 ## Ground rules

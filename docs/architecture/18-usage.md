@@ -34,7 +34,7 @@ It rests on four rules.
 
 `usage.ranges = "rolling"` switches week and month to the last 7 and 30 days, for people whose allowance works that way.
 
-**Groupings.** By provider, then model. By project. By source (Cortex-Harness, or another tool). Any two together, for example a project's cost per model this month.
+**Groupings.** By provider, then model. By project. By source (Cortex-Harness, or another tool). By speed tier, which shows what fast mode cost. Any two together, for example a project's cost per model this month.
 
 **A sketch of the panel** (the look follows [09-tui.md](09-tui.md); this shows content, not final wording):
 
@@ -59,13 +59,14 @@ The statistics store already records one event per model request. For this view 
 |---|---|
 | Time | UTC, with the local day it fell on. |
 | Provider, model, role | Role is `main`, `fast` or `judge`. |
+| Speed | The speed tier the request ran at ([04-providers.md](04-providers.md), "Speed tiers"): `standard` unless the provider served another. It is what the provider reported, not what was asked for. |
 | Project | The project key used elsewhere in the state directory. No path is stored in the event. |
 | Session | The session id. |
 | Tokens by class | Fresh input, cache read, cache write, output, reasoning. |
-| Cost | Computed when the event is recorded, from the catalog's prices at that moment, so a later price change does not rewrite history. Stored with the catalog version it came from. Absent when the model has no known price. |
+| Cost | Computed when the event is recorded, from the catalog's prices at that moment for the speed the request ran at, so a later price change does not rewrite history. Stored with the catalog version it came from. Absent when the model has no known price. |
 | Billing | `metered` (an API key billed per token), `subscription`, or `unknown`. |
 
-**Aggregates.** The small aggregates file gains buckets keyed by local day, provider, model, project and billing. Today, week, month and all time are sums over day buckets, so opening the view reads kilobytes and scans nothing. Day buckets older than 400 days are folded into month buckets, which are kept until the user resets statistics, so "all time" survives the pruning of raw event files.
+**Aggregates.** The small aggregates file gains buckets keyed by local day, provider, model, speed tier, project and billing. Today, week, month and all time are sums over day buckets, so opening the view reads kilobytes and scans nothing. Day buckets older than 400 days are folded into month buckets, which are kept until the user resets statistics, so "all time" survives the pruning of raw event files.
 
 **This costs nothing new at start-up.** The aggregates are read the first time the view, or an adaptive feature, needs them.
 
@@ -96,6 +97,7 @@ For each provider: how much of its rate limit or allowance remains, and when it 
 | A subscription's remaining allowance | **Only** where the provider officially exposes it to third-party tools, in what the harness already receives or through the opt-in refresh. Otherwise "not available". |
 | Scraping a web page, an undocumented endpoint, another tool's private files | **Never.** |
 
+- A speed tier with a rate limit of its own (Anthropic's fast mode has one) is shown as its own line under the provider, labelled with the tier.
 - A figure is shown with its age (`as of 2 min ago`). Once its reset time has passed it is shown as `reset since; unknown until the next request`, not as full.
 - Where neither response headers nor the opt-in refresh gives a figure, the provider shows `not available`. As read on 2026-11-12, Anthropic and OpenAI document rate-limit headers, and none was found documented for Google's API. The provider build steps re-check this.
 - These are rate limits per minute or per day, as each provider defines them. They are not a spending forecast, and the view does not turn them into one.

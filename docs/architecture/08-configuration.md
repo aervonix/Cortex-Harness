@@ -140,7 +140,7 @@ The schema, in outline. The configuration build step writes the full reference.
 |---|---|
 | top level | `config_version` |
 | `profile`, `[profiles.<name>]` | The selected profile, and the profiles. |
-| `[model]` | Models by role (`main`, `fast`, `judge`), reasoning level and visibility, maximum output. See [14-adaptation.md](14-adaptation.md). |
+| `[model]` | Models by role (`main`, `fast`, `judge`), reasoning level and visibility, maximum output, and the speed tier: one for the session and, where wanted, one per role, with whether to fall back to standard speed when a tier is refused ([04-providers.md](04-providers.md), "Speed tiers"). The key names are settled in the configuration step. See [14-adaptation.md](14-adaptation.md). |
 | `[providers.<name>]` | Protocol, base URL, credential source, extra headers, timeouts, capability flags. Built-in providers need no entry. |
 | `[models.<name>]` | Catalog overrides and additions: limits, prices, reasoning control, capability flags. |
 | `[tools]` | Enabled tools, output limits, per-tool settings. |
