@@ -26,7 +26,10 @@ runs:
         if [ "$EVENT" = "pull_request" ]; then
           # On a pull request the checkout is a merge commit: its first parent
           # is the base branch, so this is exactly what the pull request changes.
-          if files=$(git diff --name-only HEAD^1 HEAD); then
+          # Without rename detection, a file moved into docs/ is listed under
+          # its old path too, so moving code there does not look like a
+          # documentation change.
+          if files=$(git diff --name-only --no-renames HEAD^1 HEAD); then
             code=false
             while IFS= read -r file; do
               case "$file" in
