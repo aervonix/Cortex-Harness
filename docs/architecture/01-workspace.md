@@ -51,7 +51,7 @@ protocol ◄─ base ◄─┬─ llm ◄─────────────
 
 Rules, enforced by a workspace test that reads `cargo metadata`:
 
-1. `cortex-protocol` depends on no workspace crate. It is the contract, so it stays small and stable.
+1. `cortex-protocol` depends on no workspace crate. It is the contract, so it stays small and stable. Of third-party crates it links serde and serde_json and nothing else in a normal build; schemars is an optional dependency behind the `schema` feature, which only `xtask` and the schema test turn on.
 2. `cortex-agent` depends on traits, not implementations. It never names reqwest, a concrete provider, or a concrete tool. That is what lets the loop be tested with a scripted provider and fake tools in microseconds.
 3. `cortex-tui` and `cortex-term` never depend on `cortex-core`, `cortex-agent`, `cortex-llm` or `cortex-tools`. The TUI sees only `cortex-protocol` types. A UI edit therefore never rebuilds the core, and the UI cannot reach around the protocol.
 4. `cortex-core` and `cortex-rpc` never depend on `cortex-tui` or `cortex-term`.

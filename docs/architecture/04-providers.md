@@ -4,6 +4,8 @@
 
 The provider facts on this page were read from the providers' public documentation in November 2026. The research notes list the sources. They change often: each provider step in the build plan starts by re-reading the current docs.
 
+The neutral types this page describes (messages, parts, stop reasons, usage, model info) are defined in `cortex-protocol`, because front ends and the session log use them too. `cortex-llm` adds the request and the stream events, which nothing outside the provider layer sees.
+
 ## Three separate concepts
 
 Keeping these apart is the central decision. The same model can be reached through different wire dialects on different endpoints, each with different fidelity.
@@ -66,7 +68,7 @@ Neutral types in `cortex-protocol`. A message is a role and an ordered list of p
 | Reasoning | visible text (may be empty), opaque payload | See below. |
 | Provider block | raw JSON | Anything the provider produced that the neutral model does not name: server-side tool use and results, compaction blocks, fallback markers. |
 
-**Raw blocks are kept beside the neutral view.** Every assistant message stores, for each part, the provider's own JSON for that block, byte for byte, with the protocol, provider, model and account scope that produced it. Replay follows one rule:
+**Raw blocks are kept beside the neutral view.** Every assistant message stores, for each part, the provider's own JSON for that block, byte for byte, with the protocol, provider, model and account scope that produced it. In the protocol types a raw block is **a string that holds the JSON text**, not a nested JSON value: a value would be re-ordered, re-escaped or re-rounded by the first parser it passed through, in our code or in a client's, and "byte for byte" would stop being true. Replay follows one rule:
 
 - Same protocol and a model that can read the block: send the raw block unchanged.
 - Anything else: send the neutral projection. Text, tool calls and tool results carry over. Reasoning and provider blocks are dropped, not translated.
@@ -116,6 +118,41 @@ Which model serves a request, and in which style it is addressed, are decided ab
 - **Roles.** Configuration names models as `main`, `fast` and `judge`. The agent loop asks for a role; utility calls (summaries, titles) use `fast`. See [14-adaptation.md](14-adaptation.md).
 - **Variants.** The edit format, tool-schema style and prompt style in effect for a model are part of the request, fixed for the context epoch, and recorded with every outcome so their success rates can be compared.
 
+## Speed tiers
+
+Some providers will run the same model faster, or slower and cheaper, at a different price. The design is in [decision 0027](../decisions/0027-speed-tiers.md). The provider facts in this section were read on 2026-11-12.
+
+**A speed is a named tier that a model offers.** `standard` is what every model has. `fast` is the well-known name for a tier that produces output faster at a higher price. Any other tier keeps the provider's own name. There is no scale: what a tier is comes from its catalog entry, never from its name.
+
+| What a catalog entry says about a tier | Why it is there |
+|---|---|
+| Its name, and the provider's label for it | The name is what a setting and a usage record carry. |
+| What it buys: `faster_output`, `priority` or `deferred` | Anthropic's fast mode buys output tokens per second. A priority tier buys queue position. A flex tier sells patience. They are not points on one line. |
+| Its own full rate card | Fast mode is twice the standard price on every token class. Other tiers are not a single multiplier. |
+| What the provider does when it cannot serve it: `error` or `downgrade` | Anthropic's fast mode fails with a 429 or a 529. OpenAI's fast tier and Google's priority tier are silently served at standard and billed at standard. Flex tiers fail. |
+| Whether it has a rate limit of its own | Anthropic's has, with its own response headers. |
+| Whether it shares the prompt cache with standard | Anthropic's does not: a change of speed is a cache miss. Where a provider does not say, the entry says "not stated". |
+| Whether it is a preview | Access may need to be granted, and the terms may change. |
+
+**In a request.** The loop passes the speed in effect for the role. Each adapter maps it to its provider's mechanism: a body field (`speed` at Anthropic, `service_tier` at OpenAI and Google), an extra header, or, where a platform sells the tier as a separate deployment, another model id. A provider-side default such as `auto` is never relied on: the adapter sends an explicit tier, so that what was asked for is known.
+
+**In a response.** The adapter reads the tier that served the request wherever the provider reports it (`usage.speed`, a top-level `service_tier`, a response header) and puts it in the usage. That, not the setting, is what the request is recorded and priced at.
+
+**When a tier is refused.** The classification table gains one distinction: a rate limit or overload that belongs to the tier, not to the model. The retry layer then has two choices beyond an ordinary retry.
+
+| Situation | What happens |
+|---|---|
+| The provider's wait is short | Wait and send again at the same speed. Nothing changes, and the cache prefix survives. |
+| The wait is long or unknown, and falling back is allowed | Send the request at `standard`, and start a **cooldown** for the tier on that provider and model. Until it ends, requests go at `standard`. Then they ask for the tier again. |
+| Falling back is turned off | The refusal is an ordinary rate limit: backoff, then the error. |
+| The provider served another tier by itself | Nothing to do. The usage says what ran, and the user is told. |
+
+The cooldown exists because of the cache: where speeds do not share a prefix, every change of speed re-writes the cache for the whole conversation, which can cost more time and money than the tier saves. So the harness changes speed rarely and stays there for a while. Front ends are told through the `speed_fallback` and `speed_cooldown` notices ([11-rpc-protocol.md](11-rpc-protocol.md)).
+
+**What is not a speed.** Capacity an account has bought or reserved, batch processing, and a default set at the provider for a whole project or deployment. Decision 0027 says why.
+
+**Built in:** the types in step 3; the request field, the catalog format, the classification and the cooldown in step 5; Anthropic in step 14; the other providers with their own steps.
+
 ## Reasoning
 
 Three things are kept apart because providers keep them apart.
@@ -162,9 +199,11 @@ One normalised record per request, with the provider's raw usage object kept bes
 | `output` | Output tokens, including reasoning. |
 | `reasoning` | The part of `output` that was reasoning, when reported. |
 
+Beside the token counts the record carries the provider, the model, the role, and **the speed the request ran at**, with the speed that was asked for when the two differ ("Speed tiers", above).
+
 Providers disagree on what "input" includes, so each adapter documents and tests its normalisation (for example, subtracting cached tokens where the provider's input count includes them). Streaming usage may be cumulative, final-only, or absent after an abort; the adapter reports what it has, and `End.usage` is authoritative.
 
-**Cost** is computed when the request is recorded: tokens × the catalog prices in force, with context-size tiers and lifetime-class multipliers. The entry stores the cost and the catalog version, so later price changes do not rewrite history. A provider that reports cost itself overrides the calculation. A model with no price data shows tokens only.
+**Cost** is computed when the request is recorded: tokens × the catalog prices in force **for the speed the request ran at**, with context-size tiers and lifetime-class multipliers. Money is kept as whole nano-dollars, so that sums are exact. The entry stores the cost and the catalog version, so later price changes do not rewrite history. A provider that reports cost itself overrides the calculation. A model with no price data shows tokens only.
 
 **Out-of-band usage** (compaction, title generation) is recorded as separate usage entries and included in session totals.
 
@@ -174,7 +213,7 @@ Providers disagree on what "input" includes, so each adapter documents and tests
 
 - **Embedded.** The binary carries a compact catalog generated at build time from `catalog/models.toml` in the repo. No network at build time or at startup.
 - **Maintained by script.** `xtask catalog update` drafts changes from the providers' model-list endpoints and from models.dev (an MIT-licensed community catalog). A maintainer reviews the diff. The checked-in file is ours and is the source of truth.
-- **Per entry:** id, display name, protocol, context window, maximum output, prices (input, output, cache read, cache write by class, tiers), reasoning control, which models' reasoning it can read, modalities, capability flags (strict tools, mid-conversation system messages, structured output, minimum cacheable size).
+- **Per entry:** id, display name, protocol, context window, maximum output, prices (input, output, cache read, cache write by class, tiers), reasoning control, which models' reasoning it can read, modalities, capability flags (strict tools, mid-conversation system messages, structured output, minimum cacheable size), and the speed tiers it offers besides standard, each with its own rate card. No provider's model list reports tier support, so this part of an entry is maintained by hand from the providers' documentation.
 - **User overlay.** Configuration can add or override entries. This is how local and private models are described.
 - **Runtime discovery, on request.** `cortex models refresh` queries the provider's list endpoint and overlays limits and capabilities in the user's state directory. It never runs on its own.
 - **Local servers** are asked at connect time for the loaded context size, because it differs from the model's trained size.
@@ -244,3 +283,4 @@ A checklist for reviewing any change to the neutral types.
 6. Usage fields whose meaning differs per provider.
 7. Reasoning depth as a per-model set, and visibility as a separate setting.
 8. The difference between protocol, provider and model.
+9. Speed tiers as a per-model set with their own prices and failure modes, and the difference between the speed that was asked for and the speed that ran.

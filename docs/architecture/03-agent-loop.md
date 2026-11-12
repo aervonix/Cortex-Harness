@@ -119,6 +119,7 @@ Retries are a separate layer between the loop and the provider client, with its 
 - Rate-limit headers from each response are parsed into a per-provider state (remaining requests and tokens, reset times) and exposed in `usage.updated`, so a front end can show it.
 - The loop does not pace itself ahead of limits. It reacts to 429 and overload responses through the retry layer. Pacing can be added later behind the same state without changing the loop.
 - Non-retryable 429 responses exist on every provider (spending caps, exhausted credit). They are classified as `Provider`, not `Transient`, and end the turn with a clear message.
+- **A speed tier can have a limit of its own.** When a request at a speed other than standard is refused for that tier's limit, the retry layer may wait, or send the request at standard speed and put the tier in a cooldown. The loop emits a `speed_fallback` notice for the request and `speed_cooldown` notices when the cooldown starts and ends, and the session state shows the speed in effect. The rules, and why the harness does not switch back and forth, are in [04-providers.md](04-providers.md), "Speed tiers".
 
 ## Stop reasons
 

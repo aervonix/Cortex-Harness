@@ -55,6 +55,12 @@ These docs are the specification that every build step works from. They were wri
 | [security.md](security.md) | Threats and mitigations. |
 | [dependencies.md](dependencies.md) | Every direct third-party dependency: which crate uses it, why, what else was considered and what it costs. Checked against the manifests. |
 
+### Generated
+
+| Page | Content |
+|---|---|
+| [protocol/](protocol/README.md) | The protocol's JSON Schema and TypeScript declarations, generated from the Rust types in `cortex-protocol` by `cargo xtask schema`. Not edited by hand, and checked against the types in CI. |
+
 ### Background
 
 | Page | Content |
@@ -75,7 +81,7 @@ These docs are the specification that every build step works from. They were wri
 - **Decisions are recorded.** A choice that changes gets a new or amended record, with the reason.
 - **Provisional means the owner has not confirmed it yet.** Work proceeds on the recommendation. The build plan lists every such item, and records each decision the owner has made with its date.
 - **Provider and protocol facts go stale.** Pages that depend on them say when they were read. The steps that implement them begin by reading the current documentation.
-- **Generated files are checked.** Protocol schemas and the configuration reference are generated from code and verified in CI.
+- **Generated files are checked.** Protocol schemas and the configuration reference are generated from code and verified in CI. The protocol's are in [protocol/](protocol/README.md); a pull request that touches them is never treated as documentation-only.
 
 ## Ground rules
 

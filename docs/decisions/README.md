@@ -32,6 +32,7 @@ One record per significant choice. Each says what the options were, what was cho
 | [0024](0024-coordinator.md) | The Coordinator is built on the orchestration layer, with limits enforced by the harness | Accepted |
 | [0025](0025-usage-view.md) | The usage view: one store for our numbers, read-only adapters for other tools, limits only from official sources | Accepted by the owner. Amended on 2026-11-12: an opt-in refresh from a provider's documented usage endpoint. |
 | [0026](0026-one-autonomy-model.md) | One autonomy model: levels and leases, for single sessions and for teams | Accepted by the owner, with `supervised` confirmed as the name of the default level |
+| [0027](0027-speed-tiers.md) | Speed tiers: a per-model set of named tiers, recorded at the speed that ran | The requirement is the owner's (2026-11-12). The design is accepted; three details are open for the owner, listed in the record. |
 
 All of the owner's answers are dated 2026-11-12 and are recorded together in the [build plan](../build-plan.md).
 
