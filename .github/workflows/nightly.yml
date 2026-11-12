@@ -1,0 +1,121 @@
+# Every night: the checks that do not belong on a pull request. In this first
+# form, the advisory check, the unused-dependency check and a release build
+# for every release target. Later steps add fuzzing, the long-session memory
+# test and the live smoke tests (tiers 5 and 6).
+#
+# It does not block anything. When it fails, the `report` job opens an issue,
+# or adds a comment to the one that is open. The layout and the reasons are
+# in docs/testing-and-ci.md, "Not blocking". `cargo xtask rules` checks this
+# file: actions pinned by commit hash, a read-only token, and `issues: write`
+# for the `report` job alone.
+name: nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force_failure:
+        description: Fail on purpose, to test that a failure opens an issue.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+
+jobs:
+  # Dependency hygiene. Advisories are here and not on pull requests because
+  # a new advisory against an unchanged lockfile must not block unrelated
+  # work. Both checks run even when the first fails.
+  dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fail on purpose
+        if: ${{ inputs.force_failure }}
+        run: |
+          echo "::error::Failing on purpose: this run was started with force_failure."
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - name: Install cargo-deny and cargo-machete
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny@0.20.2,cargo-machete@0.9.2
+      - name: Advisories
+        run: cargo run --locked --quiet --package xtask -- advisories
+      - name: Unused dependencies
+        if: ${{ !cancelled() && !inputs.force_failure }}
+        run: cargo run --locked --quiet --package xtask -- unused
+
+  # The published profile (`dist`), built for every release target (the
+  # owner's decision 14 in docs/build-plan.md: Linux x86-64 and arm64,
+  # static, and Windows x86-64), each on a runner of its own architecture.
+  # No build cache: nobody waits for this run.
+  release:
+    name: release-${{ matrix.name }}
+    if: ${{ !inputs.force_failure }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Keep cargo's and rustup's files off the system disk (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          "CARGO_HOME=$env:RUNNER_TEMP\cargo" >> $env:GITHUB_ENV
+          "RUSTUP_HOME=$env:RUNNER_TEMP\rustup" >> $env:GITHUB_ENV
+      - name: Install the toolchain from rust-toolchain.toml, and the target
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+      - name: Release build, binary size and crate count
+        run: cargo run --locked --quiet --package xtask -- size --check --target ${{ matrix.target }}
+      - name: Keep the record
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: size-${{ matrix.target }}
+          path: target/size/*.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # The only job with a token that can write, and all it can write is issues.
+  report:
+    needs: [dependencies, release]
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/report-failure
+        with:
+          workflow: nightly
+          needs: ${{ toJSON(needs) }}
+          token: ${{ github.token }}
