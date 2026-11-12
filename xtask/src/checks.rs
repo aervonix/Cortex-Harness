@@ -2,6 +2,8 @@
 //! `ci test`, so the commands here are the definition of what CI runs
 //! (`docs/testing-and-ci.md`).
 
+use std::process::{Command, Stdio};
+
 use crate::Result;
 use crate::rules;
 use crate::steps::{self, Step};
@@ -78,11 +80,28 @@ pub(crate) fn test(arguments: &[String]) -> Result<()> {
         "--workspace".to_owned(),
     ];
     command.extend(arguments.iter().cloned());
-    steps::cargo(&command).map_err(|error| format!("{error}{NEXTEST_HINT}"))
+    require_nextest()?;
+    steps::cargo(&command)
 }
 
-const NEXTEST_HINT: &str = "\n(If cargo does not know `nextest`: install cargo-nextest, \
-                            https://nexte.st. The version CI uses is in docs/dependencies.md.)";
+/// Fails with a pointer to the installer when cargo-nextest is missing,
+/// instead of cargo's "no such command".
+fn require_nextest() -> Result<()> {
+    let found = Command::new(workspace::cargo())
+        .args(["nextest", "--version"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if found {
+        return Ok(());
+    }
+    Err(
+        "cargo-nextest is not installed. See https://nexte.st. The version CI uses is in \
+         docs/dependencies.md."
+            .to_owned(),
+    )
+}
 
 /// The blocking test job: tiers 1 to 3 in the `ci` profile. Building and
 /// running are separate steps so that their times are reported separately.
@@ -108,8 +127,12 @@ pub(crate) fn ci(arguments: &[String]) -> Result<()> {
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
     match arguments.as_slice() {
         ["lint"] => check(&[]),
-        ["test"] => steps::run("Tests", ci_test_steps()),
+        ["test"] => {
+            require_nextest()?;
+            steps::run("Tests", ci_test_steps())
+        }
         [] => {
+            require_nextest()?;
             let mut all: Vec<Step> = CHECK_STEPS
                 .iter()
                 .filter_map(|name| check_step(name))
