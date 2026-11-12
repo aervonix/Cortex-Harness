@@ -1435,33 +1435,6 @@
       ],
       "description": "What sort of failure an error is. It decides whether the harness retries, which exit code a headless run ends with, and what a client should offer the user."
     },
-    "ErrorObject": {
-      "description": "The error member of a failed response.",
-      "properties": {
-        "code": {
-          "description": "A JSON-RPC error code. -32000 for every application error.",
-          "type": "integer"
-        },
-        "data": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ErrorData"
-            },
-            true
-          ],
-          "description": "For an application error (code -32000), an ErrorData. Otherwise optional detail."
-        },
-        "message": {
-          "description": "One sentence for a person.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "code",
-        "message"
-      ],
-      "type": "object"
-    },
     "Event": {
       "anyOf": [
         {
@@ -2305,6 +2278,112 @@
       ],
       "type": "object"
     },
+    "JsonRpcError": {
+      "description": "The error member of a failed response.",
+      "properties": {
+        "code": {
+          "description": "A JSON-RPC error code. -32000 for every application error.",
+          "type": "integer"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorData"
+            },
+            true
+          ],
+          "description": "For an application error (code -32000), an ErrorData. Otherwise optional detail."
+        },
+        "message": {
+          "description": "One sentence for a person.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "JsonRpcMessage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonRpcRequest"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcNotification"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcResponse"
+        }
+      ],
+      "description": "Any JSON-RPC message: one JSON object per line."
+    },
+    "JsonRpcNotification": {
+      "description": "A JSON-RPC notification: a message that gets no answer.",
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": true
+      },
+      "required": [
+        "jsonrpc",
+        "method"
+      ],
+      "type": "object"
+    },
+    "JsonRpcRequest": {
+      "description": "A JSON-RPC request: the receiver must answer it with a response that has the same id.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": true
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method"
+      ],
+      "type": "object"
+    },
+    "JsonRpcResponse": {
+      "description": "The answer to a JSON-RPC request. It has `result` or `error`, never both.",
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/JsonRpcError"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "result": true
+      },
+      "required": [
+        "jsonrpc",
+        "id"
+      ],
+      "type": "object"
+    },
     "Lease": {
       "description": "Everything a session is allowed to do, as one value.",
       "properties": {
@@ -2537,20 +2616,6 @@
       "type": "object"
     },
     "Message": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/Request"
-        },
-        {
-          "$ref": "#/$defs/Notification"
-        },
-        {
-          "$ref": "#/$defs/Response"
-        }
-      ],
-      "description": "Any JSON-RPC message: one JSON object per line."
-    },
-    "Message2": {
       "description": "One message of a conversation.",
       "properties": {
         "origin": {
@@ -3059,23 +3124,6 @@
         }
       ],
       "description": "Why the harness added a notice to the conversation."
-    },
-    "Notification": {
-      "description": "A JSON-RPC notification: a message that gets no answer.",
-      "properties": {
-        "jsonrpc": {
-          "const": "2.0"
-        },
-        "method": {
-          "type": "string"
-        },
-        "params": true
-      },
-      "required": [
-        "jsonrpc",
-        "method"
-      ],
-      "type": "object"
     },
     "Origin": {
       "description": "What produced an assistant message. Raw blocks are valid only for replay\nto the same protocol, and to a model that can read them.",
@@ -4137,27 +4185,6 @@
       },
       "type": "object"
     },
-    "Request": {
-      "description": "A JSON-RPC request: the receiver must answer it with a response that has the same id.",
-      "properties": {
-        "id": {
-          "$ref": "#/$defs/RequestId"
-        },
-        "jsonrpc": {
-          "const": "2.0"
-        },
-        "method": {
-          "type": "string"
-        },
-        "params": true
-      },
-      "required": [
-        "jsonrpc",
-        "id",
-        "method"
-      ],
-      "type": "object"
-    },
     "RequestId": {
       "description": "The id that ties a response to its request: a number or a string, chosen by the side that sends the request.",
       "type": [
@@ -4299,33 +4326,6 @@
         }
       ],
       "description": "How a request from the server to its clients was settled."
-    },
-    "Response": {
-      "description": "The answer to a JSON-RPC request. It has `result` or `error`, never both.",
-      "properties": {
-        "error": {
-          "$ref": "#/$defs/ErrorObject"
-        },
-        "id": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RequestId"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "jsonrpc": {
-          "const": "2.0"
-        },
-        "result": true
-      },
-      "required": [
-        "jsonrpc",
-        "id"
-      ],
-      "type": "object"
     },
     "RetryNotice": {
       "description": "Notice: a request failed and will be tried again.",
@@ -6712,7 +6712,7 @@
       "type": "object"
     }
   },
-  "$ref": "#/$defs/Message",
+  "$ref": "#/$defs/JsonRpcMessage",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Generated from the Rust types in crates/cortex-protocol by `cargo xtask schema`. Do not edit. The root accepts any JSON-RPC message; the typed contents of each method are in x-cortex-methods.",
   "title": "Cortex-Harness protocol",

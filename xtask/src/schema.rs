@@ -463,7 +463,8 @@ fn parenthesised(ty: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::cell::RefCell;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
 
     use cortex_protocol::schema::{METHODS_KEY, bundle};
@@ -473,6 +474,12 @@ mod tests {
     use crate::workspace;
 
     const TRANSCRIPT: &str = "crates/cortex-protocol/tests/golden/v1-session.jsonl";
+    const VALUES: &str = "crates/cortex-protocol/tests/golden/v1-values.jsonl";
+
+    thread_local! {
+        /// The definitions some value has been valid against, on this thread.
+        static SEEN: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
+    }
 
     /// The done criterion of step 3: the test fails when a checked-in file
     /// is stale. `cargo xtask schema` puts it right.
@@ -590,6 +597,7 @@ mod tests {
                 .get(name)
                 .ok_or(format!("no definition {name}"))?;
             valid(target, instance, root, at)?;
+            SEEN.with(|seen| seen.borrow_mut().insert(name.to_owned()));
         }
         if let Some(expected) = object.get("const")
             && expected != instance
@@ -754,6 +762,54 @@ mod tests {
             if let Err(error) = check_line(&line, &root, &mut asked) {
                 panic!("{error}\n  in {line}");
             }
+        }
+    }
+
+    /// "Round-trip tests for every type" is only true if every type is in a
+    /// golden file. This is the check: a type added to the protocol and to
+    /// no golden file fails here, by name.
+    #[test]
+    fn every_type_of_the_protocol_is_in_a_golden_file() {
+        let root = bundle();
+        let mut asked = BTreeMap::new();
+        for line in transcript() {
+            check_line(&line, &root, &mut asked)
+                .unwrap_or_else(|error| panic!("{error}\n  in {line}"));
+        }
+        let values = fs::read_to_string(workspace::root().join(VALUES)).unwrap();
+        for line in values.lines() {
+            let entry: Value = serde_json::from_str(line).unwrap();
+            let schema = json!({"$ref": format!("#/$defs/{}", entry["type"].as_str().unwrap())});
+            valid(&schema, &entry["value"], &root, "value")
+                .unwrap_or_else(|error| panic!("{error}\n  in {line}"));
+        }
+
+        let seen = SEEN.with(|seen| seen.borrow().clone());
+        let missing: Vec<&String> = root["$defs"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|name| !seen.contains(*name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "no golden file has a value of: {missing:?}. Add one to a file in \
+             crates/cortex-protocol/tests/golden/ (a new file for an addition to a released \
+             version), so that its wire form is pinned."
+        );
+    }
+
+    #[test]
+    fn no_two_types_share_a_name() {
+        // The schema generator gives the second of two types with one name
+        // a digit at the end. `Message2` in a client's code would be ours to
+        // keep for ever.
+        let root = bundle();
+        for name in root["$defs"].as_object().unwrap().keys() {
+            assert!(
+                !name.ends_with(|c: char| c.is_ascii_digit()),
+                "`{name}`: two protocol types have the same schema name"
+            );
         }
     }
 
