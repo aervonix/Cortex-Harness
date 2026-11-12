@@ -2,7 +2,8 @@
 #
 # A pull request that touches only documentation (`docs/**` and `*.md`, and
 # nothing else) does not. Every other run does: any other pull request, every
-# push to the main branch, every scheduled or manual run.
+# push to the main branch, every scheduled or manual run. The generated
+# protocol files under `docs/protocol/` count as code, not as documentation.
 #
 # The job that uses this must check out with `fetch-depth: 2`, so that the
 # pull request's merge commit has its parents.
@@ -34,6 +35,9 @@ runs:
             while IFS= read -r file; do
               case "$file" in
                 "") ;;
+                # Generated from the Rust types and checked against them by a
+                # test, so a change here needs the tests to run.
+                docs/protocol/*) code=true ;;
                 docs/* | *.md) ;;
                 *) code=true ;;
               esac

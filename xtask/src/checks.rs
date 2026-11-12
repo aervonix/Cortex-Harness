@@ -6,17 +6,21 @@ use std::process::{Command, Stdio};
 
 use crate::Result;
 use crate::rules;
+use crate::schema;
 use crate::steps::{self, Step};
 use crate::tiers;
 use crate::workspace;
 
 /// The tier 0 steps, in the order they run: cheapest first.
-const CHECK_STEPS: [&str; 4] = ["fmt", "rules", "clippy", "deny"];
+const CHECK_STEPS: [&str; 5] = ["fmt", "rules", "generated", "clippy", "deny"];
 
 fn check_step(name: &str) -> Option<Step> {
     Some(match name {
         "fmt" => Step::cargo("fmt", &["fmt", "--all", "--check"]),
         "rules" => Step::function("rules", rules),
+        // The checked-in protocol schema and TypeScript declarations are what
+        // the types generate (docs/architecture/11-rpc-protocol.md).
+        "generated" => Step::function("generated", schema::check),
         "clippy" => Step::cargo(
             "clippy",
             &[
@@ -167,6 +171,6 @@ mod tests {
     fn an_unknown_check_is_refused_before_anything_runs() {
         let error = check(&["clipy".to_owned()]).unwrap_err();
         assert!(error.contains("unknown check `clipy`"));
-        assert!(error.contains("fmt, rules, clippy, deny"));
+        assert!(error.contains("fmt, rules, generated, clippy, deny"));
     }
 }

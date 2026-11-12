@@ -7,6 +7,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# With `schema`: the JSON Schema derivation that `cargo xtask schema` and the
+# schema test use. No shipped crate turns it on.
+cortex-protocol = { workspace = true, features = ["schema"] }
 serde_json.workspace = true
 
 [lints]

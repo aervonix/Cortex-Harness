@@ -41,6 +41,8 @@ pub(crate) struct Dependency {
     pub(crate) in_workspace: bool,
     pub(crate) default_features: bool,
     pub(crate) features: Vec<String>,
+    /// Only built when a feature of the package asks for it.
+    pub(crate) optional: bool,
 }
 
 /// One build target of a package.
@@ -120,6 +122,10 @@ fn parse_metadata(json: &Value) -> Result<Metadata> {
                     .and_then(Value::as_bool)
                     .unwrap_or(true),
                 features: strings(dependency, "features")?,
+                optional: dependency
+                    .get("optional")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             });
         }
 
