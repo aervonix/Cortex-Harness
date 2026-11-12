@@ -172,6 +172,7 @@ mod tests {
                     in_workspace: false,
                     default_features: false,
                     features: Vec::new(),
+                    optional: false,
                 })
                 .collect(),
             targets: Vec::new(),

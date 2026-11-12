@@ -19,7 +19,9 @@ use std::process::ExitCode;
 
 mod alias;
 mod checks;
+mod nonblocking;
 mod rules;
+mod schema;
 mod steps;
 mod tiers;
 mod workspace;
@@ -33,7 +35,7 @@ Developer commands for the Cortex-Harness repository.
 Usage: cargo xtask <command> [arguments]        (or: ./x <command> [arguments])
 
 Checks and tests
-  check [STEP...]   Static checks (tier 0): fmt, rules, clippy, deny.
+  check [STEP...]   Static checks (tier 0): fmt, rules, generated, clippy, deny.
                     With step names, only those steps.
   test [ARGS...]    All tests, with nextest. Arguments go to `cargo nextest run`,
                     for example: test --profile fast     (tiers 1 and 2 only)
@@ -41,13 +43,21 @@ Checks and tests
   rules             The repo-rule checks alone: no home-directory paths, the
                     crate dependency rules, docs/dependencies.md, workflows.
 
+Not blocking (the `main` and `nightly` workflows run these)
+  size [--check]    Build the `dist` profile and report the binary's size and
+                    the number of crates in it. --check fails over the budget.
+  unused            Look for dependencies that no code uses (cargo-machete).
+  advisories        Check the lockfile against the advisory database.
+
 Working on the code
   fmt               Format the workspace.
-  gen               Regenerate checked-in generated files. (There are none yet.)
+  schema [--check]  Regenerate the protocol's JSON Schema and TypeScript
+                    declarations in docs/protocol/. --check only compares.
+  gen               Regenerate every checked-in generated file. Today that is
+                    what `schema` writes.
   alias [--release] Build `cortex` and put its alias `cx` beside it.
 
 Not built yet
-  schema            Protocol schemas and TypeScript declarations (step 3).
   record            Record provider fixtures by hand (step 14).
   perf              Measure the performance budgets (step 20).
   dist              Package release binaries (step 34).
@@ -68,14 +78,12 @@ fn main() -> ExitCode {
         Some("ci") => checks::ci(&rest),
         Some("rules") => checks::rules(),
         Some("fmt") => checks::fmt(),
-        Some("gen") => {
-            println!(
-                "Nothing is generated yet. Generated files arrive with step 3 (the protocol schema)."
-            );
-            Ok(())
-        }
+        Some("gen") => schema::write(),
+        Some("schema") => schema::run(&rest),
+        Some("size") => nonblocking::size(&rest),
+        Some("unused") => nonblocking::unused(),
+        Some("advisories") => nonblocking::advisories(),
         Some("alias") => alias::run(&rest),
-        Some("schema") => not_built("schema", 3),
         Some("record") => not_built("record", 14),
         Some("perf") => not_built("perf", 20),
         Some("dist") => not_built("dist", 34),

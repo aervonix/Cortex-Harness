@@ -116,6 +116,7 @@ pub(crate) fn check(packages: &[Package], manifests: &[(String, String)]) -> Vec
     for package in packages {
         check_edges(package, &mut violations);
         check_confined(package, &mut violations);
+        check_protocol_dependencies(package, &mut violations);
         let manifest = manifests
             .iter()
             .find(|(path, _)| *path == package.manifest)
@@ -261,6 +262,48 @@ fn check_confined(package: &Package, violations: &mut Vec<Violation>) {
     }
 }
 
+/// What `cortex-protocol` links in a normal build, and the one more thing
+/// it may link behind a feature.
+const PROTOCOL_ALWAYS: [&str; 2] = ["serde", "serde_json"];
+const PROTOCOL_BEHIND_A_FEATURE: [&str; 1] = ["schemars"];
+
+/// Rule 1 goes further than workspace crates: the contract every other
+/// crate builds on links serde and serde_json, and nothing else unless a
+/// feature asks. Schema generation is that feature, and only `xtask` and
+/// the schema test turn it on.
+fn check_protocol_dependencies(package: &Package, violations: &mut Vec<Violation>) {
+    if package.name != PROTOCOL {
+        return;
+    }
+    for dependency in package.dependencies.iter().filter(|dep| !dep.in_workspace) {
+        let name = dependency.name.as_str();
+        let allowed = match dependency.kind {
+            // Tests may use what they need; a normal build never sees it.
+            DepKind::Dev => true,
+            DepKind::Build => false,
+            DepKind::Normal => {
+                (PROTOCOL_ALWAYS.contains(&name) && !dependency.optional)
+                    || (PROTOCOL_BEHIND_A_FEATURE.contains(&name) && dependency.optional)
+            }
+        };
+        if !allowed {
+            violations.push(Violation::new(
+                &package.manifest,
+                None,
+                format!(
+                    "`{PROTOCOL}` must not depend on `{name}` this way.\n    In a normal build \
+                     it depends on {} and nothing else, and on {} only as an optional \
+                     dependency behind the `schema` feature (rule 1 in {PAGE}).\n    Why: every \
+                     crate depends on the protocol, so everything it links is linked \
+                     everywhere and rebuilt first.\n    {HOW_TO_CHANGE}",
+                    PROTOCOL_ALWAYS.join(" and "),
+                    PROTOCOL_BEHIND_A_FEATURE.join(", "),
+                ),
+            ));
+        }
+    }
+}
+
 /// Conventions every crate follows, from the same page and from
 /// `docs/testing-and-ci.md`.
 fn check_conventions(package: &Package, manifest: &str, violations: &mut Vec<Violation>) {
@@ -363,6 +406,7 @@ mod tests {
             in_workspace: name.starts_with("cortex-") || name == "xtask",
             default_features: true,
             features: Vec::new(),
+            optional: false,
         }
     }
 
@@ -496,6 +540,49 @@ mod tests {
             &messages(&krate("cortex-agent", vec![dep("cortex-testkit")])),
             &["rule 6"],
         );
+    }
+
+    #[test]
+    fn the_protocol_links_serde_and_serde_json_and_nothing_else() {
+        let third_party = |name: &str, optional: bool| Dependency {
+            in_workspace: false,
+            optional,
+            ..dep(name)
+        };
+        let as_built = vec![
+            third_party("serde", false),
+            third_party("serde_json", false),
+            third_party("schemars", true),
+        ];
+        assert!(messages(&krate("cortex-protocol", as_built.clone())).is_empty());
+
+        // Schema generation in every build.
+        let mut always = as_built.clone();
+        always[2].optional = false;
+        assert_one(
+            &messages(&krate("cortex-protocol", always)),
+            &["must not depend on `schemars` this way", "rule 1"],
+        );
+
+        // Anything new.
+        let mut more = as_built.clone();
+        more.push(third_party("thiserror", false));
+        assert_one(
+            &messages(&krate("cortex-protocol", more)),
+            &["must not depend on `thiserror` this way"],
+        );
+        let mut build_script = as_built;
+        build_script.push(Dependency {
+            kind: DepKind::Build,
+            ..third_party("cc", false)
+        });
+        assert_one(
+            &messages(&krate("cortex-protocol", build_script)),
+            &["must not depend on `cc` this way"],
+        );
+
+        // The rule is about the protocol crate only.
+        assert!(messages(&krate("cortex-base", vec![third_party("thiserror", false)])).is_empty());
     }
 
     #[test]

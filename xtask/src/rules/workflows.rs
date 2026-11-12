@@ -1,24 +1,39 @@
 //! Rules for the GitHub Actions workflows (`docs/testing-and-ci.md`, "CI
-//! layout"): actions are pinned by commit hash, every workflow states its
-//! token permissions, and the blocking workflow has no secrets and can write
-//! nothing.
+//! layout"): actions are pinned by commit hash, every workflow's token is
+//! read-only by default, a workflow that runs on pull requests has no secrets
+//! and can write nothing, and the one thing any workflow may write is an
+//! issue, from the job that reports a failure.
 
 use super::Violation;
 
-/// The workflow that blocks pull requests.
-const BLOCKING: &str = ".github/workflows/ci.yml";
+/// The one job that may hold a token that writes, and the one thing it may
+/// write. The non-blocking workflows (`main`, `nightly`) open or update an
+/// issue when they fail, because a failure nobody is told about is a failure
+/// that is ignored. Everything else a workflow does needs to read only, and
+/// a job that builds and runs code must not be the job that can write.
+const REPORT_JOB: &str = "report";
+const REPORT_PERMISSION: &str = "issues";
 
 pub(crate) fn check(file: &str, text: &str) -> Vec<Violation> {
     let mut violations = Vec::new();
-    let blocking = file == BLOCKING;
+    let on_pull_requests = runs_on_pull_requests(text);
     let mut states_permissions = false;
+    let mut in_jobs = false;
+    let mut job: Option<&str> = None;
 
     for (index, raw_line) in text.lines().enumerate() {
         let line_number = Some(index + 1);
         // Comments are not rules.
         let line = raw_line.split(" #").next().unwrap_or(raw_line);
-        if line.trim_start().starts_with('#') {
+        if line.trim_start().starts_with('#') || line.trim().is_empty() {
             continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if indent == 0 {
+            in_jobs = line.trim_end() == "jobs:";
+            job = None;
+        } else if in_jobs && indent == 2 {
+            job = line.trim().strip_suffix(':');
         }
         if line.starts_with("permissions:") {
             states_permissions = true;
@@ -38,22 +53,39 @@ pub(crate) fn check(file: &str, text: &str) -> Vec<Violation> {
             ));
         }
 
-        if blocking && line.contains("secrets.") {
+        if on_pull_requests && line.contains("secrets.") {
             violations.push(Violation::new(
                 file,
                 line_number,
-                "the blocking workflow uses no secrets. Pull-request jobs run code from the pull \
-                 request, and nothing that blocks may need a paid API or a credential \
+                "a workflow that runs on pull requests uses no secrets. Its jobs run code from \
+                 the pull request, and nothing that blocks may need a paid API or a credential \
                  (rule 9 in docs/build-plan.md).",
             ));
         }
-        if blocking && line.trim_end().ends_with(": write") {
-            violations.push(Violation::new(
-                file,
-                line_number,
-                "the blocking workflow's token is read-only. Work that must write belongs in a \
-                 workflow that does not run on pull requests.",
-            ));
+
+        if let Some(permission) = written_permission(line) {
+            let in_report_job = indent >= 4 && job == Some(REPORT_JOB);
+            if on_pull_requests {
+                violations.push(Violation::new(
+                    file,
+                    line_number,
+                    "a workflow that runs on pull requests has a read-only token. Work that \
+                     must write belongs in a workflow that does not run on pull requests.",
+                ));
+            } else if permission != REPORT_PERMISSION || !in_report_job {
+                violations.push(Violation::new(
+                    file,
+                    line_number,
+                    format!(
+                        "`{permission}: write` is not allowed here. A workflow's token is \
+                         read-only, with one exception: the job named `{REPORT_JOB}` of a \
+                         workflow that does not run on pull requests may have \
+                         `{REPORT_PERMISSION}: write`, to open or update an issue when the \
+                         workflow fails. It is given to that job alone, so that no job which \
+                         builds or runs code holds a token that can write."
+                    ),
+                ));
+            }
         }
     }
 
@@ -66,6 +98,28 @@ pub(crate) fn check(file: &str, text: &str) -> Vec<Violation> {
         ));
     }
     violations
+}
+
+/// Whether the workflow has a pull-request trigger. Such a workflow runs
+/// code that anybody can propose.
+fn runs_on_pull_requests(text: &str) -> bool {
+    text.lines()
+        .map(|line| line.split(" #").next().unwrap_or(line).trim())
+        .any(|line| {
+            line.starts_with("pull_request")
+                || (line.starts_with("on:") && line.contains("pull_request"))
+        })
+}
+
+/// The permission a line gives write access to, if it gives any.
+/// `permissions: write-all` gives all of them.
+fn written_permission(line: &str) -> Option<&str> {
+    let line = line.trim();
+    if line.replace(' ', "") == "permissions:write-all" {
+        return Some("all");
+    }
+    let (permission, level) = line.split_once(':')?;
+    (level.trim() == "write").then_some(permission.trim())
 }
 
 /// The action named by a `uses:` line, if the line is one.
@@ -123,16 +177,31 @@ mod tests {
         }
     }
 
+    /// A workflow that pull requests trigger.
+    fn blocking(steps: &str) -> String {
+        format!(
+            "name: ci\non:\n  pull_request:\n  push:\n    branches: [main]\npermissions:\n  contents: read\njobs:\n  lint:\n    steps:\n{steps}"
+        )
+    }
+
+    /// A workflow that pull requests cannot trigger, with a job that reports.
+    fn non_blocking(report_permissions: &str) -> String {
+        format!(
+            "name: nightly\non:\n  schedule:\n    - cron: \"7 3 * * *\"\npermissions:\n  contents: read\njobs:\n  build:\n    steps:\n      - run: cargo build\n  report:\n    needs: [build]\n    permissions:\n{report_permissions}    steps:\n      - run: gh issue create\n"
+        )
+    }
+
     #[test]
-    fn the_blocking_workflow_has_no_secrets() {
+    fn a_pull_request_workflow_has_no_secrets() {
         let step =
             "      - run: cargo test\n        env:\n          KEY: ${{ secrets.PROVIDER_KEY }}\n";
 
-        let found = messages(".github/workflows/ci.yml", &workflow(step));
+        let found = messages(".github/workflows/ci.yml", &blocking(step));
         assert_eq!(found.len(), 1);
         assert!(
+            found[0].contains("ci.yml:13: a workflow that runs on pull requests uses no secrets"),
+            "{}",
             found[0]
-                .starts_with(".github/workflows/ci.yml:9: the blocking workflow uses no secrets")
         );
 
         // The by-hand workflow for live tests is where a key belongs.
@@ -140,12 +209,67 @@ mod tests {
     }
 
     #[test]
-    fn the_blocking_workflow_cannot_write() {
-        let text = "name: ci\npermissions:\n  contents: write\njobs: {}\n";
+    fn a_pull_request_workflow_cannot_write() {
+        for text in [
+            "name: ci\non: [push, pull_request]\npermissions:\n  contents: write\njobs: {}\n",
+            "name: ci\non:\n  pull_request_target:\npermissions:\n  contents: read\njobs:\n  report:\n    permissions:\n      issues: write\n",
+        ] {
+            let found = messages(".github/workflows/any-name.yml", text);
+            assert_eq!(found.len(), 1, "{text}");
+            assert!(found[0].contains("has a read-only token"), "{}", found[0]);
+        }
+    }
 
-        let found = messages(".github/workflows/ci.yml", text);
+    #[test]
+    fn the_report_job_of_a_non_blocking_workflow_may_write_issues() {
+        let text = non_blocking("      issues: write\n");
+        assert_eq!(
+            messages(".github/workflows/nightly.yml", &text),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn nothing_else_may_write() {
+        // Another permission in the report job.
+        let found = messages(
+            ".github/workflows/nightly.yml",
+            &non_blocking("      issues: write\n      contents: write\n"),
+        );
         assert_eq!(found.len(), 1);
-        assert!(found[0].contains("token is read-only"));
+        assert!(
+            found[0].contains("nightly.yml:15: `contents: write` is not allowed here"),
+            "{}",
+            found[0]
+        );
+
+        // The right permission in the wrong job.
+        let text = non_blocking("      issues: read\n").replace(
+            "  build:\n",
+            "  build:\n    permissions:\n      issues: write\n",
+        );
+        let found = messages(".github/workflows/nightly.yml", &text);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].contains("`issues: write` is not allowed here"));
+        assert!(found[0].contains("the job named `report`"));
+
+        // At the top level, where every job would get it.
+        let text = non_blocking("      issues: write\n").replace(
+            "permissions:\n  contents: read\n",
+            "permissions:\n  contents: read\n  issues: write\n",
+        );
+        let found = messages(".github/workflows/nightly.yml", &text);
+        assert_eq!(found.len(), 1, "{found:#?}");
+        assert!(found[0].contains("nightly.yml:7:"), "{}", found[0]);
+
+        // Everything at once.
+        let text = non_blocking("      issues: write\n").replace(
+            "permissions:\n  contents: read\n",
+            "permissions: write-all\n",
+        );
+        let found = messages(".github/workflows/nightly.yml", &text);
+        assert_eq!(found.len(), 1, "{found:#?}");
+        assert!(found[0].contains("`all: write` is not allowed here"));
     }
 
     #[test]

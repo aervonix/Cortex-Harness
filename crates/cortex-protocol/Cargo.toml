@@ -9,5 +9,16 @@ publish.workspace = true
 [lib]
 doctest = false
 
+[features]
+# JSON Schema derivation. On only for `xtask schema` and the schema test, so
+# a normal build of this crate links serde and serde_json and nothing else
+# (`cargo xtask rules` checks that).
+schema = ["dep:schemars"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+schemars = { workspace = true, optional = true }
+
 [lints]
 workspace = true
