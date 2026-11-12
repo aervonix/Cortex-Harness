@@ -10,7 +10,7 @@ All crates use the `cortex-` prefix, live under `crates/`, and set `publish = fa
 |---|---|---|---|
 | `cortex-protocol` | The public data model: `Op`, `Event`, items, messages, parts, usage, stop reasons, error codes, RPC envelopes. Serde types only, no logic. JSON Schema generation behind a feature. | none | serde, serde_json (schemars behind `schema`) |
 | `cortex-base` | Small shared primitives: error kinds, `Secret`, ids, clock and RNG traits with their fakes, cancellation, workspace paths, text utilities (width, wrapping, truncation), atomic file writes, owner-only files and directories on both OSes, content hashes, the newline-delimited JSON reader and writer, and the modification-time check behind hot-reload. No async runtime: what touches the file system blocks and is called on the blocking pool, and the cancellation tokens are built on the standard library's wakers. One Windows-only module, `private::windows`, may use `unsafe`, to set access lists ([decision 0029](../decisions/0029-owner-only-files-on-windows.md)); the rest of the crate may not. | protocol | unicode-width, unicode-segmentation, thiserror, sha2 (none of them heavy; serde and serde_json come with the protocol crate); windows-sys on Windows |
-| `cortex-llm` | Provider abstraction: model request and model event types, the `Protocol` and `Transport` traits, SSE parser, retry classification and backoff, usage normalisation, the model catalog. One module per protocol. | protocol, base | reqwest and rustls (behind `http`), tokio |
+| `cortex-llm` | Provider abstraction: model request and model event types, the `Protocol` and `Transport` traits, SSE parser, retry classification and backoff, speed-tier cooldowns, usage normalisation, the model catalog. One module per protocol. Without the `http` feature it links no network stack and no async runtime: its waits are on a timer trait. | protocol, base | reqwest, rustls and tokio (all behind `http`); futures-core, serde, serde_json, thiserror; toml in its build script only |
 | `cortex-tools` | Built-in tools and the `Tool` trait, the output policy, file snapshots, the process runner for shell commands, and the registry of dynamic tools behind `tool_search` and `tool_call`. | protocol, base | ignore, grep-searcher, grep-regex, grep-matcher, globset, similar, tokio |
 | `cortex-sandbox` | Sandbox policy types and the per-OS launchers (Landlock and seccomp on Linux, Job Objects on Windows). | base | landlock, seccompiler (Linux), windows-sys (Windows) |
 | `cortex-policy` | Levels and leases, permission rules, shell-command analysis, approval bookkeeping, project trust. | protocol, base | none |
@@ -30,7 +30,7 @@ All crates use the `cortex-` prefix, live under `crates/`, and set `publish = fa
 | `cortex-term` | Terminal layer: raw mode, input decoding, capability detection, the line renderer and its two presenters. No knowledge of agents. | base | crossterm |
 | `cortex-tui` | The interactive UI: transcript, editor, dialogs, status line, slash commands, themes. | protocol, base, term | pulldown-cmark; a syntax highlighter behind a feature |
 | `cortex-cli` | The `cortex` binary, also installed under the alias `cx`: argument parsing, mode selection, headless printer. Kept tiny because it relinks on every change. | core, rpc, tui, config | lexopt |
-| `cortex-testkit` | Test support: scripted provider, scripted SSE server, virtual terminal, PTY driver, temp workspaces, fake clock. Dev-dependency only. | protocol, base, llm, term | vt100, portable-pty |
+| `cortex-testkit` | Test support: scripted provider, scripted transport, scripted SSE server, a test protocol, the fake timer, the property-test helper, virtual terminal, PTY driver, temp workspaces, fake clock. Dev-dependency only. | protocol, base, llm, term | vt100, portable-pty (with the terminal steps); serde_json |
 | `xtask` | Developer commands: schema generation, perf runs, fixture recording, release packaging. Not shipped. | as needed | none shipped |
 
 ## Dependency direction
@@ -72,7 +72,7 @@ Features exist to keep build cost optional, not to create product variants.
 
 | Feature | Crate | Default | Purpose |
 |---|---|---|---|
-| `http` | `cortex-llm` | on | The real HTTP transport. Off for crates that only need the types. |
+| `http` | `cortex-llm` | on | The real HTTP transport, and the timer that goes with it. Off for crates that only need the types: the workspace's own entry for `cortex-llm` turns default features off, so a crate has to ask for it, and only `cortex-core` does. |
 | `schema` | `cortex-protocol` | off | JSON Schema derivation. On only for `xtask` and the schema test. |
 | `mcp` | `cortex-core` | on | Links `cortex-mcp`. |
 | `scripts` | `cortex-core` | on | Links the script engine in `cortex-ext`. Without it, extensions are limited to custom commands, skills and hook commands. |

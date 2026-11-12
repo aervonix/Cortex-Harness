@@ -1,6 +1,6 @@
 # 0027: Speed tiers: a per-model set of named tiers, recorded at the speed that ran
 
-- **Status:** Accepted by the owner as a requirement on 2026-11-12 ("provider fast modes, starting with Anthropic's"). The design below is this record's. How utility roles behave was settled the same day, in the review of step 3. Two details are left for the steps that need them, listed at the end.
+- **Status:** Accepted by the owner as a requirement on 2026-11-12 ("provider fast modes, starting with Anthropic's"). The design below is this record's. How utility roles behave was settled the same day, in the review of step 3. How long a cooldown lasts and what counts as a short wait were settled in step 5. Two details are left for the steps that need them, listed at the end.
 - **Date:** 2026-11-12
 
 ## Context
@@ -73,7 +73,7 @@ Two more facts shape the design:
 | Step | What |
 |---|---|
 | 3 (this one) | The protocol types, their schema, and these pages. |
-| 5 | The request and the model event carry a speed. The catalog format has per-model speed offers with their rate cards. The retry layer tells a tier's own limit from the model's, and has the fallback and the cooldown, tested against the fake clock. |
+| 5 | **Built.** The request carries a speed, and the usage carries the speed that ran: what the response reports, and what was sent only when it reports nothing, decided in one place for every protocol. The catalog format has per-model speed offers with their rate cards. A classified error names the tier whose own limit refused the request. The retry layer has the wait in place, the fallback and the cooldown, tested against the fake clock. The stream says each of them: a fallback (by the harness, or by the provider), and a cooldown starting and ending. The first catalog has Anthropic's fast mode on the two models that offer it. |
 | 7 | The loop sends each request at the speed in effect and emits the fallback and cooldown notices. A change of the setting applies from the next request. |
 | 9 | Configuration: the session's speed, a role's own, the utility roles at `standard` by default, and whether to fall back. **Built.** The keys are `model.speed` (the session's), `model.roles.<role>.speed` (a role's own), `model.speed_fallback`, `model.speed_wait` and `model.speed_cooldown`. |
 | 13 | `session/set` wired through the core. Headless mode gets the setting from configuration. |
@@ -87,6 +87,20 @@ Two more facts shape the design:
 ## Settled and open
 
 **Settled in the review of step 3, on 2026-11-12:** utility roles default to `standard` and do not inherit a fast session speed. It can be overridden per role. It is part of "The setting", above, and step 9 builds it.
+
+**Settled in step 5, on 2026-11-12, and accepted by the owner:** how long a cooldown lasts, and how long a wait is "short". The recommendation above was taken as it stood.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| Fall back to standard | on | Off makes a tier's refusal an ordinary rate limit: backoff, the server's wait, the maximum wait, then the error. |
+| Short wait | 20 seconds | A budget for one request, not for one attempt. While everything the request has waited for its tier stays within it, the request waits as long as the provider asked and is sent again at the same speed. The first wait that would go over it falls back instead. A refusal that names no wait falls back at once. Zero never waits in place. |
+| Cooldown | 10 minutes | Used only when the provider gives no time. When it gives one, the cooldown ends at that time, with no cap and no floor of ours. |
+
+- **Why 20 seconds.** It is about as long as a person will watch a request wait before they would rather it carried on at standard speed. Anthropic describes its `retry-after` for fast mode as "typically short", because the limit refills continuously, so most refusals should be waited out and cost nothing: no change of speed, no cache rewrite.
+- **Why the provider's time.** It is the cheapest moment to ask again. Earlier, the tier is refused. Much later, the prefix that was cached at the tier's speed has expired, and coming back costs a full rewrite.
+- **Why a budget and not a limit per attempt.** A provider that answers "8 seconds" three times in a row would otherwise hold a request for as long as it has attempts.
+- **All three are settings.** Step 5 defines them in the retry policy of `cortex-llm`; step 9 names the configuration keys. The cooldown is kept per provider, model and tier, in memory, for the life of the process.
+- **The length of a cooldown is decided in one function** (`RetryPolicy::cooldown`), so that the open item below can be settled without touching anything else.
 
 **Settled in step 9, on 2026-11-12: the configuration keys.**
 
@@ -104,7 +118,7 @@ The names sit under `[model]`, beside the model and the reasoning level, because
 
 **Open, for the steps that need them:**
 
-1. **How long a cooldown lasts, and how long a wait is "short".** The recommendation is the provider's reset time when it gives one, otherwise 10 minutes, and to wait in place for up to 20 seconds before falling back. Step 5 decides, with the numbers in configuration.
+1. **A shortest cooldown.** With no floor, a provider that keeps answering "in 25 seconds" gives 25-second cooldowns: the wait is too long to sit out and the cooldown too short to settle, so a session could change speed every half minute, each change a possible cache rewrite. That is the flip-flopping this record sets out to avoid. A floor would stop it at the price of a fourth parameter, and the right value depends on what the provider really sends. **Step 14 decides**, from Anthropic's real `retry-after` values for fast mode. The recommendation until then is none: the provider's own time is honoured as given.
 2. **A command-line flag.** `--model` and `--effort` have flags in headless mode. A `--speed` flag beside them is the obvious addition and is not in [architecture/10-headless.md](../architecture/10-headless.md) yet. Step 13 decides.
 
 ## Revisit when

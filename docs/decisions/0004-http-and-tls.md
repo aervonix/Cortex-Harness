@@ -25,10 +25,17 @@ In the full dependency set, choosing aws-lc-rs over ring costs 4.6 s of clean de
 
 ## Decision
 
-- reqwest, default features off, with `rustls-no-provider`, `http2`, `stream` and `json`.
-- rustls with the ring provider, installed at start.
+- reqwest, default features off, with `rustls-no-provider` and `http2`.
+- rustls with the ring provider, installed when the client is created.
 - The system's certificate verifier, plus a configurable CA bundle.
 - One client per process, created lazily on a background task, with a connection opened ahead of the first request.
+
+**Amended in step 5, on 2026-11-12, when the transport was built.**
+
+- **`stream` and `json` are not turned on.** This record first listed them. The response body is read chunk by chunk with the client's own `chunk()`, and requests are serialised by the protocols, so neither feature is used.
+- **Redirects are not followed.** A model endpoint has no reason to redirect, and following one would carry the credential headers to wherever it points. A redirect is returned as the response it is.
+- **The transport has no time limits except for making a connection** (30 s). The limits on a response, for its first event and for silence after it, belong to the client above the transport, where they run on the same clock as the retry layer and are tested without waiting ([architecture/04-providers.md](../architecture/04-providers.md), "Transport").
+- **Measured again** with the feature set as built (reqwest 0.13, rustls 0.23 with ring, tokio), by the same method on the same machine: 6.4 s clean in the dev profile and 13.2 s in release, 3,035 KB added, 92 packages. Creating the client: 1.06 to 1.13 ms warm over ten runs, and 44.6 ms on the first run after a build. Making the transport, which is all that happens at start-up, takes under a microsecond.
 
 ## Why
 

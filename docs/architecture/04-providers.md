@@ -20,40 +20,57 @@ A user adds an OpenAI-compatible server by writing a provider entry in configura
 
 ## Traits
 
-Sketches, to fix the boundaries. Exact signatures are settled in the provider-abstraction build step.
+As built in step 5 (`crates/cortex-llm`). The steps that add a protocol or use the client build on these shapes. Changing one is recorded here and in the step's report.
 
 ```rust
 /// A wire dialect. Stateless and pure: no I/O.
-pub trait Protocol: Send + Sync {
-    /// Build the HTTP request for one model call.
-    fn build(&self, req: &ModelRequest, model: &ModelInfo, provider: &ProviderInfo)
+pub trait Protocol: Send + Sync + Debug {
+    /// The dialect's name, as catalog and provider entries write it.
+    fn name(&self) -> &str;
+    /// Build the HTTP request for one model call, without credentials.
+    fn build(&self, request: &ModelRequest, provider: &ProviderInfo)
         -> Result<HttpRequest, BuildError>;
-    /// A fresh decoder for one response stream.
-    fn decoder(&self, model: &ModelInfo, provider: &ProviderInfo) -> Box<dyn StreamDecoder>;
+    /// A fresh decoder for the response to `request`.
+    fn decoder(&self, request: &ModelRequest, provider: &ProviderInfo) -> Box<dyn StreamDecoder>;
     /// Turn a failed response into a typed error.
-    fn classify(&self, status: u16, headers: &Headers, body: &[u8]) -> ProviderError;
+    fn classify(&self, failure: &HttpFailure<'_>, request: &ModelRequest) -> ProviderError;
+    /// Read the headers of a successful response: request id, rate limits,
+    /// the speed that served the request. The default reads nothing.
+    fn read_headers(&self, headers: &Headers, now: UtcTime, out: &mut EventSink) {}
 }
 
 /// Incremental decoder: SSE events in, neutral model events out.
 pub trait StreamDecoder: Send {
-    fn feed(&mut self, event: SseEvent<'_>, out: &mut Vec<ModelEvent>) -> Result<(), DecodeError>;
-    fn finish(&mut self, out: &mut Vec<ModelEvent>) -> Result<(), DecodeError>;
+    fn feed(&mut self, event: SseEvent<'_>, out: &mut EventSink) -> Result<(), DecodeError>;
+    fn finish(&mut self, out: &mut EventSink) -> Result<(), DecodeError>;
 }
 
 /// Sends a request and streams the body. The only part that does I/O.
-pub trait Transport: Send + Sync {
-    fn send(&self, req: HttpRequest, cancel: CancelToken) -> BoxFuture<'_, Result<HttpStream, TransportError>>;
+pub trait Transport: Send + Sync + Debug {
+    fn send(&self, request: HttpRequest, cancel: CancelToken)
+        -> BoxFuture<'_, Result<HttpResponse, TransportError>>;
 }
 
 /// What the agent loop sees.
 pub trait ModelClient: Send + Sync {
-    fn stream(&self, req: ModelRequest, cancel: CancelToken) -> BoxStream<'_, ModelEvent>;
+    fn stream(&self, request: ModelRequest, cancel: CancelToken) -> ModelStream;
+}
+
+/// Something that can wait. Every wait in the crate goes through it.
+pub trait Timer: Send + Sync + Debug {
+    fn sleep(&self, duration: Duration) -> Sleep;
 }
 ```
 
 - `build`, `feed` and `classify` are tested from files: a request snapshot per scenario, and recorded response streams replayed with every possible chunk boundary.
-- `Transport` has two implementations: the real one (reqwest) and a scripted one in the test kit.
-- `ModelClient` is implemented once, generically, by combining a protocol, a transport and the retry layer. The scripted provider in the test kit implements `ModelClient` directly, below nothing, for loop tests.
+- **The request carries the model.** `ModelRequest` holds the catalog entry of the model it is for, so `build` and `decoder` take the request and the provider and no third argument. A client is for one provider; which client a role's requests go to is decided where the core is assembled.
+- **`classify` and `decoder` are given the request as it was sent**, because one thing cannot be told without it: whether a refusal belongs to the speed tier the request was sent at ("Speed tiers", below).
+- **A decoder writes to an `EventSink`, not to a list of events.** The sink has one method per thing a response can say (`start`, `text_delta`, `tool_call_start`, `block_end`, `usage`, `end`, `error`, `served_at`, `limits`, `request_id`). It is the one place that turns "the response reported this speed" into "the request ran at this speed", so no adapter can get that rule wrong.
+- **A transport returns a response for every status.** Whether a status is a failure is the protocol's to say, so a 429 reaches `classify` with its headers and body. A transport has no time limit of its own except for making a connection.
+- `Transport` has two implementations: the real one (reqwest), behind the `http` feature, and a scripted one in the test kit.
+- `ModelClient` is implemented once, for every protocol, by `ProviderClient`: a protocol, a transport, a credential and the retry layer. The scripted provider in the test kit implements `ModelClient` directly, below nothing, for loop tests.
+- **`ModelStream` is a stream of `ModelEvent`s that owns everything it needs**, so it can be moved to a task of its own. Nothing is sent until it is first polled. It produces one event at a time and only when asked, so a slow reader holds no queue. Dropping it abandons the request and closes the connection. Its last event is always `End` or `Error`, exactly one of them; a cancelled request ends with an `Error` of kind `Interrupted`.
+- **Nothing in the crate reads a real clock or asks the runtime for a timer.** The time comes from the `Clock` of `cortex-base` and every wait from a `Timer`. The harness passes the runtime's timer; a test passes the fake timer of the test kit, which moves the fake clock. The retry layer, the two time limits on a response and a ten-minute cooldown are therefore tested against one clock, in microseconds. Only the real transport needs the async runtime.
 
 ## The conversation model
 
@@ -88,11 +105,17 @@ pub enum ModelEvent {
     ToolCallStart { index: u32, id: String, name: String },
     ToolArgsDelta { index: u32, json: String },          // fragment, not yet valid JSON
     BlockEnd { index: u32, raw: RawJson },               // the provider's complete block
-    Usage(UsageUpdate),                                  // may arrive more than once
-    End { stop: StopReason, raw_stop: String, usage: Usage },
-    Error(ProviderError),                                // including errors after HTTP 200
+    Usage(Usage),                                        // may arrive more than once
+    Limits(Vec<LimitWindow>),                            // the rate limits the response reported
+    Retry(RetryInfo),                                    // the attempt failed; another follows a wait
+    SpeedFallback(SpeedMove),                            // runs, or ran, at another speed than asked
+    SpeedCooldown(CooldownChange),                       // a tier's cooldown began or ended
+    End { stop: StopReason, raw_stop: String, stop_detail: Option<String>, usage: Usage },
+    Error(ProviderError),                                // the request failed for good
 }
 ```
+
+**One stream can hold more than one response.** The retry layer is inside the client, so the loop sees an attempt that failed as events: `Retry` when the request will be sent again after a wait, and `SpeedFallback` by the harness when it is sent again at standard speed. Either is followed by a new `Start`, and everything between the earlier `Start` and that point belongs to an attempt that no longer counts. The loop discards it and tells front ends to (`item.reset`). An `Error` is the last event: the request failed and will not be tried again here.
 
 Rules for decoders:
 
@@ -101,7 +124,7 @@ Rules for decoders:
 - An error event after a successful status is an `Error`, classified like any other.
 - The decoder reads until the provider's terminal event. Some providers deliver required data (a signature, the usage) in the last chunk.
 
-**SSE parsing** is a small parser of our own over the byte stream: event name, data lines, comments, blank-line terminator, all three line endings, no reconnection logic. The available crates are unmaintained and do more than is wanted here. It is tested with every chunk split.
+**SSE parsing** is a small parser of our own over the byte stream: event name, data lines, comments, blank-line terminator, all three line endings, no reconnection logic. The available crates are unmaintained and do more than is wanted here. It is tested with every chunk split: each fixture cut at every byte, one byte at a time, and at every pair of cuts for the short ones; and with bytes that are not a stream at all, cut at random, which must give the same events however they are cut. It keeps one event's worth of memory and refuses an event over 32 MiB.
 
 ## Tool definitions
 
@@ -138,7 +161,7 @@ Some providers will run the same model faster, or slower and cheaper, at a diffe
 
 **In a request.** The loop passes the speed in effect for the role. Each adapter maps it to its provider's mechanism: a body field (`speed` at Anthropic, `service_tier` at OpenAI and Google), an extra header, or, where a platform sells the tier as a separate deployment, another model id. A provider-side default such as `auto` is never relied on: the adapter sends an explicit tier, so that what was asked for is known.
 
-**In a response.** The adapter reads the tier that served the request wherever the provider reports it (`usage.speed`, a top-level `service_tier`, a response header) and puts it in the usage. That, not the setting, is what the request is recorded and priced at.
+**In a response.** The adapter reads the tier that served the request wherever the provider reports it (`usage.speed`, a top-level `service_tier`, a response header) and passes it on. It never fills it in from the request. The event sink then applies one rule for every protocol: **a request is recorded at the speed the response reports, and at the speed it was sent at only when the response reports none.** That, not the setting, is what the request is priced at. When the two differ the usage carries both, and the stream carries a `SpeedFallback` event marked as the provider's doing, once. "Asked for fast, served standard" is never silent.
 
 **When a tier is refused.** The classification table gains one distinction: a rate limit or overload that belongs to the tier, not to the model. The retry layer then has two choices beyond an ordinary retry.
 
@@ -148,6 +171,20 @@ Some providers will run the same model faster, or slower and cheaper, at a diffe
 | The wait is long or unknown, and falling back is allowed | Send the request at `standard`, and start a **cooldown** for the tier on that provider and model. Until it ends, requests go at `standard`. Then they ask for the tier again. |
 | Falling back is turned off | The refusal is an ordinary rate limit: backoff, then the error. |
 | The provider served another tier by itself | Nothing to do. The usage says what ran, and the user is told. |
+
+The numbers, settled in step 5 ([decision 0027](../decisions/0027-speed-tiers.md)). All three are settings; the configuration step names their keys.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| Fall back | on | Whether a refused tier's request is sent at `standard`. Off makes the refusal an ordinary rate limit. |
+| Short wait | 20 s | How long **one request** may wait in place for its tier, in total. While what it has waited stays within this, it waits as long as the provider asked and is sent again at the same speed. The first wait that would go over it is a fallback instead. A refusal that names no wait is a fallback at once. Zero never waits in place. |
+| Cooldown | 10 minutes | How long a cooldown lasts when the provider did not say when the tier is available again. When it did, the cooldown ends at that time. |
+
+- **A fallback is not a retry of a failure.** The refused attempt is not counted against the request's attempts, so `standard` gets a send of its own even when the tier was refused on the last attempt.
+- **A cooldown is kept per provider, model and tier**, in memory, for the life of the process, on the monotonic clock. The loop reads the same table to show the speed in effect and the cooldown's end.
+- **Its end is noticed, not timed.** An idle session has no timers. The first request that asks for the tier after the time has passed is sent at the tier, and the stream says the cooldown ended.
+- **Every request sent at `standard` during a cooldown says so**, with a `SpeedFallback` by the harness whose reason is `cooldown`. A request for a tier the model does not offer is sent at `standard` with the reason `not_offered`.
+- **A provider's own downgrade starts no cooldown.** There is nothing to wait for: the next request asks for the tier again.
 
 The cooldown exists because of the cache: where speeds do not share a prefix, every change of speed re-writes the cache for the whole conversation, which can cost more time and money than the tier saves. So the harness changes speed rarely and stays there for a while. Front ends are told through the `speed_fallback` and `speed_cooldown` notices ([11-rpc-protocol.md](11-rpc-protocol.md)).
 
@@ -205,7 +242,7 @@ Beside the token counts the record carries the provider, the model, the role, an
 
 Providers disagree on what "input" includes, so each adapter documents and tests its normalisation (for example, subtracting cached tokens where the provider's input count includes them). Streaming usage may be cumulative, final-only, or absent after an abort; the adapter reports what it has, and `End.usage` is authoritative.
 
-**Cost** is computed when the request is recorded: tokens × the catalog prices in force **for the speed the request ran at**, with context-size tiers and lifetime-class multipliers. Money is kept as whole nano-dollars, so that sums are exact. The entry stores the cost and the catalog version, so later price changes do not rewrite history. A provider that reports cost itself overrides the calculation. A model with no price data shows tokens only.
+**Cost** is computed when the request is recorded: tokens × the catalog prices in force **for the speed the request ran at**, with context-size tiers and lifetime-class multipliers. A size tier is chosen by every input token the request sent (fresh, cache reads and cache writes together) and prices the whole request. Cache writes the provider did not put in a lifetime class are priced at the first class the rate card lists. A token class that was used and has no price gives no cost at all, never a guess. Money is kept as whole nano-dollars, so that sums are exact. The entry stores the cost and the catalog version, so later price changes do not rewrite history. A provider that reports cost itself overrides the calculation. A model with no price data shows tokens only.
 
 **Out-of-band usage** (compaction, title generation) is recorded as separate usage entries and included in session totals.
 
@@ -213,10 +250,13 @@ Providers disagree on what "input" includes, so each adapter documents and tests
 
 ## Model catalog
 
-- **Embedded.** The binary carries a compact catalog generated at build time from `catalog/models.toml` in the repo. No network at build time or at startup.
+- **Embedded.** The binary carries a compact catalog generated at build time from `catalog/models.toml` in the repo: the build script of `cortex-llm` turns the TOML into JSON, the crate embeds it, and reads it on first use (18 to 24 µs for the first four models). No network at build time or at startup. The file documents its own format, and an unknown key in it is an error. A test loads the built-in catalog, so an entry that is not valid cannot be merged.
+- **Every fact has a source and a date.** Entries are read from the providers' documentation by hand and say where and when. A fact the documentation does not state is left out, not filled in. The first catalog (step 5) has Anthropic's four current models.
 - **Maintained by script.** `xtask catalog update` drafts changes from the providers' model-list endpoints and from models.dev (an MIT-licensed community catalog). A maintainer reviews the diff. The checked-in file is ours and is the source of truth.
 - **Per entry:** id, display name, protocol, context window, maximum output, prices (input, output, cache read, cache write by class, tiers), reasoning control, which models' reasoning it can read, modalities, capability flags (strict tools, mid-conversation system messages, structured output, minimum cacheable size), and the speed tiers it offers besides standard, each with its own rate card. No provider's model list reports tier support, so this part of an entry is maintained by hand from the providers' documentation.
-- **User overlay.** Configuration can add or override entries. This is how local and private models are described.
+- **User overlay.** Configuration can add or override entries. This is how local and private models are described. An overlaid entry replaces the built-in one for the same provider and model whole: nothing is merged field by field, so an entry says everything about its model.
+- **Variant defaults.** Each entry names the default at each variant point ([14-adaptation.md](14-adaptation.md)). Left out, they are the `replace` edit format, strict tool schemas where the model has them, and the `concise` prompt style.
+- **Flags.** What a model's or a provider's protocol needs to know that the neutral fields do not say is a named flag on the entry. Each protocol documents the flags it reads.
 - **Runtime discovery, on request.** `cortex models refresh` queries the provider's list endpoint and overlays limits and capabilities in the user's state directory. It never runs on its own.
 - **Local servers** are asked at connect time for the loaded context size, because it differs from the model's trained size.
 
@@ -255,12 +295,20 @@ Each protocol implements `classify` as a table from (transport error, status, pr
 | Other 4xx | `Provider` |
 | Error event after a 200 | Classified by its code as above |
 
+**A code that names the failure wins over the status it came with.** A spending cap is not retried because it arrived as a 429. Each protocol reads its provider's codes into one of a few signals (rate limit, quota, overload, server failure, context length, credential), and one shared function applies the table.
+
+**A refusal can belong to a speed tier.** A classified error says whether it was a rate limit or an overload, and names the tier whose own limit or capacity turned the request away, when it was a tier's and not the model's. Only the protocol can tell, from the provider's headers and codes and the speed the request was sent at.
+
+Failures that are not HTTP responses have codes of their own: `connection_failed`, `connection_lost`, `timeout`, `idle_timeout`, `first_event_timeout`, `incomplete_stream` (the stream ended before the provider's terminal event), `malformed_stream`. All are `Transient`.
+
 The provider's request id is attached to every error and written to the log.
 
 ## Transport
 
 - **Client:** reqwest with rustls and the ring crypto provider, HTTP/2 enabled, default features off. Measured against the alternatives in [decision 0004](../decisions/0004-http-and-tls.md).
-- **One client per process**, created lazily on first use, off the start-up path. Connections are pooled.
+- **One client per process**, created lazily on first use, off the start-up path. Connections are pooled. Making the transport costs under a microsecond. Creating the client costs 1.06 to 1.13 ms warm and 44.6 ms on the first run after a build, when the certificate store is not in the file cache (step 5, [../performance-budgets.md](../performance-budgets.md)). `warm()` creates it ahead of the first request, from a background task.
+- **Redirects are not followed.** A model endpoint has no reason to redirect, and following one would carry the credential headers to wherever it points. A redirect is a response like any other and is classified as a failure.
+- **Time limits are the client's, not the transport's.** One limit runs from sending a request to the first event of its response (default 60 s), and one on silence after that (default 90 s; keep-alive pings count as bytes). Both are in the retry settings and a provider's entry can set its own, which a local server that reads a long prompt before it answers needs. Either one ending is a `Transient` failure.
 - **Pre-warm.** When a session starts with a configured provider, the core opens a connection to it in the background, so the first request does not pay for DNS, TCP and TLS.
 - **Proxies:** standard environment variables are honoured. Custom CA bundles are configurable.
 - **Statelessness.** The harness sends the full history on every request and does not depend on server-side conversation state. Stateful provider features can be added later as optimisations behind the same trait.

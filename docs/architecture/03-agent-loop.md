@@ -107,21 +107,22 @@ A safe boundary is the only place a user message can be appended without breakin
 
 ## Retries
 
-Retries are a separate layer between the loop and the provider client, with its own unit tests against a fake clock.
+Retries are a separate layer between the loop and the provider's protocol and transport, with its own tests against a fake clock. As built in step 5 it is inside the model client (`ProviderClient` in `cortex-llm`): the client makes the attempts and does the waiting, and the loop sees each failed attempt as an event in the response stream, `Retry` with the error, the wait and the time of the next attempt. The loop's `Backoff` state is the time between that event and the next response's start. The rules themselves are one function with no clock and no I/O, tested row by row.
 
 - **What is retried.** Errors of kind `Transient`: connection failures, timeouts, HTTP 408, 409, 429 (when the provider's error code says it is a rate limit and not a spending limit), 5xx, provider overload codes, and mid-stream failures. The per-protocol classification table is in [04-providers.md](04-providers.md).
 - **Schedule.** Exponential backoff with full jitter. Base 1 s, factor 2, cap 30 s, at most 5 attempts per request. All four are configurable.
 - **Server hints win.** A `retry-after` header (seconds or date) or a provider reset header sets the wait. If the hint is longer than `retry.max_wait` (default 2 minutes), the loop does not sleep: it finishes the turn with the error and the hint, so a person or a script can decide.
 - **Mid-stream failure.** Only side-effect-free calls start before a response completes, so a failed stream has had no side effects. The partial response is discarded from the context, kept in the log as an `attempt` entry for debugging, and the same request is sent again. Results of read-only calls that already ran are kept in a short-lived cache and reused if the new response asks for the same call. Front ends receive `item.reset` so they can clear the partial text.
 - **Visibility.** Each wait emits a `retry` notice with the attempt number, the reason and the time of the next attempt.
-- **Idle timeout.** If no bytes arrive on a stream for 90 s (pings count as bytes), the request fails as `Transient`. A separate limit applies to the wait for the first event. Both are configurable per provider.
+- **Idle timeout.** If no bytes arrive on a stream for 90 s (pings count as bytes), the request fails as `Transient`. A separate limit applies to the wait for the first event: 60 s from sending the request, which is right for a hosted provider. Both are in the retry settings and both can be set per provider. A local server can send nothing until it has read a long prompt, which can take longer than that on modest hardware; the step that adds OpenAI-compatible servers revisits the default for them.
+- **A stream that ends early is a failure too.** A response whose stream ends before the provider's terminal event, or cannot be decoded, is `Transient` and is sent again.
 
 ## Rate limits
 
 - Rate-limit headers from each response are parsed into a per-provider state (remaining requests and tokens, reset times) and exposed in `usage.updated`, so a front end can show it.
 - The loop does not pace itself ahead of limits. It reacts to 429 and overload responses through the retry layer. Pacing can be added later behind the same state without changing the loop.
 - Non-retryable 429 responses exist on every provider (spending caps, exhausted credit). They are classified as `Provider`, not `Transient`, and end the turn with a clear message.
-- **A speed tier can have a limit of its own.** When a request at a speed other than standard is refused for that tier's limit, the retry layer may wait, or send the request at standard speed and put the tier in a cooldown. The loop emits a `speed_fallback` notice for the request and `speed_cooldown` notices when the cooldown starts and ends, and the session state shows the speed in effect. The rules, and why the harness does not switch back and forth, are in [04-providers.md](04-providers.md), "Speed tiers".
+- **A speed tier can have a limit of its own.** When a request at a speed other than standard is refused for that tier's limit, the retry layer may wait, or send the request at standard speed and put the tier in a cooldown. The response stream says which (`SpeedFallback`, `SpeedCooldown`), and the loop turns that into a `speed_fallback` notice for the request and `speed_cooldown` notices when the cooldown starts and ends. The session state shows the speed in effect, which the loop reads from the same table of cooldowns the client obeys. The rules, and why the harness does not switch back and forth, are in [04-providers.md](04-providers.md), "Speed tiers".
 
 ## Stop reasons
 
