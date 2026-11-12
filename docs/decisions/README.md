@@ -15,7 +15,7 @@ One record per significant choice. Each says what the options were, what was cho
 | [0007](0007-configuration-format.md) | Configuration in TOML, layered, with provenance | Accepted |
 | [0008](0008-rpc-protocol.md) | One typed protocol, carried as JSON-RPC over newline-delimited JSON | Accepted |
 | [0009](0009-sandboxing.md) | Autonomy default, permission rules and how far to sandbox | Accepted by the owner |
-| [0010](0010-mcp-in-first-release.md) | MCP client scope in the first release | Accepted in principle; scope **provisional** (not among the questions answered) |
+| [0010](0010-mcp-in-first-release.md) | MCP client scope in the first release | Accepted by the owner |
 | [0011](0011-cli-parsing.md) | Command-line parsing with lexopt and hand-written help | Accepted |
 | [0012](0012-release-profile.md) | Build profiles, and unwinding on panic | Accepted |
 | [0013](0013-naming.md) | The command `cortex`, its alias `cx`, and how the alias ships | Accepted by the owner. The clash check is part of step 2. |
@@ -30,8 +30,8 @@ One record per significant choice. Each says what the options were, what was cho
 | [0022](0022-repository-map.md) | The repository map uses approximate, pure-Rust outlines | Accepted by the owner (conflict C2) |
 | [0023](0023-run-engine-after-first-release.md) | One orchestration layer for parallel attempts and replay, after the first release | Accepted by the owner (conflicts C3, C9) |
 | [0024](0024-coordinator.md) | The Coordinator is built on the orchestration layer, with limits enforced by the harness | Accepted |
-| [0025](0025-usage-view.md) | The usage view: one store for our numbers, read-only adapters for other tools, limits only from official sources | Accepted. One point left open (usage endpoints). |
-| [0026](0026-one-autonomy-model.md) | One autonomy model: levels and leases, for single sessions and for teams | Accepted |
+| [0025](0025-usage-view.md) | The usage view: one store for our numbers, read-only adapters for other tools, limits only from official sources | Accepted by the owner. Amended on 2026-11-12: an opt-in refresh from a provider's documented usage endpoint. |
+| [0026](0026-one-autonomy-model.md) | One autonomy model: levels and leases, for single sessions and for teams | Accepted by the owner, with `supervised` confirmed as the name of the default level |
 
 All of the owner's answers are dated 2026-11-12 and are recorded together in the [build plan](../build-plan.md).
 

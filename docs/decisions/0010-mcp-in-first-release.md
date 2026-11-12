@@ -1,6 +1,6 @@
 # 0010: MCP client scope in the first release
 
-- **Status:** Accepted in principle (the vision settles that MCP client support is in). The scope below was not among the questions the owner answered on 2026-11-12, so it stays provisional and work proceeds on it.
+- **Status:** Accepted by the owner on 2026-11-12, as written. It is no longer provisional.
 - **Date:** 2026-11-12
 
 ## Context

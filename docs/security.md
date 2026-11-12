@@ -182,7 +182,7 @@ The reference harnesses load extensions into the agent process with the user's f
 | **Opt-in per source, user-only.** Nothing is opened until the user enables a source. A project cannot enable one. | No surprise reading of another tool's data. |
 | **Read-only.** Nothing is created, changed or locked in another tool's directory. | The other tool cannot be damaged. |
 | **Only numbers are kept.** Adapters extract times, model names, token counts, costs, project paths and record ids. A test asserts that no text field from the input reaches the output or the cache. | Conversations are not copied into our state. |
-| **No network.** The view and the indexer make no connection. Tested with the network denied. | Nothing read can be sent anywhere. |
+| **No network by default.** The view and the indexer make no connection. Tested with the network denied. The one exception is the opt-in refresh of limits: off by default, per provider, user-only, made only when the user asks, and sent only to that provider's documented usage endpoint with the user's own key. It carries no usage data, and a test asserts that. | Nothing read from another tool can be sent anywhere. |
 | **Untrusted input.** Size and line-length limits, no following of links out of the tool's directory, fuzzing of every adapter. A bad file is skipped and named. | A crafted file cannot crash the harness or make it read elsewhere. |
 | **Unknown versions are refused, not guessed.** | Wrong numbers are not shown as facts. |
 | **Every figure is labelled** with its source and cost basis. Estimates are never merged silently into metered totals. | The user is not misled about what was billed. |

@@ -53,17 +53,24 @@ All ten resolutions were **accepted as recommended on 2026-11-12** and are no lo
 
 The owner added a feature that had been held back: usage and cost per provider, model and project over time, limits left, and usage recorded by other coding agents on the same machine. It is specified in [architecture/18-usage.md](architecture/18-usage.md) and [decision 0025](decisions/0025-usage-view.md). Our own numbers are in the first release (steps 16 and 24). The readers for other tools are step 45.
 
+### Answered after step 1, on 2026-11-12
+
+Three items that step 1 left outstanding, and the repository's name. Step 2 recorded the answers.
+
+| Question | The owner's answer, 2026-11-12 | Recorded in |
+|---|---|---|
+| **Usage endpoints.** The brief for `/usage` allows "documented usage endpoints" and also says nothing is sent anywhere. | **An opt-in refresh.** Besides response headers, the user may turn on, per provider, a refresh that calls that provider's documented usage endpoint with the user's own key. It is off by default and is never telemetry. Where neither source gives a figure, the view shows "not available". | [architecture/18-usage.md](architecture/18-usage.md), [decision 0025](decisions/0025-usage-view.md) |
+| **The name of the default level.** Making one autonomy model renamed the default from `standard` to `supervised`. | **`supervised`.** `standard` is not used, as a level or as a display name. | [Decision 0026](decisions/0026-one-autonomy-model.md) |
+| **MCP scope in the first release:** tools only, through search. | **Accepted as written.** No longer provisional. | [Decision 0010](decisions/0010-mcp-in-first-release.md) |
+| **The repository's name.** | **`Cortex-Harness`**, public. Settled. | This page |
+
 ### Still outstanding
 
 | Item | Who | When |
 |---|---|---|
 | **The Windows Terminal checklist** ([measurements/windows-terminal-checklist.md](measurements/windows-terminal-checklist.md)). Decisions 0001 and 0002 stay provisional until it is run. | The owner | Before step 20 |
-| **Clash check for `cortex` and `cx`**, with a report to the owner. | Step 2 | Before anything is published |
 | **QuickJS with the Windows toolchain.** If it does not build cleanly, the step switches to Lua, as agreed. | Step 28, in its first hour | |
-| **Usage endpoints.** The brief for `/usage` allows "documented usage endpoints" and also says nothing is sent anywhere. The design calls no endpoint. If the owner wants allowance figures that only an endpoint gives, it would be an explicit, off-by-default refresh per provider. | The owner | Any time; nothing waits on it |
-| **The name of the default level.** Making one autonomy model renamed the default from `standard` to `supervised`, so that the word means the same for a session and for a team. If the owner prefers `standard`, it can be the display name; nothing else changes. | The owner | Before step 12 |
-| **MCP scope in the first release** ([decision 0010](decisions/0010-mcp-in-first-release.md)): tools only, through search. It was not among the questions answered. Work proceeds as drafted. | The owner | Before step 30 |
-| **Real CI timings.** The estimate for a cold-cache Windows run is over 5 minutes. | Step 2 measures | |
+| **Which step builds the opt-in refresh of `/usage` limits.** It is designed ([architecture/18-usage.md](architecture/18-usage.md)) and not yet placed in the steps below. | The owner | Any time; nothing waits on it |
 
 ## Features: first release or later
 

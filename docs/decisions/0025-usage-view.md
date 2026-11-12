@@ -1,6 +1,6 @@
 # 0025: The usage view: one store for our numbers, read-only adapters for other tools, limits only from official sources
 
-- **Status:** Accepted. The owner specified the feature on 2026-11-12. One point is left open, below.
+- **Status:** Accepted. The owner specified the feature on 2026-11-12. Amended the same day: the owner settled the point this record had left open, usage endpoints, with an opt-in refresh. The amendment is marked below.
 - **Date:** 2026-11-12
 
 ## Context
@@ -38,7 +38,7 @@ Other tools' on-disk formats are not documented promises. That is why each adapt
 | A provider's documented usage endpoint | Official, and often the only place a subscription allowance appears. It is a network request the user did not cause. |
 | Scraping a dashboard, undocumented endpoints, another tool's private state | Not official. Ruled out. |
 
-**Chosen:** only what arrives in responses the harness already receives. Everything else shows "not available".
+**Chosen:** what arrives in responses the harness already receives, by default. **Amended 2026-11-12:** plus a refresh the user opts in to per provider, which calls that provider's documented usage endpoint with the user's own key. Where neither gives a figure, the view shows "not available".
 
 ## Decision
 
@@ -47,20 +47,30 @@ As specified in [architecture/18-usage.md](../architecture/18-usage.md):
 - Our own figures come from `cortex-stats`. No second store.
 - Other tools: per-tool adapters, opt-in, read-only, numbers only, version-aware, cached in the background, shown separately or merged, always with their source.
 - Cost has a stated basis: metered, API-equivalent estimate, recorded by the tool, or unknown price. Estimates are never silently added to metered totals.
-- Limits come only from official figures the harness already receives.
-- No network request is made by the view or by indexing.
+- Limits come only from official figures: those the harness already receives, and, where the user has turned it on for a provider, that provider's documented usage endpoint.
+- By default no network request is made by the view or by indexing. The opt-in refresh is the one exception. It is off by default, per provider, user-only, made only when the user asks, sent only to the provider the key belongs to, and never telemetry.
 - Tests use small made-up files. Real session data is never used or committed.
-- **First release:** our own figures in every range and grouping, limits from headers, the panel, `cortex usage` and `usage/report`. **After it:** the adapters, in one step, Claude Code and Codex first.
+- **First release:** our own figures in every range and grouping, limits from headers, the panel, `cortex usage` and `usage/report`. **After it:** the adapters, in one step, Claude Code and Codex first. The opt-in refresh is built per provider once that provider's endpoint has been read and confirmed; the build plan does not yet name the step.
 
 ## Why
 
-- It keeps the privacy promise exactly: local files in, nothing out.
+- It keeps the privacy promise: local files in, nothing out, unless the user asks a provider, with their own key, for their own figures.
 - It keeps the start-up and memory budgets: nothing is read until the view is opened, and then only aggregates.
 - It fails soft. Another tool changing its file layout costs that tool's numbers until its adapter is updated, and nothing else.
 
-## One point left open
+## Settled on 2026-11-12: usage endpoints
 
-The brief lists "documented usage endpoints" among the allowed sources and also says nothing is sent anywhere. These pull apart, and this record takes the stricter reading. If the owner wants allowance figures that only an endpoint gives, the shape would be an explicit, per-provider, off-by-default refresh that calls only that provider's documented endpoint. It is not designed further until asked for.
+The brief lists "documented usage endpoints" among the allowed sources and also says nothing is sent anywhere. These pull apart, so this record first took the stricter reading, called no endpoint, and left the point to the owner.
+
+**The owner's answer, 2026-11-12:** besides response headers, allow an opt-in refresh per provider that calls that provider's documented usage endpoint with the user's own key. It is off by default and is never telemetry. Where neither source gives a figure, show "not available".
+
+| Option | Assessment |
+|---|---|
+| Never call an endpoint | Keeps "nothing is sent" without exception. A subscription's allowance, and any limit before the first request of a session, stay "not available" for good. |
+| Call the endpoint whenever the view opens | The fullest figures. A request the user did not cause, on by default, which is what the privacy rule exists to prevent. |
+| An opt-in refresh per provider, off by default, made only when the user asks | The figures for those who want them. The default stays exactly as before: no request. The request goes only to the provider the user already sends prompts to, with the same key, and carries no data of ours. **Chosen by the owner.** |
+
+How it works is in [architecture/18-usage.md](../architecture/18-usage.md), "The opt-in refresh".
 
 ## Revisit when
 
