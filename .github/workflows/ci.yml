@@ -31,6 +31,13 @@ env:
   CARGO_NET_RETRY: "10"
   RUSTUP_MAX_RETRIES: "10"
 
+# Every job starts by asking whether the pull request touches anything other
+# than documentation (.github/actions/changes). If it does not, the job's
+# remaining steps are skipped and the job still reports success under its own
+# name, so the four checks can be required without a gate job. The one thing a
+# documentation-only pull request still runs is the repo rules, on Linux: the
+# check for home-directory paths and the check of docs/dependencies.md exist
+# mostly for documentation.
 jobs:
   # Tier 0. Formatting, the repo rules and cargo-deny are the same on every
   # OS and run once, on Linux. Clippy runs on both, so that code compiled
@@ -51,21 +58,31 @@ jobs:
             check: clippy
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - id: changes
+        uses: ./.github/actions/changes
       - name: Install the toolchain from rust-toolchain.toml
+        if: steps.changes.outputs.code == 'true' || matrix.name == 'linux'
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: steps.changes.outputs.code == 'true' || matrix.name == 'linux'
         with:
           # Only the main branch writes caches. Pull requests read a cache
           # that is always consistent, and never push each other's out.
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-bin: "false"
       - name: Install cargo-deny
-        if: matrix.name == 'linux'
+        if: steps.changes.outputs.code == 'true' && matrix.name == 'linux'
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-deny@0.20.2
       - name: Static checks
+        if: steps.changes.outputs.code == 'true'
         run: cargo run --locked --quiet --package xtask -- check ${{ matrix.check }}
+      - name: Repo rules (documentation-only change)
+        if: steps.changes.outputs.code != 'true' && matrix.name == 'linux'
+        run: cargo run --locked --quiet --package xtask -- check rules
 
   # Tiers 1 to 3.
   test:
@@ -82,15 +99,23 @@ jobs:
             os: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - id: changes
+        uses: ./.github/actions/changes
       - name: Install the toolchain from rust-toolchain.toml
+        if: steps.changes.outputs.code == 'true'
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: steps.changes.outputs.code == 'true'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-bin: "false"
       - name: Install cargo-nextest
+        if: steps.changes.outputs.code == 'true'
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-nextest@0.9.151
       - name: Tests
+        if: steps.changes.outputs.code == 'true'
         run: cargo run --locked --quiet --package xtask -- ci test

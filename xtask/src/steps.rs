@@ -129,9 +129,6 @@ fn write_job_summary(
     results: &[(&'static str, Duration, Result<()>)],
     total: Duration,
 ) {
-    let Some(path) = env::var_os("GITHUB_STEP_SUMMARY") else {
-        return;
-    };
     let mut table = format!("### {title}\n\n| Step | Seconds | Result |\n|---|---:|---|\n");
     for (name, elapsed, outcome) in results {
         let mark = if outcome.is_ok() { "ok" } else { "**failed**" };
@@ -141,8 +138,17 @@ fn write_job_summary(
         ));
     }
     table.push_str(&format!("| total | {:.1} | |\n\n", total.as_secs_f64()));
+    append_job_summary(&table);
+}
+
+/// Adds Markdown to the run's summary page. Does nothing outside GitHub
+/// Actions.
+pub(crate) fn append_job_summary(markdown: &str) {
+    let Some(path) = env::var_os("GITHUB_STEP_SUMMARY") else {
+        return;
+    };
     // The summary is a convenience. Failing to write it must not fail the job.
     if let Ok(mut file) = OpenOptions::new().append(true).create(true).open(path) {
-        let _ = file.write_all(table.as_bytes());
+        let _ = file.write_all(markdown.as_bytes());
     }
 }

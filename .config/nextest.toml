@@ -16,16 +16,23 @@ nextest-version = "0.9.100"
 [test-groups]
 process = { max-threads = 2 }
 
+# The limits on one test come from the tier budgets in docs/testing-and-ci.md
+# and hold in every profile. After a CI run, `cargo xtask ci test` also checks
+# what each tier's tests took together.
+
 [profile.default]
-# A warning at 10 s, termination at 60 s.
-slow-timeout = { period = "10s", terminate-after = 6 }
+# Tiers 1 and 2: a test is reported as slow at 2 s and stopped, as a failure,
+# at 10 s.
+slow-timeout = { period = "2s", terminate-after = 5 }
 # No retries. A flaky test is a bug.
 retries = 0
 
-# Tier 3 goes in the process group.
+# Tier 3 goes in the process group, is reported as slow at 10 s and is
+# stopped at 60 s.
 [[profile.default.overrides]]
 filter = 'test(/(^|::)sys_/)'
 test-group = 'process'
+slow-timeout = { period = "10s", terminate-after = 6 }
 
 # The one exception to "no retries": a test inside a module named
 # `timing_sensitive` gets one retry. nextest reports it as flaky when the

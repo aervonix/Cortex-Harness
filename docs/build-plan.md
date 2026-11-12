@@ -130,6 +130,8 @@ These hold in every step. A step's prompt may add to them.
 9. **No paid API in CI.** Tests use the scripted provider and recorded fixtures.
 10. **Stay inside the step.** "Must not change" lists what a step may not touch. Needed changes outside the step are reported, not made.
 11. **Conflicts are raised.** Where a feature cannot meet a budget, say so in the step report with a recommendation. Do not cut the feature or loosen the budget quietly.
+12. **No real waiting in tests.** Timeouts, retries, backoff and cooldowns are tested with paused or simulated time (the async runtime's test clock, or the fake clock), never with real sleeps. The details are in [testing-and-ci.md](testing-and-ci.md).
+13. **Budgets are enforced.** Each test has a time limit for its tier, set in the nextest configuration: the runner reports a test that passes its tier's slow mark and stops one that passes its tier's limit. CI reports when a tier's total test time goes over its budget, and fails the job. The numbers are in [testing-and-ci.md](testing-and-ci.md).
 
 **Done, for every step, means:** the done criteria below are met; formatting, lints and all blocking tests pass on both OSes; the blocking checks are still within budget; public items are documented; `docs/` matches the code; and the step's report lists what was built, what was measured and anything left open.
 

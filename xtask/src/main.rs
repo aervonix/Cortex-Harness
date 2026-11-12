@@ -21,6 +21,7 @@ mod alias;
 mod checks;
 mod rules;
 mod steps;
+mod tiers;
 mod workspace;
 
 /// Failures are messages for the person at the terminal.

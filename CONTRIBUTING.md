@@ -52,10 +52,11 @@ The tiers are defined in [docs/testing-and-ci.md](docs/testing-and-ci.md). Where
 
 - **One integration-test binary per crate.** Every extra binary is another link step. Add a module to `tests/it/`, not a file to `tests/`.
 - **No doc tests.** An example that must compile is an ordinary test.
-- **No sleeping.** Time in tests is the fake clock. A process test waits on a condition with a deadline, never on a fixed delay.
+- **No real waiting.** Timeouts, retries, backoff and cooldowns are tested with paused or simulated time: the async runtime's test clock, or the fake clock. A test never sleeps. A process test waits on a condition with a deadline, never on a fixed delay.
 - **No retries**, with one exception: a test inside a module named `timing_sensitive` gets one retry, and nextest reports it as flaky when the retry was needed.
-- **A test that starts a process** is a system test and is named `sys_…`, wherever it lives. That name puts it in nextest's `process` group (two at a time) and keeps it out of the `fast` profile.
-- **A slow test needs a reason.** Over 2 s in tiers 1 and 2, or over 10 s in tier 3.
+- **A test that starts a process** is a system test and is named `sys_…`, wherever it lives. That name puts it in nextest's `process` group (two at a time), gives it tier 3's time limit, and keeps it out of the `fast` profile.
+- **Every test has a time limit.** In tiers 1 and 2 a test is reported as slow at 2 s and stopped, as a failure, at 10 s. In tier 3 the marks are 10 s and 60 s. A test that is slow needs a reason or belongs in a non-blocking tier.
+- **Every tier has a budget** for the time its tests take together: 20 s for tier 1, 40 s for tier 2, and 60 s on Linux or 90 s on Windows for tier 3. `cargo xtask ci` prints the totals after the run and fails when one is over.
 
 ## Lints
 
@@ -103,6 +104,7 @@ Four jobs block a pull request: `lint-linux`, `lint-windows`, `test-linux` and `
 - A step is not done until its tests pass on both OSes.
 - Nothing that blocks uses a secret or a paid API.
 - Only the main branch writes the build caches. A pull request reads them.
+- A pull request that touches only `docs/**` and `*.md` skips the Rust build and tests. Its four checks still report, and the Linux lint job still runs the repo rules, because those rules are mostly about documentation.
 - A change that makes the blocking checks slower than their budget moves the slow part to a non-blocking tier, or raises it for a decision. The limit is not loosened quietly.
 
 ## Ground rules

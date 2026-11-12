@@ -24,6 +24,8 @@ These are the rules of the build plan. They hold in every change.
 9. **No paid API in CI.** Tests use the scripted provider and recorded fixtures.
 10. **Stay inside the step.** A step's "Must not change" list is binding. A needed change outside the step is reported, not made.
 11. **Conflicts are raised.** Where a feature cannot meet a budget, say so in the step report with a recommendation. Do not cut the feature or loosen the budget quietly.
+12. **No real waiting in tests.** Timeouts, retries, backoff and cooldowns are tested with paused or simulated time (the async runtime's test clock, or the fake clock), never with real sleeps.
+13. **Budgets are enforced.** Each test has a time limit for its tier: slow at 2 s and stopped at 10 s in tiers 1 and 2, slow at 10 s and stopped at 60 s in tier 3. CI fails when a tier's total test time goes over its budget (20 s, 40 s, and 60 s on Linux or 90 s on Windows).
 
 **Done means:** the step's done criteria are met; formatting, lints and all blocking tests pass on both OSes; the blocking checks are still within budget; public items are documented; `docs/` matches the code; and the step's report lists what was built, what was measured and anything left open.
 
@@ -44,6 +46,7 @@ These are the rules of the build plan. They hold in every change.
 - **Windows is checked only by CI** unless you have a Windows machine. Write for both from the start: paths, line endings, process handling, file names that differ only by case.
 - **Which crate may depend on which** is fixed by [docs/architecture/01-workspace.md](docs/architecture/01-workspace.md) and checked by `cargo xtask rules`. Do not add an edge to make something compile. If the design is wrong, say so and change the page.
 - **Tests:** unit tests in `#[cfg(test)]` modules; one integration binary per crate at `tests/it/main.rs`; tests that start a process are named `sys_…`. No sleeping, no network, no doc tests.
+- **A pull request that touches only `docs/**` and `*.md`** skips the Rust build and tests in CI and runs only the repo rules. Anything else runs everything.
 - **Lints** are errors in CI. An exception is an `#[expect(…, reason = "…")]` or `#[allow(…, reason = "…")]` with a real reason, at the smallest scope that works.
 - **Measure, then write the number down.** Budgets are in [docs/performance-budgets.md](docs/performance-budgets.md). A change that affects one reports its measurement.
 - **Commit messages** say what changed and why, in the imperative. No trailers that name a person.

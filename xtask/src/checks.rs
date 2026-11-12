@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 use crate::Result;
 use crate::rules;
 use crate::steps::{self, Step};
+use crate::tiers;
 use crate::workspace;
 
 /// The tier 0 steps, in the order they run: cheapest first.
@@ -123,6 +124,9 @@ fn ci_test_steps() -> Vec<Step> {
     vec![
         Step::cargo("build tests", &build),
         Step::cargo("run tests", &RUN),
+        // Each test has its own limit in .config/nextest.toml. This checks
+        // what the tests of each tier took together.
+        Step::function("tier budgets", tiers::check_ci_report),
     ]
 }
 
