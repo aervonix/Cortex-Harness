@@ -1,6 +1,6 @@
 [package]
 name = "cortex-base"
-description = "Small shared primitives: error kinds, secrets, ids, clock and RNG traits, cancellation, workspace paths, text utilities and atomic file writes."
+description = "Small shared primitives: error kinds, secrets, ids, clock and RNG traits, cancellation, workspace paths, text utilities, atomic file writes, message framing and the changed-file check."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,6 +11,11 @@ doctest = false
 
 [dependencies]
 cortex-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
 
 [lints]
 workspace = true

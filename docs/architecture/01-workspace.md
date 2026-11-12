@@ -9,7 +9,7 @@ All crates use the `cortex-` prefix, live under `crates/`, and set `publish = fa
 | Crate | Job | Depends on (workspace) | Heavy third-party dependencies |
 |---|---|---|---|
 | `cortex-protocol` | The public data model: `Op`, `Event`, items, messages, parts, usage, stop reasons, error codes, RPC envelopes. Serde types only, no logic. JSON Schema generation behind a feature. | none | serde, serde_json (schemars behind `schema`) |
-| `cortex-base` | Small shared primitives: error kinds, `Secret`, ids, clock and RNG traits, cancellation, workspace paths, text utilities (width, wrapping, truncation), atomic file writes. | protocol | unicode-width |
+| `cortex-base` | Small shared primitives: error kinds, `Secret`, ids, clock and RNG traits with their fakes, cancellation, workspace paths, text utilities (width, wrapping, truncation), atomic file writes, the newline-delimited JSON reader and writer, and the modification-time check behind hot-reload. No async runtime: what touches the file system blocks and is called on the blocking pool, and the cancellation tokens are built on the standard library's wakers. | protocol | unicode-width, unicode-segmentation, thiserror (none of them heavy; serde and serde_json come with the protocol crate) |
 | `cortex-llm` | Provider abstraction: model request and model event types, the `Protocol` and `Transport` traits, SSE parser, retry classification and backoff, usage normalisation, the model catalog. One module per protocol. | protocol, base | reqwest and rustls (behind `http`), tokio |
 | `cortex-tools` | Built-in tools and the `Tool` trait, the output policy, file snapshots, the process runner for shell commands, and the registry of dynamic tools behind `tool_search` and `tool_call`. | protocol, base | ignore, grep-searcher, grep-regex, globset, similar, tokio |
 | `cortex-sandbox` | Sandbox policy types and the per-OS launchers (Landlock and seccomp on Linux, Job Objects on Windows). | base | landlock, seccompiler (Linux), windows-sys (Windows) |
@@ -56,7 +56,7 @@ Rules, enforced by a workspace test that reads `cargo metadata`:
 3. `cortex-tui` and `cortex-term` never depend on `cortex-core`, `cortex-agent`, `cortex-llm` or `cortex-tools`. The TUI sees only `cortex-protocol` types. A UI edit therefore never rebuilds the core, and the UI cannot reach around the protocol.
 4. `cortex-core` and `cortex-rpc` never depend on `cortex-tui` or `cortex-term`.
 5. Only `cortex-llm` (feature `http`) links the HTTP and TLS stack. Only `cortex-mcp` links the MCP SDK. Only `cortex-tools` links the search libraries. Only `cortex-ext` links the script engine. A change elsewhere does not rebuild them.
-6. Test support lives in `cortex-testkit`, never behind `cfg(test)` exports of production crates.
+6. Test support lives in `cortex-testkit`, never behind `cfg(test)` exports of production crates. The fake clock and the seeded random-number generator are the one case that looks like an exception and is not: they are ordinary public types of `cortex-base`, beside the traits they implement, because `cortex-base` tests itself with them and cannot depend on the test kit, which depends on it. The test kit re-exports them.
 7. `cortex-usage` depends only on `cortex-base` and `cortex-stats`, and links no network code. Reading other tools' files stays apart from everything that can send.
 
 ## Why this split
