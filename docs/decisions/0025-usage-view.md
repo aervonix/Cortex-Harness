@@ -50,7 +50,7 @@ As specified in [architecture/18-usage.md](../architecture/18-usage.md):
 - Limits come only from official figures: those the harness already receives, and, where the user has turned it on for a provider, that provider's documented usage endpoint.
 - By default no network request is made by the view or by indexing. The opt-in refresh is the one exception. It is off by default, per provider, user-only, made only when the user asks, sent only to the provider the key belongs to, and never telemetry.
 - Tests use small made-up files. Real session data is never used or committed.
-- **First release:** our own figures in every range and grouping, limits from headers, the panel, `cortex usage` and `usage/report`. **After it:** the adapters, in one step, Claude Code and Codex first. The opt-in refresh is built per provider once that provider's endpoint has been read and confirmed; the build plan does not yet name the step.
+- **First release:** our own figures in every range and grouping, limits from headers, the panel, `cortex usage` and `usage/report`. **After it:** the adapters, in one step, Claude Code and Codex first. The opt-in refresh is in the first release too: the setting and the command with the statistics step, the key with the panels step, and each provider's endpoint in that provider's step.
 
 ## Why
 

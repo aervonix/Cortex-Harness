@@ -272,7 +272,7 @@ With the `dev` profile's optimised dependencies the cold Windows column would be
 
 ### Not blocking
 
-None of these exists yet. Each arrives with the step that first has something for it to run. The blocking workflow also runs on every push to the main branch and twice a week on a schedule: those runs are what write the caches and keep them from expiring.
+None of these exists yet. `main` and `nightly` arrive in their first form in step 3 of the [build plan](build-plan.md), with the checks that need no product code (advisories, unused dependencies, release builds, binary size, crate count), and later steps add their tiers to them. `release` and `live` arrive with the steps that need them. The blocking workflow also runs on every push to the main branch and twice a week on a schedule: those runs are what write the caches and keep them from expiring.
 
 | Workflow | When | What |
 |---|---|---|

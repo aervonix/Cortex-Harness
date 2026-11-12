@@ -1,6 +1,6 @@
 # 0013: Names: the command `cortex`, its alias `cx`, and how the alias ships
 
-- **Status:** Accepted. The owner chose `cortex` with the short alias `cx` on 2026-11-12, and asked for the way the alias ships to be decided here. The check of both names for clashes is part of step 2 and its result is reported there.
+- **Status:** Accepted. The owner chose `cortex` with the short alias `cx` on 2026-11-12, and asked for the way the alias ships to be decided here. Step 2 checked both names for clashes the same day and found one that matters, on `cortex`. The owner saw the result and kept both names. The findings and the decision are under "The clash check: result and decision".
 - **Date:** 2026-11-12
 
 ## Context
@@ -53,6 +53,38 @@ Step 2 checks both names and reports before anything is published. To check:
 
 If a clash is serious, the report goes to the owner with options: keep the names and rely on the "never overwrite" rule, ship without the alias by default, or choose another alias. Nothing else in the design depends on the two letters.
 
+## The clash check: result and decision
+
+Step 2 ran the check on 2026-11-12. Sources were the distributions' package-contents searches, the package managers' listings, the npm, PyPI and crates.io registries, and the tools' own documentation. The three findings that matter were confirmed against the vendors' own pages.
+
+**Default installs.** Nothing on a default path in current Ubuntu, Debian or Arch uses either name, and no built-in Windows command does. No Fedora package was found; its file-level search gave no clean answer. winget and Scoop could not be searched directly.
+
+**`cortex`.**
+
+| Tool | What installs the command | How likely on a developer's path |
+|---|---|---|
+| Snowflake's Cortex Code CLI | A command named `cortex`, on Linux, macOS, WSL and native Windows. Its installer puts it in `~/.local/bin` (on Windows, a folder under the user's local application data) and adds that to the path. As read in Snowflake's documentation on 2026-11-12. | It needs a Snowflake account, so mostly data engineers. It is also a terminal coding agent: the same kind of product. |
+| Menlo's cortex.cpp, a local model runtime | `cortex`, in `/usr/bin` from its Linux installer | Low. The project is archived. |
+| Cortex, the Prometheus long-term store | A server binary named `cortex` (a Homebrew formula, and release packages) | Low. It runs in containers. |
+| cortexlabs' model-serving tool | A command-line tool, not confirmed to be named `cortex` | Low. No longer maintained. |
+| Two npm packages, one AUR package | `cortex` | Negligible: under 100 downloads a week. |
+
+**`cx`.**
+
+| Tool | What installs the command | How likely on a developer's path |
+|---|---|---|
+| The Checkmarx One CLI, a security scanner | `cx` (`cx.exe` on Windows), unpacked by hand from a release archive | Security teams and CI machines. |
+| The Coralogix CLI | `cx`, from a Homebrew formula of that name, cargo, or an install script | Coralogix users. New in 2026. |
+| The `cx-cli` crate, a code-navigation tool | `cx`, from `cargo install` | Small: a few hundred downloads. |
+
+**Assessment.** `cx`: minor. `cortex`: one serious clash, Snowflake's, because the command is the same, the installer puts it on the path, and the product is of the same kind.
+
+**The owner's decision, 2026-11-12: the names stay `cortex` and `cx`.** The owner's reasons: Snowflake has since renamed its tool (to "Snowflake CoCo", in June 2026, on the owner's information), and it is a lesser-known tool. What step 2 read on 2026-11-12 is recorded beside that: Snowflake's documentation called the product "CoCo CLI" and still gave `cortex` as the command to type. So a machine that has Snowflake's tool can still have a `cortex` on its path, and the rule that covers it is the one this record already has:
+
+- **Never overwrite another program's command.** If a `cortex` or a `cx` that is not ours is already on the path, installation leaves it alone, says so, and tells the user how to choose. This rule is kept, and it is what the decision rests on. The install script and `cortex alias install` are tested for it.
+
+The options the owner did not take: making `cortex-harness` the installed command with both short names as aliases, and shipping without the `cx` alias or under another one.
+
 ## Why
 
 - **The prefix stays.** No reason to change it was found. The bare crate name `cortex` and several `cortex-*` names are taken on crates.io, which would matter only if these crates were published, and they are not.
@@ -61,5 +93,5 @@ If a clash is serious, the report goes to the owner with options: keep the names
 
 ## Revisit when
 
-- Step 2's clash check finds a conflict the owner does not want to live with.
+- Users report that the clash with another `cortex` gets in their way: the option of `cortex-harness` as the installed command is still open.
 - Crates are to be published: check names then, and expect to move to a longer prefix.

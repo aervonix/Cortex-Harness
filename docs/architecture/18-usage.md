@@ -102,7 +102,7 @@ For each provider: how much of its rate limit or allowance remains, and when it 
 
 ### The opt-in refresh
 
-Response headers say what is left only after a request has been made, and some figures, a subscription's allowance among them, appear only at a provider's usage endpoint. The owner decided on 2026-11-12 that the view may ask for them, on these terms.
+Response headers say what is left only after a request has been made, and some figures, a subscription's allowance among them, appear only at a provider's usage endpoint. The owner decided on 2026-11-12 that the view may ask for them, on these terms, and confirmed the terms as written here the same day.
 
 | Rule | What it means in practice |
 |---|---|
@@ -199,7 +199,7 @@ The figures are in [../performance-budgets.md](../performance-budgets.md).
 |---|---|---|
 | Our own usage and cost by provider and model, all five ranges, per-project breakdown | First release: recorded in the statistics step, shown in the panels step. | It is the statistics store plus a panel, and it makes the adaptive features' data visible from day one. |
 | Limits left, from response headers | First release. | The loop parses them already. |
-| The opt-in refresh from a provider's documented usage endpoint | With each provider, once that provider's endpoint has been read and confirmed. The build plan does not yet name the step. | It depends on what each provider documents, and nothing else waits on it. |
+| The opt-in refresh from a provider's documented usage endpoint | First release: the setting, `cortex usage --refresh` and the first providers in the statistics step, the key in the panels step. Each later provider adds its own endpoint in its own step. | It depends on what each provider documents, so each provider's step reads that documentation first. |
 | `cortex usage` and `usage/report` | First release. | The same query as the panel. |
 | The API-equivalent estimate label | First release for the mechanism. It first matters with other tools' records and with sign-in flows. | The first release uses API keys only, which are metered. |
 | Adapters for Claude Code and Codex, the cache, separate and merged views | After the release, as its own step. | Reading other tools' formats is separate work with its own fixtures, and nothing else depends on it. |

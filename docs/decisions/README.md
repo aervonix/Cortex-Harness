@@ -18,7 +18,7 @@ One record per significant choice. Each says what the options were, what was cho
 | [0010](0010-mcp-in-first-release.md) | MCP client scope in the first release | Accepted by the owner |
 | [0011](0011-cli-parsing.md) | Command-line parsing with lexopt and hand-written help | Accepted |
 | [0012](0012-release-profile.md) | Build profiles, and unwinding on panic | Accepted. Amended on 2026-11-12: a `ci` profile for the blocking test jobs. |
-| [0013](0013-naming.md) | The command `cortex`, its alias `cx`, and how the alias ships | Accepted by the owner. Step 2 ran the clash check and found one serious clash, on `cortex`; the owner's choice is outstanding in the [build plan](../build-plan.md). |
+| [0013](0013-naming.md) | The command `cortex`, its alias `cx`, and how the alias ships | Accepted by the owner. Step 2's clash check found one serious clash, on `cortex`; the owner kept both names on 2026-11-12. |
 | [0014](0014-search-in-process.md) | Search and file listing are in-process | Accepted |
 | [0015](0015-syntax-highlighting.md) | Syntax highlighting with syntect, loaded lazily, behind a feature | Accepted |
 | [0016](0016-context-management.md) | Append-only history, context epochs, summary-first compaction | Accepted |
