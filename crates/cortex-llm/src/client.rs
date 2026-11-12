@@ -251,7 +251,8 @@ async fn run(
                 CooldownStatus::Clear => {}
                 CooldownStatus::Cooling { until } => {
                     sent = Speed::Standard;
-                    out.emit(moved(SpeedFallbackReason::Cooldown, Some(until))).await;
+                    out.emit(moved(SpeedFallbackReason::Cooldown, Some(until)))
+                        .await;
                 }
                 CooldownStatus::Ended => {
                     out.emit(ModelEvent::SpeedCooldown(CooldownChange {
@@ -275,7 +276,8 @@ async fn run(
         let error = match attempt(&inner, &request, &requested, &policy, &cancel, &out).await {
             Attempt::Complete => return,
             Attempt::Cancelled => {
-                out.emit(ModelEvent::Error(ProviderError::interrupted())).await;
+                out.emit(ModelEvent::Error(ProviderError::interrupted()))
+                    .await;
                 return;
             }
             Attempt::Failed(error) => error,
@@ -298,7 +300,8 @@ async fn run(
                 }))
                 .await;
                 if cancel.race(sleep).await.is_none() {
-                    out.emit(ModelEvent::Error(ProviderError::interrupted())).await;
+                    out.emit(ModelEvent::Error(ProviderError::interrupted()))
+                        .await;
                     return;
                 }
             }

@@ -272,9 +272,9 @@ impl TransportError {
 impl Classified for TransportError {
     fn kind(&self) -> ErrorKind {
         match self.kind {
-            TransportErrorKind::Connect | TransportErrorKind::Timeout | TransportErrorKind::Body => {
-                ErrorKind::Transient
-            }
+            TransportErrorKind::Connect
+            | TransportErrorKind::Timeout
+            | TransportErrorKind::Body => ErrorKind::Transient,
             TransportErrorKind::InvalidRequest => ErrorKind::Config,
             TransportErrorKind::Cancelled => ErrorKind::Interrupted,
         }
@@ -422,11 +422,31 @@ mod tests {
             (Some(599), Signal::None, Transient, None),
             (Some(500), Signal::Server, Transient, None),
             (Some(529), Signal::None, Transient, Some(Throttle::Overload)),
-            (Some(529), Signal::Overload, Transient, Some(Throttle::Overload)),
-            (Some(503), Signal::Overload, Transient, Some(Throttle::Overload)),
+            (
+                Some(529),
+                Signal::Overload,
+                Transient,
+                Some(Throttle::Overload),
+            ),
+            (
+                Some(503),
+                Signal::Overload,
+                Transient,
+                Some(Throttle::Overload),
+            ),
             // 429 with a rate-limit code, and with no code at all.
-            (Some(429), Signal::RateLimit, Transient, Some(Throttle::RateLimit)),
-            (Some(429), Signal::None, Transient, Some(Throttle::RateLimit)),
+            (
+                Some(429),
+                Signal::RateLimit,
+                Transient,
+                Some(Throttle::RateLimit),
+            ),
+            (
+                Some(429),
+                Signal::None,
+                Transient,
+                Some(Throttle::RateLimit),
+            ),
             // 429 or 402 with a spending, credit or quota code.
             (Some(429), Signal::Quota, Provider, None),
             (Some(402), Signal::Quota, Provider, None),
@@ -445,7 +465,12 @@ mod tests {
             (Some(413), Signal::None, Provider, None),
             (Some(422), Signal::None, Provider, None),
             // An error event after a 200: classified by its code alone.
-            (None, Signal::RateLimit, Transient, Some(Throttle::RateLimit)),
+            (
+                None,
+                Signal::RateLimit,
+                Transient,
+                Some(Throttle::RateLimit),
+            ),
             (None, Signal::Overload, Transient, Some(Throttle::Overload)),
             (None, Signal::Server, Transient, None),
             (None, Signal::Quota, Provider, None),
@@ -473,11 +498,31 @@ mod tests {
     #[test]
     fn transport_failures_are_transient_except_the_two_that_cannot_change() {
         let kinds = [
-            (TransportErrorKind::Connect, ErrorKind::Transient, code::CONNECTION_FAILED),
-            (TransportErrorKind::Timeout, ErrorKind::Transient, code::TIMEOUT),
-            (TransportErrorKind::Body, ErrorKind::Transient, code::CONNECTION_LOST),
-            (TransportErrorKind::InvalidRequest, ErrorKind::Config, code::INVALID_REQUEST),
-            (TransportErrorKind::Cancelled, ErrorKind::Interrupted, code::INTERRUPTED),
+            (
+                TransportErrorKind::Connect,
+                ErrorKind::Transient,
+                code::CONNECTION_FAILED,
+            ),
+            (
+                TransportErrorKind::Timeout,
+                ErrorKind::Transient,
+                code::TIMEOUT,
+            ),
+            (
+                TransportErrorKind::Body,
+                ErrorKind::Transient,
+                code::CONNECTION_LOST,
+            ),
+            (
+                TransportErrorKind::InvalidRequest,
+                ErrorKind::Config,
+                code::INVALID_REQUEST,
+            ),
+            (
+                TransportErrorKind::Cancelled,
+                ErrorKind::Interrupted,
+                code::INTERRUPTED,
+            ),
         ];
         for (transport, kind, code) in kinds {
             let error: ProviderError = TransportError::new(transport, "it failed").into();
@@ -491,7 +536,10 @@ mod tests {
     #[test]
     fn the_other_errors_keep_their_kind_as_provider_errors() {
         let build: ProviderError = BuildError::new("no images").into();
-        assert_eq!((build.kind, build.code.as_str()), (ErrorKind::Internal, code::INVALID_REQUEST));
+        assert_eq!(
+            (build.kind, build.code.as_str()),
+            (ErrorKind::Internal, code::INVALID_REQUEST)
+        );
         let decode: ProviderError = DecodeError::new("not JSON").into();
         assert_eq!(
             (decode.kind, decode.code.as_str()),

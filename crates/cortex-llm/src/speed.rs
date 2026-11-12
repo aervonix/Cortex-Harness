@@ -222,7 +222,10 @@ mod tests {
             cooldowns.check(&provider, &model, &Speed::Fast),
             CooldownStatus::Cooling { until }
         );
-        assert_eq!(cooldowns.until(&provider, &model, &Speed::Fast), Some(until));
+        assert_eq!(
+            cooldowns.until(&provider, &model, &Speed::Fast),
+            Some(until)
+        );
 
         clock.advance(secs(599));
         assert_eq!(

@@ -78,6 +78,6 @@ pub use stream::{Emitter, ModelStream};
 #[cfg(feature = "http")]
 pub use time::TokioTimer;
 pub use time::{Sleep, Timer};
+pub use transport::{BoxFuture, Transport};
 #[cfg(feature = "http")]
 pub use transport::{HttpOptions, HttpTransport};
-pub use transport::{BoxFuture, Transport};

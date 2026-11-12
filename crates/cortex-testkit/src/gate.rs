@@ -80,13 +80,18 @@ impl Gate {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.inner.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 impl std::fmt::Debug for Gate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Gate").field("open", &self.is_open()).finish()
+        f.debug_struct("Gate")
+            .field("open", &self.is_open())
+            .finish()
     }
 }
 
@@ -104,7 +109,11 @@ impl Future for Opened {
         if state.open {
             return Poll::Ready(());
         }
-        if !state.waiting.iter().any(|waker| waker.will_wake(context.waker())) {
+        if !state
+            .waiting
+            .iter()
+            .any(|waker| waker.will_wake(context.waker()))
+        {
             state.waiting.push(context.waker().clone());
         }
         Poll::Pending
@@ -119,7 +128,10 @@ mod tests {
     fn a_gate_opens_once_for_everyone_waiting() {
         let gate = Gate::new();
         assert!(!gate.is_open());
-        assert!(!gate.wait(Duration::ZERO), "a closed gate does not let a thread through");
+        assert!(
+            !gate.wait(Duration::ZERO),
+            "a closed gate does not let a thread through"
+        );
 
         let mut first = std::pin::pin!(gate.opened());
         let mut context = Context::from_waker(Waker::noop());
@@ -138,7 +150,10 @@ mod tests {
         let gate = Gate::new();
         let opener = gate.clone();
         let thread = std::thread::spawn(move || opener.open());
-        assert!(gate.wait(Duration::from_secs(30)), "the limit is only a bound");
+        assert!(
+            gate.wait(Duration::from_secs(30)),
+            "the limit is only a bound"
+        );
         thread.join().unwrap();
     }
 }

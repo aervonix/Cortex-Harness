@@ -122,7 +122,11 @@ impl Harness {
 }
 
 fn provider() -> ProviderInfo {
-    ProviderInfo::new(fixtures::PROVIDER, fixtures::PROTOCOL, "https://test.invalid")
+    ProviderInfo::new(
+        fixtures::PROVIDER,
+        fixtures::PROTOCOL,
+        "https://test.invalid",
+    )
 }
 
 fn request_at(model: Arc<ModelEntry>, speed: Speed) -> ModelRequest {

@@ -93,7 +93,9 @@ pub fn text_response(text: &str, usage: &Value) -> String {
 /// The body of a failed response.
 #[must_use]
 pub fn failure_body(code: &str, message: &str) -> Vec<u8> {
-    json!({"code": code, "message": message}).to_string().into_bytes()
+    json!({"code": code, "message": message})
+        .to_string()
+        .into_bytes()
 }
 
 /// The body of a response that failed for the speed tier's own limit.

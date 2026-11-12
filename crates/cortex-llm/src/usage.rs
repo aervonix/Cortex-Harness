@@ -16,9 +16,9 @@
 //! worked out, because the catalog has no price for something that was
 //! used, is absent. It is never a guess.
 
+use cortex_protocol::Speed;
 use cortex_protocol::model::{ModelInfo, ModelRole, Prices};
 use cortex_protocol::usage::{Billing, Cost, CostBasis, RequestUsage, TokenUsage};
-use cortex_protocol::Speed;
 
 use crate::event::Usage;
 
@@ -68,7 +68,12 @@ pub fn cost(tokens: &TokenUsage, prices: &Prices) -> Option<u64> {
         .find(|tier| size > tier.above_input_tokens);
     let (input, output, cache_read, cache_write) = match tier {
         Some(tier) => (tier.input, tier.output, tier.cache_read, &tier.cache_write),
-        None => (prices.input, prices.output, prices.cache_read, &prices.cache_write),
+        None => (
+            prices.input,
+            prices.output,
+            prices.cache_read,
+            &prices.cache_write,
+        ),
     };
 
     // Token counts times nano-dollars per million tokens.
@@ -84,7 +89,9 @@ pub fn cost(tokens: &TokenUsage, prices: &Prices) -> Option<u64> {
         if class.tokens == 0 {
             continue;
         }
-        let price = cache_write.iter().find(|price| price.class == class.class)?;
+        let price = cache_write
+            .iter()
+            .find(|price| price.class == class.class)?;
         add(class.tokens, price.price);
         unclassed = unclassed.saturating_sub(class.tokens);
     }
@@ -184,7 +191,11 @@ mod tests {
     fn a_count_that_includes_cached_tokens_is_split_and_never_negative() {
         assert_eq!(uncached_input(1000, 600, 100), 300);
         assert_eq!(uncached_input(1000, 1000, 0), 0);
-        assert_eq!(uncached_input(100, 600, 0), 0, "a provider's bad arithmetic");
+        assert_eq!(
+            uncached_input(100, 600, 0),
+            0,
+            "a provider's bad arithmetic"
+        );
     }
 
     #[test]
@@ -242,7 +253,10 @@ mod tests {
             }],
             ..TokenUsage::default()
         };
-        assert_eq!(cost(&tokens, &card()), Some(400_000 * 8_000 + 600_000 * 5_000));
+        assert_eq!(
+            cost(&tokens, &card()),
+            Some(400_000 * 8_000 + 600_000 * 5_000)
+        );
     }
 
     #[test]
@@ -259,7 +273,11 @@ mod tests {
             output: 1_000_000,
             ..TokenUsage::default()
         };
-        assert_eq!(cost(&plain, &bare), Some(usd(3)), "what is priced is priced");
+        assert_eq!(
+            cost(&plain, &bare),
+            Some(usd(3)),
+            "what is priced is priced"
+        );
 
         let read = TokenUsage {
             cache_read: 1,
@@ -356,7 +374,11 @@ mod tests {
             input: u64::MAX,
             ..TokenUsage::default()
         };
-        assert_eq!(cost(&huge, &card()), None, "more money than a u64 of nano-dollars");
+        assert_eq!(
+            cost(&huge, &card()),
+            None,
+            "more money than a u64 of nano-dollars"
+        );
         let nearly_free = Prices {
             input: 500_000,
             ..fine
@@ -475,7 +497,10 @@ mod tests {
     #[test]
     fn a_speed_with_no_price_shows_tokens_only() {
         let model = model();
-        for speed in [Speed::Other("flex".to_owned()), Speed::Other("unheard-of".to_owned())] {
+        for speed in [
+            Speed::Other("flex".to_owned()),
+            Speed::Other("unheard-of".to_owned()),
+        ] {
             let record = request_usage(
                 used(speed.clone(), None),
                 &model,

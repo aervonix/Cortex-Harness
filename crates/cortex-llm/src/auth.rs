@@ -19,8 +19,10 @@ use crate::transport::BoxFuture;
 pub trait AuthMethod: Send + Sync + std::fmt::Debug {
     /// Adds the credential to one request. May refresh a token first, which
     /// is why it is async.
-    fn authorize<'a>(&'a self, request: &'a mut HttpRequest)
-    -> BoxFuture<'a, Result<(), AuthError>>;
+    fn authorize<'a>(
+        &'a self,
+        request: &'a mut HttpRequest,
+    ) -> BoxFuture<'a, Result<(), AuthError>>;
 
     /// What `cortex auth status` shows. Never the secret.
     fn describe(&self) -> AuthSummary;
@@ -83,9 +85,11 @@ impl AuthMethod for ApiKeyAuth {
             match &self.placement {
                 KeyPlacement::Header(name) => request.headers.insert_secret(name, &self.key),
                 KeyPlacement::Bearer => {
-                    request
-                        .headers
-                        .insert_secret_with_prefix("authorization", "Bearer ", &self.key);
+                    request.headers.insert_secret_with_prefix(
+                        "authorization",
+                        "Bearer ",
+                        &self.key,
+                    );
                 }
             }
             Ok(())
@@ -130,7 +134,10 @@ mod tests {
 
     fn now<T>(future: BoxFuture<'_, T>) -> T {
         let mut future = future;
-        match future.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+        match future
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+        {
             Poll::Ready(value) => value,
             Poll::Pending => panic!("an API key needs no waiting"),
         }
@@ -157,9 +164,16 @@ mod tests {
         let auth = ApiKeyAuth::new(key, KeyPlacement::Bearer, "the credential store");
         let mut second = request();
         now(auth.authorize(&mut second)).unwrap();
-        assert_eq!(second.headers.get("authorization"), Some("Bearer sk-test-abc123"));
+        assert_eq!(
+            second.headers.get("authorization"),
+            Some("Bearer sk-test-abc123")
+        );
 
-        for shown in [format!("{first:?}"), format!("{second:?}"), format!("{auth:?}")] {
+        for shown in [
+            format!("{first:?}"),
+            format!("{second:?}"),
+            format!("{auth:?}"),
+        ] {
             assert!(!shown.contains("abc123"), "{shown}");
         }
         assert_eq!(

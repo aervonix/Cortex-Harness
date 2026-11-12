@@ -237,7 +237,9 @@ mod tests {
     }
 
     fn poll<F: Future + ?Sized>(future: &mut Pin<Box<F>>) -> Poll<F::Output> {
-        future.as_mut().poll(&mut Context::from_waker(Waker::noop()))
+        future
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
     }
 
     #[test]
@@ -246,7 +248,11 @@ mod tests {
         let timer = FakeTimer::auto(&clock);
         let mut wait = timer.sleep(secs(30));
         let unpolled = timer.sleep(secs(999));
-        assert_eq!(clock.monotonic(), Duration::ZERO, "making a wait is not waiting");
+        assert_eq!(
+            clock.monotonic(),
+            Duration::ZERO,
+            "making a wait is not waiting"
+        );
 
         assert_eq!(poll(&mut wait), Poll::Ready(()));
         assert_eq!(poll(&mut wait), Poll::Ready(()), "and only once");
@@ -256,7 +262,11 @@ mod tests {
         assert!(timer.running().is_empty());
 
         drop(unpolled);
-        assert_eq!(timer.sleeps(), [secs(30)], "a wait that lost its race never happened");
+        assert_eq!(
+            timer.sleeps(),
+            [secs(30)],
+            "a wait that lost its race never happened"
+        );
     }
 
     #[test]

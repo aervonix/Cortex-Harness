@@ -34,7 +34,9 @@ fn priority() -> Speed {
 
 /// A good response whose usage says which speed served it.
 fn hello_served_at(speed: &str) -> Reply {
-    Reply::ok(hello_text(&json!({"input": 10, "output": 2, "speed": speed})))
+    Reply::ok(hello_text(
+        &json!({"input": 10, "output": 2, "speed": speed}),
+    ))
 }
 
 fn no_fallback() -> RetryPolicy {
@@ -81,17 +83,36 @@ fn a_response_that_reports_another_speed_is_recorded_at_the_speed_it_reports() {
     assert_well_formed(&events);
     assert_eq!(
         names(&events),
-        ["start", "block_start", "text", "block_end", "speed_fallback", "end"],
+        [
+            "start",
+            "block_start",
+            "text",
+            "block_end",
+            "speed_fallback",
+            "end"
+        ],
         "the move is said as soon as the response reports it"
     );
     let usage = final_usage(&events);
-    assert_eq!(usage.speed, Speed::Standard, "what ran, not what was asked for");
-    assert_eq!(usage.speed_requested, Some(Speed::Fast), "and what was asked for, beside it");
+    assert_eq!(
+        usage.speed,
+        Speed::Standard,
+        "what ran, not what was asked for"
+    );
+    assert_eq!(
+        usage.speed_requested,
+        Some(Speed::Fast),
+        "and what was asked for, beside it"
+    );
 
     let change = fallbacks(&events)[0];
     assert_eq!(change.requested, Speed::Fast);
     assert_eq!(change.served, Speed::Standard);
-    assert_eq!(change.by, SpeedFallbackBy::Provider, "marked as the provider's doing");
+    assert_eq!(
+        change.by,
+        SpeedFallbackBy::Provider,
+        "marked as the provider's doing"
+    );
     assert_eq!(change.reason, SpeedFallbackReason::Unspecified);
     assert_eq!(change.cooldown_until, None);
 
@@ -102,7 +123,10 @@ fn a_response_that_reports_another_speed_is_recorded_at_the_speed_it_reports() {
     assert_eq!(names(&events), HELLO);
     assert_eq!(harness.speeds_sent(), ["fast", "fast"]);
     let usage = final_usage(&events);
-    assert_eq!((usage.speed.clone(), usage.speed_requested.clone()), (Speed::Fast, None));
+    assert_eq!(
+        (usage.speed.clone(), usage.speed_requested.clone()),
+        (Speed::Fast, None)
+    );
     assert!(harness.timer.sleeps().is_empty());
 }
 
@@ -120,7 +144,10 @@ fn a_speed_reported_in_a_header_or_early_in_the_stream_counts_too() {
     let text = [
         sse("start", &json!({"id": "r", "model": "m"})),
         sse("usage", &json!({"input": 5, "speed": "standard"})),
-        sse("end", &json!({"stop": "end", "raw_stop": "done", "input": 5, "output": 1})),
+        sse(
+            "end",
+            &json!({"stop": "end", "raw_stop": "done", "input": 5, "output": 1}),
+        ),
     ]
     .concat();
     let harness = Harness::new([Reply::ok(text)]);
@@ -128,7 +155,10 @@ fn a_speed_reported_in_a_header_or_early_in_the_stream_counts_too() {
     assert_eq!(names(&events), ["start", "speed_fallback", "usage", "end"]);
     assert_eq!(fallbacks(&events).len(), 1, "said once");
     let usage = final_usage(&events);
-    assert_eq!((usage.speed.clone(), usage.speed_requested.clone()), (Speed::Standard, Some(Speed::Fast)));
+    assert_eq!(
+        (usage.speed.clone(), usage.speed_requested.clone()),
+        (Speed::Standard, Some(Speed::Fast))
+    );
 }
 
 #[test]
@@ -140,13 +170,19 @@ fn a_speed_the_model_does_not_offer_is_not_sent() {
     let change = fallbacks(&events)[0];
     assert_eq!(change.by, SpeedFallbackBy::Harness);
     assert_eq!(change.reason, SpeedFallbackReason::NotOffered);
-    assert_eq!((change.requested.clone(), change.served.clone()), (Speed::Fast, Speed::Standard));
+    assert_eq!(
+        (change.requested.clone(), change.served.clone()),
+        (Speed::Fast, Speed::Standard)
+    );
     assert_eq!(final_usage(&events).speed, Speed::Standard);
     assert_eq!(final_usage(&events).speed_requested, Some(Speed::Fast));
 
     // A tier this model does not have, on a model that has others.
     let events = harness.run_at(Speed::Other("ultrafast".to_owned()));
-    assert_eq!(fallbacks(&events)[0].reason, SpeedFallbackReason::NotOffered);
+    assert_eq!(
+        fallbacks(&events)[0].reason,
+        SpeedFallbackReason::NotOffered
+    );
     assert_eq!(harness.speeds_sent(), ["standard", "standard"]);
     assert!(cooldowns(&events).is_empty());
 }
@@ -159,14 +195,28 @@ fn a_short_wait_is_waited_in_place_at_the_same_speed() {
     let harness = Harness::new([refused, hello()]);
     let events = harness.run_at(Speed::Fast);
 
-    assert_eq!(names(&events), ["retry", "start", "block_start", "text", "block_end", "end"]);
-    assert_eq!(harness.timer.sleeps(), [secs(8)], "exactly the provider's wait");
+    assert_eq!(
+        names(&events),
+        ["retry", "start", "block_start", "text", "block_end", "end"]
+    );
+    assert_eq!(
+        harness.timer.sleeps(),
+        [secs(8)],
+        "exactly the provider's wait"
+    );
     assert_eq!(harness.now(), at("2026-11-12T10:00:08Z"));
-    assert_eq!(harness.speeds_sent(), ["fast", "fast"], "sent again at the same speed");
+    assert_eq!(
+        harness.speeds_sent(),
+        ["fast", "fast"],
+        "sent again at the same speed"
+    );
     assert!(fallbacks(&events).is_empty() && cooldowns(&events).is_empty());
     assert_eq!(retries(&events)[0].error.tier, Some(Speed::Fast));
     let usage = final_usage(&events);
-    assert_eq!((usage.speed.clone(), usage.speed_requested.clone()), (Speed::Fast, None));
+    assert_eq!(
+        (usage.speed.clone(), usage.speed_requested.clone()),
+        (Speed::Fast, None)
+    );
 }
 
 #[test]
@@ -178,7 +228,15 @@ fn a_long_wait_falls_back_to_standard_at_once_and_starts_a_cooldown() {
 
     assert_eq!(
         names(&events),
-        ["speed_fallback", "speed_cooldown", "start", "block_start", "text", "block_end", "end"]
+        [
+            "speed_fallback",
+            "speed_cooldown",
+            "start",
+            "block_start",
+            "text",
+            "block_end",
+            "end"
+        ]
     );
     assert!(harness.timer.sleeps().is_empty(), "nothing is waited for");
     assert_eq!(harness.now(), at(START), "the request goes on at once");
@@ -189,7 +247,10 @@ fn a_long_wait_falls_back_to_standard_at_once_and_starts_a_cooldown() {
     let change = fallbacks(&events)[0];
     assert_eq!(change.by, SpeedFallbackBy::Harness);
     assert_eq!(change.reason, SpeedFallbackReason::RateLimited);
-    assert_eq!((change.requested.clone(), change.served.clone()), (Speed::Fast, Speed::Standard));
+    assert_eq!(
+        (change.requested.clone(), change.served.clone()),
+        (Speed::Fast, Speed::Standard)
+    );
     assert_eq!(change.cooldown_until, Some(until));
     assert_eq!(
         cooldowns(&events),
@@ -200,7 +261,10 @@ fn a_long_wait_falls_back_to_standard_at_once_and_starts_a_cooldown() {
         }]
     );
     let usage = final_usage(&events);
-    assert_eq!((usage.speed.clone(), usage.speed_requested.clone()), (Speed::Standard, Some(Speed::Fast)));
+    assert_eq!(
+        (usage.speed.clone(), usage.speed_requested.clone()),
+        (Speed::Standard, Some(Speed::Fast))
+    );
 
     // During the cooldown a request that asks for fast is sent at standard,
     // and says why.
@@ -224,7 +288,14 @@ fn a_long_wait_falls_back_to_standard_at_once_and_starts_a_cooldown() {
     let events = harness.run_at(Speed::Fast);
     assert_eq!(
         names(&events),
-        ["speed_cooldown", "start", "block_start", "text", "block_end", "end"]
+        [
+            "speed_cooldown",
+            "start",
+            "block_start",
+            "text",
+            "block_end",
+            "end"
+        ]
     );
     assert_eq!(
         cooldowns(&events),
@@ -243,8 +314,14 @@ fn a_long_wait_falls_back_to_standard_at_once_and_starts_a_cooldown() {
 fn an_unknown_wait_falls_back_and_cools_down_for_ten_minutes() {
     // A rate limit that names no wait, and an overload.
     for (refused, reason) in [
-        (tier_refusal(429, "rate_limit"), SpeedFallbackReason::RateLimited),
-        (tier_refusal(529, "overloaded"), SpeedFallbackReason::Overloaded),
+        (
+            tier_refusal(429, "rate_limit"),
+            SpeedFallbackReason::RateLimited,
+        ),
+        (
+            tier_refusal(529, "overloaded"),
+            SpeedFallbackReason::Overloaded,
+        ),
     ] {
         let harness = Harness::new([refused, hello(), hello(), hello()]);
         let events = harness.run_at(Speed::Fast);
@@ -255,11 +332,17 @@ fn an_unknown_wait_falls_back_and_cools_down_for_ten_minutes() {
 
         // One second before the ten minutes are up it still holds.
         harness.clock.advance(secs(599));
-        assert_eq!(fallbacks(&harness.run_at(Speed::Fast))[0].reason, SpeedFallbackReason::Cooldown);
+        assert_eq!(
+            fallbacks(&harness.run_at(Speed::Fast))[0].reason,
+            SpeedFallbackReason::Cooldown
+        );
         harness.clock.advance(secs(1));
         let events = harness.run_at(Speed::Fast);
         assert_eq!(cooldowns(&events)[0].state, CooldownState::Ended);
-        assert_eq!(harness.speeds_sent(), ["fast", "standard", "standard", "fast"]);
+        assert_eq!(
+            harness.speeds_sent(),
+            ["fast", "standard", "standard", "fast"]
+        );
     }
 }
 
@@ -286,7 +369,10 @@ fn the_short_wait_is_a_budget_for_the_whole_request() {
         ]
     );
     // The cooldown runs from the fallback, for the wait the provider named.
-    assert_eq!(fallbacks(&events)[0].cooldown_until, Some(at("2026-11-12T10:00:24Z")));
+    assert_eq!(
+        fallbacks(&events)[0].cooldown_until,
+        Some(at("2026-11-12T10:00:24Z"))
+    );
 }
 
 #[test]
@@ -301,7 +387,10 @@ fn the_short_wait_and_the_cooldown_are_settings() {
     };
     // 45 s is now short enough to wait.
     let harness = Harness::with_policy(
-        [tier_refusal(429, "rate_limit").header("retry-after", "45"), hello()],
+        [
+            tier_refusal(429, "rate_limit").header("retry-after", "45"),
+            hello(),
+        ],
         policy.clone(),
     );
     harness.run_at(Speed::Fast);
@@ -311,7 +400,10 @@ fn the_short_wait_and_the_cooldown_are_settings() {
     // And a refusal with no wait cools down for the configured 90 s.
     let harness = Harness::with_policy([tier_refusal(529, "overloaded"), hello()], policy);
     let events = harness.run_at(Speed::Fast);
-    assert_eq!(fallbacks(&events)[0].cooldown_until, Some(at("2026-11-12T10:01:30Z")));
+    assert_eq!(
+        fallbacks(&events)[0].cooldown_until,
+        Some(at("2026-11-12T10:01:30Z"))
+    );
 }
 
 #[test]
@@ -329,7 +421,14 @@ fn a_fallback_gives_standard_speed_its_own_attempts() {
     let events = harness.run_at(Speed::Fast);
     assert_eq!(
         names(&events)[..6],
-        ["retry", "retry", "retry", "retry", "speed_fallback", "speed_cooldown"]
+        [
+            "retry",
+            "retry",
+            "retry",
+            "retry",
+            "speed_fallback",
+            "speed_cooldown"
+        ]
     );
     assert_eq!(names(&events)[6..], HELLO);
     assert_eq!(harness.speeds_sent()[5], "standard");
@@ -343,10 +442,22 @@ fn a_refusal_that_arrives_inside_the_stream_falls_back_too() {
     let events = harness.run_at(Speed::Fast);
     assert_eq!(
         names(&events),
-        ["start", "speed_fallback", "speed_cooldown", "start", "block_start", "text", "block_end", "end"],
+        [
+            "start",
+            "speed_fallback",
+            "speed_cooldown",
+            "start",
+            "block_start",
+            "text",
+            "block_end",
+            "end"
+        ],
         "the first response is void: a new one starts after the fallback"
     );
-    assert_eq!(fallbacks(&events)[0].reason, SpeedFallbackReason::Overloaded);
+    assert_eq!(
+        fallbacks(&events)[0].reason,
+        SpeedFallbackReason::Overloaded
+    );
     assert_eq!(harness.speeds_sent(), ["fast", "standard"]);
 }
 
@@ -357,7 +468,10 @@ fn the_models_own_limit_is_not_the_tiers() {
     let limited = failure(429, "rate_limit").header("retry-after", "45");
     let harness = Harness::new([limited, hello()]);
     let events = harness.run_at(Speed::Fast);
-    assert_eq!(names(&events), ["retry", "start", "block_start", "text", "block_end", "end"]);
+    assert_eq!(
+        names(&events),
+        ["retry", "start", "block_start", "text", "block_end", "end"]
+    );
     assert_eq!(harness.timer.sleeps(), [secs(45)]);
     assert_eq!(harness.speeds_sent(), ["fast", "fast"]);
     assert_eq!(retries(&events)[0].error.tier, None);
@@ -371,7 +485,10 @@ fn with_fallback_off_a_tiers_refusal_is_an_ordinary_rate_limit() {
     let refused = || tier_refusal(429, "rate_limit").header("retry-after", "45");
     let harness = Harness::with_policy([refused(), hello(), hello()], no_fallback());
     let events = harness.run_at(Speed::Fast);
-    assert_eq!(names(&events), ["retry", "start", "block_start", "text", "block_end", "end"]);
+    assert_eq!(
+        names(&events),
+        ["retry", "start", "block_start", "text", "block_end", "end"]
+    );
     assert_eq!(harness.timer.sleeps(), [secs(45)]);
     assert_eq!(harness.speeds_sent(), ["fast", "fast"]);
     assert!(fallbacks(&events).is_empty() && cooldowns(&events).is_empty());
@@ -394,14 +511,24 @@ fn with_fallback_off_a_tiers_refusal_is_an_ordinary_rate_limit() {
     assert_eq!(names(&events), ["error"]);
     let error = final_error(&events);
     assert_kind(error, ErrorKind::Transient, "rate_limit");
-    assert_eq!(error.tier, Some(Speed::Fast), "the error still says whose limit it was");
+    assert_eq!(
+        error.tier,
+        Some(Speed::Fast),
+        "the error still says whose limit it was"
+    );
     assert_eq!(error.retry_after, Some(secs(600)));
     assert!(harness.timer.sleeps().is_empty());
 
     // And the attempts run out as for any failure.
-    let harness = Harness::with_policy((0..5).map(|_| tier_refusal(529, "overloaded")), no_fallback());
+    let harness = Harness::with_policy(
+        (0..5).map(|_| tier_refusal(529, "overloaded")),
+        no_fallback(),
+    );
     let events = harness.run_at(Speed::Fast);
-    assert_eq!(names(&events), ["retry", "retry", "retry", "retry", "error"]);
+    assert_eq!(
+        names(&events),
+        ["retry", "retry", "retry", "retry", "error"]
+    );
     assert_eq!(harness.speeds_sent(), ["fast"; 5]);
 }
 
@@ -425,7 +552,10 @@ fn a_cooldown_belongs_to_one_model_and_one_tier() {
     assert_eq!(table.in_effect(&model.info, &Speed::Fast), fast);
 
     let other = table.in_effect(&model.info, &priority());
-    assert_eq!((other.speed, other.reason, other.cooldown_until), (priority(), None, None));
+    assert_eq!(
+        (other.speed, other.reason, other.cooldown_until),
+        (priority(), None, None)
+    );
     let standard = table.in_effect(&model.info, &Speed::Standard);
     assert_eq!((standard.speed, standard.reason), (Speed::Standard, None));
     let not_offered = table.in_effect(&fixtures::plain_model().info, &Speed::Fast);
@@ -450,5 +580,8 @@ fn a_tier_refused_again_after_its_cooldown_cools_down_again() {
     assert_eq!(changes[0].state, CooldownState::Ended);
     assert_eq!(changes[1].state, CooldownState::Started);
     assert_eq!(changes[1].until, Some(at("2026-11-12T10:01:00Z")));
-    assert_eq!(harness.speeds_sent(), ["fast", "standard", "fast", "standard"]);
+    assert_eq!(
+        harness.speeds_sent(),
+        ["fast", "standard", "fast", "standard"]
+    );
 }

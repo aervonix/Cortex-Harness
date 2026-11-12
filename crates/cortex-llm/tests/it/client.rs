@@ -28,9 +28,15 @@ fn a_response_arrives_as_events_whatever_the_chunking() {
         sse("ping", &json!({})),
         sse("block_start", &json!({"index": 0, "kind": "reasoning"})),
         sse("reasoning", &json!({"index": 0, "text": "Think."})),
-        sse("block_end", &json!({"index": 0, "raw": "{\"sig\":\"abc\"}"})),
+        sse(
+            "block_end",
+            &json!({"index": 0, "raw": "{\"sig\":\"abc\"}"}),
+        ),
         sse("block_start", &json!({"index": 1, "kind": "tool_call"})),
-        sse("tool_call", &json!({"index": 1, "id": "call_1", "name": "read"})),
+        sse(
+            "tool_call",
+            &json!({"index": 1, "id": "call_1", "name": "read"}),
+        ),
         sse("tool_args", &json!({"index": 1, "json": "{\"pa"})),
         sse("tool_args", &json!({"index": 1, "json": "th\":\"a\"}"})),
         sse("block_end", &json!({"index": 1, "raw": "{}"})),
@@ -80,7 +86,11 @@ fn a_response_arrives_as_events_whatever_the_chunking() {
     let ModelEvent::BlockEnd { raw, .. } = &whole[3] else {
         panic!("{:?}", whole[3]);
     };
-    assert_eq!(raw.as_str(), "{\"sig\":\"abc\"}", "the raw block is kept byte for byte");
+    assert_eq!(
+        raw.as_str(),
+        "{\"sig\":\"abc\"}",
+        "the raw block is kept byte for byte"
+    );
     let ModelEvent::End {
         stop,
         raw_stop,
@@ -94,11 +104,18 @@ fn a_response_arrives_as_events_whatever_the_chunking() {
     assert_eq!(raw_stop, "tool_use");
     assert_eq!(stop_detail.as_deref(), Some("one call"));
     assert_eq!(
-        (usage.tokens.input, usage.tokens.output, usage.tokens.cache_read),
+        (
+            usage.tokens.input,
+            usage.tokens.output,
+            usage.tokens.cache_read
+        ),
         (100, 9, 50)
     );
     assert_eq!(usage.tokens.reasoning, Some(4));
-    assert!(usage.raw.is_some(), "the provider's own usage object is kept");
+    assert!(
+        usage.raw.is_some(),
+        "the provider's own usage object is kept"
+    );
 
     // The same bytes in pieces of every small size decode to the same events.
     for size in [1, 2, 3, 7, 64] {
@@ -137,7 +154,10 @@ fn the_request_is_what_the_protocol_built_plus_headers_and_the_credential() {
     let sent = transport.requests();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].url, "https://test.invalid/v1/test");
-    assert_eq!(sent[0].headers.get("content-type"), Some("application/json"));
+    assert_eq!(
+        sent[0].headers.get("content-type"),
+        Some("application/json")
+    );
     assert_eq!(sent[0].headers.get("x-org"), Some("acme"));
     assert_eq!(
         sent[0].headers.get("accept"),
@@ -163,7 +183,10 @@ fn nothing_is_sent_until_the_stream_is_read() {
         .stream(fixtures::request(fixtures::model()), CancelToken::new());
     assert!(harness.transport.requests().is_empty());
     drop(stream);
-    assert!(harness.transport.requests().is_empty(), "and an unread stream sends nothing");
+    assert!(
+        harness.transport.requests().is_empty(),
+        "and an unread stream sends nothing"
+    );
     assert_eq!(harness.transport.remaining(), 1);
 }
 
@@ -176,17 +199,31 @@ fn response_headers_give_the_request_id_and_the_limits() {
         Reply::status(200)
             .header("x-request-id", "req_abc")
             .chunk(sse("start", &json!({"id": "r", "model": "m"})))
-            .chunk(sse("error", &json!({"code": "quota", "message": "No credit."}))),
+            .chunk(sse(
+                "error",
+                &json!({"code": "quota", "message": "No credit."}),
+            )),
     ]);
     let events = harness.run();
-    assert_eq!(names(&events)[0], "limits", "what the headers said comes first");
+    assert_eq!(
+        names(&events)[0],
+        "limits",
+        "what the headers said comes first"
+    );
     let ModelEvent::Limits(limits) = &events[0] else {
         panic!("{:?}", events[0]);
     };
     assert_eq!(limits.len(), 2);
-    assert_eq!((limits[0].measure.clone(), limits[0].remaining), (LimitMeasure::Requests, Some(41)));
+    assert_eq!(
+        (limits[0].measure.clone(), limits[0].remaining),
+        (LimitMeasure::Requests, Some(41))
+    );
     assert_eq!(limits[0].speed, None, "the model's ordinary limit");
-    assert_eq!(limits[1].speed, Some(Speed::Fast), "the tier's own limit says whose it is");
+    assert_eq!(
+        limits[1].speed,
+        Some(Speed::Fast),
+        "the tier's own limit says whose it is"
+    );
     assert_eq!(limits[1].remaining, Some(3));
 
     // An error that arrives inside a stream gets the id from the headers.
@@ -289,7 +326,10 @@ fn a_new_policy_applies_from_the_next_request() {
         crate::failure(503, "server_error"),
     ]);
     assert_eq!(harness.client.policy().max_attempts, 5);
-    assert_eq!(names(&harness.run()), ["retry", "start", "block_start", "text", "block_end", "end"]);
+    assert_eq!(
+        names(&harness.run()),
+        ["retry", "start", "block_start", "text", "block_end", "end"]
+    );
 
     harness.client.set_policy(RetryPolicy {
         max_attempts: 1,
@@ -298,7 +338,11 @@ fn a_new_policy_applies_from_the_next_request() {
     assert_eq!(harness.client.policy().max_attempts, 1);
     let events = harness.run();
     assert_eq!(names(&events), ["error"], "one attempt and no retry");
-    assert_eq!(harness.timer.sleeps().len(), 1, "only the first request waited");
+    assert_eq!(
+        harness.timer.sleeps().len(),
+        1,
+        "only the first request waited"
+    );
 }
 
 #[test]

@@ -449,10 +449,14 @@ impl RawReasoning {
         }
         if has_budget {
             let (Some(min), Some(max)) = (self.min_tokens, self.max_tokens) else {
-                return Err("a reasoning budget needs both `min_tokens` and `max_tokens`".to_owned());
+                return Err(
+                    "a reasoning budget needs both `min_tokens` and `max_tokens`".to_owned(),
+                );
             };
             if min > max {
-                return Err("the reasoning budget's `min_tokens` is above its `max_tokens`".to_owned());
+                return Err(
+                    "the reasoning budget's `min_tokens` is above its `max_tokens`".to_owned(),
+                );
             }
             return Ok(ReasoningControl {
                 kind: ReasoningControlKind::Budget,
@@ -675,10 +679,19 @@ mod tests {
         for model in catalog.models() {
             let info = &model.info;
             let name = format!("{}/{}", info.provider, info.id);
-            assert!(model.source.is_some(), "{name}: every built-in entry says where it was read");
+            assert!(
+                model.source.is_some(),
+                "{name}: every built-in entry says where it was read"
+            );
             assert!(info.prices.is_some(), "{name}: has prices");
-            assert!(EDIT_FORMATS.contains(&model.variants.edit_format.as_str()), "{name}");
-            assert!(PROMPT_STYLES.contains(&model.variants.prompt_style.as_str()), "{name}");
+            assert!(
+                EDIT_FORMATS.contains(&model.variants.edit_format.as_str()),
+                "{name}"
+            );
+            assert!(
+                PROMPT_STYLES.contains(&model.variants.prompt_style.as_str()),
+                "{name}"
+            );
             for offer in &info.speeds {
                 assert!(info.offers(&offer.speed), "{name}");
                 assert!(
@@ -710,8 +723,16 @@ mod tests {
             // A full card: every class standard prices, the tier prices too.
             assert!(prices.input > standard.input, "{name}");
             assert!(prices.output > standard.output, "{name}");
-            assert_eq!(prices.cache_read.is_some(), standard.cache_read.is_some(), "{name}");
-            assert_eq!(prices.cache_write.len(), standard.cache_write.len(), "{name}");
+            assert_eq!(
+                prices.cache_read.is_some(),
+                standard.cache_read.is_some(),
+                "{name}"
+            );
+            assert_eq!(
+                prices.cache_write.len(),
+                standard.cache_write.len(),
+                "{name}"
+            );
         }
     }
 
@@ -721,7 +742,10 @@ mod tests {
         assert_eq!(entry.info.id.as_str(), "m");
         assert_eq!(entry.info.provider.as_str(), "p");
         assert_eq!(entry.info.display_name, "M");
-        assert_eq!(entry.info.prices, None, "no prices is `not known`, not zero");
+        assert_eq!(
+            entry.info.prices, None,
+            "no prices is `not known`, not zero"
+        );
         assert_eq!(entry.info.reasoning.kind, ReasoningControlKind::None);
         assert!(entry.info.speeds.is_empty());
         assert!(entry.info.input.is_empty());
@@ -821,10 +845,15 @@ mod tests {
         assert_eq!(fast.shares_cache, Some(false));
         assert!(!fast.preview);
         let prices = fast.prices.as_ref().unwrap();
-        assert_eq!((prices.input, prices.output), (4_000_000_000, 20_000_000_000));
+        assert_eq!(
+            (prices.input, prices.output),
+            (4_000_000_000, 20_000_000_000)
+        );
         assert_eq!(prices.cache_read, Some(200_000_000));
 
-        let priority = info.speed_offer(&Speed::Other("priority".to_owned())).unwrap();
+        let priority = info
+            .speed_offer(&Speed::Other("priority".to_owned()))
+            .unwrap();
         assert_eq!(priority.effect, SpeedEffect::Priority);
         assert_eq!(priority.when_unavailable, SpeedUnavailable::Downgrade);
         assert!(!priority.separate_limit);
@@ -856,13 +885,17 @@ mod tests {
         ] {
             problem(&format!(r#"{{"speed": [{speed}]}}"#));
         }
-        let twice = format!(r#"{{"speed": [{{"name": "fast", {base}}}, {{"name": "fast", {base}}}]}}"#);
+        let twice =
+            format!(r#"{{"speed": [{{"name": "fast", {base}}}, {{"name": "fast", {base}}}]}}"#);
         assert!(problem(&twice).contains("listed twice"));
         let unknown = problem(
             r#"{"speed": [{"name": "fast", "label": "L", "effect": "quicker",
                            "when_unavailable": "error"}]}"#,
         );
-        assert!(unknown.contains("faster_output"), "the message lists what is allowed: {unknown}");
+        assert!(
+            unknown.contains("faster_output"),
+            "the message lists what is allowed: {unknown}"
+        );
     }
 
     #[test]
@@ -877,7 +910,10 @@ mod tests {
         assert_eq!(budget.info.reasoning.min_tokens, Some(1024));
         assert_eq!(budget.info.reasoning.max_tokens, Some(32000));
 
-        assert_eq!(entry(r#"{"reasoning": {}}"#).info.reasoning.kind, ReasoningControlKind::None);
+        assert_eq!(
+            entry(r#"{"reasoning": {}}"#).info.reasoning.kind,
+            ReasoningControlKind::None
+        );
 
         for reasoning in [
             r#"{"levels": ["low", "high"], "default": "medium"}"#,
@@ -894,7 +930,8 @@ mod tests {
 
     #[test]
     fn variants_default_from_the_models_capabilities_and_are_checked() {
-        let strict = entry(r#"{"capabilities": {"strict_tools": true, "min_cacheable_tokens": 512}}"#);
+        let strict =
+            entry(r#"{"capabilities": {"strict_tools": true, "min_cacheable_tokens": 512}}"#);
         assert_eq!(strict.variants.tool_schema, ToolSchemaStyle::Strict);
         assert_eq!(strict.info.capabilities.min_cacheable_tokens, Some(512));
         assert!(strict.info.capabilities.strict_tools);
@@ -966,7 +1003,9 @@ mod tests {
 
         let model = r#"{"provider": "p", "id": "m", "name": "M", "protocol": "t",
                         "context_window": 10, "max_output": 5}"#;
-        let twice = Catalog::from_json(&format!(r#"{{"version": "1", "model": [{model}, {model}]}}"#));
+        let twice = Catalog::from_json(&format!(
+            r#"{{"version": "1", "model": [{model}, {model}]}}"#
+        ));
         assert!(twice.unwrap_err().message.contains("listed twice"));
     }
 
@@ -980,7 +1019,12 @@ mod tests {
         };
         let mut catalog = Catalog::from_json(&format!(
             r#"{{"version": "base", "model": [{}, {}]}}"#,
-            model("p", "one", "One", r#", "prices": {"input": 1, "output": 2}"#),
+            model(
+                "p",
+                "one",
+                "One",
+                r#", "prices": {"input": 1, "output": 2}"#
+            ),
             model("p", "two", "Two", ""),
         ))
         .unwrap();
@@ -999,9 +1043,22 @@ mod tests {
             .map(|entry| entry.info.display_name.as_str())
             .collect();
         assert_eq!(names, ["One, mine", "Two", "A local model"]);
-        let one = catalog.get(&ProviderId::new("p"), &ModelId::new("one")).unwrap();
-        assert_eq!(one.info.prices, None, "the entry is replaced whole, not merged");
-        assert!(catalog.get(&ProviderId::new("local"), &ModelId::new("llama")).is_some());
-        assert!(catalog.get(&ProviderId::new("local"), &ModelId::new("one")).is_none());
+        let one = catalog
+            .get(&ProviderId::new("p"), &ModelId::new("one"))
+            .unwrap();
+        assert_eq!(
+            one.info.prices, None,
+            "the entry is replaced whole, not merged"
+        );
+        assert!(
+            catalog
+                .get(&ProviderId::new("local"), &ModelId::new("llama"))
+                .is_some()
+        );
+        assert!(
+            catalog
+                .get(&ProviderId::new("local"), &ModelId::new("one"))
+                .is_none()
+        );
     }
 }
