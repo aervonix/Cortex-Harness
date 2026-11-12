@@ -1,0 +1,22 @@
+[package]
+name = "cortex-cli"
+description = "The cortex binary, also installed under the alias cx: argument parsing, mode selection and the headless printer."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# One executable. `cx` is a link to it, never a second build target
+# (docs/decisions/0013-naming.md).
+[[bin]]
+name = "cortex"
+path = "src/main.rs"
+
+[dependencies]
+cortex-config.workspace = true
+cortex-core.workspace = true
+cortex-rpc.workspace = true
+cortex-tui.workspace = true
+
+[lints]
+workspace = true

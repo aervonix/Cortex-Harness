@@ -1,0 +1,67 @@
+# cargo-deny configuration. The policy is in docs/testing-and-ci.md
+# ("Dependency hygiene"). The blocking check is
+# `cargo deny check licenses bans sources`; advisories are checked in the
+# nightly tier, so that a new advisory against an unchanged lockfile does not
+# block unrelated pull requests.
+
+[graph]
+# The targets binaries are released for, and the Linux development target.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-pc-windows-msvc",
+]
+all-features = true
+
+[licenses]
+# Licences compatible with the project's MIT licence. Anything else fails.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unlicense",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    # The certificate data (webpki-roots).
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+# The list is the policy, not a record of what is in use today.
+unused-allowed-license = "allow"
+
+[bans]
+# Duplicates are warnings that the weekly update pull request clears.
+multiple-versions = "warn"
+# A version requirement of "*" is never acceptable for a registry crate.
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+    # TLS is rustls with the ring provider (decision 0004).
+    { crate = "openssl", reason = "no OpenSSL bindings; TLS is rustls" },
+    { crate = "openssl-sys", reason = "no OpenSSL bindings; TLS is rustls" },
+    { crate = "native-tls", reason = "no native-TLS; TLS is rustls" },
+    { crate = "aws-lc-rs", reason = "needs build tools beyond the platform compiler; the provider is ring" },
+    { crate = "aws-lc-sys", reason = "needs build tools beyond the platform compiler; the provider is ring" },
+    # Nothing that needs build tools beyond the platform's own compiler.
+    { crate = "cmake", reason = "needs CMake at build time" },
+    { crate = "nasm-rs", reason = "needs NASM at build time" },
+]
+
+[sources]
+# crates.io only. No git dependencies, no other registries.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[advisories]
+# Not in the blocking set; `cargo deny check advisories` runs nightly.
+yanked = "deny"

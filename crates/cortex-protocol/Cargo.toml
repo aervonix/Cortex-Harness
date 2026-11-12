@@ -1,0 +1,13 @@
+[package]
+name = "cortex-protocol"
+description = "The public data model of Cortex-Harness: operations, events, items, messages, usage, stop reasons, error codes and RPC envelopes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true

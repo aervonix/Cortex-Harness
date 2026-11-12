@@ -1,0 +1,52 @@
+# Decides whether a run has to build and test Rust.
+#
+# A pull request that touches only documentation (`docs/**` and `*.md`, and
+# nothing else) does not. Every other run does: any other pull request, every
+# push to the main branch, every scheduled or manual run.
+#
+# The job that uses this must check out with `fetch-depth: 2`, so that the
+# pull request's merge commit has its parents.
+name: Changes
+description: Says whether this run touches anything other than documentation.
+
+outputs:
+  code:
+    description: "'true' when Rust has to be built and tested, 'false' for a docs-only pull request."
+    value: ${{ steps.detect.outputs.code }}
+
+runs:
+  using: composite
+  steps:
+    - id: detect
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+      run: |
+        code=true
+        if [ "$EVENT" = "pull_request" ]; then
+          # On a pull request the checkout is a merge commit: its first parent
+          # is the base branch, so this is exactly what the pull request changes.
+          # Without rename detection, a file moved into docs/ is listed under
+          # its old path too, so moving code there does not look like a
+          # documentation change.
+          if files=$(git diff --name-only --no-renames HEAD^1 HEAD); then
+            code=false
+            while IFS= read -r file; do
+              case "$file" in
+                "") ;;
+                docs/* | *.md) ;;
+                *) code=true ;;
+              esac
+            done <<< "$files"
+            echo "Changed files:"
+            echo "$files" | sed 's/^/  /'
+          else
+            echo "Could not list the changed files, so everything runs."
+          fi
+        fi
+        echo "code=$code" >> "$GITHUB_OUTPUT"
+        if [ "$code" = true ]; then
+          echo "This run builds and tests Rust."
+        else
+          echo "Documentation only: the Rust build and tests are skipped."
+        fi

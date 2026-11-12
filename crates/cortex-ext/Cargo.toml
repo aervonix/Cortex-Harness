@@ -1,0 +1,20 @@
+[package]
+name = "cortex-ext"
+description = "The extension host: custom commands, skills, hooks, the script runtime and its host functions, trust pinning and extension authoring."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+cortex-protocol.workspace = true
+cortex-base.workspace = true
+cortex-policy.workspace = true
+cortex-sandbox.workspace = true
+cortex-tools.workspace = true
+
+[lints]
+workspace = true

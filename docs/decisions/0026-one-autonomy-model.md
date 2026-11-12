@@ -1,6 +1,6 @@
 # 0026: One autonomy model: levels and leases, for single sessions and for teams
 
-- **Status:** Accepted. The owner asked for one model on 2026-11-12, when adopting autonomy leases.
+- **Status:** Accepted. The owner asked for one model on 2026-11-12, when adopting autonomy leases, and confirmed the name of the default level, `supervised`, the same day.
 - **Date:** 2026-11-12
 
 ## Context
@@ -24,7 +24,7 @@ The owner adopted leases and said that leases and the Coordinator's levels must 
 ## Decision
 
 - **One ladder:** `read-only`, `supervised`, `guided`, `autonomous`, `unrestricted`. A level says who decides when no rule settles a question: the lease's holder or its supervisor.
-- **`supervised` is the default.** It is what earlier drafts called `standard`, with the same behaviour: reads and in-project edits do not ask, commands ask unless safe-listed. The name changed so that one word means one thing for a session and for a team.
+- **`supervised` is the default.** It is what earlier drafts called `standard`, with the same behaviour: reads and in-project edits do not ask, commands ask unless safe-listed. The name changed so that one word means one thing for a session and for a team. The owner confirmed the name on 2026-11-12.
 - **One lease type:** a grant (level, rules, sandbox policy, models, budget, hard limits) plus stop conditions, an expiry and who granted it.
 - **Three kinds of lease, same type:** the standing lease every session has; a task lease the user confirms for one piece of work; a team lease held by a Manager, with sub-leases for Employees produced by `narrow`.
 - **Only a person grants, extends or revokes a lease.** A model's draft of the terms is text. The terms the user confirms are exactly the terms enforced.
@@ -42,7 +42,7 @@ Specified in [architecture/06-permissions-and-sandbox.md](../architecture/06-per
 
 ## What is given up
 
-- **The name `standard`.** It was in the drafts the owner accepted. If the owner prefers it for the default level, it can be kept as the display name of `supervised`; the model does not depend on the word.
+- **The name `standard`.** It was in the drafts the owner first accepted. The owner confirmed `supervised` on 2026-11-12, so `standard` is not used anywhere: not as a level, and not as a display name.
 - **A little generality.** A team cannot use a level that a session cannot, and the other way round.
 
 ## Revisit when

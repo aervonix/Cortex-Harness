@@ -1,0 +1,19 @@
+[package]
+name = "cortex-mcp"
+description = "The MCP client. Registers server tools with the dynamic-tool registry and reads other clients' server definitions."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+cortex-protocol.workspace = true
+cortex-base.workspace = true
+cortex-tools.workspace = true
+cortex-sandbox.workspace = true
+
+[lints]
+workspace = true

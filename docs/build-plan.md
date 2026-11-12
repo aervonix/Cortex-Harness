@@ -53,17 +53,25 @@ All ten resolutions were **accepted as recommended on 2026-11-12** and are no lo
 
 The owner added a feature that had been held back: usage and cost per provider, model and project over time, limits left, and usage recorded by other coding agents on the same machine. It is specified in [architecture/18-usage.md](architecture/18-usage.md) and [decision 0025](decisions/0025-usage-view.md). Our own numbers are in the first release (steps 16 and 24). The readers for other tools are step 45.
 
+### Answered after step 1, on 2026-11-12
+
+Three items that step 1 left outstanding, and the repository's name. Step 2 recorded the answers.
+
+| Question | The owner's answer, 2026-11-12 | Recorded in |
+|---|---|---|
+| **Usage endpoints.** The brief for `/usage` allows "documented usage endpoints" and also says nothing is sent anywhere. | **An opt-in refresh.** Besides response headers, the user may turn on, per provider, a refresh that calls that provider's documented usage endpoint with the user's own key. It is off by default and is never telemetry. Where neither source gives a figure, the view shows "not available". | [architecture/18-usage.md](architecture/18-usage.md), [decision 0025](decisions/0025-usage-view.md) |
+| **The name of the default level.** Making one autonomy model renamed the default from `standard` to `supervised`. | **`supervised`.** `standard` is not used, as a level or as a display name. | [Decision 0026](decisions/0026-one-autonomy-model.md) |
+| **MCP scope in the first release:** tools only, through search. | **Accepted as written.** No longer provisional. | [Decision 0010](decisions/0010-mcp-in-first-release.md) |
+| **The repository's name.** | **`Cortex-Harness`**, public. Settled. | This page |
+| **The name clash step 2 found.** Snowflake's coding-agent CLI installs a command named `cortex`; two vendor tools install `cx`. | **The names stay `cortex` and `cx`.** The "never overwrite another program's command" rule stays. | [Decision 0013](decisions/0013-naming.md), with the findings |
+| **The details of the `/usage` refresh:** the setting `usage.refresh`, user-only, run only on request, never on a timer. | **Confirmed.** Built in steps 16 and 24, and with each later provider. | [architecture/18-usage.md](architecture/18-usage.md) |
+
 ### Still outstanding
 
 | Item | Who | When |
 |---|---|---|
 | **The Windows Terminal checklist** ([measurements/windows-terminal-checklist.md](measurements/windows-terminal-checklist.md)). Decisions 0001 and 0002 stay provisional until it is run. | The owner | Before step 20 |
-| **Clash check for `cortex` and `cx`**, with a report to the owner. | Step 2 | Before anything is published |
-| **QuickJS with the Windows toolchain.** If it does not build cleanly, the step switches to Lua, as agreed. | Step 28, in its first hour | |
-| **Usage endpoints.** The brief for `/usage` allows "documented usage endpoints" and also says nothing is sent anywhere. The design calls no endpoint. If the owner wants allowance figures that only an endpoint gives, it would be an explicit, off-by-default refresh per provider. | The owner | Any time; nothing waits on it |
-| **The name of the default level.** Making one autonomy model renamed the default from `standard` to `supervised`, so that the word means the same for a session and for a team. If the owner prefers `standard`, it can be the display name; nothing else changes. | The owner | Before step 12 |
-| **MCP scope in the first release** ([decision 0010](decisions/0010-mcp-in-first-release.md)): tools only, through search. It was not among the questions answered. Work proceeds as drafted. | The owner | Before step 30 |
-| **Real CI timings.** The estimate for a cold-cache Windows run is over 5 minutes. | Step 2 measures | |
+| **QuickJS with the Windows toolchain.** Step 2's dependency probe compiled and ran it with the MSVC toolchain on a hosted Windows runner ([testing-and-ci.md](testing-and-ci.md)). Step 28 still confirms it in the real crate, and switches to Lua if it gives trouble, as agreed. | Step 28, in its first hour | |
 
 ## Features: first release or later
 
@@ -82,7 +90,7 @@ The owner added a feature that had been held back: usage and cost per provider, 
 | Compressed tool output, full output a key away | Structural compression, the viewer (steps 19, 24) | Model-written summaries of long output (step 52) | Costs tokens. Wait for routing data. |
 | Cache-ordered prompt | Yes (steps 14, 15) | | |
 | Live tokens, cost, cache hit rate | Yes (steps 16, 24) | | |
-| **`/usage`** | Our own usage and cost per provider, model and project, for the session, today, the week, the month and all time; limits left from response headers; `cortex usage` (steps 16, 24) | Usage recorded by Claude Code and Codex, then Opencode, Pi and others (step 45) | Reading other tools' formats is separate work with its own fixtures, and nothing else depends on it. |
+| **`/usage`** | Our own usage and cost per provider, model and project, for the session, today, the week, the month and all time; limits left from response headers, and from the opt-in refresh; `cortex usage` (steps 16, 24) | Usage recorded by Claude Code and Codex, then Opencode, Pi and others (step 45) | Reading other tools' formats is separate work with its own fixtures, and nothing else depends on it. |
 | **Context profiler** | The by-category `/context` view, and the per-request record it needs (steps 15, 16, 24) | The full view, cache-miss explanations and suggestions (step 44) | Presentation over data the first release already keeps. |
 | Tools start when arguments finish; parallel tools | Yes (step 7) | Side-effecting calls started early | Conflict C6. |
 | Prefetch of likely reads | Reads started early, a result cache (step 7) | Prediction from history (step 52) | Needs statistics, and a wrong guess costs tokens. |
@@ -122,6 +130,8 @@ These hold in every step. A step's prompt may add to them.
 9. **No paid API in CI.** Tests use the scripted provider and recorded fixtures.
 10. **Stay inside the step.** "Must not change" lists what a step may not touch. Needed changes outside the step are reported, not made.
 11. **Conflicts are raised.** Where a feature cannot meet a budget, say so in the step report with a recommendation. Do not cut the feature or loosen the budget quietly.
+12. **No real waiting in tests.** Timeouts, retries, backoff and cooldowns are tested with paused or simulated time (the async runtime's test clock, or the fake clock), never with real sleeps. The details are in [testing-and-ci.md](testing-and-ci.md).
+13. **Budgets are enforced.** Each test has a time limit for its tier, set in the nextest configuration: the runner reports a test that passes its tier's slow mark and stops one that passes its tier's limit. CI reports when a tier's total test time goes over its budget: a warning on the pull request, and a failed job at one and a half times the budget. The numbers, and why the two differ, are in [testing-and-ci.md](testing-and-ci.md).
 
 **Done, for every step, means:** the done criteria below are met; formatting, lints and all blocking tests pass on both OSes; the blocking checks are still within budget; public items are documented; `docs/` matches the code; and the step's report lists what was built, what was measured and anything left open.
 
@@ -195,9 +205,9 @@ Steps that can run at the same time in separate sessions are marked in each step
 
 ## Step 3: Protocol types
 
-- **Goal and scope.** `cortex-protocol`: the `Op`, `Event`, item, message, part, usage, stop-reason and error-code types from [architecture/11-rpc-protocol.md](architecture/11-rpc-protocol.md), [03-agent-loop.md](architecture/03-agent-loop.md) and [04-providers.md](architecture/04-providers.md), including client roles, plan, usage (session and report) and project operations, and the wire form of levels and leases. JSON-RPC envelopes. `xtask schema` generating JSON Schema and TypeScript declarations into `docs/protocol/`.
+- **Goal and scope.** `cortex-protocol`: the `Op`, `Event`, item, message, part, usage, stop-reason and error-code types from [architecture/11-rpc-protocol.md](architecture/11-rpc-protocol.md), [03-agent-loop.md](architecture/03-agent-loop.md) and [04-providers.md](architecture/04-providers.md), including client roles, plan, usage (session and report) and project operations, and the wire form of levels and leases. JSON-RPC envelopes. `xtask schema` generating JSON Schema and TypeScript declarations into `docs/protocol/`. **The non-blocking workflows, in their first form** ([testing-and-ci.md](testing-and-ci.md), "Not blocking"): `nightly`, which runs `cargo deny check advisories`, the unused-dependency check and a release build for every target; and `main`, which after each merge builds the release profile and records the binary's size and the crate count. A failure opens or updates an issue. They are placed here, in the first step after the skeleton, so that the nightly tier is not empty for long; later steps add to them (fuzzing with the first decoder in step 5, the performance checks in step 20).
 - **Depends on.** 2.
-- **Done when.** Round-trip tests for every type. Unknown fields and enum values tolerated where the versioning rules say so. The schema test fails when the checked-in schema is stale. One golden transcript exists. The crate depends only on serde and serde_json in a normal build, and its clean build time is recorded.
+- **Done when.** The two workflows have each run once, and a forced failure has opened an issue. Round-trip tests for every type. Unknown fields and enum values tolerated where the versioning rules say so. The schema test fails when the checked-in schema is stale. One golden transcript exists. The crate depends only on serde and serde_json in a normal build, and its clean build time is recorded.
 - **Must not change.** Other crates.
 - **Size.** M. **Parallel.** No.
 
@@ -301,9 +311,9 @@ Steps that can run at the same time in separate sessions are marked in each step
 
 ## Step 16: Statistics, roles and variants
 
-- **Goal and scope.** `cortex-stats`: events, monthly files, aggregates, retention, the `cortex stats` commands. Model roles (`main`, `fast`, `judge`) with utility calls routed to `fast`. Budgets per session and per day. Variant points with catalog defaults and overrides, fixed per epoch and recorded with every outcome. The usage figures (cache hit rate included) in `usage.updated`. **Usage history for `/usage`** ([architecture/18-usage.md](architecture/18-usage.md)): request events carry the project key, the billing kind and a cost fixed when recorded; the aggregates hold usage buckets by local day, provider, model, project and billing kind, folding into month buckets after 400 days; the range and grouping query; the latest limits each provider reported, with the time seen; `cortex usage` and `usage/report`. The per-request context record is stored.
+- **Goal and scope.** `cortex-stats`: events, monthly files, aggregates, retention, the `cortex stats` commands. Model roles (`main`, `fast`, `judge`) with utility calls routed to `fast`. Budgets per session and per day. Variant points with catalog defaults and overrides, fixed per epoch and recorded with every outcome. The usage figures (cache hit rate included) in `usage.updated`. **Usage history for `/usage`** ([architecture/18-usage.md](architecture/18-usage.md)): request events carry the project key, the billing kind and a cost fixed when recorded; the aggregates hold usage buckets by local day, provider, model, project and billing kind, folding into month buckets after 400 days; the range and grouping query; the latest limits each provider reported, with the time seen; `cortex usage` and `usage/report`. **The opt-in refresh of limits** (the same page, "The opt-in refresh"): the user-only setting `usage.refresh`, `cortex usage --refresh` and the protocol method behind it, for the providers that exist by this step. It begins by reading each provider's current documentation for a usage endpoint, and a provider without one has no refresh. The per-request context record is stored.
 - **Depends on.** 15.
-- **Done when.** Recording never blocks the loop (a test with a stalled writer). Nothing is read at start-up (the start-up file-access test). Aggregates rebuild to the same values from the raw files. Disabling statistics leaves every feature working on defaults. A variant override changes the request snapshot and is recorded. Usage ranges are right across day, week, month and time-zone boundaries (fake clock), all-time totals survive the pruning of raw files, and a cost already recorded does not change when catalog prices change. A limit past its reset time is reported as unknown, not as full. `cortex usage --range month` meets its budget and makes no network connection.
+- **Done when.** Recording never blocks the loop (a test with a stalled writer). Nothing is read at start-up (the start-up file-access test). Aggregates rebuild to the same values from the raw files. Disabling statistics leaves every feature working on defaults. A variant override changes the request snapshot and is recorded. Usage ranges are right across day, week, month and time-zone boundaries (fake clock), all-time totals survive the pruning of raw files, and a cost already recorded does not change when catalog prices change. A limit past its reset time is reported as unknown, not as full. `cortex usage --range month` meets its budget and makes no network connection. With `usage.refresh` empty nothing connects; with a provider listed, `cortex usage --refresh` makes one request, to that provider's documented endpoint with that provider's credential, carrying no usage data (a test against the scripted server), and a project's configuration cannot turn it on.
 - **Must not change.** The loop's behaviour. Provider adapters' snapshots, except through a variant.
 - **Size.** M. **Parallel.** With 18 and 20 to 22.
 
@@ -367,7 +377,7 @@ Steps that can run at the same time in separate sessions are marked in each step
 
 ## Step 24: Panels and live views
 
-- **Goal and scope.** The panel mechanism and the first-release panels: plan (with editing), review, usage, project. The usage panel has its session side and its history side: usage and cost per provider and model for today, the week, the month and all time, grouped by project on request, with limits left and each cost's basis ([architecture/18-usage.md](architecture/18-usage.md)). `/context` shows the by-category breakdown. Hot-reload wired end to end for themes, key bindings and settings. The `/usage`, `/plan`, `/project`, `/profile`, `/verify` and `/reload` commands.
+- **Goal and scope.** The panel mechanism and the first-release panels: plan (with editing), review, usage, project. The usage panel has its session side and its history side: usage and cost per provider and model for today, the week, the month and all time, grouped by project on request, with limits left and each cost's basis ([architecture/18-usage.md](architecture/18-usage.md)), and the refresh key, which asks the providers listed in `usage.refresh` and nothing else. `/context` shows the by-category breakdown. Hot-reload wired end to end for themes, key bindings and settings. The `/usage`, `/plan`, `/project`, `/profile`, `/verify` and `/reload` commands.
 - **Depends on.** 19, 23.
 - **Done when.** Each panel opens and closes on its conditions (state tests). Plan edits from the panel reach the model. Editing a theme or key-binding file takes effect on the next focus event or key press without a restart, and an invalid file leaves the old one in force. Several panels never exceed the live region's limit. Snapshots at three widths. The usage panel opens within one frame with a year of generated history, shows "not available" for a provider that reports no limit, and marks any estimate as an estimate.
 - **Must not change.** View functions from step 22.
@@ -425,7 +435,7 @@ Steps that can run at the same time in separate sessions are marked in each step
 
 ## Step 31: OpenAI-compatible protocol
 
-- **Goal and scope.** The `openai-chat` protocol: requests, the stream decoder with index-keyed tool calls, usage in the stream, reasoning fields under their various names, error classification, capability flags and provider entries for OpenAI, OpenRouter and local servers, discovery of a local server's loaded context size. Re-read current documentation first.
+- **Goal and scope.** The `openai-chat` protocol: requests, the stream decoder with index-keyed tool calls, usage in the stream, reasoning fields under their various names, error classification, capability flags and provider entries for OpenAI, OpenRouter and local servers, discovery of a local server's loaded context size. The `/usage` refresh for each of these providers that documents a usage endpoint. Re-read current documentation first.
 - **Depends on.** 5, 14.
 - **Done when.** The same fixture categories as step 14, from at least two different compatible servers. A session switches between an Anthropic model and a compatible one and back, with reasoning dropped and everything else kept. Any change the second protocol forced on the neutral types is listed in the report.
 - **Must not change.** The Anthropic adapter's snapshots.
@@ -475,7 +485,7 @@ Three tracks start here and touch different crates, so they can run in separate 
 
 ### Step 36: Google Gemini protocol
 
-- **Goal and scope.** Google's models. Choose between Google's two APIs from the documentation at that time and record the choice. Function calls, thought signatures replayed as raw blocks, the ordering rules for function responses, safety-block stop reasons, usage, catalog entries. Record what, if anything, the API reports about limits; where it reports nothing, `/usage` shows "not available".
+- **Goal and scope.** Google's models. Choose between Google's two APIs from the documentation at that time and record the choice. Function calls, thought signatures replayed as raw blocks, the ordering rules for function responses, safety-block stop reasons, usage, catalog entries. Record what, if anything, the API reports about limits; where it reports nothing, `/usage` shows "not available". The `/usage` refresh for Google, if it documents a usage endpoint.
 - **Depends on.** 31.
 - **Done when.** The same fixture categories as step 14. Parallel function calls round-trip with the ordering the API requires. A blocked response becomes a clear stop reason, not an empty message. A session switches between Google and another provider and back.
 - **Must not change.** The other adapters' snapshots. The neutral types, except agreed additions listed in the report.

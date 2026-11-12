@@ -1,0 +1,22 @@
+[package]
+name = "cortex-llm"
+description = "The provider abstraction: model requests and events, the protocol and transport traits, the SSE parser, retries, usage normalisation and the model catalog."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+default = ["http"]
+# The real HTTP transport. Off for crates that only need the types and traits.
+http = []
+
+[dependencies]
+cortex-protocol.workspace = true
+cortex-base.workspace = true
+
+[lints]
+workspace = true

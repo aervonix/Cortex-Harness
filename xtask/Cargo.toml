@@ -1,0 +1,13 @@
+[package]
+name = "xtask"
+description = "Developer commands for the Cortex-Harness repository. Not shipped."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

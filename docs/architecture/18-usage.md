@@ -4,10 +4,10 @@ One place to see what was used and what it cost: per provider and per model, ove
 
 It rests on four rules.
 
-1. **Nothing leaves the machine.** The view reads local files and the responses the harness already receives. It sends nothing and asks nobody.
+1. **Nothing leaves the machine.** The view reads local files and the responses the harness already receives. By default it sends nothing and asks nobody. The one exception is a refresh of limits that the user turns on for a provider: it calls that provider's documented usage endpoint with the user's own key, and nothing else ("The opt-in refresh", below). It is never telemetry.
 2. **One store for our own numbers.** Cortex-Harness's figures come from the local statistics ([14-adaptation.md](14-adaptation.md)). There is no second record of them.
 3. **Other tools' records are read, never written.** Each source is opt-in, and every number says where it came from.
-4. **Nothing is guessed.** A limit is shown only when the provider officially reports it. A cost that is not a real bill is labelled an estimate.
+4. **Nothing is guessed.** A limit is shown only when the provider officially reports it, and "not available" where it does not. A cost that is not a real bill is labelled an estimate.
 
 ## What it shows
 
@@ -92,13 +92,28 @@ For each provider: how much of its rate limit or allowance remains, and when it 
 |---|---|
 | Rate-limit headers on responses the harness already receives (limit, remaining and reset time, for requests and tokens) | **Yes.** The agent loop already parses them ([03-agent-loop.md](03-agent-loop.md)). The latest values per provider and credential are kept, with the time they were seen. |
 | Usage or allowance fields inside those responses | **Yes**, where a provider documents them. |
-| A subscription's remaining allowance | **Only** where the provider officially exposes it to third-party tools in what the harness already receives. Otherwise "not available". |
+| A provider's documented usage endpoint | **Only when the user has turned the refresh on for that provider.** Off by default. See "The opt-in refresh". |
+| A subscription's remaining allowance | **Only** where the provider officially exposes it to third-party tools, in what the harness already receives or through the opt-in refresh. Otherwise "not available". |
 | Scraping a web page, an undocumented endpoint, another tool's private files | **Never.** |
-| A provider's documented usage endpoint | **Not called.** It is official, but calling it is a network request the user did not cause, which rule 1 excludes. See "One point left open". |
 
 - A figure is shown with its age (`as of 2 min ago`). Once its reset time has passed it is shown as `reset since; unknown until the next request`, not as full.
-- A provider that reports nothing shows `not available`. As read on 2026-11-12, Anthropic and OpenAI document rate-limit headers, and none was found documented for Google's API. The provider build steps re-check this.
+- Where neither response headers nor the opt-in refresh gives a figure, the provider shows `not available`. As read on 2026-11-12, Anthropic and OpenAI document rate-limit headers, and none was found documented for Google's API. The provider build steps re-check this.
 - These are rate limits per minute or per day, as each provider defines them. They are not a spending forecast, and the view does not turn them into one.
+
+### The opt-in refresh
+
+Response headers say what is left only after a request has been made, and some figures, a subscription's allowance among them, appear only at a provider's usage endpoint. The owner decided on 2026-11-12 that the view may ask for them, on these terms, and confirmed the terms as written here the same day.
+
+| Rule | What it means in practice |
+|---|---|
+| **Opt-in per provider, off by default** | `usage.refresh = ["anthropic"]` names the providers the user allows. It is a user-only setting: a project's configuration cannot turn it on. With the list empty, which is the default, the view makes no request at all. |
+| **Only the provider's documented usage endpoint** | The endpoint must be one the provider documents for use with an API key or an official sign-in. A provider without one has no refresh and cannot be listed. No scraping, no undocumented endpoint. |
+| **The user's own key, to the user's own provider** | The request goes to the provider the key belongs to, with the credential the user already configured for it, over the same client as model requests. It carries nothing else: no usage figures, no project names, no identifiers of ours. |
+| **Never telemetry** | Nothing is sent to us or to any third party. The response is used for the view and is not forwarded. |
+| **Only when asked** | The request is made when the user asks for it: the refresh key in the view, or `cortex usage --refresh`. Nothing calls it at start-up, on a timer or in the background, so an idle session still makes no request. |
+| **Labelled** | A refreshed figure shows its source and age (`from anthropic · as of 10 s ago`), like every other limit. A failed refresh keeps the last figure with its age and says the refresh failed. It never shows a guess. |
+
+The endpoints themselves are provider facts that go stale. The step that builds each provider's refresh starts by reading that provider's current documentation and records what it read, as the provider steps do.
 
 ## Usage recorded by other tools
 
@@ -155,7 +170,7 @@ Enabling a source is a user-only setting. A project's configuration cannot turn 
 
 ## Security and privacy
 
-- **No network.** Stated above, and tested: opening the view and running a full index make no connection (a test with the network denied).
+- **No network by default.** Stated above, and tested: with the refresh off, opening the view and running a full index make no connection (a test with the network denied). With the refresh on for a provider, a test asserts that the only connection is to that provider's documented endpoint, with that provider's credential, and that the request carries no usage data.
 - **Other tools' files are untrusted input.** They are parsed with size and line-length limits. Symbolic links that lead out of the tool's data directory are not followed. A malformed file costs that file, not the view.
 - **Least reading.** An adapter reads only the files that hold usage, and keeps only numbers.
 - **The cache is owner-only**, like all state files.
@@ -184,11 +199,12 @@ The figures are in [../performance-budgets.md](../performance-budgets.md).
 |---|---|---|
 | Our own usage and cost by provider and model, all five ranges, per-project breakdown | First release: recorded in the statistics step, shown in the panels step. | It is the statistics store plus a panel, and it makes the adaptive features' data visible from day one. |
 | Limits left, from response headers | First release. | The loop parses them already. |
+| The opt-in refresh from a provider's documented usage endpoint | First release: the setting, `cortex usage --refresh` and the first providers in the statistics step, the key in the panels step. Each later provider adds its own endpoint in its own step. | It depends on what each provider documents, so each provider's step reads that documentation first. |
 | `cortex usage` and `usage/report` | First release. | The same query as the panel. |
 | The API-equivalent estimate label | First release for the mechanism. It first matters with other tools' records and with sign-in flows. | The first release uses API keys only, which are metered. |
 | Adapters for Claude Code and Codex, the cache, separate and merged views | After the release, as its own step. | Reading other tools' formats is separate work with its own fixtures, and nothing else depends on it. |
 | Adapters for Opencode and Pi, then others | The same step or follow-ups to it. | |
 
-## One point left open
+## Settled on 2026-11-12: usage endpoints
 
-The brief allows "documented usage endpoints" as a source of limits, and also says the view sends nothing anywhere. A usage endpoint is a network call. This design takes the stricter reading and calls none. If the owner wants allowance figures that only an endpoint provides, the fit would be an explicit, per-provider, off-by-default "refresh limits" action that calls only that provider's documented endpoint with the user's own credential. It is noted here and in the build plan, and not built until asked for.
+The brief allows "documented usage endpoints" as a source of limits, and also says the view sends nothing anywhere. A usage endpoint is a network call, so the first draft of this page called none and left the question to the owner. The owner's answer: besides response headers, allow a refresh that the user opts in to per provider, which calls that provider's documented usage endpoint with the user's own key. It is off by default and is never telemetry. Where neither source gives a figure, the view shows "not available". "The opt-in refresh", above, is that answer in detail.

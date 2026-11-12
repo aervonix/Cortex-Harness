@@ -1,0 +1,56 @@
+# nextest configuration. The tiers are described in docs/testing-and-ci.md.
+#
+# Tiers are separated by where a test lives and by its name, not by features:
+#   tier 1, unit:         `#[cfg(test)]` modules inside a crate
+#   tier 2, integration:  one binary per crate, tests/it/main.rs
+#   tier 3, system:       the real binary as a process; test names start `sys_`
+#
+#   cargo xtask test                  everything (the default profile)
+#   cargo xtask test --profile fast   tiers 1 and 2
+#   cargo xtask test --profile ci     what the blocking CI jobs run
+
+nextest-version = "0.9.100"
+
+# Process and pseudo-terminal tests, two at a time, so they do not starve each
+# other on a 4-core runner.
+[test-groups]
+process = { max-threads = 2 }
+
+# The limits on one test come from the tier budgets in docs/testing-and-ci.md
+# and hold in every profile. After a CI run, `cargo xtask ci test` also checks
+# what each tier's tests took together.
+
+[profile.default]
+# Tiers 1 and 2: a test is reported as slow at 2 s and stopped, as a failure,
+# at 10 s.
+slow-timeout = { period = "2s", terminate-after = 5 }
+# No retries. A flaky test is a bug.
+retries = 0
+
+# Tier 3 goes in the process group, is reported as slow at 10 s and is
+# stopped at 60 s.
+[[profile.default.overrides]]
+filter = 'test(/(^|::)sys_/)'
+test-group = 'process'
+slow-timeout = { period = "10s", terminate-after = 6 }
+
+# The one exception to "no retries": a test inside a module named
+# `timing_sensitive` gets one retry. nextest reports it as flaky when the
+# retry was needed, so it is seen, not hidden.
+[[profile.default.overrides]]
+filter = 'test(/(^|::)timing_sensitive::/)'
+retries = 1
+
+# Local use: tiers 1 and 2 only.
+[profile.fast]
+default-filter = 'not test(/(^|::)sys_/)'
+
+# The blocking CI jobs: tiers 1 to 3, every failure reported, quiet on success.
+[profile.ci]
+fail-fast = false
+status-level = "slow"
+final-status-level = "slow"
+failure-output = "immediate-final"
+
+[profile.ci.junit]
+path = "junit.xml"

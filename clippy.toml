@@ -1,0 +1,57 @@
+# Clippy configuration for the whole workspace. The lint levels are in the
+# root Cargo.toml under [workspace.lints.clippy].
+
+# Tests may unwrap, expect and print. This covers `#[test]` functions and
+# `#[cfg(test)]` modules; see CONTRIBUTING.md for integration-test helpers.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-print-in-tests = true
+
+# Blocking calls. The core runs on one async thread (docs/architecture/02-runtime.md),
+# so a blocking call there stalls every session. Code that is meant to block
+# (it runs on the blocking pool, or the whole crate is synchronous) opts out
+# for a module or a crate, with the reason:
+#
+#   #![allow(clippy::disallowed_methods, clippy::disallowed_types,
+#            reason = "runs on the blocking pool")]
+#
+# `std::thread::sleep` is on the list for a second reason: tests never really
+# wait. Time in tests is paused or simulated (the async runtime's test clock,
+# or the fake clock), and process tests wait on a condition with a deadline.
+disallowed-methods = [
+    { path = "std::thread::sleep", reason = "blocks the thread; tests use the fake clock and wait on conditions" },
+    { path = "std::fs::canonicalize", reason = "blocking file I/O" },
+    { path = "std::fs::copy", reason = "blocking file I/O" },
+    { path = "std::fs::create_dir", reason = "blocking file I/O" },
+    { path = "std::fs::create_dir_all", reason = "blocking file I/O" },
+    { path = "std::fs::exists", reason = "blocking file I/O" },
+    { path = "std::fs::hard_link", reason = "blocking file I/O" },
+    { path = "std::fs::metadata", reason = "blocking file I/O" },
+    { path = "std::fs::read", reason = "blocking file I/O" },
+    { path = "std::fs::read_dir", reason = "blocking file I/O" },
+    { path = "std::fs::read_link", reason = "blocking file I/O" },
+    { path = "std::fs::read_to_string", reason = "blocking file I/O" },
+    { path = "std::fs::remove_dir", reason = "blocking file I/O" },
+    { path = "std::fs::remove_dir_all", reason = "blocking file I/O" },
+    { path = "std::fs::remove_file", reason = "blocking file I/O" },
+    { path = "std::fs::rename", reason = "blocking file I/O" },
+    { path = "std::fs::set_permissions", reason = "blocking file I/O" },
+    { path = "std::fs::symlink_metadata", reason = "blocking file I/O" },
+    { path = "std::fs::write", reason = "blocking file I/O" },
+    { path = "std::path::Path::canonicalize", reason = "blocking file I/O" },
+    { path = "std::path::Path::exists", reason = "blocking file I/O" },
+    { path = "std::path::Path::is_dir", reason = "blocking file I/O" },
+    { path = "std::path::Path::is_file", reason = "blocking file I/O" },
+    { path = "std::path::Path::is_symlink", reason = "blocking file I/O" },
+    { path = "std::path::Path::metadata", reason = "blocking file I/O" },
+    { path = "std::path::Path::read_dir", reason = "blocking file I/O" },
+    { path = "std::path::Path::read_link", reason = "blocking file I/O" },
+    { path = "std::path::Path::symlink_metadata", reason = "blocking file I/O" },
+    { path = "std::path::Path::try_exists", reason = "blocking file I/O" },
+]
+
+disallowed-types = [
+    { path = "std::fs::File", reason = "blocking file I/O" },
+    { path = "std::fs::OpenOptions", reason = "blocking file I/O" },
+    { path = "std::process::Command", reason = "blocking process handling; commands go through the process runner" },
+]

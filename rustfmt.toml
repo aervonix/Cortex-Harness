@@ -1,0 +1,6 @@
+# Stable options only, so the pinned toolchain formats the same everywhere.
+style_edition = "2024"
+max_width = 100
+# Files are LF on every OS (.gitattributes), so formatting agrees on Windows.
+newline_style = "Unix"
+use_field_init_shorthand = true

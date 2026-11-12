@@ -175,7 +175,7 @@ The loop treated `_` as the end of the number; it now skips separ▏
   ☐ update the changelog   ☑ fix scan_number   ☑ add a test
 ──────────────────────────────────────────────── esc interrupt · enter steer ──
 › also run clippy when that's done▏
- opus-5.5 · high    ▰▰▰▱▱▱▱▱▱▱ 31% · 62k    $0.42    standard · sandboxed
+ opus-5.5 · high    ▰▰▰▱▱▱▱▱▱▱ 31% · 62k    $0.42  supervised · sandboxed
 ```
 
 From top to bottom:

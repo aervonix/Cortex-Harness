@@ -25,7 +25,7 @@ All crates use the `cortex-` prefix, live under `crates/`, and set `publish = fa
 | `cortex-coordinator` | The Coordinator: team leases and sub-leases, the team rows of the level table, approval routing, the escalation queue and decision log, the Manager's tools, integration. After the first release. | runs, policy | none |
 | `cortex-usage` | Read-only adapters for usage recorded locally by other coding agents, and their cache. After the first release. | base, stats | none |
 | `cortex-mcp` | MCP client. Registers server tools with the dynamic-tool registry. Reads other clients' server definitions. | protocol, base, tools (trait and registry), sandbox | rmcp (isolated here) |
-| `cortex-core` | Wires everything into a `Core` that accepts `Op` and emits `Event`. The only crate that knows all the parts. | all of the above | none new |
+| `cortex-core` | Wires everything into a `Core` that accepts `Op` and emits `Event`. The only crate that knows all the parts. | all of the above except runs and coordinator, which depend on it | none new |
 | `cortex-rpc` | JSON-RPC server over stdio and local sockets, on top of `Core`. | protocol, core | none new |
 | `cortex-term` | Terminal layer: raw mode, input decoding, capability detection, the line renderer and its two presenters. No knowledge of agents. | base | crossterm |
 | `cortex-tui` | The interactive UI: transcript, editor, dialogs, status line, slash commands, themes. | protocol, base, term | pulldown-cmark; a syntax highlighter behind a feature |
@@ -90,7 +90,8 @@ Features exist to keep build cost optional, not to create product variants.
 | Profile | Use | Settings |
 |---|---|---|
 | `dev` | Local work | `debug = "line-tables-only"`, dependencies built with `opt-level = 1` and `debug = false` |
-| `test` | CI tests | as `dev`, `debug = 0` in CI through the environment |
+| `test` | Local tests | as `dev` |
+| `ci` | The blocking CI test jobs, and `cargo xtask ci` | inherits `dev`, with dependencies at `opt-level = 0`. Added in step 2, when a clean build of the planned dependency set on a hosted Windows runner measured 259 s with optimised dependencies and 60 to 82 s without ([../testing-and-ci.md](../testing-and-ci.md)) |
 | `release` | Local optimised builds, perf runs | `opt-level = 3`, `lto = "thin"`, `codegen-units = 16`, `debug = 0` |
 | `dist` | Published binaries | inherits `release`, `lto = "fat"`, `codegen-units = 1`, `strip = true` |
 

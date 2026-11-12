@@ -1,6 +1,6 @@
 # 0012: Build profiles, and unwinding on panic
 
-- **Status:** Accepted
+- **Status:** Accepted. Amended on 2026-11-12 by step 2, which added a `ci` profile. The amendment is at the end.
 - **Date:** 2026-11-12
 
 ## Context
@@ -68,6 +68,22 @@ Specified in [architecture/01-workspace.md](../architecture/01-workspace.md) and
 
 - 0.17 to 0.27 MB (2.5 to 3.7%) of binary size.
 - `dist` builds are slow, about 50 s for the dependencies alone on 4 fast cores. They run only on tags and in the nightly tier, never in pull-request checks.
+
+## Amendment, 2026-11-12: a `ci` profile
+
+Step 2 built the planned third-party set on GitHub-hosted runners, which this record had not measured. A clean build in the `dev` profile, with dependencies at `opt-level = 1`, took 129 s on Linux and 259 s on Windows, after about half a minute of fetching sources on Windows. With dependencies at `opt-level = 0` it took 27 to 45 s on Linux and 60 to 82 s on Windows. The blocking checks must finish in under 5 minutes per OS with a cold cache too, and the first figure for Windows leaves no room to build and test our own code.
+
+So there is a fifth profile:
+
+| Profile | Use | Settings |
+|---|---|---|
+| `ci` | The blocking CI test jobs, and `cargo xtask ci` | Inherits `dev`; dependencies at `opt-level = 0` |
+
+- **`dev` is unchanged.** At a desk, dependencies are built once and kept, and optimising them makes tests and the debug binary faster.
+- **Our own crates keep line tables in `ci`,** so a failing test's backtrace has line numbers. Measured on the same runners, that costs between nothing and 8% of a cold build.
+- **What is given up:** tests in CI run against unoptimised dependencies, so a test that spends its time inside one runs slower there than at a desk. If that shows in a tier's budget, that crate gets `opt-level = 1` in the `ci` profile.
+
+The measurements and their method are in [testing-and-ci.md](../testing-and-ci.md).
 
 ## Revisit when
 

@@ -1,0 +1,16 @@
+[package]
+name = "cortex-index"
+description = "The repository map: per-language outline extractors, the on-disk cache, ranking and the map renderer."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+cortex-base.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,131 @@
+# The blocking checks. They run on every pull request, on Linux and Windows,
+# and each job must finish in under 5 minutes.
+#
+# What a job runs is defined in the xtask crate, so `cargo xtask ci` runs the
+# same thing at a desk. The layout, the reasons and the measured times are in
+# docs/testing-and-ci.md. `cargo xtask rules` checks this file: actions pinned
+# by commit hash, no secrets, a read-only token.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Keeps the main branch's caches from expiring (GitHub drops a cache that
+  # has not been read for 7 days).
+  schedule:
+    - cron: "23 5 * * 1,4"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request replaces the run in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+
+# Every job starts by asking whether the pull request touches anything other
+# than documentation (.github/actions/changes). If it does not, the job's
+# remaining steps are skipped and the job still reports success under its own
+# name, so the four checks can be required without a gate job. The one thing a
+# documentation-only pull request still runs is the repo rules, on Linux: the
+# check for home-directory paths and the check of docs/dependencies.md exist
+# mostly for documentation.
+jobs:
+  # Tier 0. Formatting, the repo rules and cargo-deny are the same on every
+  # OS and run once, on Linux. Clippy runs on both, so that code compiled
+  # only for Windows is linted too.
+  lint:
+    name: lint-${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+            check: ""
+          - name: windows
+            os: windows-latest
+            check: clippy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - id: changes
+        uses: ./.github/actions/changes
+      - name: Keep cargo's and rustup's files off the system disk (Windows)
+        if: runner.os == 'Windows' && steps.changes.outputs.code == 'true'
+        run: |
+          "CARGO_HOME=$env:RUNNER_TEMP\cargo" >> $env:GITHUB_ENV
+          "RUSTUP_HOME=$env:RUNNER_TEMP\rustup" >> $env:GITHUB_ENV
+      - name: Install the toolchain from rust-toolchain.toml
+        if: steps.changes.outputs.code == 'true' || matrix.name == 'linux'
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: steps.changes.outputs.code == 'true' || matrix.name == 'linux'
+        with:
+          # Only the main branch writes caches. Pull requests read a cache
+          # that is always consistent, and never push each other's out.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-bin: "false"
+      - name: Install cargo-deny
+        if: steps.changes.outputs.code == 'true' && matrix.name == 'linux'
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Static checks
+        if: steps.changes.outputs.code == 'true'
+        run: cargo run --locked --quiet --package xtask -- check ${{ matrix.check }}
+      - name: Repo rules (documentation-only change)
+        if: steps.changes.outputs.code != 'true' && matrix.name == 'linux'
+        run: cargo run --locked --quiet --package xtask -- check rules
+
+  # Tiers 1 to 3.
+  test:
+    name: test-${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+          - name: windows
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - id: changes
+        uses: ./.github/actions/changes
+      - name: Keep cargo's and rustup's files off the system disk (Windows)
+        if: runner.os == 'Windows' && steps.changes.outputs.code == 'true'
+        run: |
+          "CARGO_HOME=$env:RUNNER_TEMP\cargo" >> $env:GITHUB_ENV
+          "RUSTUP_HOME=$env:RUNNER_TEMP\rustup" >> $env:GITHUB_ENV
+      - name: Install the toolchain from rust-toolchain.toml
+        if: steps.changes.outputs.code == 'true'
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: steps.changes.outputs.code == 'true'
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-bin: "false"
+      - name: Install cargo-nextest
+        if: steps.changes.outputs.code == 'true'
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest@0.9.151
+      - name: Tests
+        if: steps.changes.outputs.code == 'true'
+        run: cargo run --locked --quiet --package xtask -- ci test

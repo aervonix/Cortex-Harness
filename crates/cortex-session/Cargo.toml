@@ -1,0 +1,17 @@
+[package]
+name = "cortex-session"
+description = "The session log, its tree and branches, resume and repair, artifacts, checkpoints and the session index."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+cortex-protocol.workspace = true
+cortex-base.workspace = true
+
+[lints]
+workspace = true
