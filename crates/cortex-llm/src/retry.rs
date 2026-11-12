@@ -276,8 +276,13 @@ mod tests {
     }
 
     fn rate_limited(wait: Option<u64>) -> ProviderError {
-        ProviderError::classified(Some(429), Signal::RateLimit, "rate_limit_error", "Slow down.")
-            .with_retry_after(wait.map(secs))
+        ProviderError::classified(
+            Some(429),
+            Signal::RateLimit,
+            "rate_limit_error",
+            "Slow down.",
+        )
+        .with_retry_after(wait.map(secs))
     }
 
     fn tier_refusal(wait: Option<u64>) -> ProviderError {
@@ -293,7 +298,12 @@ mod tests {
         state
     }
 
-    fn decide(policy: &RetryPolicy, state: &mut RetryState, error: &ProviderError, speed: &Speed) -> Decision {
+    fn decide(
+        policy: &RetryPolicy,
+        state: &mut RetryState,
+        error: &ProviderError,
+        speed: &Speed,
+    ) -> Decision {
         policy.decide(state, error, speed, &mut SeededRng::new(7))
     }
 
@@ -329,7 +339,9 @@ mod tests {
     #[test]
     fn the_backoff_ceiling_doubles_and_stops_at_the_cap() {
         let policy = RetryPolicy::default();
-        let ceilings: Vec<u64> = (1..=8).map(|n| policy.backoff_ceiling(n).as_secs()).collect();
+        let ceilings: Vec<u64> = (1..=8)
+            .map(|n| policy.backoff_ceiling(n).as_secs())
+            .collect();
         assert_eq!(ceilings, [1, 2, 4, 8, 16, 30, 30, 30]);
         assert_eq!(policy.backoff_ceiling(0), secs(1), "before any failure");
         assert_eq!(policy.backoff_ceiling(u32::MAX), secs(30), "no overflow");
@@ -340,7 +352,9 @@ mod tests {
             cap: secs(5),
             ..RetryPolicy::default()
         };
-        let millis: Vec<u128> = (1..=5).map(|n| odd.backoff_ceiling(n).as_millis()).collect();
+        let millis: Vec<u128> = (1..=5)
+            .map(|n| odd.backoff_ceiling(n).as_millis())
+            .collect();
         assert_eq!(millis, [250, 750, 2250, 5000, 5000]);
 
         // A factor that makes no sense does not shrink the wait or panic.
@@ -362,8 +376,12 @@ mod tests {
             let mut longest = Duration::ZERO;
             let mut shortest = Duration::MAX;
             for _ in 0..400 {
-                let decision =
-                    policy.decide(&mut sent(failures), &transient(), &Speed::Standard, &mut rng);
+                let decision = policy.decide(
+                    &mut sent(failures),
+                    &transient(),
+                    &Speed::Standard,
+                    &mut rng,
+                );
                 let Decision::Wait(wait) = decision else {
                     panic!("{decision:?}");
                 };
@@ -371,8 +389,14 @@ mod tests {
                 longest = longest.max(wait);
                 shortest = shortest.min(wait);
             }
-            assert!(longest > ceiling.mul_f64(0.9), "never near the ceiling: {longest:?}");
-            assert!(shortest < ceiling.mul_f64(0.1), "never near zero: {shortest:?}");
+            assert!(
+                longest > ceiling.mul_f64(0.9),
+                "never near the ceiling: {longest:?}"
+            );
+            assert!(
+                shortest < ceiling.mul_f64(0.1),
+                "never near zero: {shortest:?}"
+            );
         }
         // The same generator gives the same waits.
         let first = decide(&policy, &mut sent(2), &transient(), &Speed::Standard);
@@ -415,7 +439,12 @@ mod tests {
         let policy = RetryPolicy::default();
         for wait in [0, 1, 45, 120] {
             assert_eq!(
-                decide(&policy, &mut sent(1), &rate_limited(Some(wait)), &Speed::Standard),
+                decide(
+                    &policy,
+                    &mut sent(1),
+                    &rate_limited(Some(wait)),
+                    &Speed::Standard
+                ),
                 Decision::Wait(secs(wait)),
                 "{wait} s"
             );
@@ -423,7 +452,12 @@ mod tests {
         // Also when it is longer than the backoff cap, and on the last try
         // but one.
         assert_eq!(
-            decide(&policy, &mut sent(4), &rate_limited(Some(100)), &Speed::Standard),
+            decide(
+                &policy,
+                &mut sent(4),
+                &rate_limited(Some(100)),
+                &Speed::Standard
+            ),
             Decision::Wait(secs(100))
         );
     }
@@ -432,7 +466,12 @@ mod tests {
     fn a_wait_over_the_maximum_is_not_slept() {
         let policy = RetryPolicy::default();
         assert_eq!(
-            decide(&policy, &mut sent(1), &rate_limited(Some(121)), &Speed::Standard),
+            decide(
+                &policy,
+                &mut sent(1),
+                &rate_limited(Some(121)),
+                &Speed::Standard
+            ),
             Decision::GiveUp
         );
         let patient = RetryPolicy {
@@ -440,7 +479,12 @@ mod tests {
             ..RetryPolicy::default()
         };
         assert_eq!(
-            decide(&patient, &mut sent(1), &rate_limited(Some(121)), &Speed::Standard),
+            decide(
+                &patient,
+                &mut sent(1),
+                &rate_limited(Some(121)),
+                &Speed::Standard
+            ),
             Decision::Wait(secs(121))
         );
     }
@@ -454,7 +498,11 @@ mod tests {
             Decision::Wait(secs(8))
         );
         assert_eq!(state.tier_waited(), secs(8));
-        assert_eq!(state.attempts(), 1, "the wait in place is an ordinary retry");
+        assert_eq!(
+            state.attempts(),
+            1,
+            "the wait in place is an ordinary retry"
+        );
         // Exactly the budget is still within it.
         let mut state = sent(1);
         assert_eq!(
@@ -515,7 +563,12 @@ mod tests {
         // A wait far over the ordinary maximum is still a fallback, not an
         // error: standard speed is not limited by it.
         assert_eq!(
-            decide(&policy, &mut sent(1), &tier_refusal(Some(7200)), &Speed::Fast),
+            decide(
+                &policy,
+                &mut sent(1),
+                &tier_refusal(Some(7200)),
+                &Speed::Fast
+            ),
             Decision::FallBack {
                 reason: SpeedFallbackReason::RateLimited,
                 cooldown: secs(7200),
@@ -564,7 +617,12 @@ mod tests {
         for wait in [0, 1] {
             assert!(
                 matches!(
-                    decide(&policy, &mut sent(1), &tier_refusal(Some(wait)), &Speed::Fast),
+                    decide(
+                        &policy,
+                        &mut sent(1),
+                        &tier_refusal(Some(wait)),
+                        &Speed::Fast
+                    ),
                     Decision::FallBack { .. }
                 ),
                 "a wait of {wait} s"
@@ -595,7 +653,12 @@ mod tests {
         ));
         // The maximum wait and the attempts hold.
         assert_eq!(
-            decide(&policy, &mut sent(1), &tier_refusal(Some(121)), &Speed::Fast),
+            decide(
+                &policy,
+                &mut sent(1),
+                &tier_refusal(Some(121)),
+                &Speed::Fast
+            ),
             Decision::GiveUp
         );
         assert_eq!(
@@ -615,7 +678,12 @@ mod tests {
         // A tier's limit named on a request that was sent at standard, or at
         // another tier: nothing to fall back from.
         assert_eq!(
-            decide(&policy, &mut sent(1), &tier_refusal(Some(45)), &Speed::Standard),
+            decide(
+                &policy,
+                &mut sent(1),
+                &tier_refusal(Some(45)),
+                &Speed::Standard
+            ),
             Decision::Wait(secs(45))
         );
         let flex = Speed::Other("flex".to_owned());
@@ -634,8 +702,9 @@ mod tests {
     #[test]
     fn a_tiers_failure_that_is_not_transient_is_reported() {
         let policy = RetryPolicy::default();
-        let refused = ProviderError::classified(Some(400), Signal::None, "invalid_request_error", "No.")
-            .for_tier(Speed::Fast);
+        let refused =
+            ProviderError::classified(Some(400), Signal::None, "invalid_request_error", "No.")
+                .for_tier(Speed::Fast);
         assert_eq!(
             decide(&policy, &mut sent(1), &refused, &Speed::Fast),
             Decision::GiveUp

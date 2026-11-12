@@ -292,7 +292,9 @@ const LONGEST_WAIT: Duration = Duration::from_secs(366 * 24 * 60 * 60);
 /// A count of seconds, whole or with a fraction: `30`, `1.5`.
 fn parse_seconds(value: &str) -> Option<Duration> {
     let plain = !value.is_empty()
-        && value.bytes().all(|byte| byte.is_ascii_digit() || byte == b'.')
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
         && value.bytes().filter(|byte| *byte == b'.').count() <= 1
         && value.bytes().any(|byte| byte.is_ascii_digit());
     if !plain {

@@ -27,7 +27,11 @@ fn fail_then_succeed(first: Reply) -> (Vec<ModelEvent>, Vec<std::time::Duration>
     let harness = Harness::new([first, hello()]);
     let events = harness.run();
     assert_well_formed(&events);
-    (events, harness.timer.sleeps(), harness.transport.requests().len())
+    (
+        events,
+        harness.timer.sleeps(),
+        harness.transport.requests().len(),
+    )
 }
 
 /// Runs one failing reply with a good one behind it, and asserts that the
@@ -37,7 +41,11 @@ fn fails_at_once(first: Reply, kind: ErrorKind, code: &str) {
     let events = harness.run();
     assert_eq!(names(&events), ["error"], "{code}");
     assert_kind(final_error(&events), kind, code);
-    assert_eq!(harness.transport.requests().len(), 1, "{code}: not sent again");
+    assert_eq!(
+        harness.transport.requests().len(),
+        1,
+        "{code}: not sent again"
+    );
     assert!(harness.timer.sleeps().is_empty(), "{code}: no wait");
     assert_eq!(harness.now(), at(START), "{code}: no time passed");
 }
@@ -52,13 +60,19 @@ fn a_connection_failure_is_retried_with_backoff() {
         assert_eq!(names(&events), RETRIED_ONCE, "{kind:?}");
         assert_eq!(sent, 2);
         assert_eq!(sleeps.len(), 1);
-        assert!(sleeps[0] <= secs(1), "the first backoff is at most the base: {sleeps:?}");
+        assert!(
+            sleeps[0] <= secs(1),
+            "the first backoff is at most the base: {sleeps:?}"
+        );
 
         let retry = retries(&events)[0];
         assert_eq!((retry.attempt, retry.max_attempts), (2, 5));
         assert_eq!(retry.error.kind, ErrorKind::Transient);
         assert_eq!(retry.wait, sleeps[0]);
-        assert_eq!(retry.next_attempt_at, at(START).checked_add(sleeps[0]).unwrap());
+        assert_eq!(
+            retry.next_attempt_at,
+            at(START).checked_add(sleeps[0]).unwrap()
+        );
     }
 }
 
@@ -71,10 +85,24 @@ fn a_connection_lost_part_way_is_retried_and_the_new_response_starts_over() {
     let (events, sleeps, sent) = fail_then_succeed(broken);
     assert_eq!(
         names(&events),
-        ["start", "block_start", "text", "retry", "start", "block_start", "text", "block_end", "end"],
+        [
+            "start",
+            "block_start",
+            "text",
+            "retry",
+            "start",
+            "block_start",
+            "text",
+            "block_end",
+            "end"
+        ],
         "what the first attempt said is followed by a retry and a fresh start"
     );
-    assert_kind(&retries(&events)[0].error, ErrorKind::Transient, "connection_lost");
+    assert_kind(
+        &retries(&events)[0].error,
+        ErrorKind::Transient,
+        "connection_lost",
+    );
     assert_eq!((sent, sleeps.len()), (2, 1));
 }
 
@@ -122,7 +150,11 @@ fn a_rate_limit_waits_exactly_as_long_as_the_server_said() {
     let harness = Harness::new([limited, hello()]);
     let events = harness.run();
     assert_eq!(names(&events), RETRIED_ONCE);
-    assert_eq!(harness.timer.sleeps(), [secs(7)], "the server's wait, not a backoff");
+    assert_eq!(
+        harness.timer.sleeps(),
+        [secs(7)],
+        "the server's wait, not a backoff"
+    );
     assert_eq!(harness.now(), at("2026-11-12T10:00:07Z"));
 
     let retry = retries(&events)[0];
@@ -153,9 +185,16 @@ fn a_rate_limit_with_no_wait_backs_off() {
 #[test]
 fn a_wait_longer_than_the_maximum_is_not_slept() {
     // The default maximum is two minutes.
-    let harness = Harness::new([failure(429, "rate_limit").header("retry-after", "121"), hello()]);
+    let harness = Harness::new([
+        failure(429, "rate_limit").header("retry-after", "121"),
+        hello(),
+    ]);
     let events = harness.run();
-    assert_eq!(names(&events), ["error"], "no retry notice: nothing is waited for");
+    assert_eq!(
+        names(&events),
+        ["error"],
+        "no retry notice: nothing is waited for"
+    );
     let error = final_error(&events);
     assert_kind(error, ErrorKind::Transient, "rate_limit");
     assert_eq!(error.retry_after, Some(secs(121)));
@@ -167,7 +206,10 @@ fn a_wait_longer_than_the_maximum_is_not_slept() {
     assert_eq!(data.retry_at.unwrap().to_string(), "2026-11-12T10:02:01Z");
 
     // Exactly the maximum is still waited.
-    let harness = Harness::new([failure(429, "rate_limit").header("retry-after", "120"), hello()]);
+    let harness = Harness::new([
+        failure(429, "rate_limit").header("retry-after", "120"),
+        hello(),
+    ]);
     assert_eq!(names(&harness.run()), RETRIED_ONCE);
     assert_eq!(harness.timer.sleeps(), [secs(120)]);
 
@@ -177,7 +219,10 @@ fn a_wait_longer_than_the_maximum_is_not_slept() {
         ..RetryPolicy::default()
     };
     let harness = Harness::with_policy(
-        [failure(429, "rate_limit").header("retry-after", "300"), hello()],
+        [
+            failure(429, "rate_limit").header("retry-after", "300"),
+            hello(),
+        ],
         patient,
     );
     assert_eq!(names(&harness.run()), RETRIED_ONCE);
@@ -190,7 +235,11 @@ fn a_wait_longer_than_the_maximum_is_not_slept() {
 fn a_spending_limit_is_not_retried_whatever_its_status() {
     fails_at_once(failure(429, "quota"), ErrorKind::Provider, "quota");
     fails_at_once(failure(402, "quota"), ErrorKind::Provider, "quota");
-    fails_at_once(failure(402, "payment_required"), ErrorKind::Provider, "payment_required");
+    fails_at_once(
+        failure(402, "payment_required"),
+        ErrorKind::Provider,
+        "payment_required",
+    );
     // Even when the provider sends a wait with it.
     fails_at_once(
         failure(429, "quota").header("retry-after", "5"),
@@ -203,7 +252,11 @@ fn a_spending_limit_is_not_retried_whatever_its_status() {
 
 #[test]
 fn a_rejected_credential_is_not_retried() {
-    fails_at_once(failure(401, "unauthorized"), ErrorKind::Auth, "unauthorized");
+    fails_at_once(
+        failure(401, "unauthorized"),
+        ErrorKind::Auth,
+        "unauthorized",
+    );
     fails_at_once(failure(403, "forbidden"), ErrorKind::Auth, "forbidden");
     fails_at_once(failure(400, "auth"), ErrorKind::Auth, "auth");
 }
@@ -212,8 +265,16 @@ fn a_rejected_credential_is_not_retried() {
 
 #[test]
 fn a_context_overflow_is_reported_for_the_loop_to_compact() {
-    fails_at_once(failure(400, "context_length"), ErrorKind::ContextOverflow, "context_length");
-    fails_at_once(failure(413, "context_length"), ErrorKind::ContextOverflow, "context_length");
+    fails_at_once(
+        failure(400, "context_length"),
+        ErrorKind::ContextOverflow,
+        "context_length",
+    );
+    fails_at_once(
+        failure(413, "context_length"),
+        ErrorKind::ContextOverflow,
+        "context_length",
+    );
 }
 
 // Row: other 4xx.
@@ -233,9 +294,9 @@ fn other_client_errors_are_not_retried() {
 
 #[test]
 fn a_failure_keeps_the_providers_message_status_and_request_id() {
-    let harness = Harness::new([Reply::status(404)
-        .header("x-request-id", "req_404")
-        .chunk(cortex_testkit::protocol::failure_body("not_found", "No such model."))]);
+    let harness = Harness::new([Reply::status(404).header("x-request-id", "req_404").chunk(
+        cortex_testkit::protocol::failure_body("not_found", "No such model."),
+    )]);
     let events = harness.run();
     let error = final_error(&events);
     assert_eq!(error.message, "No such model.");
@@ -251,7 +312,11 @@ fn a_failure_keeps_the_providers_message_status_and_request_id() {
     // And one whose body is far larger than is worth reading.
     let huge = Reply::status(400).chunk(vec![b'x'; 300_000]);
     let harness = Harness::new([huge]);
-    assert_kind(final_error(&harness.run()), ErrorKind::Provider, "unknown_error");
+    assert_kind(
+        final_error(&harness.run()),
+        ErrorKind::Provider,
+        "unknown_error",
+    );
 }
 
 // Row: an error event after a 200, classified by its code as above.
@@ -271,7 +336,11 @@ fn an_error_event_after_a_good_status_is_classified_by_its_code() {
     // Retried: overload, server failure, rate limit.
     for code in ["overloaded", "server_error", "rate_limit"] {
         let (events, sleeps, sent) = fail_then_succeed(stream_with(json!({"code": code})));
-        assert_eq!(names(&events)[..4], [PARTIAL[0], PARTIAL[1], PARTIAL[2], "retry"], "{code}");
+        assert_eq!(
+            names(&events)[..4],
+            [PARTIAL[0], PARTIAL[1], PARTIAL[2], "retry"],
+            "{code}"
+        );
         assert_eq!(names(&events)[4..], HELLO, "{code}");
         assert_kind(&retries(&events)[0].error, ErrorKind::Transient, code);
         assert_eq!(retries(&events)[0].error.status, None);
@@ -279,7 +348,10 @@ fn an_error_event_after_a_good_status_is_classified_by_its_code() {
     }
 
     // With the wait the event names.
-    let harness = Harness::new([stream_with(json!({"code": "rate_limit", "retry_after": 12})), hello()]);
+    let harness = Harness::new([
+        stream_with(json!({"code": "rate_limit", "retry_after": 12})),
+        hello(),
+    ]);
     harness.run();
     assert_eq!(harness.timer.sleeps(), [secs(12)]);
 
@@ -293,7 +365,11 @@ fn an_error_event_after_a_good_status_is_classified_by_its_code() {
     ] {
         let harness = Harness::new([stream_with(json!({"code": code})), hello()]);
         let events = harness.run();
-        assert_eq!(names(&events), [PARTIAL[0], PARTIAL[1], PARTIAL[2], "error"], "{code}");
+        assert_eq!(
+            names(&events),
+            [PARTIAL[0], PARTIAL[1], PARTIAL[2], "error"],
+            "{code}"
+        );
         assert_kind(final_error(&events), kind, code);
         assert_eq!(harness.transport.requests().len(), 1, "{code}");
         assert!(harness.timer.sleeps().is_empty(), "{code}");
@@ -307,17 +383,29 @@ fn a_stream_that_ends_early_or_cannot_be_read_is_retried() {
     let unfinished = Reply::ok(sse("start", &json!({"id": "r1", "model": "m"})));
     let (events, _, sent) = fail_then_succeed(unfinished);
     assert_eq!(names(&events)[..2], ["start", "retry"]);
-    assert_kind(&retries(&events)[0].error, ErrorKind::Transient, "incomplete_stream");
+    assert_kind(
+        &retries(&events)[0].error,
+        ErrorKind::Transient,
+        "incomplete_stream",
+    );
     assert_eq!(sent, 2);
 
     let empty = Reply::status(200);
     let (events, _, _) = fail_then_succeed(empty);
-    assert_kind(&retries(&events)[0].error, ErrorKind::Transient, "incomplete_stream");
+    assert_kind(
+        &retries(&events)[0].error,
+        ErrorKind::Transient,
+        "incomplete_stream",
+    );
 
     let garbled = Reply::ok("event: start\ndata: {not json\n\n");
     let (events, _, _) = fail_then_succeed(garbled);
     assert_eq!(names(&events), RETRIED_ONCE);
-    assert_kind(&retries(&events)[0].error, ErrorKind::Transient, "malformed_stream");
+    assert_kind(
+        &retries(&events)[0].error,
+        ErrorKind::Transient,
+        "malformed_stream",
+    );
 }
 
 // The attempt limit and the backoff schedule.
@@ -326,10 +414,17 @@ fn a_stream_that_ends_early_or_cannot_be_read_is_retried() {
 fn a_request_is_sent_at_most_five_times_and_the_waits_grow() {
     let harness = Harness::new((0..6).map(|_| failure(503, "unavailable")));
     let events = harness.run();
-    assert_eq!(names(&events), ["retry", "retry", "retry", "retry", "error"]);
+    assert_eq!(
+        names(&events),
+        ["retry", "retry", "retry", "retry", "error"]
+    );
     assert_well_formed(&events);
     assert_eq!(harness.transport.requests().len(), 5);
-    assert_eq!(harness.transport.remaining(), 1, "the sixth reply was never asked for");
+    assert_eq!(
+        harness.transport.remaining(),
+        1,
+        "the sixth reply was never asked for"
+    );
 
     let attempts: Vec<u32> = retries(&events).iter().map(|retry| retry.attempt).collect();
     assert_eq!(attempts, [2, 3, 4, 5]);
@@ -367,7 +462,10 @@ fn the_schedule_follows_the_policy() {
     assert_eq!(names(&events), ["retry", "retry", "error"]);
     let sleeps = harness.timer.sleeps();
     assert!(sleeps[0] <= secs(10) && sleeps[1] <= secs(20), "{sleeps:?}");
-    assert!(sleeps[0] > secs(1) || sleeps[1] > secs(2), "the base is used: {sleeps:?}");
+    assert!(
+        sleeps[0] > secs(1) || sleeps[1] > secs(2),
+        "the base is used: {sleeps:?}"
+    );
     assert_eq!(retries(&events)[0].max_attempts, 3);
 }
 
@@ -409,7 +507,11 @@ fn cancelling_during_a_backoff_ends_the_request_without_another_send() {
     ));
     assert_eq!(names(&events), ["retry", "error"]);
     assert_kind(final_error(&events), ErrorKind::Interrupted, "interrupted");
-    assert_eq!(harness.transport.requests().len(), 1, "the second attempt was never made");
+    assert_eq!(
+        harness.transport.requests().len(),
+        1,
+        "the second attempt was never made"
+    );
     assert!(harness.timer.sleeps().is_empty(), "the wait did not finish");
     assert_eq!(harness.now(), at(START));
 }
@@ -424,7 +526,10 @@ fn a_stream_that_goes_silent_fails_at_the_idle_limit() {
         .client
         .stream(fixtures::request(fixtures::model()), CancelToken::new());
     block_on(async {
-        assert!(matches!(stream.next().await, Some(ModelEvent::Start { .. })));
+        assert!(matches!(
+            stream.next().await,
+            Some(ModelEvent::Start { .. })
+        ));
 
         // The response has begun, so the limit that runs is the idle one:
         // 90 seconds. One second short of it, nothing has happened.
@@ -432,7 +537,10 @@ fn a_stream_that_goes_silent_fails_at_the_idle_limit() {
             harness.timer.sleeping().await;
             assert_eq!(harness.timer.running(), [secs(90)]);
             harness.timer.advance(secs(89));
-            assert!(harness.timer.sleeps().is_empty(), "89 seconds is not yet idle");
+            assert!(
+                harness.timer.sleeps().is_empty(),
+                "89 seconds is not yet idle"
+            );
             harness.timer.advance(secs(1));
         })
         .await;

@@ -145,7 +145,8 @@ impl Response {
                 json: (*fragment).to_owned(),
             }));
         }
-        let raw = json!({"type": "tool_call", "id": id, "name": name, "arguments": fragments.concat()});
+        let raw =
+            json!({"type": "tool_call", "id": id, "name": name, "arguments": fragments.concat()});
         self.end_block(index, &raw)
     }
 
@@ -328,7 +329,10 @@ impl ModelClient for ScriptedProvider {
 
             // The speed the response "ran at": what the script says served
             // it, and otherwise what was asked for.
-            let ran = response.served_at.clone().unwrap_or_else(|| requested.clone());
+            let ran = response
+                .served_at
+                .clone()
+                .unwrap_or_else(|| requested.clone());
             let usage = |tokens: &TokenUsage| Usage {
                 tokens: tokens.clone(),
                 speed: ran.clone(),
@@ -339,7 +343,8 @@ impl ModelClient for ScriptedProvider {
 
             for step in response.steps {
                 if cancel.is_cancelled() {
-                    out.emit(ModelEvent::Error(ProviderError::interrupted())).await;
+                    out.emit(ModelEvent::Error(ProviderError::interrupted()))
+                        .await;
                     return;
                 }
                 match step {
@@ -382,18 +387,21 @@ impl ModelClient for ScriptedProvider {
                         if let Some(timer) = &provider.timer
                             && cancel.race(timer.sleep(duration)).await.is_none()
                         {
-                            out.emit(ModelEvent::Error(ProviderError::interrupted())).await;
+                            out.emit(ModelEvent::Error(ProviderError::interrupted()))
+                                .await;
                             return;
                         }
                     }
                     Step::Stall => {
                         cancel.cancelled().await;
-                        out.emit(ModelEvent::Error(ProviderError::interrupted())).await;
+                        out.emit(ModelEvent::Error(ProviderError::interrupted()))
+                            .await;
                         return;
                     }
                     Step::Wait(gate) => {
                         if cancel.race(gate.opened()).await.is_none() {
-                            out.emit(ModelEvent::Error(ProviderError::interrupted())).await;
+                            out.emit(ModelEvent::Error(ProviderError::interrupted()))
+                                .await;
                             return;
                         }
                     }
@@ -501,7 +509,10 @@ mod tests {
         };
         assert_eq!(*stop, StopReason::ToolCalls);
         assert_eq!(usage.tokens, tokens);
-        assert_eq!((usage.speed.clone(), usage.speed_requested.clone()), (Speed::Standard, None));
+        assert_eq!(
+            (usage.speed.clone(), usage.speed_requested.clone()),
+            (Speed::Standard, None)
+        );
 
         assert_eq!(provider.requests().len(), 1);
         assert_eq!(provider.requests()[0].system, "You are a test.");
@@ -539,7 +550,10 @@ mod tests {
             .error(failure.clone())
             .text("never said")]);
         let events = play(&provider);
-        assert_eq!(names(&events), ["start", "block_start", "text", "block_end", "error"]);
+        assert_eq!(
+            names(&events),
+            ["start", "block_start", "text", "block_end", "error"]
+        );
         assert_eq!(events.last(), Some(&ModelEvent::Error(failure)));
     }
 
@@ -567,7 +581,10 @@ mod tests {
     fn an_abort_ends_the_stream_with_no_last_word() {
         let provider = ScriptedProvider::new([Response::new().text("cut").abort()]);
         let events = play(&provider);
-        assert_eq!(names(&events), ["start", "block_start", "text", "block_end"]);
+        assert_eq!(
+            names(&events),
+            ["start", "block_start", "text", "block_end"]
+        );
         assert!(!events.last().unwrap().is_terminal());
     }
 
@@ -584,9 +601,18 @@ mod tests {
         .with_timer(Arc::new(timer.clone()));
         let mut stream = provider.stream(fixtures::request(fixtures::model()), CancelToken::new());
         block_on(async {
-            assert!(matches!(stream.next().await, Some(ModelEvent::Start { .. })));
-            assert!(timer.sleeps().is_empty(), "nothing happens ahead of the reader");
-            assert!(matches!(stream.next().await, Some(ModelEvent::BlockStart { .. })));
+            assert!(matches!(
+                stream.next().await,
+                Some(ModelEvent::Start { .. })
+            ));
+            assert!(
+                timer.sleeps().is_empty(),
+                "nothing happens ahead of the reader"
+            );
+            assert!(matches!(
+                stream.next().await,
+                Some(ModelEvent::BlockStart { .. })
+            ));
             assert_eq!(timer.sleeps(), [Duration::from_secs(3)]);
             assert!(stream.next().await.is_some());
             assert!(stream.next().await.is_some());
@@ -598,7 +624,11 @@ mod tests {
     #[test]
     fn a_response_served_at_another_speed_says_so_and_records_both() {
         let provider = ScriptedProvider::new([
-            Response::new().served_at(Speed::Standard).text("ok").usage().end(StopReason::End),
+            Response::new()
+                .served_at(Speed::Standard)
+                .text("ok")
+                .usage()
+                .end(StopReason::End),
             Response::new().text("ok").end(StopReason::End),
         ]);
         let ask_fast = || {
@@ -613,7 +643,11 @@ mod tests {
             panic!("{downgraded:?}");
         };
         assert_eq!(
-            (change.requested.clone(), change.served.clone(), change.by.clone()),
+            (
+                change.requested.clone(),
+                change.served.clone(),
+                change.by.clone()
+            ),
             (Speed::Fast, Speed::Standard, SpeedFallbackBy::Provider)
         );
         for event in &downgraded {
@@ -628,7 +662,10 @@ mod tests {
         let Some(ModelEvent::End { usage, .. }) = served.last() else {
             panic!("{served:?}");
         };
-        assert_eq!((usage.speed.clone(), usage.speed_requested.clone()), (Speed::Fast, None));
+        assert_eq!(
+            (usage.speed.clone(), usage.speed_requested.clone()),
+            (Speed::Fast, None)
+        );
     }
 
     #[test]

@@ -62,7 +62,10 @@ fn client(server: &SseServer, timer: &FakeTimer, clock: &FakeClock) -> ProviderC
 #[test]
 fn the_client_is_created_on_first_use_and_not_before() {
     let transport = HttpTransport::new(HttpOptions::default());
-    assert!(!transport.is_created(), "making a transport makes no client");
+    assert!(
+        !transport.is_created(),
+        "making a transport makes no client"
+    );
     let server = SseServer::start();
     server.push(ServerReply::sse().send("data: x\n\n"));
     run(async {
@@ -94,7 +97,10 @@ fn a_request_arrives_whole_and_the_response_comes_back() {
     let transport = HttpTransport::default();
     let key = Secret::new("sk-on-the-wire");
     let (status, headers, body) = run(async {
-        let mut request = post(server.url("/v1/test?x=1"), r#"{"model":"m","speed":"fast"}"#);
+        let mut request = post(
+            server.url("/v1/test?x=1"),
+            r#"{"model":"m","speed":"fast"}"#,
+        );
         request.headers.insert("x-custom", "value");
         request.headers.insert_secret("x-api-key", &key);
         let mut response = transport.send(request, CancelToken::new()).await.unwrap();
@@ -107,7 +113,10 @@ fn a_request_arrives_whole_and_the_response_comes_back() {
     assert_eq!(status, 200);
     assert_eq!(headers.get("content-type"), Some("text/event-stream"));
     assert_eq!(headers.get("X-Request-Id"), Some("req_real"));
-    assert_eq!(body, b"data: one\n\ndata: two\n\n", "the chunked framing is gone");
+    assert_eq!(
+        body, b"data: one\n\ndata: two\n\n",
+        "the chunked framing is gone"
+    );
 
     let received = server.requests();
     assert_eq!(received.len(), 1);
@@ -115,8 +124,17 @@ fn a_request_arrives_whole_and_the_response_comes_back() {
     assert_eq!(received[0].path, "/v1/test?x=1");
     assert_eq!(received[0].header("content-type"), Some("application/json"));
     assert_eq!(received[0].header("x-custom"), Some("value"));
-    assert_eq!(received[0].header("x-api-key"), Some("sk-on-the-wire"), "a secret is sent");
-    assert!(received[0].header("user-agent").unwrap().starts_with("cortex-harness/"));
+    assert_eq!(
+        received[0].header("x-api-key"),
+        Some("sk-on-the-wire"),
+        "a secret is sent"
+    );
+    assert!(
+        received[0]
+            .header("user-agent")
+            .unwrap()
+            .starts_with("cortex-harness/")
+    );
     assert_eq!(received[0].body, br#"{"model":"m","speed":"fast"}"#);
 }
 
@@ -178,7 +196,9 @@ fn a_failure_status_is_a_response_and_a_redirect_is_not_followed() {
         assert_eq!(body, br#"{"code":"rate_limit","message":"Slow down."}"#);
 
         let mut request = post(server.url("/"), "{}");
-        request.headers.insert_secret("x-api-key", &Secret::new("sk-stays-here"));
+        request
+            .headers
+            .insert_secret("x-api-key", &Secret::new("sk-stays-here"));
         let redirected = transport.send(request, CancelToken::new()).await.unwrap();
         assert_eq!(redirected.status, 302);
     });
@@ -278,9 +298,14 @@ fn a_connection_that_breaks_is_a_transport_error_of_the_right_kind() {
     // A URL that is not one, and a header HTTP cannot carry. Neither is
     // worth sending again, and neither message shows a value.
     let not_a_url = run(transport.send(post("not a url".to_owned(), "{}"), CancelToken::new()));
-    assert_eq!(not_a_url.unwrap_err().kind, TransportErrorKind::InvalidRequest);
+    assert_eq!(
+        not_a_url.unwrap_err().kind,
+        TransportErrorKind::InvalidRequest
+    );
     let mut request = post(server.url("/"), "{}");
-    request.headers.insert_secret("x-api-key", &Secret::new("line\nbreak-secret"));
+    request
+        .headers
+        .insert_secret("x-api-key", &Secret::new("line\nbreak-secret"));
     let bad_header = run(transport.send(request, CancelToken::new())).unwrap_err();
     assert_eq!(bad_header.kind, TransportErrorKind::InvalidRequest);
     assert!(bad_header.message.contains("x-api-key"), "{bad_header}");
@@ -293,7 +318,10 @@ fn a_whole_request_through_the_client_and_the_real_transport() {
     server.push(
         ServerReply::sse()
             .header("x-request-id", "req_e2e")
-            .send(text_response("Hello", &json!({"input": 12, "output": 3, "speed": "standard"}))),
+            .send(text_response(
+                "Hello",
+                &json!({"input": 12, "output": 3, "speed": "standard"}),
+            )),
     );
     let clock = FakeClock::starting_at(START).unwrap();
     let timer = FakeTimer::manual(&clock);
@@ -304,7 +332,14 @@ fn a_whole_request_through_the_client_and_the_real_transport() {
     let events = run(client.stream(request, CancelToken::new()).collect());
     assert_eq!(
         names(&events),
-        ["start", "block_start", "text", "block_end", "speed_fallback", "end"],
+        [
+            "start",
+            "block_start",
+            "text",
+            "block_end",
+            "speed_fallback",
+            "end"
+        ],
         "asked for fast, served standard, over a real socket"
     );
     let received = server.requests();
@@ -330,7 +365,10 @@ fn a_stalled_response_ends_at_the_idle_limit_and_the_connection_is_closed() {
 
     run(async {
         let mut stream = client.stream(fixtures::request(fixtures::model()), CancelToken::new());
-        assert!(matches!(stream.next().await, Some(ModelEvent::Start { .. })));
+        assert!(matches!(
+            stream.next().await,
+            Some(ModelEvent::Start { .. })
+        ));
 
         // The server has gone silent. Ninety seconds pass on the fake clock.
         let (last, ()) = join(stream.next(), async {
@@ -364,7 +402,10 @@ fn cancelling_a_request_through_the_client_closes_the_connection() {
 
     run(async {
         let mut stream = client.stream(fixtures::request(fixtures::model()), cancel.clone());
-        assert!(matches!(stream.next().await, Some(ModelEvent::Start { .. })));
+        assert!(matches!(
+            stream.next().await,
+            Some(ModelEvent::Start { .. })
+        ));
         cancel.cancel();
         let last = [stream.next().await.unwrap()];
         assert_kind(final_error(&last), ErrorKind::Interrupted, "interrupted");

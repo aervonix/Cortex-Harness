@@ -397,7 +397,12 @@ mod tests {
     #[test]
     fn every_fixture_parses_whole() {
         for fixture in FIXTURES {
-            assert_eq!(parse(&[fixture.stream]), expected(fixture), "{}", fixture.name);
+            assert_eq!(
+                parse(&[fixture.stream]),
+                expected(fixture),
+                "{}",
+                fixture.name
+            );
         }
     }
 
@@ -549,7 +554,10 @@ mod tests {
     #[test]
     fn bytes_that_are_not_text_are_replaced_not_refused() {
         let events = parse(&[b"data: ok \xFF\xFE end\n\n"]);
-        assert_eq!(events, [("message".to_owned(), "ok \u{fffd}\u{fffd} end".to_owned())]);
+        assert_eq!(
+            events,
+            [("message".to_owned(), "ok \u{fffd}\u{fffd} end".to_owned())]
+        );
     }
 
     #[test]
@@ -604,5 +612,81 @@ mod tests {
             while parser.next_event().is_some() {}
         }
         assert!(parser.buffer.capacity() < 64 * 1024);
+    }
+
+    /// Bytes that are not a well-formed stream: the pieces of the format in
+    /// any order, with bytes that are not text among them.
+    fn soup(rng: &mut cortex_testkit::SeededRng) -> Vec<u8> {
+        const PIECES: &[&[u8]] = &[
+            b"\n",
+            b"\n",
+            b"\r",
+            b"\r\n",
+            b":",
+            b": ",
+            b" ",
+            b"data",
+            b"data:",
+            b"data: ",
+            b"event",
+            b"event: ",
+            b"id: 1",
+            b"retry: 5",
+            b"x",
+            b"{\"a\":1}",
+            b"\xEF\xBB\xBF",
+            b"\xFF",
+            b"\xC3",
+            b"\xC3\xA9",
+            b"\xF0\x9F\x98\x80",
+            b"\0",
+        ];
+        let mut bytes = Vec::new();
+        for _ in 0..cases::small(rng, 60) {
+            bytes.extend_from_slice(cases::pick(rng, PIECES));
+        }
+        bytes
+    }
+
+    #[test]
+    fn any_bytes_parse_the_same_however_they_are_cut_and_never_panic() {
+        // This is the parser's fuzzing: a nightly run multiplies the cases
+        // (`docs/testing-and-ci.md`, "Property tests").
+        cases::check(
+            "sse_soup",
+            400,
+            |rng| {
+                let bytes = soup(rng);
+                let mut cuts = Vec::new();
+                let mut at = 0;
+                while at < bytes.len() {
+                    at = (at + 1 + cases::small(rng, 12)).min(bytes.len());
+                    cuts.push(at);
+                }
+                (bytes, cuts)
+            },
+            |(bytes, cuts)| {
+                let whole = parse(&[bytes]);
+                let mut chunks = Vec::new();
+                let mut from = 0;
+                for cut in cuts {
+                    chunks.push(&bytes[from..*cut]);
+                    from = *cut;
+                }
+                let cut_up = parse(&chunks);
+                ensure!(cut_up == whole, "whole: {whole:?}\n  cut up: {cut_up:?}");
+                let single: Vec<&[u8]> = bytes.chunks(1).collect();
+                let one_by_one = parse(&single);
+                ensure!(one_by_one == whole, "byte by byte: {one_by_one:?}");
+                for (event, data) in &whole {
+                    ensure!(!event.is_empty(), "an event with no name");
+                    ensure!(
+                        !event.contains(['\r', '\n']) && !data.contains('\r'),
+                        "a line ending inside a field: {event:?} {data:?}"
+                    );
+                }
+                Ok(())
+            },
+        );
     }
 }

@@ -148,7 +148,14 @@ mod tests {
         for name in ["read", "tool_call", "a", "Read-File_2", &"x".repeat(64)] {
             assert!(is_valid_tool_name(name), "{name:?}");
         }
-        for name in ["", "has space", "dot.name", "ünï", "slash/name", &"x".repeat(65)] {
+        for name in [
+            "",
+            "has space",
+            "dot.name",
+            "ünï",
+            "slash/name",
+            &"x".repeat(65),
+        ] {
             assert!(!is_valid_tool_name(name), "{name:?}");
         }
     }

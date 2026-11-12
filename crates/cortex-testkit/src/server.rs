@@ -430,7 +430,10 @@ mod tests {
         );
         let response = exchange(&server, r#"{"model":"m"}"#);
         assert!(response.starts_with("HTTP/1.1 200 "), "{response}");
-        assert!(response.contains("content-type: text/event-stream\r\n"), "{response}");
+        assert!(
+            response.contains("content-type: text/event-stream\r\n"),
+            "{response}"
+        );
         assert!(response.contains("x-request-id: req_7\r\n"), "{response}");
         // Two chunks of eleven bytes, then the end of the chunked body.
         assert!(
@@ -507,7 +510,11 @@ mod tests {
     fn it_can_hold_the_whole_response_back_and_is_let_go_when_dropped() {
         let server = SseServer::start();
         let never_opened = Gate::new();
-        server.push(ServerReply::sse().hold_until(&never_opened).send("data: x\n\n"));
+        server.push(
+            ServerReply::sse()
+                .hold_until(&never_opened)
+                .send("data: x\n\n"),
+        );
         let mut connection = TcpStream::connect(server.address).unwrap();
         connection
             .write_all(b"POST / HTTP/1.1\r\nContent-Length: 0\r\n\r\n")
@@ -527,7 +534,11 @@ mod tests {
         let response = exchange(&server, "");
         assert!(response.contains("data: half"), "{response}");
         assert!(!response.ends_with("0\r\n\r\n"), "{response}");
-        assert_eq!(exchange(&server, ""), "", "and a hang-up sends nothing at all");
+        assert_eq!(
+            exchange(&server, ""),
+            "",
+            "and a hang-up sends nothing at all"
+        );
         assert_eq!(server.requests().len(), 2);
     }
 }

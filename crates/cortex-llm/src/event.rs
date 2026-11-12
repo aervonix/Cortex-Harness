@@ -464,7 +464,12 @@ mod tests {
     #[test]
     fn a_response_that_reports_the_speed_that_was_sent_says_nothing_more() {
         let mut sink = EventSink::sent_at(Speed::Fast);
-        sink.end(StopReason::End, "end_turn", None, reported(Some(Speed::Fast)));
+        sink.end(
+            StopReason::End,
+            "end_turn",
+            None,
+            reported(Some(Speed::Fast)),
+        );
         let usage = final_usage(&sink);
         assert_eq!((usage.speed, usage.speed_requested), (Speed::Fast, None));
         assert!(fallbacks(&sink).is_empty());
@@ -476,7 +481,12 @@ mod tests {
         sink.start(Some("resp_1".to_owned()), "a-model");
         sink.usage(reported(Some(Speed::Standard)));
         sink.usage(reported(Some(Speed::Standard)));
-        sink.end(StopReason::End, "end_turn", None, reported(Some(Speed::Standard)));
+        sink.end(
+            StopReason::End,
+            "end_turn",
+            None,
+            reported(Some(Speed::Standard)),
+        );
 
         let usage = final_usage(&sink);
         assert_eq!(usage.speed, Speed::Standard);
@@ -519,7 +529,10 @@ mod tests {
         sink.end(StopReason::End, "stop", None, reported(None));
         let usage = final_usage(&sink);
         assert_eq!(usage.speed, Speed::Standard);
-        assert_eq!(usage.speed_requested, Some(Speed::Other("priority".to_owned())));
+        assert_eq!(
+            usage.speed_requested,
+            Some(Speed::Other("priority".to_owned()))
+        );
         assert_eq!(fallbacks(&sink).len(), 1);
         assert_eq!(fallbacks(&sink)[0].by, SpeedFallbackBy::Provider);
     }
@@ -528,7 +541,12 @@ mod tests {
     fn a_request_the_harness_already_moved_keeps_what_was_asked_for() {
         // Asked for fast, sent at standard during a cooldown, served standard.
         let mut sink = EventSink::new(Speed::Fast, Speed::Standard);
-        sink.end(StopReason::End, "end_turn", None, reported(Some(Speed::Standard)));
+        sink.end(
+            StopReason::End,
+            "end_turn",
+            None,
+            reported(Some(Speed::Standard)),
+        );
         let usage = final_usage(&sink);
         assert_eq!(usage.speed, Speed::Standard);
         assert_eq!(usage.speed_requested, Some(Speed::Fast));
@@ -542,7 +560,12 @@ mod tests {
     #[test]
     fn a_response_faster_than_asked_is_recorded_as_it_ran_too() {
         let mut sink = EventSink::sent_at(Speed::Standard);
-        sink.end(StopReason::End, "end_turn", None, reported(Some(Speed::Fast)));
+        sink.end(
+            StopReason::End,
+            "end_turn",
+            None,
+            reported(Some(Speed::Fast)),
+        );
         let usage = final_usage(&sink);
         assert_eq!(usage.speed, Speed::Fast);
         assert_eq!(usage.speed_requested, Some(Speed::Standard));
@@ -554,7 +577,11 @@ mod tests {
         let mut sink = EventSink::sent_at(Speed::Standard);
         assert_eq!(sink.known_request_id(), None);
         sink.request_id("req_42");
-        sink.error(ProviderError::new(ErrorKind::Transient, "overloaded_error", "Busy."));
+        sink.error(ProviderError::new(
+            ErrorKind::Transient,
+            "overloaded_error",
+            "Busy.",
+        ));
         let own = ProviderError::new(ErrorKind::Provider, "bad", "No.")
             .with_request_id(Some("req_own".to_owned()));
         sink.error(own);

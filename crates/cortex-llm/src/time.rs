@@ -112,8 +112,7 @@ mod tests {
     fn the_limit_ends_work_that_is_not_ready() {
         let token = CancelToken::new();
         let mut limit = at_once();
-        let mut raced =
-            std::pin::pin!(race(std::future::pending::<u8>(), &token, &mut limit));
+        let mut raced = std::pin::pin!(race(std::future::pending::<u8>(), &token, &mut limit));
         assert_eq!(poll(raced.as_mut()), Poll::Ready(Raced::TimedOut));
     }
 
@@ -122,8 +121,7 @@ mod tests {
         let token = CancelToken::new();
         let mut limit = never();
         {
-            let mut raced =
-                std::pin::pin!(race(std::future::pending::<u8>(), &token, &mut limit));
+            let mut raced = std::pin::pin!(race(std::future::pending::<u8>(), &token, &mut limit));
             assert_eq!(poll(raced.as_mut()), Poll::Pending);
             token.cancel();
             assert_eq!(poll(raced.as_mut()), Poll::Ready(Raced::Cancelled));
