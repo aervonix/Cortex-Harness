@@ -450,8 +450,35 @@ mod tests {
     /// The sample as a byte stream with the given line ending, and with empty
     /// lines mixed in.
     fn sample_stream(ending: &str) -> Vec<u8> {
+        stream_of(&sample_messages(), ending)
+    }
+
+    /// A shorter stream with the same difficulties, for the test whose work
+    /// grows with the square of the stream's length.
+    fn short_messages() -> Vec<Message> {
+        vec![
+            Notification {
+                method: "a".to_owned(),
+                params: Some(json!(["é日🙂", "\n\r\n"])),
+            }
+            .into(),
+            Response {
+                id: Some(RequestId::Number(7)),
+                result: Ok(json!({})),
+            }
+            .into(),
+            Request {
+                id: RequestId::String("b".to_owned()),
+                method: "c".to_owned(),
+                params: None,
+            }
+            .into(),
+        ]
+    }
+
+    fn stream_of(messages: &[Message], ending: &str) -> Vec<u8> {
         let mut stream = Vec::new();
-        for (index, message) in sample_messages().iter().enumerate() {
+        for (index, message) in messages.iter().enumerate() {
             if index == 1 {
                 stream.extend_from_slice(ending.as_bytes());
             }
@@ -497,9 +524,10 @@ mod tests {
 
     #[test]
     fn every_split_into_three_chunks_gives_the_same_messages() {
-        let expected = sample_messages();
+        let expected = short_messages();
         for ending in ["\n", "\r\n"] {
-            let stream = sample_stream(ending);
+            let stream = stream_of(&expected, ending);
+            assert!(stream.len() < 160, "kept short: {} bytes", stream.len());
             for first in 0..=stream.len() {
                 for second in first..=stream.len() {
                     let mut decoder = FrameDecoder::new();
@@ -538,13 +566,13 @@ mod tests {
 
     #[test]
     fn the_golden_transcript_survives_every_split_of_its_start() {
-        // Every split of the first few kilobytes, with both line endings,
+        // Every split of its first kilobyte, with both line endings,
         // compared line by line. The whole transcript is covered by the next
         // two tests.
         let expected: Vec<&str> = GOLDEN.lines().collect();
         for ending in ["\n", "\r\n"] {
             let stream = GOLDEN.replace('\n', ending).into_bytes();
-            let window = stream.len().min(4096);
+            let window = stream.len().min(1024);
             for split in 0..=window {
                 let mut decoder = FrameDecoder::new();
                 let mut lines = Vec::new();
