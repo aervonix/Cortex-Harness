@@ -1,0 +1,100 @@
+# After each merge to the main branch: the checks that are too slow to block
+# a pull request. In this first form, the release build with its binary size
+# and crate count. Later steps add the performance checks (tier 4).
+#
+# It does not block anything. When it fails, the `report` job opens an issue,
+# or adds a comment to the one that is open. The layout and the reasons are
+# in docs/testing-and-ci.md, "Not blocking". `cargo xtask rules` checks this
+# file: actions pinned by commit hash, a read-only token, and `issues: write`
+# for the `report` job alone.
+name: main
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force_failure:
+        description: Fail on purpose, to test that a failure opens an issue.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One at a time per branch. A run in progress is left to finish: each merge
+# gets its own record.
+concurrency:
+  group: main-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+
+jobs:
+  # The published profile (`dist`), built for the two release operating
+  # systems, with the size checked against its budget
+  # (docs/performance-budgets.md, "Binary size") and the number of crates in
+  # the build recorded. No build cache: the run is not waited on, and the
+  # blocking workflow's caches keep the whole 10 GB.
+  size:
+    name: size-${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - name: windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - name: Fail on purpose
+        if: ${{ inputs.force_failure }}
+        shell: bash
+        run: |
+          echo "::error::Failing on purpose: this run was started with force_failure."
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Keep cargo's and rustup's files off the system disk (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          "CARGO_HOME=$env:RUNNER_TEMP\cargo" >> $env:GITHUB_ENV
+          "RUSTUP_HOME=$env:RUNNER_TEMP\rustup" >> $env:GITHUB_ENV
+      - name: Install the toolchain from rust-toolchain.toml, and the target
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+      - name: Release build, binary size and crate count
+        run: cargo run --locked --quiet --package xtask -- size --check --target ${{ matrix.target }}
+      - name: Keep the record
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: size-${{ matrix.target }}
+          path: target/size/*.json
+          if-no-files-found: ignore
+          retention-days: 90
+
+  # The only job with a token that can write, and all it can write is issues.
+  report:
+    needs: [size]
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/report-failure
+        with:
+          workflow: main
+          needs: ${{ toJSON(needs) }}
+          token: ${{ github.token }}
