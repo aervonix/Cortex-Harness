@@ -172,16 +172,30 @@ pub(crate) fn size(arguments: &[String]) -> Result<()> {
 }
 
 /// `cargo xtask unused`
+///
+/// The tool is run by its own name, not as `cargo machete`: started through
+/// cargo from inside `cargo run`, version 0.9.2 took the word `machete` for
+/// the directory to analyse and failed (seen on the first nightly run).
 pub(crate) fn unused() -> Result<()> {
-    steps::cargo(&["machete"]).map_err(|error| {
-        format!(
-            "{error}\n    cargo-machete reads the sources and reports a dependency that no code \
-             names. Remove it from the manifest and from docs/dependencies.md, or, if it is \
-             used in a way the tool cannot see, say so in the manifest under \
-             [package.metadata.cargo-machete]. (Not installed? The version CI uses is in \
-             docs/dependencies.md.)"
-        )
-    })
+    const TOOL: &str = "cargo-machete";
+    println!("$ {TOOL}");
+    let status = Command::new(TOOL)
+        .current_dir(workspace::root())
+        .status()
+        .map_err(|error| {
+            format!(
+                "could not run {TOOL}: {error}. Is it installed? The version CI uses is in \
+                 docs/dependencies.md."
+            )
+        })?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "`{TOOL}` failed.\n    It reads the sources and reports a dependency that no code names. \
+         Remove it from the manifest and from docs/dependencies.md, or, if it is used in a way \
+         the tool cannot see, say so in the manifest under [package.metadata.cargo-machete]."
+    ))
 }
 
 /// `cargo xtask advisories`
