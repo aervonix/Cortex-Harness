@@ -2,7 +2,7 @@
 
 The second pillar of the [vision](../vision.md): full-featured, and lean in tokens, wall-clock time, footprint and the user's attention. Footprint is covered by [../performance-budgets.md](../performance-budgets.md). Cache-friendly prompt layout is covered by [07-sessions-and-context.md](07-sessions-and-context.md). This page specifies the rest.
 
-Each feature here spends something to save something. Where it spends against a speed budget, the conflict is listed in the open questions of [../build-plan.md](../build-plan.md) with a recommended resolution.
+Each feature here spends something to save something. Where it spends against a speed budget, the conflict is listed in [../build-plan.md](../build-plan.md) with the resolution the owner accepted on 2026-11-12.
 
 ## Repository map
 
@@ -127,11 +127,54 @@ Specified in [07-sessions-and-context.md](07-sessions-and-context.md). In short:
 - `verify.mode` is `auto`, `ask` (offer after each turn) or `off`.
 - The user can interrupt verification like any other tool.
 
-**Cost.** Verification trades wall-clock time and CPU for fewer broken turns. It runs at the end of a turn, not after every edit, to keep that trade favourable. Speculative verification, which starts earlier, is in [../ideas.md](../ideas.md).
+**Cost.** Verification trades wall-clock time and CPU for fewer broken turns. It runs at the end of a turn, not after every edit, to keep that trade favourable. The owner accepted this resolution on 2026-11-12 (conflict C7 in the [build plan](../build-plan.md)).
+
+### Speculative verification
+
+Adopted by the owner on 2026-11-12 ([../ideas.md](../ideas.md)), with one condition: it must work together with end-of-turn verification, not replace it or argue with it. This is how.
+
+**End-of-turn verification stays the only gate.** What is checked, when failures are fed back to the model, the time limits and the limit of two rounds are exactly as above. Speculative verification changes one thing: **when the work of a check starts.** It is a head start, and its result is a cache entry.
+
+| | End-of-turn verification (C7) | Speculative verification |
+|---|---|---|
+| Decides whether the turn passed | Yes | No |
+| Feeds failures back to the model unasked | Yes, at the end of the turn, up to two rounds | **Never** |
+| Starts | When the model ends its turn | When edits have landed and gone quiet, while the model is still working |
+| Result | Shown in the turn summary | Stored under a key, and used only if the key still matches |
+
+**The key.** Every speculative run is tied to the exact state it ran against: the check's command, and a hash of the contents of the files the turn has changed so far together with the base state. A result is valid only for that key.
+
+**How the two meet.**
+
+1. An edit lands. After a short quiet period (default 750 ms with no further edit), the harness starts the check the end-of-turn stage would run, for the current key.
+2. If another edit lands, the key changes. The running check is cancelled and, after the quiet period, restarted.
+3. When the model ends its turn, the verification stage computes the key and looks it up:
+   - **Finished, same key:** the result is used at once. The turn waits for nothing.
+   - **Running, same key:** the stage waits for that run, which has a head start, under the stage's own time limit.
+   - **No run, or a different key:** the stage runs the check normally.
+4. From there on the stage behaves as it always does. If the check failed, the failure is fed back, the model edits, and the cycle starts again with a new key. A feedback round counts as a round whether its result came from the cache or not.
+
+**When the model runs the check itself.** If the model calls the shell tool with a command that is exactly a known check, and a result exists for the current key, that result is returned with a note that it was already run against this state. Nothing is injected into the conversation that the model did not ask for, so the reason for C7 (no extra tokens and no interruptions after every edit) still holds.
+
+**Not interfering with the model's next step.**
+
+| Kind of check | Where it runs |
+|---|---|
+| Reads the tree only (a type-check with no outputs, a linter) | In place. |
+| Writes build outputs or caches | In an isolated copy of the workspace from the orchestration layer's workspace manager ([16-run-engine.md](16-run-engine.md)), with its own build directory. Or in place, if the project profile marks the command as safe to run alongside edits. |
+| Unknown | Not run speculatively. |
+
+**Limits.**
+
+- One speculative run at a time. Cancelled promptly, with the whole process tree.
+- It runs in the sandbox under the same policy as verification commands.
+- Not when the statistics say the check usually takes longer than a turn does, since it would rarely finish in time to be used.
+- `verify.speculative` is `off`, `auto` or `on`. The default is `off` until the local statistics show that its results are used often enough to pay for the CPU: every run is recorded as used, waited-on or wasted, and `auto` turns it on per project above a hit rate.
+- It needs verification (first release) and, for checks that write, the workspace manager (after the release). It is built after both.
 
 ## Live usage view
 
-Always visible in the status line ([09-tui.md](09-tui.md)): the context gauge, tokens, and session cost. `/usage` opens a panel with:
+Always visible in the status line ([09-tui.md](09-tui.md)): the context gauge, tokens, and session cost. `/usage` opens a panel. Its history side (usage and cost per provider, model and project over time, limits left, and other tools' records) is specified in [18-usage.md](18-usage.md). Its session side shows:
 
 - tokens by class for the session and the last request: fresh input, cache read, cache write, output, reasoning;
 - **cache hit rate:** cache-read tokens as a share of all input tokens, for the last request and the session;
@@ -139,7 +182,25 @@ Always visible in the status line ([09-tui.md](09-tui.md)): the context gauge, t
 - time to first token and tokens per second;
 - rate-limit state where the provider reports it.
 
-The same numbers are in `usage.updated` events for other clients ([11-rpc-protocol.md](11-rpc-protocol.md)). A fuller "where did the tokens go, and why did the cache miss" view is proposed in [../ideas.md](../ideas.md).
+The same numbers are in `usage.updated` events for other clients ([11-rpc-protocol.md](11-rpc-protocol.md)).
+
+## Context profiler
+
+Adopted by the owner on 2026-11-12 ([../ideas.md](../ideas.md)). The usage view says how much was used. The profiler says why, for one session.
+
+**Three questions.**
+
+| Question | Answered from | Example |
+|---|---|---|
+| Where did the tokens go? | The context record the statistics keep for each request ([14-adaptation.md](14-adaptation.md)): sizes by source and by item. | "Tool results are 61% of this context. One file, read four times, is 9,000 tokens of it." |
+| Why did the cache miss? | The prefix check that already runs on every request ([07-sessions-and-context.md](07-sessions-and-context.md)), which knows the first segment that differed. | "Request 14 missed the cache: the tool list changed when an MCP server reconnected." |
+| What would be cheaper? | Small rules over the same record, each with an estimated saving. | "This server's tool definitions cost 6% of every request. Switching it to search would save about 4,000 tokens a request." |
+
+**Rules, not a model.** Each suggestion is a tested rule with a threshold. A rule that cannot estimate its saving does not speak. The first set: a file read whole several times where its outline would have served; a tool's output that was mostly discarded; an extension or MCP server whose definitions are large and rarely used; an instruction file that dominates the prompt; a cache miss with a nameable cause; a session that would be cheaper after compaction.
+
+**Cost.** The record is a few numbers per item, written with the request event. The view is computed when opened. Nothing runs during a turn.
+
+**Where.** `/context` opens it. In the first release `/context` shows the breakdown by category, and the per-request record is already being kept. The full view, the cache-miss explanation and the suggestions are one build step after the release.
 
 ## Smart permissions
 
@@ -156,5 +217,6 @@ Specified in [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md). The
 | Parallel tools | Yes. | | |
 | Prefetch | Steps 1 and 2. | Step 3. | Needs statistics. |
 | Background compaction | Yes. | | |
-| Automatic verification | Configured and learned commands, at the end of a turn. | Test-impact analysis. Speculative runs. | Per-ecosystem work; the second is an idea, not yet agreed. |
-| Live usage view | Yes. | The context profiler. | An idea, not yet agreed. |
+| Automatic verification | Configured and learned commands, at the end of a turn. | Test-impact analysis. Speculative verification. | Per-ecosystem work. Speculative runs need the workspace manager and statistics that show they pay. |
+| Live usage view | Yes, with usage history for our own numbers. | Other tools' usage records. | Separate reader work. |
+| Context profiler | The by-category breakdown, and the per-request record. | The full view, cache-miss explanations, suggestions. | Presentation over data the first release already keeps. |

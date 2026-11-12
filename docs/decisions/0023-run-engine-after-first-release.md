@@ -1,6 +1,6 @@
 # 0023: One run engine for parallel attempts and for replay; after the first release
 
-- **Status:** Provisional. The order of milestones is the owner's call.
+- **Status:** Accepted by the owner on 2026-11-12 (conflicts C3 and C9).
 - **Date:** 2026-11-12
 
 ## Context

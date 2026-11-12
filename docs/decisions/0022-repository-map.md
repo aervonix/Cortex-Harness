@@ -1,6 +1,6 @@
 # 0022: The repository map uses approximate, pure-Rust outlines
 
-- **Status:** Provisional. Flagged as a conflict between the vision and the speed budgets, with this as the recommended resolution.
+- **Status:** Accepted by the owner on 2026-11-12. It resolves a conflict between the vision and the speed budgets (C2).
 - **Date:** 2026-11-12
 
 ## Context

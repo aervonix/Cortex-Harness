@@ -1,6 +1,6 @@
 # 0005: Extensions are JavaScript on an embedded QuickJS engine; MCP for process tools; Lua as the fallback
 
-- **Status:** Provisional. The mechanism and the language are the owner's call, and the Windows build of the engine is not yet confirmed.
+- **Status:** Accepted by the owner on 2026-11-12: JavaScript on QuickJS, with Lua as the fallback. One technical check remains, at the start of step 28: that the engine builds with the Windows toolchain.
 - **Date:** 2026-11-12
 
 ## Context

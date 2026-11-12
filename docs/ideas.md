@@ -1,16 +1,21 @@
-# Further ideas
+# Further ideas: all five adopted
 
-Five proposals beyond the agreed [vision](vision.md). They are options for the owner to pick from. None is a commitment, and none is in the build plan until chosen.
+Five proposals beyond the original [vision](vision.md). **The owner adopted all five on 2026-11-12.** Each is now designed in an architecture page and has a step in the [build plan](build-plan.md). This page keeps the reasoning: what each idea is, what is new about it, and what it costs.
 
 Each was picked because current harnesses do it poorly or not at all, and because it builds on something the design already has.
 
-| # | Idea | In one line | Builds on | Size |
-|---|---|---|---|---|
-| 1 | Checked memory | Every learned fact carries a cheap check that proves it is still true. | Project memory | M |
-| 2 | Corrections become evaluations | When the user corrects the agent, that moment is saved as a test case for the replay engine. | Run engine, snapshots | M |
-| 3 | Autonomy leases | The user grants a scoped, time- and cost-limited contract instead of answering prompts one by one. | Permissions, limits | M |
-| 4 | Context profiler | "Explain the bill": where the tokens went, why the cache missed, and what to change. | Local statistics, epochs | M |
-| 5 | Speculative verification | Start the likely next check before the model asks for it. | Verification, sandbox, snapshots | L |
+| # | Idea | In one line | Designed in | Build step | What the first release already carries |
+|---|---|---|---|---|---|
+| 1 | Checked memory | Every learned fact can carry a cheap check that proves it is still true. | [architecture/14-adaptation.md](architecture/14-adaptation.md) | 43 | The `check` field in the memory file format. |
+| 2 | Corrections become evaluations | When the user corrects the agent, that moment is saved as a test case for the replay engine. | [architecture/16-run-engine.md](architecture/16-run-engine.md) | 47 | Sessions record their base state and how each turn ended. |
+| 3 | Autonomy leases | The user grants a scoped, time- and cost-limited contract instead of answering prompts one by one. | [architecture/06-permissions-and-sandbox.md](architecture/06-permissions-and-sandbox.md) | 37 | The lease type, the standing lease and the ladder of levels. |
+| 4 | Context profiler | "Explain the bill": where the tokens went, why the cache missed, and what to change. | [architecture/15-efficiency.md](architecture/15-efficiency.md) | 44 | The per-request context record, and the by-category `/context` view. |
+| 5 | Speculative verification | Start the likely next check before it is needed. | [architecture/15-efficiency.md](architecture/15-efficiency.md) | 42 | End-of-turn verification, which stays the gate. |
+
+Two of them came with conditions from the owner, and the design pages say how each is met:
+
+- **Autonomy leases and the Coordinator's levels are one model.** One ladder of levels and one lease type serve a single session and a team ([decision 0026](decisions/0026-one-autonomy-model.md)).
+- **Speculative verification works with end-of-turn verification.** The end-of-turn stage stays the only gate and the only thing that feeds failures back. A speculative run is a head start whose result is used only if the files have not changed since.
 
 ---
 
@@ -27,7 +32,7 @@ Each was picked because current harnesses do it poorly or not at all, and becaus
 
 **Depends on.** Project memory ([architecture/14-adaptation.md](architecture/14-adaptation.md)), the sandbox, file snapshots.
 
-**Where it fits.** A follow-up to the project-memory step, after the first release.
+**Where it fits.** Step 43, after the first release. It depends on the project-memory step (17) and the verification step (19). The file format carries the field from the start.
 
 ## 2. Corrections become evaluations
 
@@ -43,7 +48,7 @@ Each was picked because current harnesses do it poorly or not at all, and becaus
 
 **Depends on.** The run engine ([architecture/16-run-engine.md](architecture/16-run-engine.md)), per-turn snapshots, the recorded starting state of sessions.
 
-**Where it fits.** Directly after the replay step. It is what makes per-model adaptation trustworthy, because variants are then compared on real corrections instead of live trial and error.
+**Where it fits.** Step 47, directly after the replay step (46). It is what makes per-model adaptation trustworthy, because variants are then compared on real corrections instead of live trial and error.
 
 ## 3. Autonomy leases
 
@@ -58,7 +63,7 @@ Each was picked because current harnesses do it poorly or not at all, and becaus
 
 **Depends on.** Permissions and limits ([architecture/06-permissions-and-sandbox.md](architecture/06-permissions-and-sandbox.md)), the project profile for "the project's build and test commands", automatic verification for the stop conditions.
 
-**Where it fits.** After the first release, once the profile and verification exist. It is also the natural permission model for parallel attempts, which run unattended.
+**Where it fits.** Step 37, the first autonomy step after the release, once permissions, budgets, the sandbox, the profile and verification exist. The Coordinator's team lease is the same thing with a team attached, so the Coordinator steps come after it and build on it. It is also the permission model for parallel attempts, which run unattended.
 
 ## 4. Context profiler
 
@@ -73,7 +78,7 @@ Each was picked because current harnesses do it poorly or not at all, and becaus
 
 **Depends on.** Local statistics ([architecture/14-adaptation.md](architecture/14-adaptation.md)), context epochs and the prefix check ([architecture/07-sessions-and-context.md](architecture/07-sessions-and-context.md)).
 
-**Where it fits.** A small step after the first release. A reduced form (the breakdown by category) is already in the first release as the `/context` command.
+**Where it fits.** Step 44, after the first release. It depends on context management (15), statistics (16) and panels (24). A reduced form (the breakdown by category) is in the first release as the `/context` command, and the record it needs is kept from the start.
 
 ## 5. Speculative verification
 
@@ -88,7 +93,7 @@ Each was picked because current harnesses do it poorly or not at all, and becaus
 
 **Depends on.** Automatic verification ([architecture/15-efficiency.md](architecture/15-efficiency.md)), the project profile for commands and their usual duration, the sandbox, file-state hashing, and for write-heavy checks the isolated workspaces of the run engine.
 
-**Where it fits.** After automatic verification and the run engine. It conflicts with the footprint goals on small machines, so it would ship off by default until statistics show it pays.
+**Where it fits.** Step 42, after automatic verification (19) and the orchestration layer's workspace manager (38). It conflicts with the footprint goals on small machines, so it ships off by default until statistics show it pays.
 
 ---
 

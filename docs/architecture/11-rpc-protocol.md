@@ -92,7 +92,7 @@ The first-release set. Each maps to one `Op`.
 | Method | Purpose |
 |---|---|
 | `initialize` | Handshake. |
-| `session/new` | Create a session: workspace, model, permission mode, overrides. |
+| `session/new` | Create a session: workspace, model, level (permission mode), overrides. |
 | `session/open` | Open a stored session by id. Returns its metadata and current state. |
 | `session/list` | List stored sessions for a workspace. |
 | `session/read` | Read items of a session, paged, from the log. Also used to resynchronise. |
@@ -101,9 +101,10 @@ The first-release set. Each maps to one `Op`.
 | `turn/start` | Send a prompt. If a turn is running, `delivery` must be `"steer"` or `"queue"`. Returns at once with the turn id and a disposition: `started`, `steering` or `queued`. |
 | `turn/interrupt` | Cancel the running turn. Idempotent. |
 | `session/compact` | Compact now, with optional focus instructions. |
-| `session/set` | Change settings for the session: model, reasoning level, permission mode. |
+| `session/set` | Change settings for the session: model, reasoning level, level (permission mode). Raising the level needs the `user` role. |
 | `plan/get`, `plan/update` | Read the plan, and apply a user's edit to it (reorder, skip, reword, add, remove). |
 | `usage/get` | Token, cost and cache figures for the session. |
+| `usage/report` | Usage and cost for a range (today, week, month, all time), grouped by provider, model, project or source, with limits left. Reads local data only ([18-usage.md](18-usage.md)). |
 | `project/list`, `project/update` | Read the project profile and memory, and accept, edit, disable or delete entries. |
 | `verify/run` | Run the project's checks now. |
 | `models/list`, `config/get`, `config/reload` | Read the catalog and the effective configuration. Reload configuration. |
@@ -113,7 +114,7 @@ The first-release set. Each maps to one `Op`.
 
 `turn/start` returning means "accepted". Completion is the `turn.completed` event. The response never carries the model's answer.
 
-After the first release, the orchestration layer adds methods under `run/*` ([16-run-engine.md](16-run-engine.md)) and the Coordinator adds methods under `team/*` ([17-coordinator.md](17-coordinator.md)): the team's status, the escalation queue and answers to it, the decision log, and attaching to an Employee. A run and an Employee are ordinary sessions, so the methods and events on this page are how they are driven:
+After the first release, task leases add `lease/grant`, `lease/get`, `lease/extend` and `lease/revoke`, which only a `user` client may call, and the usage readers add `usage/sources`. The orchestration layer adds methods under `run/*` ([16-run-engine.md](16-run-engine.md)) and the Coordinator adds methods under `team/*` ([17-coordinator.md](17-coordinator.md)): the team's status, the escalation queue and answers to it, the decision log, and attaching to an Employee. A run and an Employee are ordinary sessions, so the methods and events on this page are how they are driven:
 
 | The Coordinator needs | Provided by |
 |---|---|

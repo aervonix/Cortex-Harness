@@ -10,7 +10,7 @@ Three layers, each with a different job. The distinction matters because only on
 
 The sandbox enforces. Approvals decide when to step outside it. Rules exist to reduce how often a person is asked. The threat model is in [../security.md](../security.md).
 
-The default behaviour follows the [vision](../vision.md)'s autonomy policy: reads run, edits inside the project apply with a snapshot to undo them, and shell commands ask first unless they are on a safe list. How far to go beyond that is the owner's call, and those points are marked provisional in [../build-plan.md](../build-plan.md).
+The default behaviour follows the [vision](../vision.md)'s autonomy policy: reads run, edits inside the project apply with a snapshot to undo them, and shell commands ask first unless they are on a safe list. The owner accepted this posture, and how far the sandbox goes on each OS, on 2026-11-12 ([decision 0009](../decisions/0009-sandboxing.md)).
 
 ## What is checked
 
@@ -26,52 +26,79 @@ Every tool call is planned before it runs ([05-tools.md](05-tools.md)), and the 
 
 Built-in tools, extension tools and MCP tools all go through the same check. There is no path around it.
 
-## Modes
+## Autonomy: one model
 
-A mode is a named set of defaults. Rules refine it.
+How much the agent may do without asking is described by one model. It covers a single session, a time-limited piece of delegated work, and a Coordinator team ([17-coordinator.md](17-coordinator.md)). There is no separate "permission mode", "lease" and "team level": every session holds a **lease**, and every lease has a **level**. The owner asked for this on 2026-11-12 ([decision 0026](../decisions/0026-one-autonomy-model.md)).
 
-| Mode | Reads | Edits inside the workspace | Shell | Network from tools | Outside the workspace |
+### Levels
+
+A level says who decides when no rule has already settled the question: the **holder** of the lease, which is the agent, or its **supervisor**. The supervisor of an ordinary session is the user. The supervisor of an Employee is its Manager, as far as the Manager's own lease reaches, and the user beyond that.
+
+| Level | Reads | Edits inside the lease's scope | Commands on a safe list | Other commands | Anything beyond the lease's scope |
 |---|---|---|---|---|---|
-| `read-only` | allow | deny | safe-listed read-only commands run; anything else asks | ask | read: ask; write: deny |
-| `standard` (default) | allow | allow, with a snapshot | ask first, unless the command is on a safe list | ask | ask |
-| `autonomous` | allow | allow, with a snapshot | runs without asking inside an enforcing sandbox; asks to leave it | off inside the sandbox; ask otherwise | ask |
-| `unrestricted` | allow | allow | allow, no sandbox | allow | allow |
+| `read-only` | holder | refused | holder, for read-only commands | supervisor | supervisor for reads; writes refused |
+| `supervised` (default) | holder | holder, with a snapshot | holder | supervisor | supervisor |
+| `guided` | holder | holder, with a snapshot | holder | holder, for the kinds of command the lease names, inside an enforcing sandbox; otherwise supervisor | supervisor |
+| `autonomous` | holder | holder, with a snapshot | holder | holder, inside an enforcing sandbox | supervisor |
+| `unrestricted` | holder | holder | holder | holder, with no sandbox | holder |
 
-- `standard` is the vision's default, on every OS.
+- **`supervised` is the vision's default**, on every OS: reads and in-project edits do not ask, and shell commands ask unless they are on a safe list. The command line and configuration call a session's level its *mode* (`--permission-mode supervised`).
+- **The scope** of a lease is its rules and its sandbox policy: which paths may be edited, which commands may run, whether tools may use the network. For a session's ordinary lease the scope is the workspace. "Beyond the scope" covers leaving the sandbox, writing outside the workspace, and network access from tools.
 - **The safe list** is three lists together: the built-in table of read-only commands (below), commands the user approved for the session or the project, and commands learned for the project and accepted by the user ([14-adaptation.md](14-adaptation.md)), such as its build and test commands.
-- **The sandbox applies in every mode except `unrestricted`.** A command that runs, whether it was asked about or safe-listed, runs inside the sandbox where one is enforcing. Asking and confining are separate protections.
-- `autonomous` is for people who want fewer prompts and have an enforcing sandbox. It is refused, with an explanation, where the sandbox is not enforcing (Windows in the first release, or a Linux kernel without Landlock).
-- `unrestricted` must be chosen explicitly, by flag or user configuration. A project cannot select it or `autonomous`. The status line shows both prominently.
-- A front end that cannot ask (headless without pre-approval) treats "ask" as "deny" and says so in the result.
+- **The sandbox applies at every level except `unrestricted`.** A command that runs, whether it was asked about or not, runs inside the sandbox where one is enforcing. Asking and confining are separate protections.
+- **`guided` and `autonomous` need an enforcing sandbox.** They are refused, with an explanation, where the sandbox is not enforcing: Windows until its sandbox step, or a Linux kernel without Landlock. There, `supervised` is the highest level short of `unrestricted`, for single sessions and for teams alike.
+- **`unrestricted` must be chosen explicitly**, by flag or user configuration. A project cannot select it, nor `guided` or `autonomous`. It cannot be given to a team or passed down to a child session. The status line shows any level above `supervised` prominently.
+- **The decisions a team adds** (the plan, starting Employees, merging, spending past a threshold) follow the same ladder. Their rows are in [17-coordinator.md](17-coordinator.md).
+- A front end that cannot ask (headless without pre-approval) treats "supervisor" as "refused" and says so in the result.
 
-## Permissions are data
+### Leases
 
-Everything a session is allowed to do is one value, a **grant**: its mode, its rules, its sandbox policy, the models it may use, its budget, and its hard limits.
+Everything a session is allowed to do is one value.
 
 ```rust
-pub struct Grant {
-    pub mode: Mode,
-    pub rules: Vec<Rule>,
-    pub sandbox: SandboxPolicy,
-    pub models: Vec<ModelId>,
-    pub budget: Budget,
-    pub limits: HardLimits,
+pub struct Lease {
+    pub id: LeaseId,
+    pub grant: Grant,                   // what is allowed
+    pub stop_when: Vec<StopCondition>,  // when the holder must stop and report
+    pub expires: Expiry,                // Never | At(time) | EndOfTask | EndOfSession
+    pub granted_by: Grantor,            // User | Parent(LeaseId)
 }
 
-impl Grant {
-    /// The widest grant inside both. Never wider than `self`.
-    pub fn narrow(&self, requested: &Grant) -> Grant;
+pub struct Grant {
+    pub level: Level,
+    pub rules: Vec<Rule>,               // allow / ask / deny
+    pub sandbox: SandboxPolicy,         // writable roots, protected paths, network
+    pub models: Vec<ModelId>,
+    pub budget: Budget,                 // money, tokens, requests, wall-clock time
+    pub limits: HardLimits,             // what no level relaxes
+}
+
+impl Lease {
+    /// The widest lease inside both. Never wider than `self`.
+    pub fn narrow(&self, requested: &Lease) -> Lease;
     /// True if everything `self` permits, `parent` permits too.
-    pub fn is_within(&self, parent: &Grant) -> bool;
+    pub fn is_within(&self, parent: &Lease) -> bool;
 }
 ```
 
-- A session's grant is built from configuration, flags and the user's approvals. The permission engine and the sandbox launcher read only the grant.
-- **A parent can hand a child a subset, and only a subset.** A session that starts another session (a run, or an Employee under the Coordinator) proposes a grant, and the harness gives the child `parent.narrow(proposed)`. Nothing a model writes can make the child's grant wider than the parent's.
-- Narrowing is defined field by field: the stricter mode; the parent's `deny` and `ask` rules always carried over; `allow` rules kept only where the parent allows the same thing; writable roots intersected; the network allowed only if both allow it; budgets capped by what the parent has left.
-- A property test checks that `narrow` always returns a grant within both inputs.
+There are three kinds of lease, and they are the same type.
 
-This is in the first release because settings profiles, headless flags and the non-interactive policy of runs all compile to grants, and because the Coordinator ([17-coordinator.md](17-coordinator.md)) depends on it.
+| Kind | Who grants it | Lasts | Used for |
+|---|---|---|---|
+| **Standing lease** | Built from configuration, flags and the user's stored approvals. | The session. | Every session. Its level is the configured mode. Its budget is the configured session and daily limits. |
+| **Task lease** | The user, for one piece of work, confirmed in exact terms. | Until the work is done, the time or budget runs out, a stop condition fires, or the user revokes it. | "For the next 30 minutes or 2 dollars, edit under `src/` and `tests/`, run the build and the tests, and stop if the tests fail three times running." |
+| **Team lease** | The user, to a Manager session. Each Employee holds a **sub-lease** narrowed from it. | As a task lease. | The Coordinator. |
+
+- **Granting a task lease.** The user says what they want in a sentence, or picks a preset. The model may draft the terms, but a draft is only text. The harness shows the exact terms it will enforce (scope, level, budget, time, stop conditions) and the user confirms them. Only a client in the `user` role can create, extend or revoke a lease ([11-rpc-protocol.md](11-rpc-protocol.md)). Nothing a model writes can.
+- **Inside a task lease** the holder does not ask for what the lease covers. **At its edge** it does not start asking question after question: it stops at the next safe boundary, falls back to the standing lease, and reports what it did, what remains of the task, and what it would need to continue. The user can extend the lease or carry on step by step.
+- **Stop conditions** are checked by the harness: verification failed a set number of rounds in a row, an action outside the scope was needed, a spending threshold was crossed, the time ran out. They are data, not instructions to the model.
+- **A parent can hand a child a subset, and only a subset.** A session that starts another session (a run, or an Employee) proposes a lease, and the harness gives the child `parent.narrow(proposed)`. Narrowing is defined field by field: the lower level; the parent's `deny` and `ask` rules always carried over; `allow` rules kept only where the parent allows the same thing; writable roots intersected; the network allowed only if both allow it; budgets capped by what the parent has left; an expiry no later than the parent's; the stop conditions of both.
+- **What reads the lease.** The permission engine and the sandbox launcher read only the current lease's grant. The limits ledger ([03-agent-loop.md](03-agent-loop.md)) charges the lease's budget before each request.
+- **A task lease cannot exceed what the user could configure.** Managed configuration caps it, and a project cannot grant one.
+- The status line shows the level and, for a task lease, what remains of its time and budget. `/lease` shows the full terms.
+- Property tests check that `narrow` always returns a lease within both inputs, and that no sequence of narrowing widens anything.
+
+**In the first release:** the types, the standing lease, the levels `read-only`, `supervised`, `autonomous` and `unrestricted`, and `narrow` with its tests. Settings profiles, headless flags and the non-interactive policy of runs all compile to leases. **After it:** task leases and the `guided` level (one build step), then team leases with the Coordinator, which is built on that step. See the [build plan](../build-plan.md).
 
 ## Rules
 
@@ -95,7 +122,7 @@ action = "allow"
 ```
 
 - **Matching.** Path effects match with globs against the canonical path. Exec effects match against the analysed command (below). Extension and MCP tools match by `server/tool` name.
-- **Evaluation.** All matching rules are collected. `deny` beats `ask` beats `allow`. If no rule matches, the mode's default applies. Order in the file does not matter, so a broad allow can never hide a deny.
+- **Evaluation.** All matching rules are collected. `deny` beats `ask` beats `allow`. If no rule matches, the level's default applies. Order in the file does not matter, so a broad allow can never hide a deny.
 - **Layers.** Managed rules cannot be weakened by user rules, and user rules cannot be weakened by project rules. A project's rules can add `deny` and `ask`. A project's `allow` rules take effect only if the user has trusted the project and are shown at that time.
 - **Built-in deny rules** protect the harness's own files and credentials: the configuration directory, credential storage, and session logs of other projects.
 
@@ -135,7 +162,7 @@ An approval never outlives its scope. Session approvals are not saved. Stored ap
 
 **In the RPC protocol** an approval is a request from the server to the client ([11-rpc-protocol.md](11-rpc-protocol.md)). If no client answers within the configured time, the answer is deny.
 
-**When a session is supervised** by another session, its approval requests go to the supervisor first. The supervisor may answer only what its own grant covers, and passes the rest up to the user. A user attached to the session can always answer directly. See [17-coordinator.md](17-coordinator.md).
+**When a session is supervised** by another session, its approval requests go to the supervisor first. The supervisor may answer only what its own lease covers, and passes the rest up to the user. A user attached to the session can always answer directly. See [17-coordinator.md](17-coordinator.md).
 
 ## Project trust
 
@@ -159,7 +186,7 @@ pub struct SandboxPolicy {
 }
 ```
 
-**Default policy for `standard` mode:** read anywhere, write only inside the workspace and a per-session temporary directory, no network.
+**Default policy at the `supervised` level:** read anywhere, write only inside the workspace and a per-session temporary directory, no network.
 
 **Protected paths inside the workspace:** `.git/hooks`, `.git/config`, the project's `.cortex` directory, and shell start-up files. A process that can write these can run code later, outside the sandbox.
 
@@ -177,7 +204,7 @@ The harness re-executes itself as a small launcher: `cortex` with a hidden subco
 | Process group and death signal | Clean-up. | Nothing. |
 
 - No root, no helper program, no user namespaces, no container runtime. This matters because Ubuntu 24.04 and later restrict unprivileged user namespaces by default, which breaks the namespace-based approach other tools use unless an administrator installs a profile.
-- **Detection.** At start-up the harness asks the kernel which Landlock version it has. If Landlock is missing or disabled, the sandbox is reported as "not enforcing" in the status line, commands that run are not confined, and `autonomous` mode is refused.
+- **Detection.** At start-up the harness asks the kernel which Landlock version it has. If Landlock is missing or disabled, the sandbox is reported as "not enforcing" in the status line, commands that run are not confined, and the `guided` and `autonomous` levels are refused.
 - **Known limits, stated plainly.**
   - Landlock rules only add permissions. With the workspace writable, protected paths inside it cannot be blocked by Landlock alone. The harness therefore checks the protected paths after every sandboxed command and, if one changed, stops the turn, shows the change and offers to restore it from a checkpoint taken before the command. This detects; it does not prevent.
   - Reads are not restricted by default, so a sandboxed command can read files such as SSH keys. It cannot send them anywhere while the network is off. A stricter read policy is a configuration option.
@@ -194,7 +221,7 @@ A namespace-based backend (mount and network namespaces, with protected paths mo
 | Job Object, kill on close | The whole process tree dies with the command or the harness. Limits on process count and memory are available. |
 | Approvals | Every shell command that no rule allows is asked. |
 
-There is no filesystem or network confinement of child processes on Windows in the first release. The status line says "sandbox: off", and `autonomous` mode is not available. Extension scripts are still confined, because their confinement is the script runtime and not the OS.
+There is no filesystem or network confinement of child processes on Windows in the first release. The status line says "sandbox: off", and the `guided` and `autonomous` levels are not available. Extension scripts are still confined, because their confinement is the script runtime and not the OS.
 
 ### Windows: later, after its own spike
 

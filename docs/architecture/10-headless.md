@@ -18,7 +18,7 @@ cortex -p "fix it" --continue                    # continue the latest session h
 | `--continue`, `--resume <id>`, `--fork <id>` | Session selection, as in the TUI. |
 | `--no-session` | Do not write a session log. |
 | `--model`, `--effort` | Override the model and reasoning level. |
-| `--permission-mode <mode>` | `read-only`, `standard` or `unrestricted`. |
+| `--permission-mode <mode>` | `read-only`, `supervised`, `autonomous` or `unrestricted`. `autonomous` needs an enforcing sandbox. These are the levels in [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md). |
 | `--allow <rule>`, `--deny <rule>` | Add permission rules for this run, for example `--allow 'exec:cargo test *'`. |
 | `--trust-project` | Treat the project as trusted for this run. |
 | `--max-requests N`, `--max-cost USD`, `--max-time DURATION` | Limits. Reaching one stops the run with exit code 7. |

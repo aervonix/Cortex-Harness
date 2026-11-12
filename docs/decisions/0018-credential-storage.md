@@ -1,6 +1,6 @@
 # 0018: Credentials in an owner-only file on Linux, Credential Manager on Windows
 
-- **Status:** Provisional. The Linux default is the owner's call.
+- **Status:** Accepted by the owner on 2026-11-12.
 - **Date:** 2026-11-12
 
 ## Context

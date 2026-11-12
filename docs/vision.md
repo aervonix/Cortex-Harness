@@ -54,7 +54,7 @@ Full-featured, and efficient in every dimension that costs the user something.
   - A live, editable plan: a task list the user can reorder, skip or edit while the agent works.
   - Self-written extensions, as above.
   - Project memory across sessions, where every fact records where it came from and when it expires, and the user can view and edit all of it.
-- **More to find.** Further proposals are in [ideas.md](ideas.md). They are options for the owner, not commitments.
+- **More to find.** Five further proposals are in [ideas.md](ideas.md). The owner adopted all five on 2026-11-12, and each has a place in the build plan.
 
 ## Defaults and policies
 
@@ -90,6 +90,7 @@ Full-featured, and efficient in every dimension that costs the user something.
 | Compressed tool output with the full output a key press away | [architecture/05-tools.md](architecture/05-tools.md), [architecture/09-tui.md](architecture/09-tui.md) | Yes. |
 | Cache-ordered prompt | [architecture/07-sessions-and-context.md](architecture/07-sessions-and-context.md) | Yes. |
 | Live tokens, cost and cache hit rate | [architecture/09-tui.md](architecture/09-tui.md) | Yes. |
+| `/usage`: usage and cost per provider, model and project over time, limits left, other tools' records | [architecture/18-usage.md](architecture/18-usage.md) | Yes for our own numbers and limits. Other tools' records after the release. |
 | Tools start when their arguments finish; parallel tools; prefetch | [architecture/03-agent-loop.md](architecture/03-agent-loop.md), [architecture/15-efficiency.md](architecture/15-efficiency.md) | Yes for the first two, prefetch in a limited form. |
 | Background compaction | [architecture/07-sessions-and-context.md](architecture/07-sessions-and-context.md) | Yes. |
 | Start-up, memory, rendering | [performance-budgets.md](performance-budgets.md) | Yes. Budgets are checked in CI. |
@@ -98,6 +99,7 @@ Full-featured, and efficient in every dimension that costs the user something.
 | Live, editable plan | [architecture/05-tools.md](architecture/05-tools.md), [architecture/09-tui.md](architecture/09-tui.md) | Yes. |
 | Parallel attempts; replay and evaluation; one engine | [architecture/16-run-engine.md](architecture/16-run-engine.md) | No. First milestone after the release. |
 | The Coordinator | [architecture/17-coordinator.md](architecture/17-coordinator.md) | No. Right after the release, on the same layer. The first release carries the permission, protocol and log pieces it needs. |
+| The five adopted ideas: checked memory, corrections become evaluations, autonomy leases, the context profiler, speculative verification | [ideas.md](ideas.md) and the pages it names | No. Each follows the step it depends on, after the release. The first release carries the data each one needs. |
 | Autonomy default with snapshots | [architecture/06-permissions-and-sandbox.md](architecture/06-permissions-and-sandbox.md), [architecture/07-sessions-and-context.md](architecture/07-sessions-and-context.md) | Yes. |
 | Adaptive panels, accent colour | [architecture/09-tui.md](architecture/09-tui.md) | Yes. |
 | Reading `AGENTS.md`, `CLAUDE.md`, MCP configurations, Skills folders | [architecture/07-sessions-and-context.md](architecture/07-sessions-and-context.md), [architecture/13-mcp.md](architecture/13-mcp.md), [architecture/12-extensions.md](architecture/12-extensions.md) | Yes. |
@@ -106,4 +108,4 @@ Full-featured, and efficient in every dimension that costs the user something.
 | Onboarding | [architecture/08-configuration.md](architecture/08-configuration.md), [build-plan.md](build-plan.md) | Yes. |
 | Branching time-travel, re-attachable sessions | [architecture/07-sessions-and-context.md](architecture/07-sessions-and-context.md), [architecture/11-rpc-protocol.md](architecture/11-rpc-protocol.md) | Not as features. The design keeps them possible. |
 
-The reasons for each "later" are in the feature table of [build-plan.md](build-plan.md). Where a goal pulls against a speed budget, the conflict and a recommended resolution are in that page's open questions.
+The reasons for each "later" are in the feature table of [build-plan.md](build-plan.md). Where a goal pulls against a speed budget, the conflict and its resolution are in that page's record of the owner's decisions.

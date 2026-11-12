@@ -159,6 +159,8 @@ The whole tree is cleaned up on timeout, on cancellation, and when the harness e
 
 Concurrency: exclusive, unless the policy engine has classified the command as read-only.
 
+After the first release, when the command is exactly one of the project's known checks and speculative verification has already run it against the current state of the files, that result is returned with a note saying so ([15-efficiency.md](15-efficiency.md)).
+
 Long-lived background processes (development servers, watchers) are not in the first release. The design leaves room for a handle-based variant of this tool.
 
 ## `search`
@@ -231,6 +233,7 @@ Proposes a fact or convention for the project's memory.
 | `kind` | `"fact"` or `"convention"` | |
 | `text` | string | One or two sentences. |
 | `evidence` | string | Where this was learned: a path and line, a command, or the user's words. |
+| `check` | object, optional | A read-only test that shows the entry still holds: `exists`, `contains` or `command` ([14-adaptation.md](14-adaptation.md)). It is stored and shown with the proposal. Checks are run from the checked-memory step onward. |
 
 - The entry is stored as proposed, with its source, and becomes active only when the user accepts it ([14-adaptation.md](14-adaptation.md)).
 - Concurrency: read-only.

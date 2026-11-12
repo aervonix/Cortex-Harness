@@ -95,7 +95,7 @@ Running `cortex` with no configuration starts a short guided set-up in the TUI. 
 1. **Provider.** Detect provider keys in the environment and offer them. Otherwise ask for a provider and a key, and store the key in the credential store.
 2. **Import.** List what was found from other tools (instruction files, MCP servers, skills) and ask what to bring in.
 3. **Project.** Ask whether to trust the project, showing what trust enables. Offer to detect the build, test and check commands, and show them for confirmation before they enter the profile.
-4. **Preferences.** Permission mode, with `standard` preselected and explained in two lines.
+4. **Preferences.** Permission mode, with `supervised` preselected and explained in two lines.
 
 Headless mode never runs this. It reports what is missing and how to provide it.
 
@@ -128,7 +128,7 @@ A repository must not be able to take over the harness by containing a configura
 | Harmless preferences | default model, reasoning level, compaction settings, instruction file names, UI hints | Applied always. |
 | Can run code | hooks, extensions, MCP servers, custom commands with shell steps | Applied only after the user trusts the project, and pinned by hash ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)). |
 | Can widen access | permission `allow` rules, sandbox `write` paths, network on | Applied only after trust. Shown to the user at that time. |
-| User-only | credentials, provider base URLs and headers, permission mode `unrestricted`, sandbox off, the data directory, proxy and CA settings, anything under `[managed]` | Ignored in project layers, with a warning. |
+| User-only | credentials, provider base URLs and headers, permission modes above `supervised`, sandbox off, usage sources, the data directory, proxy and CA settings, anything under `[managed]` | Ignored in project layers, with a warning. |
 
 The list of user-only keys is part of the schema, and a test checks that every key is classified.
 
@@ -157,6 +157,7 @@ The schema, in outline. The configuration build step writes the full reference.
 | `[index]` | Repository map caps. |
 | `[compat]` | Which of the other tools' files to read. |
 | `[runs]` | Run engine: concurrency, workspace location, set-up command, budgets (after the first release). |
+| `[usage]` | Week start, calendar or rolling ranges, and, after the first release, which other tools' usage records may be read ([18-usage.md](18-usage.md)). |
 | `[tui]` | Presenter (inline or full screen), theme, density, markdown and diff options. |
 | `[keys.<mode>]` | Key bindings ([09-tui.md](09-tui.md)). |
 | `[terminal]` | Capability overrides, each defaulting to automatic detection. All terminal quirks live here. |

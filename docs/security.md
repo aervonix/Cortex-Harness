@@ -139,8 +139,8 @@ The reference harnesses load extensions into the agent process with the user's f
 | Mitigation | Effect |
 |---|---|
 | **Hard limits are enforced by the harness, never only stated in a prompt.** The budget is a ledger charged before each request. Models never run network git commands: commands run with the network off, and pushing or opening a pull request is done only by a harness operation that has no code path that forces. Writes are confined to each session's worktree by the sandbox and the path check. The main branch is refused as a merge target unless the grant allows it. | A Manager that has been talked into anything still cannot exceed the budget, force-push, write outside the project or merge to the main branch. |
-| **A child's grant is computed, not chosen.** An Employee receives the Manager's grant narrowed by what was requested. The narrowing is code with a property test. | No instruction, from the user's task or from an Employee, can give an Employee more than the Manager holds. |
-| **The Manager cannot approve beyond its own grant.** An Employee's approval request is checked against the Manager's grant before the Manager is asked. Anything outside it goes to the user. | "Please approve network access" from an Employee reaches the user, not just the Manager. |
+| **A child's lease is computed, not chosen.** An Employee receives the Manager's lease narrowed by what was requested. The narrowing is code with a property test. | No instruction, from the user's task or from an Employee, can give an Employee more than the Manager holds. |
+| **The Manager cannot approve beyond its own lease.** An Employee's approval request is checked against the Manager's lease before the Manager is asked. Anything outside it goes to the user. | "Please approve network access" from an Employee reaches the user, not just the Manager. |
 | **Employee output is data.** Reports, questions and summaries reach the Manager as bounded, labelled tool results, with the same sanitising as any tool output. They are never inserted as instructions or as the user's words. | The Manager can tell an Employee's text from the user's. This lowers the risk and does not remove it. |
 | **Integration is decided on evidence the harness produced.** Before a merge the harness runs the project's checks in the Employee's worktree and computes the diff itself. The review packet says what the checks returned and flags deleted or weakened tests. An Employee's claim that "tests pass" is not an input. | A persuasive report cannot stand in for a passing check. |
 | **Sensitive paths always go to the user** unless the grant names them: CI configuration, git hooks and configuration, the project's `.cortex` directory, dependency registry and script settings, files that look like secrets. | The changes most useful to an attacker are the ones a person must see, at every level. |
@@ -150,11 +150,45 @@ The reference harnesses load extensions into the agent process with the user's f
 | **Levels above supervised need an enforcing sandbox.** Where the OS sandbox is not enforcing, only the supervised level is offered. | The hard limits are never offered where they could not be guaranteed. |
 | **A watchdog in the harness**, not a model, pauses a session that stops making progress or repeats itself, and the whole team stops at the budget cap. | Runaway spend and stuck sessions are caught without relying on the Manager's judgement. |
 | **The user can see and stop everything**: every Employee is listed, any can be attached to, and one action stops the team. | |
-| The grant is shown in full, in plain language, before the team starts. | The user knows what they are delegating. |
+| The team lease is shown in full, in plain language, before the team starts. It is the same lease type and the same levels a single session uses (section 9). | The user knows what they are delegating, in terms they already know. |
 
 **Residual risk.**
 - Choices about design, security and scope depend on the Manager recognising them as such. The harness cannot detect them mechanically. At the guided and autonomous levels a steered Manager could make a poor design choice inside its grant; the decision log and review of the integration branch are the backstops, and the main branch stays out of reach.
 - Code written by a steered Employee can still be subtly wrong while passing the checks. The same is true of any agent, and review before merging to the main branch remains the user's.
+
+## 9. Task leases
+
+**Threat.** A task lease ([architecture/06-permissions-and-sandbox.md](architecture/06-permissions-and-sandbox.md)) lets the agent work without asking inside agreed terms. The risks are terms that are wider than the user understood, terms that widen themselves, and work that carries on after the user stopped watching.
+
+| Mitigation | Effect |
+|---|---|
+| **Only a person grants, extends or revokes a lease.** It is a protocol operation open to the `user` role alone. A model can draft terms; a draft is text. | Injected text cannot give the agent more autonomy. |
+| **The terms confirmed are the terms enforced.** The confirmation screen is rendered from the lease value itself: scope, level, budget, time, stop conditions. | No gap between what was read and what runs. |
+| **Every term is enforced by the harness**: scope by the permission engine and the sandbox, budget by the ledger, time by the supervisor, stop conditions as data. | None of it depends on the model's good behaviour. |
+| **`guided` and `autonomous` need an enforcing sandbox.** | Autonomy is never offered where confinement could not be guaranteed. |
+| **At the edge the agent stops and reports**, and the session falls back to its standing lease. | No drift into a stream of prompts that train the user to approve without reading. |
+| **A lease cannot exceed managed or user configuration, and a project cannot grant one.** | A repository cannot make itself trusted. |
+| **A child's lease is always a subset** (`narrow`, with property tests). | Runs, attempts and Employees cannot hold more than their parent. |
+| The level and what remains of the lease are always in the status line. | The user can see at a glance that the agent is working unasked, and for how much longer. |
+
+**Residual risk.** Inside its scope a lease permits everything it says. A lease that allows running the project's tests allows whatever the tests do, inside the sandbox. This is the same trust the user already places in the project's own build.
+
+## 10. Reading other tools' usage records
+
+**Threat.** The usage view can read files written by other coding agents ([architecture/18-usage.md](architecture/18-usage.md)). Those files hold conversations as well as numbers, are in formats that change without notice, and could be crafted by anything that can write to the user's home directory.
+
+| Mitigation | Effect |
+|---|---|
+| **Opt-in per source, user-only.** Nothing is opened until the user enables a source. A project cannot enable one. | No surprise reading of another tool's data. |
+| **Read-only.** Nothing is created, changed or locked in another tool's directory. | The other tool cannot be damaged. |
+| **Only numbers are kept.** Adapters extract times, model names, token counts, costs, project paths and record ids. A test asserts that no text field from the input reaches the output or the cache. | Conversations are not copied into our state. |
+| **No network.** The view and the indexer make no connection. Tested with the network denied. | Nothing read can be sent anywhere. |
+| **Untrusted input.** Size and line-length limits, no following of links out of the tool's directory, fuzzing of every adapter. A bad file is skipped and named. | A crafted file cannot crash the harness or make it read elsewhere. |
+| **Unknown versions are refused, not guessed.** | Wrong numbers are not shown as facts. |
+| **Every figure is labelled** with its source and cost basis. Estimates are never merged silently into metered totals. | The user is not misled about what was billed. |
+| The cache is owner-only and can be deleted per source. | |
+
+**Residual risk.** Project paths from other tools are shown in the view and stored in the cache. They stay on the machine.
 
 ## Reporting
 

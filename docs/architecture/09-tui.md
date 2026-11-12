@@ -1,8 +1,8 @@
 # The terminal UI
 
-The interactive front end. It is written in Rust and lives in the main binary, in two crates: `cortex-term` (terminal layer and renderer, no knowledge of agents) and `cortex-tui` (the application). The language choice is [decision 0001](../decisions/0001-tui-language.md), provisional until the owner approves it. The rendering approach is [decision 0002](../decisions/0002-tui-rendering.md).
+The interactive front end. It is written in Rust and lives in the main binary, in two crates: `cortex-term` (terminal layer and renderer, no knowledge of agents) and `cortex-tui` (the application). The language choice is [decision 0001](../decisions/0001-tui-language.md) and the rendering approach is [decision 0002](../decisions/0002-tui-rendering.md). The owner accepted both on 2026-11-12; they stay provisional until the Windows Terminal checklist has been run, which must happen before the terminal layer is built.
 
-The look described here is our own. It was designed from the requirements, not from another tool's screen. Glyphs, wording, colours, commands and default keys are defaults that the owner can change (see the open questions in [../build-plan.md](../build-plan.md)); the TUI build steps implement what this page says and do not need to invent more.
+The look described here is our own. It was designed from the requirements, not from another tool's screen. Glyphs, wording, colours, commands and default keys are defaults. The owner accepted them as drafted on 2026-11-12; the TUI build steps implement what this page says and do not need to invent more.
 
 It follows the [vision](../vision.md)'s interface policy: a clean chat-style flow by default, panels that open when there is something to show and close again, and the logo's purple (`#7A3CFB`) as the accent colour.
 
@@ -191,8 +191,8 @@ From top to bottom:
 |---|---|
 | Model | Short model name and reasoning level. |
 | Context | A ten-cell gauge, the percentage of the context window in use, and the token count. The gauge takes the warning colour at 70% and the error colour at 90%. |
-| Cost | Session cost, when prices are known, and the cache hit rate of the last request (`cache 94%`). |
-| Access | Permission mode and sandbox state: `sandboxed`, `sandbox off`, or `unrestricted` in the warning colour. |
+| Cost | Session cost, when prices are known, and the cache hit rate of the last request (`cache 94%`). When a provider reports a limit and less than a fifth of it is left, what remains and when it resets. |
+| Access | The level and sandbox state: `sandboxed`, `sandbox off`, or `unrestricted` in the warning colour. Under a task lease (after the first release), what remains of its time and budget. |
 | Extras | Shown when relevant: queued prompt count, MCP or extension problems, rate-limit wait. |
 
 Segments are dropped from the right when the window is narrow. Under 50 columns the status line shows the model and the gauge only.
@@ -205,7 +205,7 @@ A panel is a bounded block in the live region that appears when it has something
 |---|---|---|---|
 | **Plan** | The `plan` tool has items. | Collapsed: one line of items with `☐`, `◧` (active), `☑`, `⊘` (skipped). Expanded: one item per line. | The plan is empty or all items are done and the turn has ended. |
 | **Review** | A turn ended having changed files. | One line per changed file with `+` and `−` counts, and the verification result. | The next prompt is sent. The changes stay reachable through `/view` and `/undo`. |
-| **Usage** | `/usage`, or a limit is near. | Tokens by class, cache hit rate, cost by model, speed. | Dismissed, or the limit is no longer near. |
+| **Usage** | `/usage`, or a limit is near. | This session: tokens by class, cache hit rate, cost by model, speed. History: usage and cost per provider and model for today, the week, the month and all time, with a breakdown per project, and what is left of each provider's limits ([18-usage.md](18-usage.md)). | Dismissed, or the limit is no longer near. |
 | **Project** | Learned entries are waiting for review, or `/project`. | Proposed commands, conventions and facts with their sources. | Reviewed or dismissed. |
 | **Attempts** (after the first release) | Parallel attempts are running. | One row per attempt: variant, state, cost, checks. | A winner is picked or the attempts are discarded. |
 | **Employees** (after the first release) | A Coordinator team is running. | One row per Employee: task, state (working, waiting, needs approval, stuck, done), model, spend, last activity. `Enter` attaches to that Employee: the transcript view switches to its session, and a banner shows whose session it is and how to return. | The team has finished and its work is integrated or discarded. |
@@ -214,7 +214,7 @@ A panel is a bounded block in the live region that appears when it has something
 - **Height.** Each panel is collapsed by default to one to three lines. The live region's overall limit still applies; when several panels compete, the oldest collapses first.
 - **Focus.** `Ctrl+P` moves focus from the editor to the panels and back. In a focused panel, `Up` and `Down` move, `Enter` expands or opens the item in the viewer, and `Esc` returns to the editor.
 - **Editing the plan.** With the plan panel focused: `Space` skips or restores an item, `e` rewords it, `Alt+Up` and `Alt+Down` reorder, `a` adds, `d` deletes. Each change takes effect at once and is passed to the agent at its next safe boundary ([05-tools.md](05-tools.md)).
-- **In the full-screen presenter**, on a wide window, panels may sit beside the transcript instead of above the editor. The components are the same. Whether side-by-side panes should be the default is an open question for the owner.
+- **In the full-screen presenter**, on a wide window, panels may sit beside the transcript instead of above the editor. The components are the same. The owner chose stacked panels as the default on 2026-11-12.
 
 ### Dialogs and menus
 
@@ -322,11 +322,12 @@ Every binding can be changed in `[keys]`. Bindings are looked up through a key m
 | `/rewind` | Picks an earlier point to continue from, with or without restoring files. |
 | `/undo` | Restores the files changed by the last turn and steps back before it. |
 | `/model`, `/effort` | Pickers for the model and reasoning level. |
-| `/mode` | Picks the permission mode. |
+| `/mode` | Picks the level (the permission mode). |
+| `/lease` | After the first release: grants, shows, extends or ends a task lease ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)). |
 | `/permissions` | Lists and removes stored approvals. |
 | `/compact [focus]` | Compacts now. |
-| `/context` | Shows what the context window holds, by category. |
-| `/usage` | Opens the usage panel: tokens, cache hit rate, cost, speed. |
+| `/context` | Shows what the context window holds, by category. After the first release it opens the context profiler ([15-efficiency.md](15-efficiency.md)). |
+| `/usage` | Opens the usage panel: this session, and usage and cost by provider, model and project over time, with limits left ([18-usage.md](18-usage.md)). |
 | `/plan` | Focuses the plan panel. |
 | `/project` | Opens the project profile and memory for review. |
 | `/profile <name>` | Switches the settings profile. |
@@ -393,4 +394,6 @@ Covered in [../testing-and-ci.md](../testing-and-ci.md): snapshot tests of view 
 
 ## Not in the first release
 
-Mouse support in inline mode, image display, a vi editing mode, the attempts panel, screen-reader mode, and running the user's own shell commands from the prompt. None is ruled out by the design.
+Mouse support in inline mode, image display, a vi editing mode, screen-reader mode, and running the user's own shell commands from the prompt. None is ruled out by the design.
+
+Planned for after the release, each with its own build step: task leases and `/lease`, the attempts panel, the Employees and escalations panels, the full context profiler behind `/context`, and other tools' records in `/usage`.

@@ -1,6 +1,6 @@
 # 0024: The Coordinator is built on the orchestration layer, with limits enforced by the harness
 
-- **Status:** Provisional. Scope and timing are the owner's call.
+- **Status:** Accepted. The owner asked for the feature and its place in the plan, and on 2026-11-12 accepted that only the supervised level is offered on Windows until its sandbox exists. Its levels and its team lease are the single autonomy model of [0026](0026-one-autonomy-model.md).
 - **Date:** 2026-11-12
 
 ## Context
@@ -43,7 +43,7 @@ It is the most security-sensitive feature in the product. A session with broad p
 - **Approvals route to the Manager first, bounded by its grant,** and otherwise to the user through an escalation queue. A user's answer always wins.
 - **The escalation queue and the decision log are session records.**
 - **Levels above supervised require an enforcing sandbox.**
-- **The first release carries** the grant type, client roles and approval routing, the reserved record kinds, the shared limits ledger and several sessions per core, so the Coordinator adds a crate and panels and changes none of them.
+- **The first release carries** the lease type, client roles and approval routing, the reserved record kinds, the shared limits ledger and several sessions per core, so the Coordinator adds a crate and panels and changes none of them.
 - **It is built in two steps right after the orchestration layer and parallel attempts.**
 
 Specified in [architecture/17-coordinator.md](../architecture/17-coordinator.md). Threats in [security.md](../security.md), section 8.

@@ -33,7 +33,7 @@ The loop is an explicit state machine. There are no boolean flags such as "is re
 | `Backoff` | Sleep until the next attempt. Emit retry notices. | Timer → `Requesting`. Attempts exhausted → `Finishing` with the error. |
 | `Deciding` | Record the assistant item. Look at the stop reason. | Tool calls → `ToolRound`. No tool calls and files changed in this turn → `Verifying`. Otherwise → `Finishing`, or `Preparing` if a continuation is required. |
 | `ToolRound` | Plan, approve, run and record every call. Calls that started early are joined here. | All results recorded → `Preparing`. |
-| `Verifying` | Run the project's checks ([15-efficiency.md](15-efficiency.md)). | Passed, skipped or round limit reached → `Finishing`. Failed → append the failures as a notice → `Preparing`. |
+| `Verifying` | Run the project's checks ([15-efficiency.md](15-efficiency.md)). After the first release, a check that speculative verification already ran against exactly this state is used instead of being run again. | Passed, skipped or round limit reached → `Finishing`. Failed → append the failures as a notice → `Preparing`. |
 | `Finishing` | Flush the log. Emit `turn.completed`. | Queued prompt → `Preparing` as a new turn. Otherwise → `Idle`. |
 | `Interrupted` | Cancel children, record what exists, emit `turn.completed` with outcome `interrupted`. | Always → `Idle`. Queued prompts stay queued and the front end is told. |
 

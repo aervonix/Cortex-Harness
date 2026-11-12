@@ -1,6 +1,6 @@
 # 0020: The edit tool matches exactly, with one tolerant tier
 
-- **Status:** Provisional. To be confirmed with evaluation data after the first release.
+- **Status:** Accepted by the owner on 2026-11-12. To be looked at again with evaluation data after the first release.
 - **Date:** 2026-11-12
 
 ## Context

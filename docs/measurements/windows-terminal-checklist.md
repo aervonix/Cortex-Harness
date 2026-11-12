@@ -2,6 +2,8 @@
 
 A short manual check for the owner to run on the desktop, in native Windows. It covers the one thing the TUI measurements could not: how the prototypes behave in a real Windows Terminal window.
 
+**When.** Before step 20 of the build plan, the terminal layer. The owner accepted both decisions on 2026-11-12 on the condition that this is run first.
+
 **Why it is manual.** The measurement harness ran on Linux (the laptop, and the desktop under WSL 2). It cannot see a Windows terminal window, and a pseudo-terminal recording does not show what a person sees. The decision in [decisions/0001-tui-language.md](../decisions/0001-tui-language.md) stays provisional until this has been run.
 
 **Time:** about 20 minutes.
@@ -10,7 +12,7 @@ A short manual check for the owner to run on the desktop, in native Windows. It 
 
 - Windows Terminal, current stable. Note its version (Settings → About).
 - A Rust toolchain for Windows, and Bun or Node for the TypeScript prototype.
-- The spike folder `ch-spike-tui`. It is not in this repo. The step 1 report says where the copy is. It holds the stub core, the Rust prototype (`tui-rs`), the TypeScript prototype (`tui-ts`) and the benchmark harness (`tui-bench`).
+- The spike folder `ch-spike-tui`. It is not in this repo. It is inside the archive of step 1's spikes, `cortex-harness-step1-spikes.tar.gz`, which the owner is keeping until this checklist has been run. It holds the stub core, the Rust prototype (`tui-rs`), the TypeScript prototype (`tui-ts`) and the benchmark harness (`tui-bench`).
 
 ## Build
 

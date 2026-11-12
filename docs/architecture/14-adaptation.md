@@ -17,14 +17,15 @@ Four rules hold for all of them.
 
 | Event | Fields | Used for |
 |---|---|---|
-| Request | provider, model, variant ids, tokens by class, cost, time to first token, tokens per second, stop reason, retries | Cost and cache views, routing, per-model choices. |
+| Request | time, provider, model, role, project key, session, variant ids, tokens by class, cost as priced at that moment, billing kind (metered, subscription, unknown), time to first token, tokens per second, stop reason, retries | The usage view ([18-usage.md](18-usage.md)), cost and cache views, routing, per-model choices. |
+| Context | per request: token estimates by source (system prompt, each instruction file, profile, repository map, tool definitions by origin, history by item kind), and where the cached prefix first differed when the cache missed | The context profiler ([15-efficiency.md](15-efficiency.md)). |
 | Tool call | tool, model, variant ids, outcome (ok, invalid arguments, failed, denied), duration | Tool-schema and edit-format success rates. |
 | Edit | model, edit format, matching tier used, outcome | Choosing the edit format per model. |
 | Turn | model, requests, tool calls, outcome, verification result, whether the user undid it | The quality signal for a set-up. |
 | Command | project, command class (build, test, check), exit status, duration | The project profile, verification planning. |
 | Run | from the run engine: task, variant, judge results | Replay and evaluation ([16-run-engine.md](16-run-engine.md)). |
 
-**Where.** Append-only JSON lines in the state directory, one file per month, plus a small aggregates file that is rebuilt from them. The comparison with a database is in [decision 0021](../decisions/0021-local-statistics.md).
+**Where.** Append-only JSON lines in the state directory, one file per month, plus a small aggregates file that is rebuilt from them. The aggregates hold success rates per model and variant, and usage buckets by local day, provider, model, project and billing kind; day buckets fold into month buckets after 400 days, so all-time usage outlives the raw files. The comparison with a database is in [decision 0021](../decisions/0021-local-statistics.md).
 
 **Cost, against the speed budgets.**
 
@@ -56,6 +57,7 @@ Every entry carries:
 | `status` | `proposed`, `active` or `disabled`. |
 | `confirmed` | When it was last seen to hold. |
 | `expires` | When it stops being used unless confirmed again. User-written entries do not expire. Learned entries get a default by kind (commands 90 days, flaky tests 30, facts and conventions 60). |
+| `check` | Optional. A cheap, read-only test that shows the entry still holds. See "Checked memory" below. |
 
 ### Where it lives
 
@@ -74,7 +76,39 @@ Both are plain TOML that a person can read and edit. The shared file needs no tr
 | **Proposed** | The model calls the `remember` tool with a fact or convention and a pointer to the evidence. Or a session-end pass (off by default, and run on the fast model) proposes entries. | Only when the user accepts it in the review panel. |
 | **Written** | The user adds or edits an entry. | Immediately. |
 
-How much is accepted without review is an open question for the owner ([../build-plan.md](../build-plan.md)).
+The owner confirmed this split on 2026-11-12: observed facts become active with a notice, and anything a model inferred waits for review.
+
+### Checked memory
+
+Adopted by the owner on 2026-11-12 ([../ideas.md](../ideas.md)). An expiry date is a guess about when a fact goes stale. A check replaces the guess with evidence.
+
+**What a check is.** One of a small set of forms, all read-only:
+
+| Form | Example | Holds when |
+|---|---|---|
+| `exists` | `exists = "scripts/release.sh"` | The path exists. |
+| `contains` | `contains = { path = "src/router.rs", pattern = "/v2" }` | A search in that file or folder finds the pattern. |
+| `command` | `command = "cargo nextest list"` | The command exits with success. It must be one the command analysis classes as read-only, or one the user approved when accepting the entry. |
+
+**Who writes it.** The model, as an optional argument to `remember`, shown with the proposal and accepted or dropped with it. Or the user. For an observed `command` entry the harness writes the obvious one itself: the command's program still exists.
+
+**When it runs.**
+
+- Before an entry is used after a long gap (default 7 days since `confirmed`).
+- When a file the entry was learned from, or a file its check names, has changed since `confirmed` (by content hash).
+- Never at start-up. In the background on the blocking pool, inside the sandbox with no write access and no network, with a short time limit, at most a few per session.
+
+**What follows.**
+
+| Result | Effect |
+|---|---|
+| Holds | `confirmed` is updated and the expiry moves out. |
+| Fails | The entry is disabled, leaves the prompt at the next epoch, and the user gets a notice with the evidence and a way to restore it. |
+| Flips more than once | The check itself is unreliable. It is dropped, and the entry goes back to plain expiry. |
+
+An entry with no check behaves exactly as before.
+
+**In the first release** the `check` field is part of the file format, is shown in the review panel, and is not run. Running checks is its own build step after the release, because it needs the verification runner and care about flaky checks.
 
 ### How entries are used
 
@@ -140,8 +174,8 @@ Different work deserves different models. Configuration names models by role.
 
 | Feature | First usable release | Later | Why later |
 |---|---|---|---|
-| Local statistics | Recording, the usage views, reset and disable. | | |
+| Local statistics | Recording, the usage view for our own numbers in every range ([18-usage.md](18-usage.md)), reset and disable. | Usage recorded by other tools. | Separate reader work with its own fixtures. |
 | Project profile | Observed commands and flaky tests. User-written entries. Review panel. Prompt section. | A session-end pass that proposes entries. | It costs tokens on every session, so it should follow evidence that proposals are good. |
-| Project memory | `remember` proposals with source and expiry, accepted by review. | Checks that prove a fact still holds ([../ideas.md](../ideas.md)). | Not agreed yet. |
+| Project memory | `remember` proposals with source and expiry, accepted by review. The `check` field stored and shown. | Running checks (checked memory). | Adopted on 2026-11-12. It needs the verification runner, and handling of unreliable checks. |
 | Per-model variants | Variant points, defaults, overrides, recording. | Measured choice. A second edit format. | Needs data that only exists after people use it, and a second format to choose between. |
 | Routing | Roles for utility calls. Budgets. | Delegated sub-tasks. Measured routing. | Needs sub-agents. |

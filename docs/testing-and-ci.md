@@ -42,6 +42,8 @@ Tiers 1 to 3 are separated by where the test lives and by nextest filters, not b
 
 **No paid API in CI.** Pull-request jobs have no secrets. The scripted fakes and fixtures cover everything that blocks.
 
+**Usage records from other tools.** The adapters in [architecture/18-usage.md](architecture/18-usage.md) are tested only against small, made-up example files written for the purpose: one set per format version an adapter supports, plus damaged and unknown-version examples. Real session data from any tool is never used as a fixture and never committed. The static check that rejects home-directory paths covers the fixture folders, and an adapter test asserts that no text from the input reaches the output.
+
 ## Testing the TUI
 
 Three levels, matching the tiers.
@@ -72,6 +74,7 @@ Every row is a test, or a group of tests, that runs on the Windows job.
 | Permissions on files | Session, credential and state files are readable only by the user. |
 | Configuration | Files with a byte-order mark and CRLF parse. |
 | Extension scripts | The script engine builds and runs, and a script's host calls are denied exactly as on Linux. |
+| Command names | The binary behaves identically as `cortex.exe` and `cx.exe`. The install script creates the alias as a hard link, falls back to a copy, and never overwrites another program's `cx`. |
 
 What CI cannot check is how a real terminal window looks. That is the manual checklist in [measurements/windows-terminal-checklist.md](measurements/windows-terminal-checklist.md), run by the owner at the points the build plan names.
 
@@ -126,7 +129,7 @@ These are estimates from measurements on other hardware. **Step 2 measures all f
 4. One integration-test binary per crate, to cut link steps.
 5. Use the faster linker on Windows for test builds if step 2 measures a gain.
 6. If the Windows job is still over budget on a warm cache: split it in two with nextest's partitioning, building once and sharing the test archive.
-7. If a cold-cache Windows run is still over 5 minutes after all of this, that case is reported to the owner as an open question. The limit is not relaxed quietly.
+7. If a cold-cache Windows run is still over 5 minutes after all of this, that case is reported to the owner for a decision. The limit is not relaxed quietly.
 
 **What grows the time, and the rule for each.**
 

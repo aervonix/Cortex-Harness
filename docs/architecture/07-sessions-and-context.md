@@ -82,7 +82,8 @@ One JSON object per line. Every entry has the same envelope.
 | `meta` | Title, labels, user notes. | no |
 | `ext` | State saved by an extension, namespaced by extension id. | no |
 | `escalation` | A question waiting for the user, and later its answer. Used by the Coordinator ([17-coordinator.md](17-coordinator.md)). Reserved in the first release. | no |
-| `decision` | Something a Manager session decided without asking, with its reason and the grant clause that allowed it. Reserved in the first release. | no |
+| `decision` | Something a Manager session decided without asking, with its reason and the lease clause that allowed it. Reserved in the first release. | no |
+| `lease` | A lease granted, extended or ended, with its exact terms and who granted it ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)). The standing lease is recorded when a session starts. Task and team leases come after the first release. | no |
 
 **Writing.**
 
@@ -122,7 +123,7 @@ Edits apply without asking ([06-permissions-and-sandbox.md](06-permissions-and-s
 - **Undo** restores the files changed by the last turn and rewinds the session to before it. **Rewind** to any entry does the same back to that point. Both are available from the TUI and the protocol.
 - A restore checks each file against the state the harness left it in, and asks before overwriting something the user has edited since.
 - **Changes made by shell commands** are not captured by file checkpoints. The harness detects them: it compares the workspace's changed-file list before and after each command (through git where there is a repository, otherwise by modification times under the workspace, within a time cap), records what it saw, and saves the previous content of any tracked file the command changed when that content is still recoverable from git. An undo that crosses such a command says exactly which changes it can and cannot restore.
-- **Whole-workspace snapshots** (a copy-on-write or shadow-repository snapshot per turn) would make every change undoable at a cost in time and disk on large trees. They are not in the first release. The conflict and the recommendation are in the open questions of [../build-plan.md](../build-plan.md).
+- **Whole-workspace snapshots** (a copy-on-write or shadow-repository snapshot per turn) would make every change undoable at a cost in time and disk on large trees. They are not in the first release. The owner accepted this resolution on 2026-11-12 (conflict C5 in [../build-plan.md](../build-plan.md)).
 
 **Branching time-travel**, forking the conversation and the files together and comparing branches, is not a headline feature. The pieces it needs are here: the log is a tree, each turn has a snapshot, and sessions record their base state.
 

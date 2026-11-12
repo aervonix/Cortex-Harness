@@ -109,11 +109,37 @@ If the real workspace changed while attempts ran, the pick is applied as a patch
 
 **Budget.** Every evaluation has a hard cap on money and on wall-clock time, shown before it starts. It never runs on its own.
 
+### Corrections become evaluations
+
+Adopted by the owner on 2026-11-12 ([../ideas.md](../ideas.md)). Replay needs cases, and people do not curate test sets. The most useful cases are the moments the user said "no".
+
+**What counts as a correction.**
+
+| Signal | Recorded already as |
+|---|---|
+| The user undid a turn | Turn outcome `undone`. |
+| The user rewound to before a turn | Turn outcome `rewound`. |
+| The user steered mid-turn with a correction, or the next prompt reverses the last change | The steer or prompt, and the file changes that followed. |
+| The user rejected an approval with a note | The denial and the note. |
+| Verification failed and the user fixed it by hand | Turn outcome and the changed files at the next prompt. |
+
+**What a case holds.** Pointers, not copies: the session and turn, the base state before the turn, the task (the prompt), what the agent did (its diff and outcome), and what the user accepted in the end (the state of the same files once the work was settled). The case index lives in the state directory. A session that a case points to is kept when old sessions are pruned.
+
+**How a replay of a case is judged,** in this order of trust, and the report always says which was used:
+
+1. The project's checks pass on the replay's result, where they failed or were absent for the original.
+2. Agreement with the accepted outcome: the same files changed, and the changes are close by a diff measure.
+3. A model judge, on the `judge` role, given the task, the accepted outcome and the replay's outcome.
+
+**Use.** `cortex eval --cases corrections` runs variants (a model, a prompt style, an edit format) against the user's own corrections and reports how often each would have been right the first time. The measured choice of per-model variants ([14-adaptation.md](14-adaptation.md)) reads these results, which is what makes it trustworthy: variants are compared on real corrections, offline, not by experimenting on the user.
+
+**Limits.** Capture is bookkeeping and costs nothing noticeable. Replaying costs tokens, so it runs only when asked, under a budget. Cases contain the user's code and never leave the machine. A noisy signal (an undo that was a change of mind, not a mistake) is expected: cases can be listed, tagged and deleted with `cortex eval cases`.
+
 ## Unattended runs and safety
 
 A run has nobody to ask.
 
-- **Permissions.** Each run uses a non-interactive policy: reads and edits inside its own workspace, and the commands the user has already accepted (the profile's commands and the approved list). Anything else is denied and recorded, as in headless mode.
+- **Permissions.** Each run holds a lease narrowed from the session that started it ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)), and cannot ask: reads and edits inside its own workspace, and the commands the user has already accepted (the profile's commands and the approved list). Anything else is denied and recorded, as in headless mode.
 - **Sandbox.** The same launcher as everywhere. Network is off unless the task's set-up needs it and the user allowed it for runs.
 - **Budgets.** Per run and for the whole batch: money, tokens, time, requests.
 - **Isolation between runs.** Separate workspaces, separate sessions, no shared mutable state apart from caches the profile explicitly shares.

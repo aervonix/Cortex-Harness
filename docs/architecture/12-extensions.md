@@ -7,7 +7,7 @@ Extensions let users add their own tools, slash commands and hooks without chang
 - **Hot-reloaded**, like configuration, themes and key bindings.
 - **For everyone.** It cannot assume that Python, Node or a compiler is installed.
 
-This page compares the ways to build it, recommends one, and specifies it. The choice is recorded in [decision 0005](../decisions/0005-extension-mechanism.md) and is provisional.
+This page compares the ways to build it, recommends one, and specifies it. The choice is recorded in [decision 0005](../decisions/0005-extension-mechanism.md). The owner accepted it on 2026-11-12.
 
 ## What an extension can add
 
@@ -70,7 +70,7 @@ How the first-try experiment was run, and its limits, are in the measurement pag
 - **The pure-Rust JavaScript engine is too slow for the job.** A tool that tidies a 64 KiB command output takes 155 ms in it on a fast desktop and 296 ms on a laptop, about 30 times longer than in QuickJS, and it costs six times the binary.
 - **WASM is the strongest sandbox and cannot do the job**: the harness cannot write and load one on a machine without a toolchain.
 
-## Recommendation (provisional)
+## Decision
 
 1. **Extensions are JavaScript, run by an embedded QuickJS engine.** One runtime per extension, with memory and time limits, and no access to anything except host functions that are checked one by one.
 2. **Tools that need an ecosystem are MCP servers.** There is no second, bespoke process protocol.

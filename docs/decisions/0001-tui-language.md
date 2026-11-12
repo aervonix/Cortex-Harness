@@ -1,6 +1,6 @@
 # 0001: The TUI is written in Rust, inside the main binary
 
-- **Status:** Provisional. The owner approves this choice. The Windows Terminal checklist has not been run yet.
+- **Status:** Accepted by the owner on 2026-11-12, and still provisional until the owner runs the Windows Terminal checklist. That has to happen before step 20, the terminal layer.
 - **Date:** 2026-11-12
 
 ## Context
@@ -68,7 +68,7 @@ The RPC protocol is nonetheless complete enough for a TypeScript client to be bu
 
 ## The gap
 
-**Windows Terminal was not measured.** The measurement harness runs on Linux; the desktop used for measurements runs Linux under WSL 2. The Rust side compiles for Windows, and the harness itself can run there under ConPTY, but how a real Windows Terminal window behaves (flicker, resize, keys) needs eyes. The checklist is in [measurements/windows-terminal-checklist.md](../measurements/windows-terminal-checklist.md), for the owner to run on the desktop. Its results belong in this record.
+**Windows Terminal was not measured.** The measurement harness runs on Linux; the desktop used for measurements runs Linux under WSL 2. The Rust side compiles for Windows, and the harness itself can run there under ConPTY, but how a real Windows Terminal window behaves (flicker, resize, keys) needs eyes. The checklist is in [measurements/windows-terminal-checklist.md](../measurements/windows-terminal-checklist.md), for the owner to run on the desktop. Its results belong in this record. The owner accepted this decision on 2026-11-12 and will run the checklist before step 20, the terminal layer; until then the decision is provisional.
 
 Nothing known about Windows favours TypeScript here: both prototypes send the same kinds of terminal sequences, and Node's start-up is slower on Windows than on Linux.
 

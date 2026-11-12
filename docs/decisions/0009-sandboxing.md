@@ -1,6 +1,6 @@
 # 0009: Autonomy default, permission rules and how far to sandbox
 
-- **Status:** Provisional. The default posture and how far to go on sandboxing are the owner's call.
+- **Status:** Accepted by the owner on 2026-11-12. The level names follow [0026](0026-one-autonomy-model.md).
 - **Date:** 2026-11-12
 
 ## Context
@@ -39,13 +39,13 @@ The reference harnesses mark the two ends. One has no permission system by desig
 
 ## Decision
 
-- **Default mode `standard`,** exactly as the vision states. The safe list is the built-in read-only table, the user's approvals, and learned commands the user accepted.
+- **Default level `supervised`** (called `standard` in earlier drafts), exactly as the vision states. The safe list is the built-in read-only table, the user's approvals, and learned commands the user accepted.
 - **Rules:** deny beats ask beats allow, whatever the order. Projects may tighten freely and loosen only with trust.
 - **Command analysis fails closed.** Anything it cannot model asks.
-- **Sandbox whenever a command runs,** where the OS has one, in every mode except `unrestricted`. Asking and confining are separate protections.
+- **Sandbox whenever a command runs,** where the OS has one, at every level except `unrestricted`. Asking and confining are separate protections.
 - **Linux, first release:** Landlock and seccomp through a re-executed launcher. Protected paths inside the workspace are checked after each command.
 - **Windows, first release:** Job Objects and approvals. AppContainer is a separate step after a spike.
-- **An opt-in `autonomous` mode** runs commands without asking inside an enforcing sandbox, for users who want fewer prompts.
+- **An opt-in `autonomous` level** runs commands without asking inside an enforcing sandbox, for users who want fewer prompts. `guided`, between the two, arrives with task leases.
 - **Extension scripts** are confined by the script runtime on every OS ([0005](0005-extension-mechanism.md)).
 
 ## Why

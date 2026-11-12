@@ -1,6 +1,6 @@
 # 0002: Inline rendering with our own line-based renderer; full screen as the alternative
 
-- **Status:** Provisional. Inline or full screen by default is partly a matter of taste, and the owner's call.
+- **Status:** Accepted by the owner on 2026-11-12: inline by default, with stacked panels. Still provisional until the owner runs the Windows Terminal checklist, before step 20.
 - **Date:** 2026-11-12
 
 ## Context

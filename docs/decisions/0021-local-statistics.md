@@ -1,6 +1,6 @@
 # 0021: Local statistics are append-only files with a small aggregate
 
-- **Status:** Accepted. Flagged as a conflict between the vision and the speed budgets, with this as the recommended resolution.
+- **Status:** Accepted. It resolves a conflict between the vision and the speed budgets (C4), and the owner accepted the resolution on 2026-11-12. The usage view reads from this store ([0025](0025-usage-view.md)).
 - **Date:** 2026-11-12
 
 ## Context

@@ -17,7 +17,7 @@ Numbers the product and the tooling must meet, how each is measured, and where e
 | TUI: process start to first complete frame | ≤ 20 ms | ≤ 50 ms | ≤ 120 ms | Prototype: 0.8 to 1.0 ms (desktop), 1.3 to 1.6 ms (laptop). The TypeScript prototypes: 51 and 98 ms (desktop), 64 and 131 ms (laptop). |
 | Headless: process start to request handed to the network stack (warm connection excluded) | ≤ 15 ms | ≤ 40 ms | ≤ 100 ms | Building the HTTP client: 1.2 ms warm, 45 ms on a cold file cache. |
 
-**How.** A pseudo-terminal harness records the time from spawning the process to the first frame that shows the editor and status line. Thirty runs, median and 95th percentile.
+**How.** A pseudo-terminal harness records the time from spawning the process to the first frame that shows the editor and status line. Thirty runs, median and 95th percentile. The alias `cx` is the same file under a second name ([decisions/0013-naming.md](decisions/0013-naming.md)), so it has the same budget; the measurement is taken under both names.
 
 **Rules that protect it.**
 
@@ -123,6 +123,9 @@ The size budget is where the vision's features meet the footprint goal most dire
 | Search a 100,000-file tree for a literal | ≤ 1 s on a desktop | To be measured in step 6. |
 | Warm repository map (cached outlines, few changes) | ≤ 150 ms | To be measured in the index step. |
 | Cold repository index, 20,000 files | ≤ 2 s of background time per pass | To be measured in the index step. |
+| Open the usage view, any range, with a year of history | ≤ 16 ms (one frame) from the aggregates | To be measured in step 24. It reads kilobytes and scans no raw history. |
+| `cortex usage --range month` | The headless start-up budget plus ≤ 5 ms | To be measured in step 16. |
+| Indexing other tools' usage records | Background only, one low-priority thread, ≤ 50 MB extra memory, paused while a turn streams. Never at start-up. | To be measured in step 45. |
 | Take a per-turn snapshot | Proportional to the files the turn changed; nothing otherwise | By design. |
 | Record a statistics event | ≤ 10 µs on the calling thread | By design: a queue push. |
 | One tool call through `tool_call` to an extension script | ≤ 0.1 ms of overhead | Script engines measured at 4 to 45 µs per call. |
@@ -132,7 +135,7 @@ The size budget is where the vision's features meet the footprint goal most dire
 ## What is deliberately not budgeted
 
 - **Model latency and tokens per second.** They belong to the provider. The harness shows them.
-- **Verification time.** It is the project's own build and test time. It has limits the user sets ([architecture/15-efficiency.md](architecture/15-efficiency.md)), not a budget here.
+- **Verification time.** It is the project's own build and test time. It has limits the user sets ([architecture/15-efficiency.md](architecture/15-efficiency.md)), not a budget here. Speculative verification spends CPU early to save waiting: one run at a time, off until local statistics show it pays.
 - **Parallel attempts and Coordinator teams.** They multiply the project's build cost by design, and run only on request with an estimate first. What the harness controls is how many commands run at once (by default no more than half the machine's cores) and the spend ([architecture/16-run-engine.md](architecture/16-run-engine.md), [architecture/17-coordinator.md](architecture/17-coordinator.md)).
 
 ## Summary of automatic checks

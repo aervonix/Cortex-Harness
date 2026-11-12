@@ -112,4 +112,4 @@ Cancelling a node cancels everything below it. Every await in the loop that can 
 - `Authorization`, `x-api-key` and similar headers. The request logger has an allow-list of headers it prints.
 - Prompt and file content at `info` and below. Bodies are logged only at `debug`, truncated, and after the redaction filter in [../security.md](../security.md).
 
-**No telemetry.** The process makes no network request that the user did not cause. There is no usage reporting and no automatic update check (see the open questions in [../build-plan.md](../build-plan.md)).
+**No telemetry.** The process makes no network request that the user did not cause. There is no usage reporting and no automatic update check, which the owner confirmed on 2026-11-12. `cortex update check` asks on request.

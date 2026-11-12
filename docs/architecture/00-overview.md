@@ -21,7 +21,7 @@ The [product vision](../vision.md) in one sentence: an agent harness that learns
 5. **Linux and native Windows are equal targets.** macOS is not a target now, and nothing in the design rules it out.
 6. **Usable by anyone.** Sensible defaults, a guided first run, and reading the set-up people already have from other agents.
 
-Where a product feature pulls against goal 1, the conflict is stated in the open questions of [../build-plan.md](../build-plan.md) with a recommended resolution. Features are not cut quietly and budgets are not loosened quietly.
+Where a product feature pulls against goal 1, the conflict is stated in [../build-plan.md](../build-plan.md) with its resolution. The owner accepted the ten recorded there on 2026-11-12. Features are not cut quietly and budgets are not loosened quietly.
 
 ## The shape
 
@@ -86,6 +86,7 @@ These are referred to from the other pages as "the invariants".
 7. **Secrets are typed.** Credentials live in a `Secret` type that cannot be printed or serialised by accident.
 8. **Determinism where a model can see it.** Anything that reaches a prompt is ordered deterministically (sorted maps, stable tool order), and carries no timestamps in the cached prefix.
 9. **The same behaviour on Linux and Windows unless a page says otherwise**, with the difference tested on both.
+10. **One autonomy model.** What any session may do without asking is its lease: a level on one ladder, a scope, a budget and limits. A single session, an unattended run and a Coordinator team all use it, a child's lease is always a subset of its parent's, and only a person can widen one.
 
 ## Where each topic lives
 
@@ -105,22 +106,23 @@ These are referred to from the other pages as "the invariants".
 | Extensions | [12-extensions.md](12-extensions.md) |
 | MCP | [13-mcp.md](13-mcp.md) |
 | Statistics, project profile and memory, per-model variants, roles | [14-adaptation.md](14-adaptation.md) |
-| Repository map, re-reads, output compression, early tool start, verification | [15-efficiency.md](15-efficiency.md) |
+| Repository map, re-reads, output compression, early tool start, verification, the context profiler | [15-efficiency.md](15-efficiency.md) |
 | The orchestration layer, parallel attempts, replay and evaluation | [16-run-engine.md](16-run-engine.md) |
 | The Coordinator: a Manager session running a team of Employee sessions | [17-coordinator.md](17-coordinator.md) |
-| Product vision, and further ideas | [../vision.md](../vision.md), [../ideas.md](../ideas.md) |
+| Usage and cost: the `/usage` view, limits left, usage recorded by other tools | [18-usage.md](18-usage.md) |
+| Product vision, and the five adopted ideas | [../vision.md](../vision.md), [../ideas.md](../ideas.md) |
 | Performance budgets | [../performance-budgets.md](../performance-budgets.md) |
 | Testing and CI | [../testing-and-ci.md](../testing-and-ci.md) |
 | Security | [../security.md](../security.md) |
 | Decisions and their reasons | [../decisions/README.md](../decisions/README.md) |
-| Build plan and open questions | [../build-plan.md](../build-plan.md) |
+| Build plan and the owner's decisions | [../build-plan.md](../build-plan.md) |
 
 ## Names used in these docs
 
 | Name | Meaning |
 |---|---|
 | Cortex-Harness | The project. |
-| `cortex` | The command (provisional; see the open questions in the build plan). |
+| `cortex`, `cx` | The command, and its short alias. Both names run the same program ([decision 0013](../decisions/0013-naming.md)). |
 | Session | One conversation with its log, artifacts and checkpoints. |
 | Turn | Everything from one user prompt until the session is idle again: one or more model requests, tool rounds, retries and compaction. |
 | Item | One unit inside a turn: a user message, an assistant message, a tool call with its result, or a notice. |
@@ -135,5 +137,6 @@ These are referred to from the other pages as "the invariants".
 | Variant | One choice at a point where models differ: an edit format, a tool-schema style, a prompt style. |
 | Role | What a model is used for: `main`, `fast` or `judge`. |
 | Run | One unattended session in an isolated workspace, started by the orchestration layer. |
-| Grant | Everything a session is allowed to do, as one value: mode, rules, sandbox policy, models, budget, hard limits. A child's grant is always a subset of its parent's. |
+| Level | How much a session decides without its supervisor: `read-only`, `supervised` (the default), `guided`, `autonomous` or `unrestricted`. One ladder for single sessions and for teams. |
+| Lease | Everything a session is allowed to do, as one value: a grant (level, rules, sandbox policy, models, budget, hard limits) plus stop conditions and an expiry. Every session has a standing lease; a task lease or a team lease is a temporary, wider one the user confirms. A child's lease is always a subset of its parent's. |
 | Manager, Employee | Under the Coordinator: the session that plans, assigns and reviews, and the sessions that do the pieces of work. |

@@ -2,6 +2,8 @@
 
 A mode in which one session, the **Manager**, runs a team of sessions, the **Employees**. It is part of the [vision](../vision.md). It comes right after the first usable release, on the orchestration layer in [16-run-engine.md](16-run-engine.md). The first release already carries the pieces it needs in the protocol, the permission model and the session log, so nothing has to be reworked.
 
+**One autonomy model.** The Manager's authority is a **team lease**: the same lease type, with the same levels, that a single session holds ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)). The three levels offered here, `supervised`, `guided` and `autonomous`, are the middle of that one ladder. This page adds only the decisions that exist because there is a team. Where this page says "the grant", it means the grant inside the team lease: its scope, models, budget and hard limits.
+
 This page treats the Coordinator as a security-sensitive feature throughout: a Manager with broad permissions drives other agents, and text produced by an Employee can try to steer the Manager.
 
 ## The shape
@@ -26,7 +28,7 @@ This page treats the Coordinator as a security-sensitive feature throughout: a M
 
 ## Starting
 
-The user gives the Manager a task and a **grant**. The grant is shown in full before anything starts, in plain language, and must be confirmed.
+The user gives the Manager a task and a **team lease**. Its terms are shown in full before anything starts, in plain language, and must be confirmed. It is granted, extended and revoked exactly as a task lease for a single session is, by the user and never by a model.
 
 ```
 Coordinator grant
@@ -73,7 +75,7 @@ Coordinator grant
 
 ## Autonomy levels
 
-Three levels. They differ in what the Manager may decide alone. **All three sit inside the hard limits**, which no level relaxes.
+Three levels, the same ones a single session's lease can have. For a single session a level settles who decides about commands. For a Manager it also settles who decides the things below. **All three sit inside the hard limits**, which no level relaxes.
 
 | Decision | `supervised` | `guided` | `autonomous` |
 |---|---|---|---|
@@ -92,7 +94,7 @@ Three levels. They differ in what the Manager may decide alone. **All three sit 
 
 **Sensitive paths** always escalate unless the grant names them: CI configuration, git hooks and git configuration, the project's `.cortex` directory, dependency manifests' registry and script settings, and files matching the secret patterns in [../security.md](../security.md). The list is configurable upward.
 
-**Levels above `supervised` need an enforcing sandbox.** Where the OS sandbox is not enforcing (Windows until its sandbox step), only `supervised` is offered, because the hard limits below could not be guaranteed.
+**Levels above `supervised` need an enforcing sandbox,** as they do for a single session. Where the OS sandbox is not enforcing (Windows until its sandbox step), only `supervised` is offered, because the hard limits below could not be guaranteed. The owner confirmed this on 2026-11-12.
 
 ## Hard limits
 
@@ -106,32 +108,16 @@ Set by the user in the grant. Enforced by the harness. Never only written in a p
 | **No merge into the main branch** (unless allowed) | `team_integrate` refuses the main branch as a target unless the grant says otherwise. The main branch's name comes from the repository, not from the Manager. |
 | **Team size, time** | The session supervisor. |
 
-## Permissions as data
+## Leases for the team
 
-The permission model in [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md) is built so that a set of permissions is a value that can be compared and narrowed.
+The lease type in [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md) is built so that a set of permissions is a value that can be compared and narrowed. The Coordinator adds no permission type of its own.
 
-```rust
-pub struct Grant {
-    pub mode: Mode,                 // read-only | standard | autonomous
-    pub rules: Vec<Rule>,           // allow / ask / deny
-    pub sandbox: SandboxPolicy,     // writable roots, protected paths, network
-    pub models: Vec<ModelId>,       // which models may be used
-    pub budget: Budget,             // money, tokens, time, requests
-    pub limits: HardLimits,         // integration targets, sensitive paths, team size
-}
-
-impl Grant {
-    /// The widest grant that is inside both. Never wider than `self`.
-    pub fn narrow(&self, requested: &Grant) -> Grant;
-    /// True if everything `self` permits, `parent` permits too.
-    pub fn is_within(&self, parent: &Grant) -> bool;
-}
-```
-
-- When the Manager starts an Employee it proposes a grant. The harness replaces it with `manager_grant.narrow(proposed)`, so an Employee can never hold more than the Manager, whatever was asked for.
-- Narrowing is defined per field: the stricter mode; the parent's deny and ask rules always carried over; allow rules kept only where the parent allows the same thing; writable roots intersected; network allowed only if both allow it; budgets capped by what is left in the parent's.
-- A property test checks, for random grants, that `narrow` is always within both inputs and that no sequence of narrowing widens anything.
-- The same type is what a settings profile, a headless run's flags and a lease ([../ideas.md](../ideas.md)) compile to.
+- **The Manager holds the team lease** the user confirmed: level, scope, models, budget, time, stop conditions and hard limits.
+- **Each Employee holds a sub-lease.** When the Manager starts an Employee it proposes one. The harness replaces it with `manager_lease.narrow(proposed)`, so an Employee can never hold more than the Manager, whatever was asked for. An Employee's level is never above the Manager's.
+- **Narrowing is defined per field:** the lower level; the parent's deny and ask rules always carried over; allow rules kept only where the parent allows the same thing; writable roots intersected with the Employee's own worktree; network allowed only if both allow it; budgets capped by what is left in the parent's; an expiry no later than the parent's.
+- **When the team lease ends** (done, out of time or budget, a stop condition, or revoked by the user), every sub-lease ends with it. Employees stop at their next safe boundary and the Manager reports.
+- A property test checks, for random leases, that `narrow` is always within both inputs and that no sequence of narrowing widens anything.
+- The same type is what a settings profile, a headless run's flags and a single session's task lease compile to. The task-lease step is built before the Coordinator, and the Coordinator is built on it.
 
 ## Approval routing
 
@@ -216,15 +202,17 @@ The threats and mitigations are in [../security.md](../security.md), section 8. 
 
 ## Where it lives
 
-A crate `cortex-coordinator` on top of `cortex-runs`: the grant narrowing, the level table, approval routing, the escalation queue and decision log, the Manager's tools, and the integration operations. The TUI gains the Employees and escalations panels. The protocol gains methods under `team/*`.
+A crate `cortex-coordinator` on top of `cortex-runs`: sub-leases for Employees, the team rows of the level table, approval routing, the escalation queue and decision log, the Manager's tools, and the integration operations. The TUI gains the Employees and escalations panels. The protocol gains methods under `team/*`.
 
 ## What the first release carries for it
 
 | Piece | Where |
 |---|---|
-| Permissions as a `Grant` value with `narrow` and `is_within` | [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md) |
+| Permissions as a `Lease` value with `narrow` and `is_within`, and one ladder of levels | [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md) |
 | Client roles, approval routing to a supervisor, several clients per session | [11-rpc-protocol.md](11-rpc-protocol.md) |
 | Entry kinds reserved for escalations and decisions | [07-sessions-and-context.md](07-sessions-and-context.md) |
 | Limits as a ledger that several sessions can share | [03-agent-loop.md](03-agent-loop.md) |
 | Several sessions in one core, each with its own workspace root | [03-agent-loop.md](03-agent-loop.md) |
 | Panels that open when needed | [09-tui.md](09-tui.md) |
+
+One more piece comes after the first release and before the Coordinator: **task leases and the `guided` level** for a single session. The Coordinator's team lease is that feature with a team attached, so it is built once.
