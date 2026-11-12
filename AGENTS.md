@@ -25,7 +25,7 @@ These are the rules of the build plan. They hold in every change.
 10. **Stay inside the step.** A step's "Must not change" list is binding. A needed change outside the step is reported, not made.
 11. **Conflicts are raised.** Where a feature cannot meet a budget, say so in the step report with a recommendation. Do not cut the feature or loosen the budget quietly.
 12. **No real waiting in tests.** Timeouts, retries, backoff and cooldowns are tested with paused or simulated time (the async runtime's test clock, or the fake clock), never with real sleeps.
-13. **Budgets are enforced.** Each test has a time limit for its tier: slow at 2 s and stopped at 10 s in tiers 1 and 2, slow at 10 s and stopped at 60 s in tier 3. CI fails when a tier's total test time goes over its budget (20 s, 40 s, and 60 s on Linux or 90 s on Windows).
+13. **Budgets are enforced.** Each test has a time limit for its tier: slow at 2 s and stopped at 10 s in tiers 1 and 2, slow at 10 s and stopped at 60 s in tier 3. CI warns when a tier's total test time goes over its budget (20 s, 40 s, and 60 s on Linux or 90 s on Windows) and fails at one and a half times the budget.
 
 **Done means:** the step's done criteria are met; formatting, lints and all blocking tests pass on both OSes; the blocking checks are still within budget; public items are documented; `docs/` matches the code; and the step's report lists what was built, what was measured and anything left open.
 

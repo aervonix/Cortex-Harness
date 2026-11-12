@@ -99,9 +99,9 @@ The size budget is where the vision's features meet the footprint goal most dire
 
 | Budget | Limit | Measured basis |
 |---|---|---|
-| Blocking pull-request checks, wall time per OS | < 5 min | Measured in step 2 for the skeleton: 23 s on Linux and 48 to 74 s on Windows, with a cold or a warm cache. The tables are in [testing-and-ci.md](testing-and-ci.md). |
-| Clean build of the workspace in the `ci` profile, Linux runner | ≤ 2 min | Measured in step 2: the planned third-party set alone takes 42 to 45 s. In the `dev` profile, which optimises dependencies, it takes 129 s; that is why CI has a profile of its own. |
-| Clean build of the workspace in the `ci` profile, Windows runner | ≤ 3.5 min | Measured in step 2: the planned third-party set alone takes 77 s, after 32 to 35 s of fetching sources. In the `dev` profile it takes 259 s. |
+| Blocking pull-request checks, wall time per OS | < 5 min | Measured in step 2 for the skeleton: 20 to 29 s on Linux and 37 to 39 s on Windows, with a cold or a warm cache. The tables are in [testing-and-ci.md](testing-and-ci.md). |
+| Clean build of the workspace in the `ci` profile, Linux runner | ≤ 2 min | Measured in step 2: the planned third-party set alone takes 27 to 45 s. In the `dev` profile, which optimises dependencies, it takes 129 s; that is why CI has a profile of its own. |
+| Clean build of the workspace in the `ci` profile, Windows runner | ≤ 3.5 min | Measured in step 2: the planned third-party set alone takes 60 to 82 s, after about 10 s of fetching sources (26 to 36 s before cargo's files were moved off the runner's system disk). In the `dev` profile it takes 259 s. |
 | Clean release build (`release` profile), 4 desktop cores | ≤ 3 min | Core dependency set: 37 s. With the optional parts: 76 s. The script engine adds about 9 s. |
 | `cargo check` after an edit in a leaf crate, desktop | ≤ 2 s | |
 | Rebuild and relink the binary after an edit, desktop | ≤ 5 s | Relinking the full dependency set with a trivial change: 0.4 s on the desktop, 0.54 s on a Linux runner, 1.5 s on a Windows runner. |

@@ -85,20 +85,66 @@ fn check_report(report: &Path) -> Result<()> {
     let (table, over) = summarise(&cases);
     print!("{table}");
     steps::append_job_summary(&format!("### Test time by tier\n\n{}\n", markdown(&cases)));
-    if over.is_empty() {
+
+    let names = |wanted: Verdict| -> Vec<&str> {
+        let tiers = over.iter().filter(|(_, verdict)| *verdict == wanted);
+        tiers.map(|(tier, _)| tier.name()).collect()
+    };
+    let in_actions = std::env::var_os("GITHUB_ACTIONS").is_some();
+    const ADVICE: &str = "Make the tests faster or move the slow ones to a non-blocking tier \
+                          (docs/testing-and-ci.md). Budgets are not loosened quietly.";
+
+    let warned = names(Verdict::OverBudget);
+    if !warned.is_empty() {
+        let message = format!(
+            "over its time budget: tier {}. {ADVICE}",
+            warned.join(", tier ")
+        );
+        // An annotation, so that it shows on the pull request and not only in the log.
+        if in_actions {
+            println!("::warning title=Test tier over budget::{message}");
+        } else {
+            println!("warning: {message}");
+        }
+    }
+    let failed = names(Verdict::Failing);
+    if failed.is_empty() {
         return Ok(());
     }
-    let names: Vec<&str> = over.iter().map(|tier| tier.name()).collect();
     let message = format!(
-        "over its time budget: tier {}. Make the tests faster or move the slow ones to a \
-         non-blocking tier (docs/testing-and-ci.md). Budgets are not loosened quietly.",
-        names.join(", tier ")
+        "more than {FAIL_AT} times over its time budget: tier {}. {ADVICE}",
+        failed.join(", tier ")
     );
-    // An annotation, so that it shows on the pull request and not only in the log.
-    if std::env::var_os("GITHUB_ACTIONS").is_some() {
-        println!("::error title=Test tier over budget::{message}");
+    if in_actions {
+        println!("::error title=Test tier far over budget::{message}");
     }
     Err(message)
+}
+
+/// A tier fails the job only when it is this many times over its budget.
+/// Hosted runners vary by tens of percent from one run to the next, more on
+/// Windows, so a failure at exactly the budget would turn a tier that is
+/// near its limit into red builds at random. Between the budget and this
+/// factor, the job passes with a warning on the pull request.
+const FAIL_AT: f64 = 1.5;
+
+/// What a tier's total says about it, when it is over budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+    /// Over the budget: a warning.
+    OverBudget,
+    /// Over [`FAIL_AT`] times the budget: a failure.
+    Failing,
+}
+
+fn verdict(seconds: f64, budget: f64) -> Option<Verdict> {
+    if seconds > FAIL_AT * budget {
+        Some(Verdict::Failing)
+    } else if seconds > budget {
+        Some(Verdict::OverBudget)
+    } else {
+        None
+    }
 }
 
 /// Total seconds and number of tests for a tier.
@@ -112,25 +158,26 @@ fn total(cases: &[TestCase], tier: Tier) -> (f64, usize) {
 }
 
 /// The table for the terminal, and the tiers that are over budget.
-fn summarise(cases: &[TestCase]) -> (String, Vec<Tier>) {
+fn summarise(cases: &[TestCase]) -> (String, Vec<(Tier, Verdict)>) {
     let mut table = String::from("  tier             tests   time    budget  used\n");
     let mut over = Vec::new();
     for tier in Tier::ALL {
         let (seconds, count) = total(cases, tier);
         let used = 100.0 * seconds / tier.budget();
+        let verdict = verdict(seconds, tier.budget());
+        let mark = match verdict {
+            None => "",
+            Some(Verdict::OverBudget) => "  over budget (warning)",
+            Some(Verdict::Failing) => "  FAR OVER BUDGET",
+        };
         let _ = writeln!(
             table,
-            "  {:<15}  {count:>5}  {seconds:>5.1} s  {:>4.0} s  {used:>3.0}%{}",
+            "  {:<15}  {count:>5}  {seconds:>5.1} s  {:>4.0} s  {used:>3.0}%{mark}",
             tier.name(),
             tier.budget(),
-            if seconds > tier.budget() {
-                "  OVER BUDGET"
-            } else {
-                ""
-            },
         );
-        if seconds > tier.budget() {
-            over.push(tier);
+        if let Some(verdict) = verdict {
+            over.push((tier, verdict));
         }
     }
     (table, over)
@@ -189,7 +236,7 @@ fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TestCase, Tier, parse, summarise};
+    use super::{TestCase, Tier, Verdict, parse, summarise, verdict};
 
     const REPORT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <testsuites name="nextest-run" tests="4" failures="0" errors="0" time="0.9">
@@ -274,19 +321,41 @@ mod tests {
         assert_eq!(over, []);
         assert!(table.contains("1, unit"), "{table}");
         assert!(table.contains("  0.6 s"), "{table}");
-        assert!(!table.contains("OVER BUDGET"), "{table}");
+        assert!(!table.to_lowercase().contains("over budget"), "{table}");
+    }
+
+    /// Five unit tests of `seconds` each, and one quick integration test.
+    fn unit_tests_taking(seconds: f64) -> Vec<TestCase> {
+        let mut cases: Vec<TestCase> = (0..5)
+            .map(|i| case("cortex-base", &format!("tests::slow_{i}"), seconds))
+            .collect();
+        cases.push(case("cortex-agent::it", "loop_::quick", 0.1));
+        cases
     }
 
     #[test]
-    fn a_tier_over_its_budget_is_named() {
-        let mut cases: Vec<TestCase> = (0..5)
-            .map(|i| case("cortex-base", &format!("tests::slow_{i}"), 4.5))
-            .collect();
-        cases.push(case("cortex-agent::it", "loop_::quick", 0.1));
+    fn a_tier_over_its_budget_is_a_warning() {
+        // 22.5 s against a budget of 20 s.
+        let (table, over) = summarise(&unit_tests_taking(4.5));
 
-        let (table, over) = summarise(&cases);
+        assert_eq!(over, [(Tier::Unit, Verdict::OverBudget)]);
+        assert!(table.contains("over budget (warning)"), "{table}");
+    }
 
-        assert_eq!(over, [Tier::Unit]);
-        assert!(table.contains("OVER BUDGET"), "{table}");
+    #[test]
+    fn a_tier_far_over_its_budget_fails() {
+        // 32.5 s: more than one and a half times the budget of 20 s.
+        let (table, over) = summarise(&unit_tests_taking(6.5));
+
+        assert_eq!(over, [(Tier::Unit, Verdict::Failing)]);
+        assert!(table.contains("FAR OVER BUDGET"), "{table}");
+    }
+
+    #[test]
+    fn the_line_between_a_warning_and_a_failure_is_one_and_a_half_budgets() {
+        assert_eq!(verdict(20.0, 20.0), None);
+        assert_eq!(verdict(20.1, 20.0), Some(Verdict::OverBudget));
+        assert_eq!(verdict(30.0, 20.0), Some(Verdict::OverBudget));
+        assert_eq!(verdict(30.1, 20.0), Some(Verdict::Failing));
     }
 }
