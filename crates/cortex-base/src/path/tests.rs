@@ -396,7 +396,8 @@ fn case_folding_follows_windows_one_to_one_upper_casing() {
         ('ω', 'Ω'),
         ('ǆ', 'Ǆ'),
         ('ǅ', 'Ǆ'),
-        ('ı', 'I'),
+        // Unicode says `I`. Windows keeps the dotless i apart.
+        ('ı', 'ı'),
         // No one-to-one upper case: left alone.
         ('ß', 'ß'),
         ('ŉ', 'ŉ'),
@@ -447,6 +448,11 @@ fn containment_is_by_whole_names() {
         let sibling = base.parent().unwrap().join("ap").unwrap();
         assert!(!sibling.starts_with(&base));
         assert!(!base.parent().unwrap().starts_with(&base));
+        assert_eq!(
+            inside.strip_prefix_exactly(&base).unwrap().as_str(),
+            "src/main.rs"
+        );
+        assert!(sibling.strip_prefix_exactly(&base).is_none());
 
         // Everything is under its root.
         assert!(inside.starts_with(&base.root()));
@@ -459,6 +465,26 @@ fn containment_is_by_whole_names() {
     assert!(
         abs("c:/WORK/app/SRC", Windows).starts_with(&base),
         "case does not matter"
+    );
+    // The exact form is for two paths the file system spelled: there a
+    // difference in case is a difference. The drive letter has no spelling
+    // on disk and is compared as ever.
+    assert!(
+        abs("c:/WORK/app/SRC", Windows)
+            .strip_prefix_exactly(&base)
+            .is_none()
+    );
+    assert_eq!(
+        abs("c:/Work/App/SRC", Windows)
+            .strip_prefix_exactly(&base)
+            .unwrap()
+            .as_str(),
+        "SRC"
+    );
+    assert!(
+        abs("/Work/App/x", Posix)
+            .strip_prefix_exactly(&base)
+            .is_none()
     );
     assert_eq!(
         abs("c:/WORK/app/SRC/Main.rs", Windows)

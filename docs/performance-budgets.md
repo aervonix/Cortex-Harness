@@ -57,7 +57,7 @@ The model's own latency is not ours. What the harness adds to it is.
 | Key press → frame that shows it, idle | ≤ 2 ms (99th percentile) | Prototype: 0.1 to 0.3 ms. TypeScript prototypes: 1.6 to 2.4 ms median, with single keys up to 13 ms. |
 | Key press → frame that shows it, while streaming at 2,000 tokens per second | ≤ 4 ms (99th percentile) | Prototype: 0.2 to 0.5 ms. TypeScript prototypes: 1.6 to 5.1 ms. |
 | Starting a shell command, harness overhead including the sandbox launcher | ≤ 5 ms on Linux, ≤ 30 ms on Windows | To be measured in steps 11 and 26. |
-| Hot-reload check | ≤ 1 ms | By design: a few `stat` calls. Step 4 measured the check itself (`cortex-base`, `watch`) on the desktop, release build, files in the page cache: 3.2 µs for ten watched files. Resolving a path, measured the same way: 2.8 µs for an existing file seven directories down, and 9 to 15 µs for a file that does not exist yet. Windows is not measured. |
+| Hot-reload check | ≤ 1 ms | By design: a few `stat` calls. Step 4 measured the check itself (`cortex-base`, `watch`) on the desktop, release build, files in the page cache: 3.2 µs for ten watched files. Resolving a path, measured the same way: 6.5 µs for an existing file nine directories below the file system's root, 7.1 µs for the same file through a link, and 5 to 6 µs for a file that does not exist yet. The resolver looks at every directory on the way without following it, which is one `lstat` a level. Windows is not measured. |
 
 **How.** Span timings from the tracing layer for the first two. The pseudo-terminal harness for key latency: it writes a key and records when the screen shows it.
 

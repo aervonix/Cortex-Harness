@@ -58,4 +58,4 @@ pub use path::{AbsPath, PathError, PathOptions, PathResolver, PathStyle, RelPath
 pub use rng::{Rng, SeededRng, SystemRng};
 pub use secret::Secret;
 pub use time::{TimeError, UtcTime};
-pub use watch::{FileStamp, WatchList};
+pub use watch::{FileStamp, TimedStamp, WatchList};

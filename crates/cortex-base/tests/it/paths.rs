@@ -29,16 +29,14 @@ fn a_path_inside_the_workspace_resolves_to_its_real_location() {
         "src//main.rs",
         "src/./main.rs",
         "src/../src/main.rs",
-        "src/main.rs/",
     ] {
-        match resolver.resolve(spelling) {
-            Ok(other) => assert_eq!(other, resolved, "{spelling:?}"),
-            // A trailing separator after a file is refused by Linux, which
-            // is as good as resolving it.
-            Err(PathError::Io { .. }) if spelling.ends_with('/') => {}
-            Err(error) => panic!("{spelling:?}: {error}"),
-        }
+        assert_eq!(
+            resolver.resolve(spelling).unwrap(),
+            resolved,
+            "{spelling:?}"
+        );
     }
+    assert!(!resolved.names_a_directory());
     // And so does its absolute path.
     let absolute = scratch.join("ws/src/main.rs");
     assert_eq!(
@@ -190,6 +188,31 @@ fn a_path_through_a_file_is_refused() {
             "{spelling:?} leads through a file"
         );
     }
+}
+
+#[test]
+fn a_trailing_separator_names_a_directory() {
+    let scratch = Scratch::new("resolve_trailing_separator");
+    scratch.file("ws/src/main.rs", "x");
+    let resolver = scratch.resolver("ws");
+
+    // On an existing directory it changes nothing but the flag.
+    let directory = resolver.resolve("src/").unwrap();
+    assert!(directory.names_a_directory());
+    assert_eq!(directory.abs(), resolver.resolve("src").unwrap().abs());
+    assert!(!resolver.resolve("src").unwrap().names_a_directory());
+
+    // On an existing file it is refused, as the OS would refuse it.
+    let error = resolver.resolve("src/main.rs/").unwrap_err();
+    assert!(matches!(error, PathError::Io { .. }), "{error}");
+
+    // On something that does not exist yet, the caller is told, so that a
+    // write to `out/` does not create a file named `out`.
+    let new = resolver.resolve("out/").unwrap();
+    assert!(!new.exists());
+    assert!(new.names_a_directory());
+    assert_eq!(new.display(), "out");
+    assert!(!resolver.resolve("out").unwrap().names_a_directory());
 }
 
 #[test]

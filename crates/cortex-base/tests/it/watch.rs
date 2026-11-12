@@ -167,13 +167,34 @@ fn a_stamp_taken_before_reading_catches_a_change_made_during_the_read() {
     let config = settled_file(&scratch, "config.toml", "a = 1");
     let (_, mut list) = list();
 
-    let stamp = FileStamp::of(&config);
+    let stamp = list.stamp(&config);
+    assert!(stamp.stamp().exists());
     // The file changes while it is being read and parsed.
     fs::write(&config, "a = 22").unwrap();
     set_modified(&config, long_ago() + Duration::from_secs(30));
     list.watch_with(&config, stamp);
 
     assert_eq!(list.check(), [config], "the next check reloads it");
+}
+
+#[test]
+fn a_slow_read_does_not_make_a_fresh_file_look_settled() {
+    let scratch = Scratch::new("watch_slow_read");
+    let config = scratch.file("config.toml", "a = 1");
+    let written = fs::metadata(&config).unwrap().modified().unwrap();
+    let clock = FakeClock::new(UtcTime::from_system(written).unwrap());
+    let mut list = WatchList::new(Arc::new(clock.clone()));
+
+    // Stamped the moment it was written, then read and parsed for a long
+    // time before it is registered.
+    let stamp = list.stamp(&config);
+    clock.advance(Duration::from_secs(30));
+    list.watch_with(&config, stamp);
+
+    // What counts is when the stamp was taken: the file was fresh then, so
+    // a second write could be hiding behind the same time.
+    assert_eq!(list.check(), std::slice::from_ref(&config));
+    assert!(list.check().is_empty(), "and now it has settled");
 }
 
 #[test]

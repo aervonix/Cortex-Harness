@@ -50,7 +50,9 @@ The two phases exist so the permission engine, the sandbox and the scheduler can
 **Paths.** Tools take paths relative to the workspace root, absolute paths, or paths that begin with `~` for the home directory. One resolver in `cortex-base` reads all of them, by the rules below. It was built in step 4.
 
 - Both `/` and `\` are accepted as separators on Windows. Paths shown to the model use `/`: relative to the workspace when inside it, absolute otherwise.
-- A path is resolved to a canonical absolute form before any check. Symbolic links, and on Windows junctions, are resolved, and the permission check applies to the target. The part of a path that exists is replaced by its real location, spelled as the file system spells it. The part that does not exist yet (a file about to be created) is kept as written.
+- A path is resolved to a canonical absolute form before any check. Symbolic links, and on Windows junctions, are resolved, and the permission check applies to the target. The part of a path that exists is replaced by its real location, spelled on Windows as the file system spells it. The part that does not exist yet (a file about to be created) is kept as written.
+- **Links are followed by the harness, one at a time, never by the OS on its behalf.** Each link's target is read and checked by these same rules before it is followed, so a link cannot lead anywhere the rules have not seen first. A link to a refused place is refused where the link is.
+- A path written with a separator at its end (`out/`) names a directory. If it leads to an existing file it is refused, and if it does not exist yet the tool is told, so that it does not create a file there.
 - `..` means what the OS makes it mean. On Linux it is the parent of the real directory, so `link/..` is the parent of the link's target. On Windows it is resolved as text before anything is opened.
 - On Windows, comparison is case-insensitive and the on-disk spelling is kept. Short names (`PROGRA~1`) resolve to the long ones, so a rule on the long name cannot be dodged through the short one.
 - Paths outside the workspace are allowed only by permission (see [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)). Resolving one is not an error: the resolver says where it leads and that it is outside.
@@ -67,11 +69,16 @@ The two phases exist so the permission engine, the sandbox and the scheduler can
 | A name that ends with a dot or a space | Windows | Windows drops them: `secret.env.` opens `secret.env`. |
 | A colon in a name, and `< > " \| ? *` and control characters | Windows | A colon selects an alternate data stream: `secret.env::$DATA` is the content of `secret.env`. The rest are wildcards or not allowed in names. |
 | `C:name` and `\name` | Windows | They are relative to a current directory or drive that nobody stated. |
-| A network path, `\\server\share\…`, unless configuration allows that server and share | Windows | Reaching for a share sends the account's credentials to whoever answers. The refusal is made on the text, before the network is asked anything. A drive letter mapped to a share is refused the same way, on the resolved path. |
+| A network path, `\\server\share\…`, unless configuration allows that server and share | Windows | Reaching for a share sends the account's credentials to whoever answers. The refusal is made on the text, before the network is asked anything, and that holds for a link in the workspace that points at a share: its target is read, not followed. A drive letter the user has mapped to a share is refused too, on the resolved path; by then the share has been asked, and it is one the user connected themselves. |
+| A directory that is a mounted volume with no drive letter | Windows | Its real location has no ordinary path to check. |
 
 The Windows rows apply on Windows only. On Linux `notes:2026` and `name.` are ordinary file names.
 
-**What resolution does not promise.** Resolving a path and opening it are two steps, and the file system can change between them: a directory can be swapped for a link after the check. The harness opens the location it checked, never the text it was given, which closes the gap for everything that is not actively racing it. A process that is racing it is the sandbox's to confine ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)).
+**What resolution does not promise.**
+
+- **That nothing changes afterwards.** Resolving a path and opening it are two steps, and the file system can change between them: a directory can be swapped for a link after the check. The harness opens the location it checked, never the text it was given, which closes the gap for everything that is not actively racing it. A process that is racing it is the sandbox's to confine ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)).
+- **That one file has one path.** A file with a second hard link has two, and both are real. And Linux is taken to compare names exactly: on a mount that ignores case there (a FAT or NTFS volume, a directory with case folding on), two spellings of one file resolve to two paths. A rule that protects a file by name does not protect its other names.
+- **That its case folding is exactly Windows's.** Windows compares names by a table of its own. The harness folds case by the same rule with the Rust standard library's tables, which differ for a few letters outside ASCII. Inside or outside the workspace does not depend on it: that is decided on the file system's own spelling, compared exactly. Rule matching does depend on it ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)), so there a deny may match a little too much and an allow must not.
 
 **Text files.** Tools read and write UTF-8. A file that is not valid UTF-8 is refused by the editing tools with a message that says so. Line endings and a byte-order mark are detected on read and preserved on write.
 
@@ -81,7 +88,8 @@ The Windows rows apply on Windows only. On Linux `notes:2026` and `name.` are or
 
 **Atomic writes.** New content goes to a temporary file in the same directory, is flushed, and is renamed over the target. On Windows the replace is retried briefly when another process holds the file open (six more attempts over half a second), and fails with a clear message if it stays locked. File permissions are preserved: the new file takes the mode of the one it replaces, and the temporary file is private until it does.
 
-- A target marked read-only is refused, on both OSes. A rename would otherwise replace a file its owner had protected on Linux, and fail on Windows.
+- A target that could not have been written in place is refused. A rename needs only the right to change the directory, so without this it would replace a file its owner had protected. Refused: a file marked read-only (on Linux one with no write permission at all, on Windows one with the read-only attribute), and on Linux also a file the user may not open for writing.
+- Only a regular file is replaced. A directory, a device, a socket or a pipe under the target's name is refused, not swapped for a file.
 - A symbolic link is written through: the file it points to is replaced, and the link stays.
 - Not preserved: hard links (the file's other names keep the old content), the owner of a file that belonged to someone else, and on Windows the hidden and system attributes and any access rules set on the file itself, as opposed to inherited from its directory.
 

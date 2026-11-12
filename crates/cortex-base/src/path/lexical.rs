@@ -227,12 +227,19 @@ pub(crate) fn from_extended_length(text: &str) -> Result<std::borrow::Cow<'_, st
 /// NTFS compares names by an upper-case table of its own, one 16-bit unit at
 /// a time. This is that rule as closely as the standard library can state
 /// it: a character whose upper case is one character in the same plane is
-/// mapped, and every other character is left alone (`ß` stays `ß`).
+/// mapped, and every other character is left alone (`ß` stays `ß`). The
+/// dotless `ı` is left alone too: Unicode gives it the upper case `I`, and
+/// Windows keeps it apart from `i`.
+///
+/// It is an approximation. The standard library's tables are newer than the
+/// table a volume was formatted with, so a few letters may fold here and
+/// not there. Nothing that decides what is inside the workspace relies on
+/// it: see `AbsPath::strip_prefix_exactly`.
 pub(crate) fn fold_char(character: char) -> char {
     if character.is_ascii() {
         return character.to_ascii_uppercase();
     }
-    if u32::from(character) > 0xffff {
+    if u32::from(character) > 0xffff || character == 'ı' {
         return character;
     }
     let mut upper = character.to_uppercase();
