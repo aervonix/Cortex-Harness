@@ -102,3 +102,5 @@ Two of them came with conditions from the owner, and the design pages say how ea
 - **A second model reviewing risky actions before they run.** Useful, and other tools already have it.
 - **Keeping provider caches warm with keep-alive requests.** One reference harness does this. It can be added as a routing rule if cache statistics show misses caused by idle gaps.
 - **Learned context prefetch from which files are read together.** Promising, and close to the vision's "likely reads are fetched ahead". It is noted in [architecture/15-efficiency.md](architecture/15-efficiency.md) as the later form of prefetch, not as a separate idea.
+
+This line exists only to make a documentation-only pull request for a CI measurement. It is never merged.
