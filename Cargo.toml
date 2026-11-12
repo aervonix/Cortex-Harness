@@ -41,6 +41,36 @@ schemars = { version = "1.2.3", default-features = false, features = ["derive", 
 serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1.0.145", default-features = false, features = ["std"] }
 
+# The nightly unused-dependency check (`cargo xtask unused`, cargo-machete)
+# looks at third-party crates only, for now. The skeleton declares the edges
+# between workspace crates that docs/architecture/01-workspace.md gives each
+# crate, before the code that uses them exists, so every one of them would be
+# reported. Which crate may depend on which is checked by `cargo xtask rules`.
+# Remove a name from this list when the crates that depend on it have code,
+# and the whole table once the first release's crates are built.
+[workspace.metadata.cargo-machete]
+ignored = [
+    "cortex-agent",
+    "cortex-base",
+    "cortex-config",
+    "cortex-core",
+    "cortex-ext",
+    "cortex-index",
+    "cortex-knowledge",
+    "cortex-llm",
+    "cortex-mcp",
+    "cortex-policy",
+    "cortex-protocol",
+    "cortex-rpc",
+    "cortex-sandbox",
+    "cortex-session",
+    "cortex-stats",
+    "cortex-term",
+    "cortex-testkit",
+    "cortex-tools",
+    "cortex-tui",
+]
+
 [workspace.lints.rust]
 # Allowed per module in cortex-sandbox and cortex-term only, where the OS
 # interfaces need it, with a safety comment on each block.
