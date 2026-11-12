@@ -21,7 +21,7 @@ cortex-protocol.workspace = true
 cortex-base.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-toml.workspace = true
+toml = { workspace = true, features = ["display"] }
 
 # Windows Credential Manager, through a thin wrapper, so that this crate has
 # no `unsafe` of its own (docs/dependencies.md).

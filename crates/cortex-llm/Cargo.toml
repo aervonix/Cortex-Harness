@@ -5,18 +5,37 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+build = "build.rs"
 
 [lib]
 doctest = false
 
 [features]
 default = ["http"]
-# The real HTTP transport. Off for crates that only need the types and traits.
-http = []
+# The real HTTP transport and the timer that goes with it. Off for crates
+# that only need the types and traits: nothing else in this crate links an
+# async runtime or a network stack.
+http = ["dep:reqwest", "dep:rustls", "dep:tokio"]
 
 [dependencies]
 cortex-protocol.workspace = true
 cortex-base.workspace = true
+futures-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+reqwest = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["time"] }
+
+[build-dependencies]
+# The catalog is written in TOML and embedded as JSON (build.rs).
+serde_json.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+cortex-testkit.workspace = true
+tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true

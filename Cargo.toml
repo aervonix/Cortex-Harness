@@ -37,20 +37,25 @@ cortex-tools = { path = "crates/cortex-tools" }
 cortex-tui = { path = "crates/cortex-tui" }
 
 # Third-party crates. Default features off; opt in to what is used.
+futures-core = { version = "0.3.34", default-features = false, features = ["std"] }
 globset = { version = "0.4.21", default-features = false }
 grep-matcher = { version = "0.1.9", default-features = false }
 grep-regex = { version = "0.1.14", default-features = false }
 grep-searcher = { version = "0.1.17", default-features = false }
 ignore = { version = "0.4.34", default-features = false }
 keyring-core = { version = "1.0.1", default-features = false }
+reqwest = { version = "0.13.5", default-features = false, features = ["http2", "rustls-no-provider"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 schemars = { version = "1.2.3", default-features = false, features = ["derive", "std"] }
 serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1.0.145", default-features = false, features = ["std"] }
 sha2 = { version = "0.11.1", default-features = false }
 similar = { version = "3.2.1", default-features = false, features = ["std"] }
 thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
-tokio = { version = "1.54.1", default-features = false, features = ["rt"] }
-toml = { version = "1.2.1", default-features = false, features = ["std", "parse", "serde", "display"] }
+# Each crate names the tokio features it uses; none are on here.
+tokio = { version = "1.54.1", default-features = false }
+# Reading only. A crate that also writes TOML turns `display` on itself.
+toml = { version = "1.2.1", default-features = false, features = ["parse", "serde", "std"] }
 unicode-segmentation = { version = "1.13.3", default-features = false }
 unicode-width = { version = "0.2.3", default-features = false }
 # Without `search`, which brings a regular-expression engine for a listing

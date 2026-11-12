@@ -1,0 +1,282 @@
+# The model catalog: what Cortex-Harness knows about each model that no
+# provider's API serves. This file is the source of truth
+# (docs/decisions/0017-model-catalog.md). The build embeds it in the binary;
+# `cortex-llm` reads it on first use, and its tests fail when an entry is
+# not valid.
+#
+# The facts here are read from the providers' own documentation, by hand.
+# Each entry says where and when in `source`. They go stale: check the
+# provider's pages before trusting a number that matters, and update the
+# entry and its date together. A fact the documentation does not state is
+# left out. It is never filled in from memory or from another tool's list.
+#
+# The format
+# ----------
+#
+# version               Changes whenever a price or a limit here changes.
+#                       A usage record stores it beside a cost worked out
+#                       from these prices.
+#
+# [[model]]             One per provider and model id.
+#   provider            The provider's configured name.
+#   id                  The model id sent to the provider.
+#   name                The name to show.
+#   protocol            The wire dialect: anthropic-messages, openai-chat.
+#   context_window      Tokens.
+#   max_output          The most output tokens of one response.
+#   input               What it accepts: "text", "image".
+#   reads_reasoning_from  Ids of other models whose opaque reasoning this
+#                       model can read back. Left out when not documented.
+#   source              Where the entry's facts were read, and when.
+#
+# [model.prices]        US dollars per million tokens, at standard speed.
+#   input, output       Required when there is a prices table at all.
+#   cache_read          Left out when the model has no cache price.
+#   cache_write         A list of { class, price }, one per cache lifetime.
+#                       The first is the provider's default lifetime.
+#   above               A list of dearer rate cards for large requests:
+#                       { input_tokens, input, output, cache_read,
+#                       cache_write }. A request whose input (fresh, cache
+#                       reads and cache writes together) is over
+#                       `input_tokens` is priced whole on that card.
+#
+# [model.reasoning]     Either `levels` (the model's own names, least to
+#                       most) with a `default`, or `min_tokens` and
+#                       `max_tokens` for a token budget. Left out for a
+#                       model with no reasoning control.
+#
+# [model.capabilities]  strict_tools, mid_conversation_system,
+#                       structured_output (each false when left out), and
+#                       min_cacheable_tokens.
+#
+# [model.variants]      The default at each variant point
+#                       (docs/architecture/14-adaptation.md): edit_format
+#                       ("replace"), tool_schema ("strict" or "loose"),
+#                       prompt_style ("concise" or "guided"). Left out, they
+#                       are replace, strict where the model has strict
+#                       tools, and concise.
+#
+# [model.flags]         What the model's protocol needs to know about it
+#                       that nothing above says. Each protocol documents
+#                       the flags it reads.
+#
+# [[model.speed]]       One per speed tier the model offers besides
+#                       standard (docs/decisions/0027-speed-tiers.md). A
+#                       tier is described by what it is, never by its name:
+#   name                What a setting names and a usage record carries.
+#                       "fast" for a tier that produces output faster at a
+#                       higher price; otherwise the provider's own name.
+#   label               What the provider calls it, for display.
+#   effect              What it buys: "faster_output", "priority" or
+#                       "deferred".
+#   when_unavailable    What the provider does when it cannot serve it:
+#                       "error" (it refuses the request) or "downgrade" (it
+#                       serves standard, says so, and bills standard).
+#   separate_limit      Whether it has a rate limit of its own.
+#   shares_cache        Whether a prompt-cache prefix written at standard
+#                       can be read at this tier. LEAVE IT OUT when the
+#                       provider does not say: absent means "not stated".
+#   preview             Whether the provider marks it a preview.
+#   [model.speed.prices]  The tier's own full rate card, in the same form
+#                       as [model.prices]. Left out when not known, and its
+#                       usage then shows tokens only.
+#
+# An unknown key anywhere is an error.
+
+version = "2026-11-12"
+
+# Anthropic
+# ---------
+#
+# Read on 2026-11-12 from platform.claude.com/docs/en:
+#   models/overview and the page of each model  (ids, limits, prices,
+#                                                reasoning, input)
+#   about-claude/pricing                        (prices, cache multipliers,
+#                                                fast mode, long context)
+#   build-with-claude/fast-mode                 (fast mode)
+#   build-with-claude/prompt-caching            (minimum cacheable length,
+#                                                cache and speed)
+#   build-with-claude/effort                    (effort levels)
+#   agents-and-tools/tool-use/strict-tool-use, build-with-claude/structured-outputs
+#
+# What those pages do not state, and so is not here:
+# - The exact token counts. They say "1M tokens" and "128K tokens", written
+#   below as 1,000,000 and 128,000.
+# - Which models can read which other models' reasoning.
+# - Whether system messages may appear mid-conversation.
+#
+# Fast mode, as documented: `speed: "fast"` in the request; up to 2.5 times
+# the output tokens per second, not a shorter time to first token; refused
+# with a 429 that carries `retry-after`, or a 529, never served at standard
+# on these models; a rate limit of its own, reported in `anthropic-fast-*`
+# headers; "Requests at different speeds do not share cached prefixes"; the
+# response says what ran in `usage.speed`. The pricing page lists a fast
+# price for input and output only, and says "Prompt caching multipliers
+# apply on top of fast mode pricing". The fast cache prices below are that
+# rule applied: the model's documented multipliers (cache read 0.025 times
+# input for Fable 5.2 and 0.05 times for Opus 5.5; writes 1.25 times for 5
+# minutes and 2 times for 1 hour) times the fast input price.
+
+[[model]]
+provider = "anthropic"
+id = "claude-fable-5-2"
+name = "Claude Fable 5.2"
+protocol = "anthropic-messages"
+context_window = 1_000_000
+max_output = 128_000
+input = ["text", "image"]
+source = "platform.claude.com/docs/en/models/fable-5-2/overview, about-claude/pricing, build-with-claude/fast-mode; read 2026-11-12"
+
+[model.prices]
+input = 8.00
+output = 40.00
+cache_read = 0.20
+cache_write = [{ class = "5m", price = 10.00 }, { class = "1h", price = 16.00 }]
+
+[model.reasoning]
+levels = ["low", "medium", "high", "xhigh", "max"]
+default = "high"
+
+[model.capabilities]
+strict_tools = true
+structured_output = true
+min_cacheable_tokens = 512
+
+[model.variants]
+edit_format = "replace"
+tool_schema = "strict"
+prompt_style = "concise"
+
+[[model.speed]]
+name = "fast"
+label = "Fast mode"
+effect = "faster_output"
+when_unavailable = "error"
+separate_limit = true
+shares_cache = false
+preview = false
+
+[model.speed.prices]
+input = 16.00
+output = 80.00
+cache_read = 0.40
+cache_write = [{ class = "5m", price = 20.00 }, { class = "1h", price = 32.00 }]
+
+[[model]]
+provider = "anthropic"
+id = "claude-opus-5-5"
+name = "Claude Opus 5.5"
+protocol = "anthropic-messages"
+context_window = 1_000_000
+max_output = 128_000
+input = ["text", "image"]
+source = "platform.claude.com/docs/en/models/opus-5-5/overview, about-claude/pricing, build-with-claude/fast-mode; read 2026-11-12"
+
+[model.prices]
+input = 4.00
+output = 20.00
+cache_read = 0.20
+cache_write = [{ class = "5m", price = 5.00 }, { class = "1h", price = 8.00 }]
+
+[model.reasoning]
+levels = ["low", "medium", "high", "xhigh", "max"]
+default = "medium"
+
+[model.capabilities]
+strict_tools = true
+structured_output = true
+min_cacheable_tokens = 512
+
+[model.variants]
+edit_format = "replace"
+tool_schema = "strict"
+prompt_style = "concise"
+
+[[model.speed]]
+name = "fast"
+label = "Fast mode"
+effect = "faster_output"
+when_unavailable = "error"
+separate_limit = true
+shares_cache = false
+preview = false
+
+[model.speed.prices]
+input = 8.00
+output = 40.00
+cache_read = 0.40
+cache_write = [{ class = "5m", price = 10.00 }, { class = "1h", price = 16.00 }]
+
+# Sonnet 5.5 and Haiku 5.5 are in no list of fast-mode models, so they have
+# no speed tier here.
+
+[[model]]
+provider = "anthropic"
+id = "claude-sonnet-5-5"
+name = "Claude Sonnet 5.5"
+protocol = "anthropic-messages"
+context_window = 1_000_000
+max_output = 128_000
+input = ["text", "image"]
+source = "platform.claude.com/docs/en/models/sonnet-5-5/overview, about-claude/pricing; read 2026-11-12"
+
+[model.prices]
+input = 2.00
+output = 10.00
+cache_read = 0.10
+cache_write = [{ class = "5m", price = 2.50 }, { class = "1h", price = 4.00 }]
+
+[model.reasoning]
+levels = ["low", "medium", "high", "xhigh", "max"]
+default = "high"
+
+[model.capabilities]
+strict_tools = true
+structured_output = true
+min_cacheable_tokens = 512
+
+[model.variants]
+edit_format = "replace"
+tool_schema = "strict"
+prompt_style = "concise"
+
+# Haiku 5.5 is priced by the length of the prompt: "A request's prompt
+# length counts all of its input tokens, including cache reads and cache
+# writes", and a request over 100,000 tokens pays the higher prices whole.
+
+[[model]]
+provider = "anthropic"
+id = "claude-haiku-5-5"
+name = "Claude Haiku 5.5"
+protocol = "anthropic-messages"
+context_window = 1_000_000
+max_output = 128_000
+input = ["text", "image"]
+source = "platform.claude.com/docs/en/models/haiku-5-5/overview, about-claude/pricing; read 2026-11-12"
+
+[model.prices]
+input = 0.10
+output = 0.50
+cache_read = 0.01
+cache_write = [{ class = "5m", price = 0.125 }, { class = "1h", price = 0.20 }]
+
+[[model.prices.above]]
+input_tokens = 100_000
+input = 0.50
+output = 2.50
+cache_read = 0.05
+cache_write = [{ class = "5m", price = 0.625 }, { class = "1h", price = 1.00 }]
+
+[model.reasoning]
+levels = ["low", "medium", "high", "xhigh", "max"]
+default = "medium"
+
+[model.capabilities]
+strict_tools = true
+structured_output = true
+min_cacheable_tokens = 512
+
+[model.variants]
+edit_format = "replace"
+tool_schema = "strict"
+prompt_style = "concise"
