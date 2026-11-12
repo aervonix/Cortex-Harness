@@ -124,7 +124,10 @@ The reference harnesses load extensions into the agent process with the user's f
 | Threat | Mitigation |
 |---|---|
 | Control sequences in model output, file content or tool output change the terminal's state, title or clipboard, or forge UI. | The renderer writes only text it has sanitised. Control characters other than newline and tab are stripped or shown as visible symbols. Only the harness emits control sequences. |
-| Symbolic links lead a tool outside the workspace. | Paths are resolved before the permission check, and the check applies to the target. |
+| Symbolic links lead a tool outside the workspace. | Paths are resolved before the permission check, and the check applies to the target. Windows junctions are resolved the same way. A link to something that does not exist is refused. |
+| A protected file is reached under another spelling, which a rule written for its name does not match. On Windows: another case, a short name (`SECRET~1.ENV`), a trailing dot or space, an alternate data stream (`secret.env::$DATA`), a device or extended-length path. | The check is made on the resolved path, in which case and short names are already the file system's own. The other spellings are refused outright, each with its own error ([architecture/05-tools.md](architecture/05-tools.md), "Paths"). |
+| A path on a network share makes Windows send the account's credentials to a server an attacker named. | Network paths are refused unless configuration allows that server and share. The refusal is made on the text of the path, before anything is asked of the network. |
+| The file system changes between the check of a path and its use. | The harness opens the resolved location, never the text it was given. That does not stop a process that swaps a directory for a link at the right moment: confining such a process is the sandbox's job, and without an enforcing sandbox this remains a residual risk. |
 | Two harness processes corrupt shared files. | Session logs are append-only with one writer per session, guarded by a lock. Shared state files are written atomically under a lock. |
 | A panic leaves the terminal unusable. | The panic hook restores it. |
 

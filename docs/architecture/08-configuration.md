@@ -63,7 +63,10 @@ Configuration, extensions, themes and key bindings reload while the harness runs
 - at the start of every turn;
 - when the user runs `/reload`.
 
-The check is a handful of `stat` calls, well under a millisecond.
+The check is a handful of `stat` calls, well under a millisecond. It compares each file's modification time and size with what they were when the file was loaded (and on Unix which file it is, so that a replaced file shows even when both are the same). Two details keep it from missing a change:
+
+- **The stamp is taken before the file is read.** A change that lands while a file is being read and parsed is then seen by the next check.
+- **A file written in the last two seconds is not trusted yet.** File systems record times in steps as coarse as two seconds, so a second write can leave the time as it was. Such a file is reported as changed until it has settled. The cost is a few reloads of a file that did not change again, so a reload that produces the same configuration is not announced.
 
 **What happens to a change.**
 

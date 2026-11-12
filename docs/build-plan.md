@@ -76,12 +76,26 @@ Two additions the owner made when step 3 began, and one decision from its review
 | **Enforced values fail closed.** | Decided in the review of step 3. A lease, a grant, a rule or a hard limit with a field or a value a build does not know is refused whole, with its own error code. It is never ignored and never kept: a dropped restriction would widen a lease. Everything that only informs stays tolerant. | [decision 0028](decisions/0028-enforced-values-fail-closed.md), [architecture/11-rpc-protocol.md](architecture/11-rpc-protocol.md) |
 | **A repo-root `CLAUDE.md`.** | One line that includes `AGENTS.md`, so that Claude Code sessions load the repository's rules by themselves. | The file. It is documentation: a pull request that changes only it skips the Rust build. |
 
+### Answered in step 4, on 2026-11-12
+
+Step 4 built `cortex-base`. These are the choices it put to the owner, each accepted as recommended.
+
+| Question | The owner's answer, 2026-11-12 | Recorded in |
+|---|---|---|
+| **A dependency outside the planned set:** `unicode-segmentation`, for grapheme clusters. Width is counted per cluster, and a cut or a wrap must never split one. | **Approved**, with its measured cost in the dependency table. | [dependencies.md](dependencies.md), [architecture/01-workspace.md](architecture/01-workspace.md) |
+| **Property tests without a property-testing crate:** a small helper on the seeded generator of `cortex-base`. | **Approved**, on two conditions, both met: a failure prints the seed and the input, and an environment variable multiplies the number of cases so that the nightly run checks many more than a pull request. Steps 6, 10 and 12 follow the pattern. | [testing-and-ci.md](testing-and-ci.md), "Property tests" |
+| **Paths that could mean two things are refused, not tidied.** On Windows: device names, the device and extended-length forms, names that end with a dot or a space, alternate data streams, drive-relative and root-relative paths, and network shares that are not allowed in configuration. On every OS: a path that is not valid Unicode, and a link to something that does not exist. | **Approved.** The Windows refusals apply on Windows only. A path that is not Unicode is a refusal of that one path, which a directory walk steps past. Junctions are resolved like symbolic links, and a short name resolves to the long one. | [architecture/05-tools.md](architecture/05-tools.md), "Paths" |
+| **An atomic write refuses a read-only target,** on both OSes. | **Approved.** | [architecture/05-tools.md](architecture/05-tools.md), "Atomic writes" |
+| **The fake clock and the seeded generator live in `cortex-base`,** beside their traits, and the test kit re-exports them. | **Approved.** | [architecture/01-workspace.md](architecture/01-workspace.md), rule 6 |
+
 ### Still outstanding
 
 | Item | Who | When |
 |---|---|---|
 | **The Windows Terminal checklist** ([measurements/windows-terminal-checklist.md](measurements/windows-terminal-checklist.md)). Decisions 0001 and 0002 stay provisional until it is run. | The owner | Before step 20 |
 | **Two details of speed tiers:** how long a cooldown lasts, and a `--speed` flag for headless mode. Each has a recommendation in [decision 0027](decisions/0027-speed-tiers.md). The third, whether utility roles follow the session's speed, was answered on 2026-11-12: they do not. | Step 5 (the cooldown), step 13 (the flag) | In those steps |
+| **The project key.** It is derived from the canonical workspace path, and stored approvals and project trust hang off it, so two projects must never share one. It therefore needs a collision-resistant hash, which `cortex-base` does not have. The input is ready: the resolved root of a workspace, and its comparison form (`AbsPath::key`), in which two spellings of one Windows path are the same text. | Step 8 | In that step |
+| **Owner-only files on Windows.** `cortex-base` writes a new file owner-only on Linux (mode `0600`). On Windows a file takes its directory's access rules, and setting a rule on the file itself needs a Windows API that only `cortex-sandbox` and `cortex-term` may call. Steps 8 and 9 both promise owner-only files on both OSes, and run at the same time. | Step 9 builds it; step 8 uses it or relies on the per-user state directory until then | In those steps |
 | **QuickJS with the Windows toolchain.** Step 2's dependency probe compiled and ran it with the MSVC toolchain on a hosted Windows runner ([testing-and-ci.md](testing-and-ci.md)). Step 28 still confirms it in the real crate, and switches to Lua if it gives trouble, as agreed. | Step 28, in its first hour | |
 
 ## Features: first release or later

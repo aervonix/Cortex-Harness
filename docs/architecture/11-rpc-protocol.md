@@ -27,7 +27,13 @@ The requirement from the TUI language decision applies here: a TypeScript client
 
 In `--stdio` mode standard output carries only protocol messages. Logs go to standard error and the log file. Any code path that could print to standard output in this mode is a bug, and a test guards it.
 
-Newline-delimited JSON was chosen over length-prefixed framing because every language can produce and consume it with a line reader, and because it is the same framing MCP uses for stdio, so the extension host, the MCP client and this server share one reader and writer.
+Newline-delimited JSON was chosen over length-prefixed framing because every language can produce and consume it with a line reader, and because it is the same framing MCP uses for stdio, so the extension host, the MCP client and this server share one reader and writer. They are in `cortex-base` (`framing`): a decoder that does no I/O, into which bytes are pushed in chunks of any size, and thin wrappers for blocking streams. The details of the framing:
+
+- **A message is written as one line** of compact JSON and a `\n`, in one write, and flushed. A line break inside a string is an escape, so a line never contains one.
+- **Empty lines are skipped.**
+- **A bad line is an error for that line only.** The reader goes on with the next line. A line that is not JSON is answered with -32700, and one that is JSON but not a message with -32600.
+- **A line has a size limit,** 32 MiB by default, so that a peer that never sends a newline cannot use up the memory. A longer line is dropped as it arrives, reported once (-32600), and reading resumes at the next newline.
+- **A stream that ends in the middle of a line** is an error (-32700): every message ends with a newline, so those bytes are a message that was cut off.
 
 ## Messages
 
