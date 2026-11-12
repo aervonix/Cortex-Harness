@@ -36,12 +36,27 @@
 //!
 //! # What this does not do
 //!
-//! Resolving a path and then using it are two steps, and the file system
-//! can change between them: a directory can be swapped for a symbolic link
-//! after the check. A resolved path is therefore the right thing to check
-//! and the right thing to open, and it is not a guarantee. Confining a
-//! process that is actively racing the harness is the sandbox's job
+//! **It does not freeze the file system.** Resolving a path and then using
+//! it are two steps, and the file system can change between them: a
+//! directory can be swapped for a symbolic link after the check. A resolved
+//! path is therefore the right thing to check and the right thing to open,
+//! and it is not a guarantee. Confining a process that is actively racing
+//! the harness is the sandbox's job
 //! (`docs/architecture/06-permissions-and-sandbox.md`).
+//!
+//! **It does not know that two names are one file.** A file with a second
+//! hard link has two paths, and both are real. And Linux is taken to
+//! compare names exactly: on a mount that ignores case there, two spellings
+//! of one file resolve to two paths.
+//!
+//! **Its case folding is close to Windows's, not identical.** Windows
+//! compares names by a table of its own that this crate cannot read.
+//! [`PathStyle::fold`] follows the same rule with the standard library's
+//! tables, which differ for a few letters outside ASCII. The resolver does
+//! not depend on it: what exists is spelled by the file system, and inside
+//! or outside the workspace is decided by exact comparison. Whoever matches
+//! rules against [`AbsPath::key`] should hold that a deny rule may match a
+//! little too much and an allow rule must not.
 
 mod lexical;
 mod resolve;
@@ -523,6 +538,33 @@ impl AbsPath {
         }
         let rest: Vec<&str> = mine.collect();
         Some(RelPath::from_text(style, rest.join("/")))
+    }
+
+    /// [`strip_prefix`](Self::strip_prefix) with the names compared exactly,
+    /// whatever the style. For two paths that are both in the file system's
+    /// own spelling, which is how the resolver decides what is inside the
+    /// workspace: an exact match cannot be wrong about a letter whose upper
+    /// case Windows and this crate see differently.
+    pub(crate) fn strip_prefix_exactly(&self, base: &Self) -> Option<RelPath> {
+        if self.style != base.style {
+            return None;
+        }
+        // The root is a drive letter or a server and share, which have no
+        // spelling on disk: compared as the style compares names.
+        if !self
+            .style
+            .same_name(&self.text[..self.root_len], &base.text[..base.root_len])
+        {
+            return None;
+        }
+        let mut mine = self.names();
+        for theirs in base.names() {
+            if mine.next()? != theirs {
+                return None;
+            }
+        }
+        let rest: Vec<&str> = mine.collect();
+        Some(RelPath::from_text(self.style, rest.join("/")))
     }
 
     /// The path in the operating system's own spelling, for showing to a

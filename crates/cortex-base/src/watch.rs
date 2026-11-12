@@ -98,13 +98,31 @@ fn identity(_: &std::fs::Metadata) -> Option<(u64, i64, i64)> {
     None
 }
 
+/// A [`FileStamp`] and the moment it was taken. Made by
+/// [`WatchList::stamp`]. The moment matters because a file written just
+/// before it is not trusted yet (see [`WatchList`]), however long the
+/// reading and parsing between the stamp and its registration took.
+#[derive(Debug, Clone)]
+pub struct TimedStamp {
+    stamp: FileStamp,
+    taken: UtcTime,
+}
+
+impl TimedStamp {
+    /// What the file looked like.
+    #[must_use]
+    pub fn stamp(&self) -> &FileStamp {
+        &self.stamp
+    }
+}
+
 /// The files the harness loaded, and what each looked like when it did.
 ///
 /// # Use
 ///
 /// Take the stamp **before** reading a file, and register both:
 ///
-/// 1. `let stamp = FileStamp::of(path);`
+/// 1. `let stamp = list.stamp(path);`
 /// 2. read and parse the file;
 /// 3. `list.watch_with(path, stamp);`
 ///
@@ -150,19 +168,31 @@ impl WatchList {
         }
     }
 
+    /// What `path` looks like now, and when that was: to be taken before a
+    /// file is read and handed to [`watch_with`](Self::watch_with) after.
+    #[must_use]
+    pub fn stamp(&self, path: &Path) -> TimedStamp {
+        TimedStamp {
+            // The time first: if the file is written in between, the stamp
+            // is the newer of the two and the file counts as fresh.
+            taken: self.clock.now(),
+            stamp: FileStamp::of(path),
+        }
+    }
+
     /// Watches `path`, as it is now. A path already on the list gets a fresh
     /// stamp.
     pub fn watch(&mut self, path: impl Into<PathBuf>) {
         let path = path.into();
-        let stamp = FileStamp::of(&path);
+        let stamp = self.stamp(&path);
         self.watch_with(path, stamp);
     }
 
     /// Watches `path` with a stamp taken earlier, before the file was read.
     /// A file that does not exist can be watched: its creation is a change.
-    pub fn watch_with(&mut self, path: impl Into<PathBuf>, stamp: FileStamp) {
+    pub fn watch_with(&mut self, path: impl Into<PathBuf>, stamp: TimedStamp) {
         let path = path.into();
-        let taken = self.clock.now();
+        let TimedStamp { stamp, taken } = stamp;
         match self.entries.iter_mut().find(|entry| entry.path == path) {
             Some(entry) => {
                 entry.stamp = stamp;

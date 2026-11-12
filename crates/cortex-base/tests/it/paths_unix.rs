@@ -126,6 +126,35 @@ fn a_link_to_nothing_is_refused() {
 }
 
 #[test]
+fn every_link_on_the_way_is_followed_in_turn() {
+    let scratch = Scratch::new("unix_link_chain");
+    scratch.file("far/away/file.txt", "x");
+    scratch.dir("ws/a");
+    // Relative, then absolute, then relative with a step back, then one in
+    // the middle of what an earlier link pointed at.
+    symlink("a/first", scratch.join("ws/start")).unwrap();
+    symlink(scratch.join("ws/second"), scratch.join("ws/a/first")).unwrap();
+    symlink("../far/hop", scratch.join("ws/second")).unwrap();
+    symlink("away", scratch.join("far/hop")).unwrap();
+    let resolver = scratch.resolver("ws");
+
+    let resolved = resolver.resolve("start/file.txt").unwrap();
+    assert_eq!(resolved.abs(), &scratch.real("far/away/file.txt"));
+    assert!(!resolved.is_inside_workspace());
+    assert!(resolved.exists());
+    // The same answer as the kernel's own resolution.
+    assert_eq!(
+        resolved.to_fs_path(),
+        std::fs::canonicalize(scratch.join("ws/start/file.txt")).unwrap()
+    );
+    let new = resolver.resolve("start/new.txt").unwrap();
+    assert_eq!(
+        new.abs(),
+        &scratch.real("far/away").join("new.txt").unwrap()
+    );
+}
+
+#[test]
 fn a_loop_of_links_is_refused() {
     let scratch = Scratch::new("unix_loop");
     scratch.dir("ws");

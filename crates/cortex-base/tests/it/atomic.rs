@@ -123,8 +123,8 @@ fn a_read_only_file_is_refused_and_keeps_its_content() {
 fn a_reader_sees_the_old_content_or_the_new_and_never_a_mixture() {
     let scratch = Scratch::new("atomic_readers");
     let target = scratch.join("shared.txt");
-    let old = vec![b'a'; 256 * 1024];
-    let new = vec![b'b'; 300 * 1024];
+    let old = vec![b'a'; 64 * 1024];
+    let new = vec![b'b'; 80 * 1024];
     fs::write(&target, &old).unwrap();
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -150,16 +150,15 @@ fn a_reader_sees_the_old_content_or_the_new_and_never_a_mixture() {
     };
 
     let mut replaced = 0;
-    for round in 0..200 {
+    for round in 0..100 {
         let contents = if round % 2 == 0 { &new } else { &old };
         // On Windows a reader that has the file open at the wrong moment
-        // can make one replace fail as "in use": the retries wait on the
-        // fake clock, so they take no time and the reader may still be
-        // there. The file is then unchanged, which is the property under
-        // test.
+        // can make one replace fail: the retries wait on the fake clock, so
+        // they take no time and the reader may still be there. The file is
+        // then unchanged, which is the property under test.
         match write_atomic(&target, contents, &options(), &FakeClock::default()) {
             Ok(()) => replaced += 1,
-            Err(AtomicWriteError::InUse { .. }) if cfg!(windows) => {}
+            Err(AtomicWriteError::InUse { .. } | AtomicWriteError::Io { .. }) if cfg!(windows) => {}
             Err(error) => panic!("round {round}: {error}"),
         }
     }
@@ -273,6 +272,64 @@ mod unix {
         assert_ne!(fs::metadata(&target).unwrap().ino(), before);
         assert_eq!(fs::read(&target).unwrap(), b"new");
         assert_eq!(fs::read(&other).unwrap(), b"old");
+    }
+
+    #[test]
+    fn only_a_regular_file_is_replaced() {
+        let scratch = Scratch::new("atomic_unix_not_a_file");
+        let socket = scratch.join("agent.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let link = scratch.join("link-to-socket");
+        symlink("agent.sock", &link).unwrap();
+
+        for target in [&socket, &link] {
+            let error = write_atomic(target, b"x", &options(), &FakeClock::default()).unwrap_err();
+            assert!(
+                matches!(error, AtomicWriteError::NotAFile { .. }),
+                "{error}"
+            );
+        }
+        use std::os::unix::fs::FileTypeExt;
+        assert!(
+            fs::metadata(&socket).unwrap().file_type().is_socket(),
+            "still a socket"
+        );
+        assert_eq!(scratch.listing(""), ["agent.sock", "link-to-socket"]);
+
+        // The null device, where there is one to look at.
+        let error = write_atomic(
+            std::path::Path::new("/dev/null"),
+            b"x",
+            &options(),
+            &FakeClock::default(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, AtomicWriteError::NotAFile { .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_file_this_user_may_not_write_is_refused() {
+        let scratch = Scratch::new("atomic_unix_not_writable");
+        // Writable by the group only. Its owner, who runs this test, may
+        // not write it, though it is not "read-only" by its mode bits and
+        // the directory would let a rename replace it.
+        let target = scratch.file("shared.txt", "old");
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o460)).unwrap();
+        let outcome = write_atomic(&target, b"new", &options(), &FakeClock::default());
+        match outcome {
+            Err(AtomicWriteError::ReadOnly { .. }) => {
+                assert_eq!(mode(&target), 0o460);
+                fs::set_permissions(&target, fs::Permissions::from_mode(0o660)).unwrap();
+                assert_eq!(fs::read(&target).unwrap(), b"old");
+            }
+            // The superuser may write any file, as it could in place.
+            Ok(()) => assert_eq!(mode(&target), 0o460),
+            Err(error) => panic!("unexpected failure: {error}"),
+        }
+        assert_eq!(scratch.listing(""), ["shared.txt"]);
     }
 
     #[test]

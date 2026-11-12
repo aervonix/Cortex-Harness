@@ -8,9 +8,14 @@
 //! - **Permissions are kept.** The new file gets the mode of the one it
 //!   replaces. On Windows it gets the directory's inherited access rules;
 //!   rules set on the old file itself are not carried over.
-//! - **A read-only target is refused,** on both OSes. A rename would
-//!   otherwise replace on Linux a file its owner had protected, and fail on
-//!   Windows.
+//! - **A target that could not have been written in place is refused.** A
+//!   rename needs only the right to change the directory, so without this
+//!   it would replace a file its owner had protected. Refused: a file marked
+//!   read-only (on Linux, one with no write permission at all; on Windows,
+//!   one with the read-only attribute), and on Linux also a file this user
+//!   may not open for writing.
+//! - **Only a regular file is replaced.** A directory, a device, a socket
+//!   or a pipe under the target's name is refused, not swapped for a file.
 //! - **A symbolic link is written through:** the file it points to is
 //!   replaced and the link stays. A link to nothing is an error.
 //! - **A file in use is retried.** On Windows another program can hold a
@@ -21,6 +26,11 @@
 //! Not kept: hard links (the other names keep the old content), the owner
 //! when the file belonged to someone else, and on Windows the hidden and
 //! system attributes.
+//!
+//! Two limits. A process that is killed in the middle of a write leaves its
+//! temporary file (`.cortex-….tmp`) behind. And with `sync` off, an error
+//! that the OS reports only when a file is closed (a full disk, on some
+//! network file systems) is not seen.
 //!
 //! These functions block. Async code calls them on the blocking pool. They
 //! run to completion and take no cancellation token: a write that has begun
@@ -75,10 +85,10 @@ impl Default for AtomicWriteOptions {
 }
 
 /// Why an atomic write did not happen. The target is unchanged in every
-/// case, and no temporary file is left behind.
+/// case, and the temporary file has been removed.
 #[derive(Debug, thiserror::Error)]
 pub enum AtomicWriteError {
-    /// The target is marked read-only.
+    /// The target is marked read-only, or this user may not write to it.
     #[error("`{path}` is read-only, so it was not replaced")]
     ReadOnly {
         /// The target.
@@ -87,6 +97,13 @@ pub enum AtomicWriteError {
     /// The target is a directory.
     #[error("`{path}` is a directory, not a file")]
     IsADirectory {
+        /// The target.
+        path: String,
+    },
+    /// The target is something other than a file or a directory: a device,
+    /// a socket, a pipe.
+    #[error("`{path}` is not a regular file, so it was not replaced")]
+    NotAFile {
         /// The target.
         path: String,
     },
@@ -153,7 +170,10 @@ pub fn write_atomic(
         if found.is_dir() {
             return Err(AtomicWriteError::IsADirectory { path: shown });
         }
-        if found.permissions().readonly() {
+        if !found.is_file() {
+            return Err(AtomicWriteError::NotAFile { path: shown });
+        }
+        if found.permissions().readonly() || !may_write(&target) {
             return Err(AtomicWriteError::ReadOnly { path: shown });
         }
     }
@@ -261,38 +281,82 @@ fn sync_directory(directory: &Path) {
 #[cfg(not(unix))]
 fn sync_directory(_: &Path) {}
 
-/// Whether a failed rename means another program has the target open.
+/// Whether this user may open the file for writing, which is what writing
+/// it in place would have needed. Opening changes nothing.
+#[cfg(unix)]
+fn may_write(target: &Path) -> bool {
+    match OpenOptions::new().write(true).open(target) {
+        Ok(_) => true,
+        Err(error) => error.kind() != io::ErrorKind::PermissionDenied,
+    }
+}
+
+/// On Windows the read-only attribute is the whole check. Opening the file
+/// would fail for a file that is merely in use, which is not a refusal but
+/// something to wait for.
+#[cfg(not(unix))]
+fn may_write(_: &Path) -> bool {
+    true
+}
+
+/// What a failed rename says about the target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        reason = "only Windows refuses to replace a file in use; the retry loop is tested everywhere"
+    )
+)]
+enum Blocked {
+    /// Another program has it open: worth waiting for.
+    InUse,
+    /// The rename was refused and nothing says why. It may be a program
+    /// that had the file open a moment ago, so it is worth trying again,
+    /// and if it goes on it is reported as what the OS said, not as a file
+    /// in use.
+    Unclear,
+    /// Something waiting will not fix.
+    No,
+}
+
+/// What a failed rename says about the target.
 #[cfg(windows)]
-fn in_use(error: &io::Error, target: &Path) -> bool {
-    // ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION.
-    const LOCKED: [i32; 2] = [32, 33];
+fn in_use(error: &io::Error, target: &Path) -> Blocked {
+    // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION, and
+    // ERROR_USER_MAPPED_FILE (another program has the file mapped into its
+    // memory).
+    const LOCKED: [i32; 3] = [32, 33, 1224];
     // ERROR_ACCESS_DENIED: what a rename reports for a target that someone
     // has open, and also what a real permission problem reports.
     const ACCESS_DENIED: i32 = 5;
     match error.raw_os_error() {
-        Some(code) if LOCKED.contains(&code) => true,
+        Some(code) if LOCKED.contains(&code) => Blocked::InUse,
         Some(ACCESS_DENIED) => {
             // Tell the two apart by opening the target for writing. If that
-            // is refused for sharing, someone holds it. If it works, nothing
-            // is wrong with our rights, so the refusal was someone who had
-            // it open a moment ago. Only a second "access denied" is a real
-            // permission problem, which no amount of waiting will fix.
+            // is refused for sharing, someone holds it. If that is refused
+            // for access too, waiting will not help.
             match OpenOptions::new().write(true).open(target) {
-                Ok(_) => true,
-                Err(probe) => probe
-                    .raw_os_error()
-                    .is_some_and(|code| LOCKED.contains(&code)),
+                Ok(_) => Blocked::Unclear,
+                Err(probe)
+                    if probe
+                        .raw_os_error()
+                        .is_some_and(|code| LOCKED.contains(&code)) =>
+                {
+                    Blocked::InUse
+                }
+                Err(_) => Blocked::No,
             }
         }
-        _ => false,
+        _ => Blocked::No,
     }
 }
 
-/// Whether a failed rename means another program has the target open. Off
-/// Windows it never does: a file in use can be replaced.
+/// What a failed rename says about the target. Off Windows it never means
+/// "in use": a file in use can be replaced.
 #[cfg(not(windows))]
-fn in_use(_: &io::Error, _: &Path) -> bool {
-    false
+fn in_use(_: &io::Error, _: &Path) -> Blocked {
+    Blocked::No
 }
 
 /// Why a replace gave up.
@@ -304,15 +368,16 @@ enum ReplaceFailure {
         waited: Duration,
         source: io::Error,
     },
-    /// Anything else. Not retried.
+    /// Anything else: something that was not retried, or a refusal with no
+    /// stated reason that outlasted the retries.
     Other(io::Error),
 }
 
-/// Runs `replace`, and while it fails because the target is in use, waits
+/// Runs `replace`, and while it fails in a way that waiting may fix, waits
 /// and runs it again, once per entry of `waits`.
 fn replace_with_retry(
     mut replace: impl FnMut() -> io::Result<()>,
-    in_use: impl Fn(&io::Error) -> bool,
+    blocked: impl Fn(&io::Error) -> Blocked,
     waits: &[Duration],
     clock: &dyn Clock,
 ) -> Result<(), ReplaceFailure> {
@@ -325,14 +390,18 @@ fn replace_with_retry(
             Ok(()) => return Ok(()),
             Err(error) => error,
         };
-        if !in_use(&error) {
+        let state = blocked(&error);
+        if state == Blocked::No {
             return Err(ReplaceFailure::Other(error));
         }
         let Some(&wait) = waits.next() else {
-            return Err(ReplaceFailure::InUse {
-                attempts,
-                waited,
-                source: error,
+            return Err(match state {
+                Blocked::InUse => ReplaceFailure::InUse {
+                    attempts,
+                    waited,
+                    source: error,
+                },
+                Blocked::Unclear | Blocked::No => ReplaceFailure::Other(error),
             });
         };
         clock.sleep(wait);
@@ -351,8 +420,12 @@ mod tests {
         io::Error::other("locked")
     }
 
-    fn is_locked(error: &io::Error) -> bool {
-        error.to_string() == "locked"
+    fn is_locked(error: &io::Error) -> Blocked {
+        match error.to_string().as_str() {
+            "locked" => Blocked::InUse,
+            "refused" => Blocked::Unclear,
+            _ => Blocked::No,
+        }
     }
 
     #[test]
@@ -449,6 +522,42 @@ mod tests {
         ));
         assert_eq!(calls.get(), 1);
         assert!(clock.sleeps().is_empty());
+    }
+
+    #[test]
+    fn an_unexplained_refusal_is_retried_and_reported_as_what_it_was() {
+        // It goes away: someone had the file open for a moment.
+        let clock = FakeClock::default();
+        let calls = Cell::new(0);
+        let outcome = replace_with_retry(
+            || {
+                calls.set(calls.get() + 1);
+                if calls.get() < 3 {
+                    Err(io::Error::other("refused"))
+                } else {
+                    Ok(())
+                }
+            },
+            is_locked,
+            &AtomicWriteOptions::default().retry_waits,
+            &clock,
+        );
+        assert!(outcome.is_ok());
+        assert_eq!(clock.sleeps().len(), 2);
+
+        // It stays: the report is the refusal itself, not "in use".
+        let clock = FakeClock::default();
+        let outcome = replace_with_retry(
+            || Err(io::Error::other("refused")),
+            is_locked,
+            &AtomicWriteOptions::default().retry_waits,
+            &clock,
+        );
+        assert!(matches!(
+            outcome,
+            Err(ReplaceFailure::Other(error)) if error.to_string() == "refused"
+        ));
+        assert_eq!(clock.slept(), Duration::from_millis(500));
     }
 
     #[test]

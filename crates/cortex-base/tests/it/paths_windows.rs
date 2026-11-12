@@ -295,7 +295,9 @@ fn network_shares_are_refused_unless_the_share_is_allowed() {
         Err(PathError::ShareNotAllowed { .. })
     ));
 
-    // With one share allowed, that share is let through and no other.
+    // With one share allowed, every other share is still refused. (That the
+    // allowed one passes the check is tested as text, in the crate: a test
+    // must not reach for a share, even this machine's own.)
     let allowing = scratch.resolver_with("ws", PathOptions::new().allow_share("LOCALHOST", "C$"));
     assert!(matches!(
         allowing.resolve(r"\\localhost\d$\x"),
@@ -305,17 +307,38 @@ fn network_shares_are_refused_unless_the_share_is_allowed() {
         allowing.resolve(r"\\otherhost\c$\x"),
         Err(PathError::ShareNotAllowed { .. })
     ));
-    match allowing.resolve(r"\\localhost\c$\Windows") {
-        Ok(resolved) => {
-            let (server, share) = resolved.abs().share().expect("still a share path");
-            assert!(server.eq_ignore_ascii_case("localhost") && share.eq_ignore_ascii_case("c$"));
-            assert!(!resolved.is_inside_workspace());
-        }
-        // The machine may not offer its administrative share. What matters
-        // is that the refusal is no longer ours.
-        Err(PathError::Io { .. }) => {}
-        Err(other) => panic!("an allowed share was refused: {other}"),
+}
+
+#[test]
+fn a_link_to_a_network_share_is_refused_without_following_it() {
+    let scratch = Scratch::new("win_link_to_unc");
+    scratch.dir("ws/sub");
+    // A link is only a name and a target: making one asks nothing of the
+    // server it names, which does not exist.
+    let share = Path::new(r"\\cortex-no-such-host.invalid\share\dir");
+    if !link_dir_or_skip(share, &scratch.join("ws").join("sub").join("remote")) {
+        return;
     }
+    let resolver = scratch.resolver("ws");
+
+    // Following the link would send this account's credentials to whoever
+    // answers for that name. The link's target is read and checked first,
+    // so nothing is sent, and the test takes no time.
+    for written in [r"sub\remote", r"sub\remote\file.txt", "SUB/REMOTE/a/b.txt"] {
+        match resolver.resolve(written).unwrap_err() {
+            PathError::ShareNotAllowed { server, share, .. } => {
+                assert_eq!(server, "cortex-no-such-host.invalid", "{written:?}");
+                assert_eq!(share, "share");
+            }
+            other => panic!("{written:?}: {other}"),
+        }
+    }
+    // Everything beside the link still resolves.
+    assert!(resolver.resolve("sub").unwrap().exists());
+    assert_eq!(
+        resolver.resolve(r"sub\new.txt").unwrap().display(),
+        "sub/new.txt"
+    );
 }
 
 #[test]
