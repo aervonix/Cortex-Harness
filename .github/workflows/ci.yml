@@ -62,6 +62,11 @@ jobs:
           fetch-depth: 2
       - id: changes
         uses: ./.github/actions/changes
+      - name: Keep cargo's and rustup's files off the system disk (Windows)
+        if: runner.os == 'Windows' && steps.changes.outputs.code == 'true'
+        run: |
+          "CARGO_HOME=$env:RUNNER_TEMP\cargo" >> $env:GITHUB_ENV
+          "RUSTUP_HOME=$env:RUNNER_TEMP\rustup" >> $env:GITHUB_ENV
       - name: Install the toolchain from rust-toolchain.toml
         if: steps.changes.outputs.code == 'true' || matrix.name == 'linux'
         run: rustup toolchain install
@@ -103,6 +108,11 @@ jobs:
           fetch-depth: 2
       - id: changes
         uses: ./.github/actions/changes
+      - name: Keep cargo's and rustup's files off the system disk (Windows)
+        if: runner.os == 'Windows' && steps.changes.outputs.code == 'true'
+        run: |
+          "CARGO_HOME=$env:RUNNER_TEMP\cargo" >> $env:GITHUB_ENV
+          "RUSTUP_HOME=$env:RUNNER_TEMP\rustup" >> $env:GITHUB_ENV
       - name: Install the toolchain from rust-toolchain.toml
         if: steps.changes.outputs.code == 'true'
         run: rustup toolchain install
