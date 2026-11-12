@@ -1,0 +1,17 @@
+[package]
+name = "cortex-stats"
+description = "Local statistics: event recording, monthly files, aggregates and retention."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+cortex-protocol.workspace = true
+cortex-base.workspace = true
+
+[lints]
+workspace = true

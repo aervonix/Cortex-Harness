@@ -1,0 +1,19 @@
+[package]
+name = "cortex-testkit"
+description = "Test support: the scripted provider, the scripted SSE server, the virtual terminal, the pseudo-terminal driver, temporary workspaces and the fake clock. A dev-dependency only."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+cortex-protocol.workspace = true
+cortex-base.workspace = true
+cortex-llm.workspace = true
+cortex-term.workspace = true
+
+[lints]
+workspace = true

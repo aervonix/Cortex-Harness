@@ -1,0 +1,4 @@
+# `cargo xtask <command>` runs the developer commands in the xtask crate.
+# `./x <command>` is the same thing from a shell.
+[alias]
+xtask = "run --quiet --package xtask --"

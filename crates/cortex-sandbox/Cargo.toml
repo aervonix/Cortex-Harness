@@ -1,0 +1,16 @@
+[package]
+name = "cortex-sandbox"
+description = "Sandbox policy types and the per-OS launchers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+cortex-base.workspace = true
+
+[lints]
+workspace = true

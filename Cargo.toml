@@ -1,0 +1,100 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+repository = "https://github.com/aervonix/Cortex-Harness"
+
+# One table, so each crate has one version and one feature set.
+# Every third-party entry also needs a row in docs/dependencies.md
+# (`cargo xtask rules` fails when the two disagree).
+[workspace.dependencies]
+# Workspace crates. Which crate may depend on which is fixed by
+# docs/architecture/01-workspace.md and checked by `cargo xtask rules`.
+cortex-agent = { path = "crates/cortex-agent" }
+cortex-base = { path = "crates/cortex-base" }
+cortex-config = { path = "crates/cortex-config" }
+cortex-core = { path = "crates/cortex-core" }
+cortex-ext = { path = "crates/cortex-ext" }
+cortex-index = { path = "crates/cortex-index" }
+cortex-knowledge = { path = "crates/cortex-knowledge" }
+# Default features are off here so that a crate has to ask for the HTTP stack.
+cortex-llm = { path = "crates/cortex-llm", default-features = false }
+cortex-mcp = { path = "crates/cortex-mcp" }
+cortex-policy = { path = "crates/cortex-policy" }
+cortex-protocol = { path = "crates/cortex-protocol" }
+cortex-rpc = { path = "crates/cortex-rpc" }
+cortex-sandbox = { path = "crates/cortex-sandbox" }
+cortex-session = { path = "crates/cortex-session" }
+cortex-stats = { path = "crates/cortex-stats" }
+cortex-term = { path = "crates/cortex-term" }
+cortex-testkit = { path = "crates/cortex-testkit" }
+cortex-tools = { path = "crates/cortex-tools" }
+cortex-tui = { path = "crates/cortex-tui" }
+
+# Third-party crates. Default features off; opt in to what is used.
+serde_json = { version = "1.0.145", default-features = false, features = ["std"] }
+
+[workspace.lints.rust]
+# Allowed per module in cortex-sandbox and cortex-term only, where the OS
+# interfaces need it, with a safety comment on each block.
+unsafe_code = "deny"
+# Public items are documented: part of "done" for every step.
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+# `pub` that cannot be reached from outside the crate should say `pub(crate)`.
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+# The project rules from docs/testing-and-ci.md. The lists they use are in
+# clippy.toml. CI turns every warning into an error.
+#
+# Blocking standard-library calls must not run on the core thread.
+disallowed_methods = "warn"
+disallowed_types = "warn"
+# No unwrap or expect outside tests, unless an attribute gives the invariant:
+#   #[expect(clippy::unwrap_used, reason = "the regex is a literal")]
+unwrap_used = "warn"
+expect_used = "warn"
+# Nothing writes to standard output or standard error by accident.
+# cortex-cli and xtask are the two crates that allow these.
+print_stdout = "warn"
+print_stderr = "warn"
+# Every unsafe block says why it is sound.
+undocumented_unsafe_blocks = "warn"
+# An exception to a lint always carries its reason.
+allow_attributes_without_reason = "warn"
+# Nothing unfinished reaches the main branch.
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+# Exiting the process skips terminal restoration. Return an exit code instead.
+exit = "warn"
+
+# The profiles are decision 0012 (docs/decisions/0012-release-profile.md).
+# `panic = "unwind"` is Cargo's default and is what every profile uses:
+# a panic in a tool task or an extension call is caught at the task boundary.
+[profile.dev]
+debug = "line-tables-only"
+
+# Third-party crates: lightly optimised, no debug info.
+[profile.dev.package."*"]
+opt-level = 1
+debug = false
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 16
+debug = false
+
+# Published binaries: `cargo build --profile dist`.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = true

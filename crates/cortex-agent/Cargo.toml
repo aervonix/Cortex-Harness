@@ -1,0 +1,23 @@
+[package]
+name = "cortex-agent"
+description = "The agent loop: the turn state machine, the tool scheduler, the steering queue, verification, context assembly and compaction."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+cortex-protocol.workspace = true
+cortex-base.workspace = true
+cortex-llm.workspace = true
+cortex-tools.workspace = true
+cortex-policy.workspace = true
+cortex-session.workspace = true
+cortex-knowledge.workspace = true
+cortex-stats.workspace = true
+
+[lints]
+workspace = true

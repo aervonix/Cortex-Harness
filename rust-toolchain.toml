@@ -1,0 +1,8 @@
+# The one toolchain everyone and CI builds with. The project follows current
+# stable and promises no minimum supported Rust version, so this is bumped to
+# each new stable release, in a pull request of its own (a bump empties the
+# CI caches; see docs/testing-and-ci.md).
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

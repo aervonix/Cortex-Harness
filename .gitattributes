@@ -1,0 +1,14 @@
+# Text files are LF in the repository and in every checkout, Windows included.
+# rustfmt, snapshots and byte-exact tests then agree on both OSes.
+* text=auto eol=lf
+
+# Fixtures are stored and checked out exactly as they were recorded: CRLF,
+# mixed line endings and byte-order marks are what some of them test.
+**/fixtures/** -text
+
+# Binary assets.
+*.png binary
+
+# Scripts that only run on Windows keep the line endings Windows tools expect.
+*.cmd text eol=crlf
+*.bat text eol=crlf
