@@ -513,10 +513,12 @@ mod tests {
 
     #[test]
     fn the_systems_time_converts_on_both_sides_of_the_epoch() {
-        let after = SystemTime::UNIX_EPOCH + Duration::new(1_794_478_502, 5);
+        // In steps of 100 ns, which is as fine as Windows keeps a time: a
+        // `SystemTime` there cannot hold 5 ns, and gives back 0.
+        let after = SystemTime::UNIX_EPOCH + Duration::new(1_794_478_502, 500);
         assert_eq!(
             UtcTime::from_system(after),
-            UtcTime::from_unix(1_794_478_502, 5)
+            UtcTime::from_unix(1_794_478_502, 500)
         );
         // Not every platform can represent a time before 1970.
         if let Some(before) = SystemTime::UNIX_EPOCH.checked_sub(Duration::new(1, 250_000_000)) {

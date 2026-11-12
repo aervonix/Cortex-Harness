@@ -231,6 +231,31 @@ The clean build of the protocol crate alone, measured on the desktop pinned to 4
 
 The first `nightly` run failed, usefully: the unused-dependency tool had been started in a way that made it read its own name as a directory. The `report` job opened an issue for it, and the second failure (the tool, now working, listing the skeleton's placeholder edges between workspace crates) was added to that issue as a comment. Both were fixed in the same pull request. Until the crates have code, the check ignores the workspace's own crates and looks at third-party ones only; the list is in the root `Cargo.toml`.
 
+#### After step 4: the base primitives
+
+Step 4 filled `cortex-base`: about 10,500 lines, more than half of them tests, 173 tests on Linux and 168 on Windows, and three small third-party crates (`thiserror`, `unicode-width`, `unicode-segmentation`). It is the first pull request to read caches that the main branch wrote, so the dependencies of step 3 were restored and not built. Measured on the step's pull request on 2026-11-12:
+
+| Job | Step 3, last run of its pull request | Step 4, first run |
+|---|---|---|
+| `lint-linux` | 43 s | 26 s |
+| `test-linux` | 37 s | 33 s |
+| `lint-windows` | 56 s | 60 s |
+| `test-windows` | 94 s | 50 s |
+| **Wall time, Linux** | 43 s | 33 s |
+| **Wall time, Windows** | 94 s | 60 s |
+
+The step added code and tests and the jobs did not get slower, because the warm cache took away more than the step added. That is the answer to the question step 3 left ("A warm cache should remove nearly all of it"): it does. The two runs were on different machines, so differences of ten seconds mean nothing.
+
+| | `lint-linux` | `test-linux` | `lint-windows` | `test-windows` |
+|---|---|---|---|---|
+| The job's command once `xtask` runs | 5.7 s (clippy 5.2 s) | 9.7 s (build tests 7.9 s, run 1.8 s) | 12.2 s (clippy) | 12.6 s (build tests 10.4 s, run 2.2 s) |
+| Test time against the tier budgets | | tier 1: 5.2 s of 20 s. Tier 2: 0.3 s of 40 s. Tier 3: 0.3 s of 60 s | | tier 1: 5.6 s of 20 s. Tier 2: 0.5 s of 40 s. Tier 3: 0.4 s of 90 s |
+
+- **Tier 1 is now a quarter used,** almost all of it by `cortex-base`'s property tests and the framing tests that split a stream at every byte. On the desktop the same tests take 3.0 s. The number of property cases is the dial if this tier fills up: the nightly run is where the large counts belong.
+- **The Windows-only tests ran here for the first time,** and every one of them passed on the first run: case, device names, alternate data streams, network paths, a directory link, a junction (the one system test the step adds), short names, a path longer than 260 characters, and the replace of a locked file. The one failure of the first run was a test of time conversion that assumed a clock finer than Windows keeps (100 ns), and was a mistake in the test.
+- **The clean build of `cortex-base` alone,** on the desktop pinned to 4 cores: 7.1 to 7.5 s in the `dev` profile and 4.7 to 4.8 s in `release` (two runs each), against 7.1 s and 4.9 s for `cortex-protocol` alone in step 3. The crate itself is 0.5 s. What it adds to the protocol crate's build is `thiserror`'s derive macro (1.05 s, built beside serde's) and the two Unicode crates (0.26 s together). A normal build has 15 third-party packages, 4 more than before.
+- **The release build** has 34 crates, 4 more than step 3's 30. The binary is unchanged, because nothing in it calls `cortex-base` yet.
+
 #### The planned third-party set
 
 The skeleton cannot show what a cold cache will cost once the dependencies arrive, which is the risk this page was written around. So step 2 also built a throwaway program that depends on the whole third-party set planned for the first release (the async runtime, the HTTP and TLS stack, serde, the terminal library, the search libraries, the MCP SDK, the highlighter, the script engine, the test-kit libraries, and the Windows-only and Linux-only crates: 283 packages in its lockfile) on both runners. The program was on a scratch branch and is not in the repository. It uses each library enough to link it.
