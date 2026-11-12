@@ -71,7 +71,7 @@ Specified in [architecture/01-workspace.md](../architecture/01-workspace.md) and
 
 ## Amendment, 2026-11-12: a `ci` profile
 
-Step 2 built the planned third-party set on GitHub-hosted runners, which this record had not measured. A clean build in the `dev` profile, with dependencies at `opt-level = 1`, took 129 s on Linux and 259 s on Windows, after 32 to 35 s of fetching sources on Windows. With dependencies at `opt-level = 0` it took 27 to 45 s on Linux and 60 to 82 s on Windows. The blocking checks must finish in under 5 minutes per OS with a cold cache too, and the first figure for Windows leaves no room to build and test our own code.
+Step 2 built the planned third-party set on GitHub-hosted runners, which this record had not measured. A clean build in the `dev` profile, with dependencies at `opt-level = 1`, took 129 s on Linux and 259 s on Windows, after about half a minute of fetching sources on Windows. With dependencies at `opt-level = 0` it took 27 to 45 s on Linux and 60 to 82 s on Windows. The blocking checks must finish in under 5 minutes per OS with a cold cache too, and the first figure for Windows leaves no room to build and test our own code.
 
 So there is a fifth profile:
 

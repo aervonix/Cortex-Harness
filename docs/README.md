@@ -51,8 +51,9 @@ These docs are the specification that every build step works from. They were wri
 | Page | Content |
 |---|---|
 | [performance-budgets.md](performance-budgets.md) | The numbers, how each is measured, and where each is checked. |
-| [testing-and-ci.md](testing-and-ci.md) | Test tiers, the scripted provider, TUI testing, Windows coverage, the CI layout and its time budget, dependency hygiene. |
+| [testing-and-ci.md](testing-and-ci.md) | Test tiers and their time limits, the scripted provider, TUI testing, Windows coverage, the CI layout with its measured times, lints and repo rules, dependency hygiene. |
 | [security.md](security.md) | Threats and mitigations. |
+| [dependencies.md](dependencies.md) | Every direct third-party dependency: which crate uses it, why, what else was considered and what it costs. Checked against the manifests. |
 
 ### Background
 
