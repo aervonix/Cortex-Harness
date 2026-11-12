@@ -7,7 +7,7 @@
 //! | [`cases`] | Property tests without a property-testing crate. |
 //! | [`timer`] | [`FakeTimer`]: waits that move the fake clock instead of waiting. |
 //! | [`gate`] | [`Gate`]: how two sides of a test take turns without sleeping. |
-//! | [`exec`] | [`block_on`]: runs async code with no runtime. |
+//! | [`exec`] | [`block_on`], which runs async code with no runtime, and [`join`], which runs two futures together. |
 //! | [`provider`] | [`ScriptedProvider`]: a model that says what the test tells it to. For tests of the agent loop. |
 //! | [`transport`] | [`ScriptedTransport`]: recorded responses in place of a network. For tests of protocols and of the client. |
 //! | [`protocol`] | [`TestProtocol`]: a wire dialect made for tests. |
@@ -41,7 +41,7 @@ pub mod timer;
 pub mod transport;
 
 pub use cortex_base::{Clock, FakeClock, Rng, SeededRng};
-pub use exec::block_on;
+pub use exec::{block_on, join};
 pub use gate::Gate;
 pub use protocol::TestProtocol;
 pub use provider::{Response, ScriptedProvider};

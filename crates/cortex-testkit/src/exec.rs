@@ -41,10 +41,63 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
+/// Runs two futures together on one task and returns both outputs. For a
+/// test that must do something while the code under test is waiting: the
+/// code is one future, and what the test does is the other.
+///
+/// The first future is polled before the second.
+pub async fn join<A: Future, B: Future>(first: A, second: B) -> (A::Output, B::Output) {
+    let mut first = std::pin::pin!(first);
+    let mut second = std::pin::pin!(second);
+    let mut first_output = None;
+    let mut second_output = None;
+    std::future::poll_fn(|context| {
+        if first_output.is_none()
+            && let Poll::Ready(output) = first.as_mut().poll(context)
+        {
+            first_output = Some(output);
+        }
+        if second_output.is_none()
+            && let Poll::Ready(output) = second.as_mut().poll(context)
+        {
+            second_output = Some(output);
+        }
+        if first_output.is_some() && second_output.is_some() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
+    match (first_output, second_output) {
+        (Some(first), Some(second)) => (first, second),
+        _ => unreachable!("both futures finished before the wait ended"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Gate;
+
+    #[test]
+    fn two_futures_run_together_and_the_first_is_polled_first() {
+        let gate = Gate::new();
+        let opener = gate.clone();
+        // The first waits for what the second does.
+        let (first, second) = block_on(join(
+            async {
+                gate.opened().await;
+                "waited"
+            },
+            async move {
+                opener.open();
+                "opened"
+            },
+        ));
+        assert_eq!((first, second), ("waited", "opened"));
+        assert_eq!(block_on(join(async { 1 }, async { 2 })), (1, 2));
+    }
 
     #[test]
     fn it_runs_a_future_that_is_ready_and_one_that_waits_for_a_thread() {

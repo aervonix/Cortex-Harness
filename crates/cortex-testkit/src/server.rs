@@ -11,7 +11,9 @@
 //!
 //! Nothing here waits for a fixed time. The server and the test take turns
 //! through [`Gate`]s. The limits that appear are bounds, there so that a
-//! mistake is a failed test and not a hung one.
+//! mistake is a failed test and not a hung one. Dropping the server opens
+//! every gate one of its threads is still waiting on, so that a test that
+//! ends early does not wait for them.
 //!
 //! The server speaks just enough HTTP/1.1 for one request per connection,
 //! answers with a chunked body and closes. It listens on `127.0.0.1` only,
@@ -34,6 +36,10 @@ const PATIENCE: Duration = Duration::from_secs(30);
 /// One scripted answer of the server.
 #[derive(Debug, Clone)]
 pub struct ServerReply {
+    /// Opened by the test before the status line may be sent.
+    hold: Option<Gate>,
+    /// Close the connection without answering.
+    hang_up: bool,
     status: u16,
     headers: Vec<(String, String)>,
     steps: Vec<Step>,
@@ -60,10 +66,30 @@ impl ServerReply {
     #[must_use]
     pub fn status(status: u16) -> Self {
         Self {
+            hold: None,
+            hang_up: false,
             status,
             headers: Vec::new(),
             steps: Vec::new(),
         }
+    }
+
+    /// No response at all: the server reads the request and closes the
+    /// connection.
+    #[must_use]
+    pub fn hang_up() -> Self {
+        Self {
+            hang_up: true,
+            ..Self::status(0)
+        }
+    }
+
+    /// Sends nothing at all, not even the status, until the test opens
+    /// `gate`: a server that has taken the request and not answered yet.
+    #[must_use]
+    pub fn hold_until(mut self, gate: &Gate) -> Self {
+        self.hold = Some(gate.clone());
+        self
     }
 
     /// Adds a response header.
@@ -158,11 +184,30 @@ struct State {
     /// A handle on every connection, to close them all at the end.
     connections: Vec<TcpStream>,
     workers: Vec<JoinHandle<()>>,
+    /// The gates server threads are waiting on, to let them all go at the
+    /// end.
+    waiting_on: Vec<Gate>,
 }
 
 impl Shared {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Waits for the test to open `gate`. Returns whether to go on: not
+    /// when the server is stopping, and not when the test never opened it.
+    fn wait_for(&self, gate: &Gate) -> bool {
+        {
+            let mut state = self.lock();
+            // Checked under the lock the stopping server takes to find the
+            // gates to open, so a thread either sees that it is stopping or
+            // has its gate opened.
+            if self.stopping.load(Ordering::SeqCst) {
+                return false;
+            }
+            state.waiting_on.push(gate.clone());
+        }
+        gate.wait(PATIENCE) && !self.stopping.load(Ordering::SeqCst)
     }
 }
 
@@ -215,16 +260,21 @@ impl Drop for SseServer {
             let _ = acceptor.join();
         }
         // Closing the connections ends every thread that is reading or
-        // writing one. A thread waiting on a gate ends at its bound.
-        let (connections, workers) = {
+        // writing one, and opening the gates ends every thread that is
+        // waiting for the test.
+        let (connections, workers, gates) = {
             let mut state = self.shared.lock();
             (
                 std::mem::take(&mut state.connections),
                 std::mem::take(&mut state.workers),
+                std::mem::take(&mut state.waiting_on),
             )
         };
         for connection in connections {
             let _ = connection.shutdown(Shutdown::Both);
+        }
+        for gate in gates {
+            gate.open();
         }
         for worker in workers {
             let _ = worker.join();
@@ -303,6 +353,15 @@ fn serve(connection: &TcpStream, shared: &Shared) -> std::io::Result<()> {
         ServerReply::status(500).send("the scripted server has no reply left for this request")
     });
 
+    if let Some(hold) = &reply.hold
+        && !shared.wait_for(hold)
+    {
+        return Ok(());
+    }
+    if reply.hang_up {
+        return Ok(());
+    }
+
     let mut head = format!("HTTP/1.1 {} Scripted\r\n", reply.status);
     for (name, value) in &reply.headers {
         head.push_str(&format!("{name}: {value}\r\n"));
@@ -323,7 +382,7 @@ fn serve(connection: &TcpStream, shared: &Shared) -> std::io::Result<()> {
             }
             Step::Mark(gate) => gate.open(),
             Step::Wait(gate) => {
-                if !gate.wait(PATIENCE) {
+                if !shared.wait_for(&gate) {
                     return Ok(());
                 }
             }
@@ -445,11 +504,30 @@ mod tests {
     }
 
     #[test]
+    fn it_can_hold_the_whole_response_back_and_is_let_go_when_dropped() {
+        let server = SseServer::start();
+        let never_opened = Gate::new();
+        server.push(ServerReply::sse().hold_until(&never_opened).send("data: x\n\n"));
+        let mut connection = TcpStream::connect(server.address).unwrap();
+        connection
+            .write_all(b"POST / HTTP/1.1\r\nContent-Length: 0\r\n\r\n")
+            .unwrap();
+        // Dropping the server must not wait out the bound on the gate.
+        drop(server);
+        let mut rest = Vec::new();
+        let _ = connection.read_to_end(&mut rest);
+        assert!(rest.is_empty(), "nothing was sent: {rest:?}");
+    }
+
+    #[test]
     fn a_disconnect_leaves_the_body_unfinished() {
         let server = SseServer::start();
         server.push(ServerReply::sse().send("data: half\n\n").disconnect());
+        server.push(ServerReply::hang_up());
         let response = exchange(&server, "");
         assert!(response.contains("data: half"), "{response}");
         assert!(!response.ends_with("0\r\n\r\n"), "{response}");
+        assert_eq!(exchange(&server, ""), "", "and a hang-up sends nothing at all");
+        assert_eq!(server.requests().len(), 2);
     }
 }
