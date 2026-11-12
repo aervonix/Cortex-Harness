@@ -86,6 +86,7 @@ At 2,000 tokens per second, which is faster than any current hosted model.
 | Budget | Limit | Measured basis |
 |---|---|---|
 | Release binary, Linux x86-64, `dist` profile, stripped | ≤ 16 MB | A binary with the core dependency set: 7.0 MB. With the MCP SDK, keychain and highlighter: 12.0 MB. The script engine adds 1.1 MB, unwinding on panic 0.2 to 0.3 MB, and our own code comes on top. Measured with thin LTO; fat LTO is about 7% smaller. The TypeScript alternative ships a 110 to 150 MB runtime. |
+| Release binary, Linux arm64, `dist` profile, stripped | ≤ 16 MB | The same limit as Linux x86-64, until it is measured with real code. The skeleton with the protocol crate: 0.38 MB on both. |
 | Release binary, Windows x86-64 | ≤ 18 MB | Not measured. Windows binaries of the same code are usually somewhat larger. |
 | Crates in a release build | Recorded, not capped. A rise of more than five in one change needs a reason. | Core set: 191. With the optional parts: about 310. Recorded by the `main` workflow since step 3: 30 (19 of ours and 11 third-party), with a `dist` binary of 0.38 MB on Linux and 0.12 MB on Windows. |
 
@@ -93,7 +94,7 @@ The size budget is where the vision's features meet the footprint goal most dire
 
 **How.** `ls -l` on the stripped `dist` binary.
 
-**Checked.** Main (a release build is too slow for the blocking checks): `cargo xtask size --check`, in the `main` workflow after each merge and in `nightly` for every release target. The Linux budget is applied to both Linux targets.
+**Checked.** Main (a release build is too slow for the blocking checks): `cargo xtask size --check`, in the `main` workflow after each merge and in `nightly` for every release target. Each of the three release targets has a row above.
 
 ## Build and test times
 

@@ -1,6 +1,6 @@
 # 0027: Speed tiers: a per-model set of named tiers, recorded at the speed that ran
 
-- **Status:** Accepted by the owner as a requirement on 2026-11-12 ("provider fast modes, starting with Anthropic's"). The design below is this record's; the points still open for the owner are listed at the end.
+- **Status:** Accepted by the owner as a requirement on 2026-11-12 ("provider fast modes, starting with Anthropic's"). The design below is this record's. How utility roles behave was settled the same day, in the review of step 3. Two details are left for the steps that need them, listed at the end.
 - **Date:** 2026-11-12
 
 ## Context
@@ -37,7 +37,7 @@ Two more facts shape the design:
 
 - **Names.** `standard` is what every model has. `fast` is the well-known name for a tier that produces output faster at a higher price, so that a setting, a key binding and a status line can mean one thing across providers. Any other tier keeps the provider's own name (`flex`, `priority`, `ultrafast`): inventing neutral names for them would be the ordered scale again. On the wire a speed is an open string.
 - **Offers.** A model's catalog entry lists the tiers it offers besides `standard`. Each offer says what the tier **buys** (`faster_output`, `priority`, `deferred`), its **own full rate card**, what the provider does **when it cannot serve it** (`error` or `downgrade`), whether it has a **rate limit of its own**, whether it **shares the prompt cache** with standard (yes, no, or not stated), and whether it is a **preview**. A front end shows a speed control only for a model with offers.
-- **The setting.** A session has a speed, and each model role may have its own, which wins. The default is `standard` everywhere. A setting the role's model does not offer is kept and is not in effect: the session state reports both the speed that is set and the speed in effect, as it does for the reasoning level.
+- **The setting.** A session has a speed, which is what the `main` role runs at. Each model role may have a speed of its own, which wins. **The utility roles (`fast` and `judge`) do not inherit the session's speed: they run at `standard` unless the user sets theirs.** This was decided in the review of step 3, on 2026-11-12. The reason is cost: summaries and titles gain little from speed, and when the `fast` role is not configured it falls back to the main model, so an inherited fast speed would double the price of every compaction. The default is `standard` everywhere. A setting the role's model does not offer is kept and is not in effect: the session state reports both the speed that is set and the speed in effect, as it does for the reasoning level.
 - **The record.** Every usage record carries the speed the request **ran at**: the provider's own report where it gives one, otherwise the speed that was sent. The cost is tokens multiplied by **that** speed's rate card. When it differs from what was asked for, the record carries both.
 - **Fallback and cooldown.** When a provider refuses a tier with its own limit, the harness may wait (if the provider's wait is short) or send the request at `standard`. After a fallback the tier is in a **cooldown**: later requests go at `standard` until it ends, and only then ask for the tier again. The harness does not flip between speeds request by request, because each flip can cost a cache rewrite that is larger than the time saved. A fallback and the start and end of a cooldown are events. A provider that downgrades by itself produces the same fallback event, marked as the provider's doing, and no cooldown.
 - **Limits.** A tier's own rate limit is reported beside the model's ordinary one, labelled with the tier.
@@ -75,7 +75,7 @@ Two more facts shape the design:
 | 3 (this one) | The protocol types, their schema, and these pages. |
 | 5 | The request and the model event carry a speed. The catalog format has per-model speed offers with their rate cards. The retry layer tells a tier's own limit from the model's, and has the fallback and the cooldown, tested against the fake clock. |
 | 7 | The loop sends each request at the speed in effect and emits the fallback and cooldown notices. A change of the setting applies from the next request. |
-| 9 | Configuration: the session's speed, a role's own, and whether to fall back. |
+| 9 | Configuration: the session's speed, a role's own, the utility roles at `standard` by default, and whether to fall back. |
 | 13 | `session/set` wired through the core. Headless mode gets the setting from configuration. |
 | 14 | Anthropic: `speed` in the request, `usage.speed` in the decoder, the `anthropic-fast-*` headers, the beta header where a model needs it, catalog entries. It begins, as always, by re-reading the provider's documentation. |
 | 16 | The statistics record and the usage aggregates carry the speed, priced at its rate. `/usage` can group by it. |
@@ -84,11 +84,14 @@ Two more facts shape the design:
 
 **The owner's requirement for the terminal UI**, recorded here for steps 22 to 24: the `/effort` picker shows a fast-mode toggle on `Tab`, with the hint `tab - fast mode`, only when the current model offers a fast speed. The rest of the UI is our own design, not a copy of another harness's command or icon ([architecture/09-tui.md](../architecture/09-tui.md)).
 
-## Open, for the owner
+## Settled and open
 
-1. **Do utility calls follow the session's speed?** As designed, the session's speed is the default for every role, and the `fast` role (summaries, titles) can be set apart. When the `fast` role is not configured it falls back to the main model, so a session at fast speed would also pay double for its compaction summaries. The recommendation is that configuration ships with the `fast` and `judge` roles at `standard` unless the user sets them, which step 9 would build.
-2. **How long a cooldown lasts, and how long a wait is "short".** The recommendation is the provider's reset time when it gives one, otherwise 10 minutes, and to wait in place for up to 20 seconds before falling back. Steps 5 and 7 need the numbers.
-3. **A command-line flag.** `--model` and `--effort` have flags in headless mode. A `--speed` flag beside them is the obvious addition and is not in [architecture/10-headless.md](../architecture/10-headless.md) yet.
+**Settled in the review of step 3, on 2026-11-12:** utility roles default to `standard` and do not inherit a fast session speed. It can be overridden per role. It is part of "The setting", above, and step 9 builds it.
+
+**Open, for the steps that need them:**
+
+1. **How long a cooldown lasts, and how long a wait is "short".** The recommendation is the provider's reset time when it gives one, otherwise 10 minutes, and to wait in place for up to 20 seconds before falling back. Step 5 decides, with the numbers in configuration.
+2. **A command-line flag.** `--model` and `--effort` have flags in headless mode. A `--speed` flag beside them is the obvious addition and is not in [architecture/10-headless.md](../architecture/10-headless.md) yet. Step 13 decides.
 
 ## Revisit when
 

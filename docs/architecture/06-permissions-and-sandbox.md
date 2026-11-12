@@ -97,6 +97,7 @@ There are three kinds of lease, and they are the same type.
 - **A task lease cannot exceed what the user could configure.** Managed configuration caps it, and a project cannot grant one.
 - The status line shows the level and, for a task lease, what remains of its time and budget. `/lease` shows the full terms.
 - Property tests check that `narrow` always returns a lease within both inputs, and that no sequence of narrowing widens anything.
+- **A lease that is not understood in full is refused whole.** The wire form of a lease, a grant, a rule, a sandbox policy, a budget, the hard limits and a stop condition rejects any field and any value it does not know, with the error code `lease_not_understood`. Elsewhere the protocol ignores what it does not know; here that would let a build that predates a restriction drop it, and hold a wider lease than was granted ([decision 0028](../decisions/0028-enforced-values-fail-closed.md)).
 
 **In the first release:** the types, the standing lease, the levels `read-only`, `supervised`, `autonomous` and `unrestricted`, and `narrow` with its tests. Settings profiles, headless flags and the non-interactive policy of runs all compile to leases. **After it:** task leases and the `guided` level (one build step), then team leases with the Coordinator, which is built on that step. See the [build plan](../build-plan.md).
 

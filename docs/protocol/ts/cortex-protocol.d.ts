@@ -468,7 +468,7 @@ export interface Expiry {
 }
 
 /** When a lease ends. */
-export type ExpiryKind = "never" | "at" | "end_of_task" | "end_of_session" | (string & {});
+export type ExpiryKind = "never" | "at" | "end_of_task" | "end_of_session";
 
 /** The result of `extensions/status`. */
 export interface ExtensionsStatusResult {
@@ -480,8 +480,8 @@ export interface ExtensionsStatusResult {
 export interface Grant {
   /** What may be spent. */
   budget?: Budget;
-  /** The level. */
-  level: Level;
+  /** The level. A level that is not listed is refused. */
+  level: "read-only" | "supervised" | "guided" | "autonomous" | "unrestricted";
   /** What no level relaxes. */
   limits?: HardLimits;
   /** The models that may be used. Empty means the configured ones. */
@@ -501,7 +501,7 @@ export interface Grantor {
 }
 
 /** Who granted a lease. */
-export type GrantorKind = "user" | "parent" | (string & {});
+export type GrantorKind = "user" | "parent";
 
 /** What no level relaxes. Set by the user in the grant and enforced by the harness. */
 export interface HardLimits {
@@ -785,7 +785,7 @@ export interface ModelsListResult {
 }
 
 /** Whether sandboxed processes may use the network. There is no per-host list. */
-export type NetworkAccess = "off" | "full" | (string & {});
+export type NetworkAccess = "off" | "full";
 
 /** Something transient that front ends should show. It is never sent to the model and is not an item. Every notice has a `message` in words, so a client can show a kind of notice it does not know. */
 export type Notice = ({
@@ -831,11 +831,6 @@ export interface Origin {
   protocol: string;
   /** The provider. */
   provider: ProviderId;
-}
-
-/** Stop when an action outside the lease's scope is needed. */
-export interface OutOfScopeStop {
-  [key: string]: unknown;
 }
 
 /** One part of a message. */
@@ -1199,7 +1194,7 @@ export interface RoleSettings {
   model?: ModelId | null;
   /** The provider that serves the model. Needed only when two providers have a model with the same id. */
   provider?: ProviderId | null;
-  /** The speed for this role. It overrides the session's speed. `inherit` is not a value: to go back to the session's speed, send the session's speed. */
+  /** The speed for this role. For `main` it overrides the session's speed. The utility roles (`fast`, `judge`) do not follow the session's speed: they run at `standard` unless this is set. */
   speed?: Speed | null;
 }
 
@@ -1213,7 +1208,7 @@ export interface RoleState {
   model: ModelId;
   /** The provider. */
   provider: ProviderId;
-  /** The speed this role is set to: its own setting, or the session's. Required, so that a reader never has to guess a default. */
+  /** The speed this role is set to: its own setting; without one, the session's speed for `main` and `standard` for a utility role. Required, so that a reader never has to guess a default. */
   speed: Speed;
   /** When a cooldown of `speed` ends, while one is running. */
   speed_cooldown_until?: Timestamp | null;
@@ -1225,14 +1220,14 @@ export interface RoleState {
 export interface Rule {
   /** What it decides. */
   action: RuleAction;
-  /** The effect the rule is about. */
-  effect: Effect;
+  /** The effect the rule is about. An effect that is not listed is refused. */
+  effect: "read" | "write" | "exec" | "network" | "ext";
   /** What it matches: a path glob, a command pattern, a host, or a `server/tool` name. */
   match: string;
 }
 
 /** What a rule decides. */
-export type RuleAction = "allow" | "ask" | "deny" | (string & {});
+export type RuleAction = "allow" | "ask" | "deny";
 
 /** Notice: something about the sandbox the user should know: it is not enforcing, a command ran outside it, a protected path changed. */
 export interface SandboxNotice {
@@ -1395,7 +1390,7 @@ export interface SessionSettings {
   level?: Level | null;
   /** Settings per model role. */
   roles?: { [key: string]: RoleSettings };
-  /** The speed for every role that does not set its own. */
+  /** The session's speed: what the `main` role runs at unless it sets its own. The utility roles do not inherit it. */
   speed?: Speed | null;
 }
 
@@ -1421,7 +1416,7 @@ export interface SessionState {
   seq: number;
   /** The session. */
   session_id: SessionId;
-  /** The session's speed setting: what a role runs at unless it sets its own. Required. */
+  /** The session's speed setting: what the `main` role runs at unless it sets its own. Required. */
   speed: Speed;
   /** The session's title. */
   title?: string | null;
@@ -1546,22 +1541,22 @@ export interface SpeedOffer {
 /** What the provider does when it cannot serve a request at the tier that was asked for. */
 export type SpeedUnavailable = "error" | "downgrade" | (string & {});
 
-/** Stop when spending passes a threshold below the budget. */
-export interface SpendingStop {
-  /** The threshold, in nano-dollars. */
-  usd_nanos: number;
-}
-
 /** A condition on which the holder of a lease must stop and report. The harness checks it. It is data, not an instruction to the model. */
-export type StopCondition = ({
+export type StopCondition = {
     kind: "verification_failed";
-  } & VerificationFailedStop) | ({
+    /** The number of failed rounds in a row. */
+    rounds: number;
+  } | {
     kind: "out_of_scope";
-  } & OutOfScopeStop) | ({
+  } | {
     kind: "spending";
-  } & SpendingStop) | ({
+    /** The threshold, in nano-dollars. */
+    usd_nanos: number;
+  } | {
+    /** The moment. */
+    at: Timestamp;
     kind: "time";
-  } & TimeStop);
+  };
 
 /** Why a response from the model ended. Each provider's own value is mapped onto this set, and kept beside it as `raw_stop`. */
 export type StopReason = "end" | "tool_calls" | "max_output" | "context_overflow" | "paused" | "refusal" | "content_filter" | "malformed_tool_call" | "error" | "interrupted" | (string & {});
@@ -1612,12 +1607,6 @@ export interface TextPart {
   raw?: RawJson | null;
   /** The text. */
   text: string;
-}
-
-/** Stop at a moment in time. */
-export interface TimeStop {
-  /** The moment. */
-  at: Timestamp;
 }
 
 /** A moment in time, in RFC 3339 form in UTC: `2026-11-12T10:15:02Z`. Fractional seconds are allowed. */
@@ -1886,9 +1875,3 @@ export interface UserMessageItem {
 
 /** What the project's checks said at the end of a turn. */
 export type Verification = "passed" | "failed" | "skipped" | (string & {});
-
-/** Stop when the project's checks have failed this many rounds in a row. */
-export interface VerificationFailedStop {
-  /** The number of failed rounds in a row. */
-  rounds: number;
-}
