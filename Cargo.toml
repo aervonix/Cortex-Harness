@@ -40,6 +40,9 @@ cortex-tui = { path = "crates/cortex-tui" }
 schemars = { version = "1.2.3", default-features = false, features = ["derive", "std"] }
 serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1.0.145", default-features = false, features = ["std"] }
+thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
+unicode-segmentation = { version = "1.13.3", default-features = false }
+unicode-width = { version = "0.2.3", default-features = false }
 
 # The nightly unused-dependency check (`cargo xtask unused`, cargo-machete)
 # looks at third-party crates only, for now. The skeleton declares the edges
