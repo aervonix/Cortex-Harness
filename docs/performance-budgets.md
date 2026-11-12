@@ -87,19 +87,19 @@ At 2,000 tokens per second, which is faster than any current hosted model.
 |---|---|---|
 | Release binary, Linux x86-64, `dist` profile, stripped | ≤ 16 MB | A binary with the core dependency set: 7.0 MB. With the MCP SDK, keychain and highlighter: 12.0 MB. The script engine adds 1.1 MB, unwinding on panic 0.2 to 0.3 MB, and our own code comes on top. Measured with thin LTO; fat LTO is about 7% smaller. The TypeScript alternative ships a 110 to 150 MB runtime. |
 | Release binary, Windows x86-64 | ≤ 18 MB | Not measured. Windows binaries of the same code are usually somewhat larger. |
-| Crates in a release build | Recorded, not capped. A rise of more than five in one change needs a reason. | Core set: 191. With the optional parts: about 310. |
+| Crates in a release build | Recorded, not capped. A rise of more than five in one change needs a reason. | Core set: 191. With the optional parts: about 310. Recorded by the `main` workflow since step 3: 30 (19 of ours and 11 third-party), with a `dist` binary of 0.38 MB on Linux and 0.12 MB on Windows. |
 
 The size budget is where the vision's features meet the footprint goal most directly: the script engine, the MCP SDK and the highlighter are each a megabyte or more. Their measured costs are in the decision records, and the ones that are optional have cargo features so their cost can always be seen.
 
 **How.** `ls -l` on the stripped `dist` binary.
 
-**Checked.** Main (a release build is too slow for the blocking checks).
+**Checked.** Main (a release build is too slow for the blocking checks): `cargo xtask size --check`, in the `main` workflow after each merge and in `nightly` for every release target. The Linux budget is applied to both Linux targets.
 
 ## Build and test times
 
 | Budget | Limit | Measured basis |
 |---|---|---|
-| Blocking pull-request checks, wall time per OS | < 5 min | Measured in step 2 for the skeleton: 20 to 29 s on Linux and 37 to 39 s on Windows, with a cold or a warm cache. The tables are in [testing-and-ci.md](testing-and-ci.md). |
+| Blocking pull-request checks, wall time per OS | < 5 min | Measured in step 2 for the skeleton: 20 to 29 s on Linux and 37 to 39 s on Windows, with a cold or a warm cache. In step 3, with the protocol crate and a cold cache for the new dependencies: 39 to 48 s on Linux and 78 to 94 s on Windows. The tables are in [testing-and-ci.md](testing-and-ci.md). |
 | Clean build of the workspace in the `ci` profile, Linux runner | ≤ 2 min | Measured in step 2: the planned third-party set alone takes 27 to 45 s. In the `dev` profile, which optimises dependencies, it takes 129 s; that is why CI has a profile of its own. |
 | Clean build of the workspace in the `ci` profile, Windows runner | ≤ 3.5 min | Measured in step 2: the planned third-party set alone takes 60 to 82 s, after about 10 s of fetching sources (26 to 36 s before cargo's files were moved off the runner's system disk). In the `dev` profile it takes 259 s. |
 | Clean release build (`release` profile), 4 desktop cores | ≤ 3 min | Core dependency set: 37 s. With the optional parts: 76 s. The script engine adds about 9 s. |
