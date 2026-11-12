@@ -1,0 +1,84 @@
+# Cortex-Harness design docs
+
+Cortex-Harness is a terminal agent harness written from scratch in Rust: an LLM agent loop that reads and edits code, runs commands, and talks to several model providers.
+
+These docs are the specification that every build step works from. They were written before any harness code. A step's session has only these docs and its own prompt, so they are meant to be complete enough to build from.
+
+## Start here
+
+| If you want | Read |
+|---|---|
+| What the product is for | [vision.md](vision.md) |
+| The shape of the whole system in one page | [architecture/00-overview.md](architecture/00-overview.md) |
+| What to build next, and what is still the owner's decision | [build-plan.md](build-plan.md) |
+| Why a choice was made | [decisions/README.md](decisions/README.md) |
+
+## Everything
+
+### Product
+
+| Page | Content |
+|---|---|
+| [vision.md](vision.md) | The pitch, the audience, the three pillars, the defaults, and where each goal is designed. |
+| [ideas.md](ideas.md) | Five further ideas for the owner to pick from. Not commitments. |
+
+### Architecture
+
+| Page | Content |
+|---|---|
+| [00-overview.md](architecture/00-overview.md) | Goals, the shape, threads, the data flow of a turn, the rules that hold everywhere, glossary. |
+| [01-workspace.md](architecture/01-workspace.md) | Crates, their jobs and dependency direction, cargo features, profiles, the dependency policy. |
+| [02-runtime.md](architecture/02-runtime.md) | Concurrency, error handling, cancellation, logging. |
+| [03-agent-loop.md](architecture/03-agent-loop.md) | The turn state machine, streaming, tool rounds, steering, retries, rate limits, stop reasons, guards. |
+| [04-providers.md](architecture/04-providers.md) | Protocols, providers and models; stream events; tools; reasoning; caching; usage and cost; the catalog; credentials. |
+| [05-tools.md](architecture/05-tools.md) | The tool contract and every built-in tool. |
+| [06-permissions-and-sandbox.md](architecture/06-permissions-and-sandbox.md) | Grants, modes, rules, command analysis, approvals, project trust, and what is sandboxed on each OS. |
+| [07-sessions-and-context.md](architecture/07-sessions-and-context.md) | The session log, resume and branches, snapshots and undo, what goes into a request, instruction files, budgeting, compaction. |
+| [08-configuration.md](architecture/08-configuration.md) | Layers, profiles, reloading, reading other tools' set-up, the first run, credentials. |
+| [09-tui.md](architecture/09-tui.md) | Rendering, the look, panels, the editor, keys, slash commands, the terminal layer. |
+| [10-headless.md](architecture/10-headless.md) | Output formats and exit codes. |
+| [11-rpc-protocol.md](architecture/11-rpc-protocol.md) | Transports, messages, versioning, roles, methods, events, backpressure. |
+| [12-extensions.md](architecture/12-extensions.md) | Commands, skills, hooks, script extensions, extensions the harness writes itself. |
+| [13-mcp.md](architecture/13-mcp.md) | MCP client scope and how its tools reach the model. |
+| [14-adaptation.md](architecture/14-adaptation.md) | Local statistics, the project profile and memory, per-model variants, model roles. |
+| [15-efficiency.md](architecture/15-efficiency.md) | The repository map, changed-only re-reads, output compression, early tool start, prefetch, verification, the usage view. |
+| [16-run-engine.md](architecture/16-run-engine.md) | The orchestration layer, parallel attempts, replay and evaluation. |
+| [17-coordinator.md](architecture/17-coordinator.md) | The Coordinator: a Manager session running a team of Employee sessions. |
+
+### Quality
+
+| Page | Content |
+|---|---|
+| [performance-budgets.md](performance-budgets.md) | The numbers, how each is measured, and where each is checked. |
+| [testing-and-ci.md](testing-and-ci.md) | Test tiers, the scripted provider, TUI testing, Windows coverage, the CI layout and its time budget, dependency hygiene. |
+| [security.md](security.md) | Threats and mitigations. |
+
+### Background
+
+| Page | Content |
+|---|---|
+| [reference-notes.md](reference-notes.md) | How Pi and Opencode approach the same problems, what is worth matching, and where Cortex-Harness differs. |
+| [decisions/](decisions/README.md) | One record per significant choice: options, the choice, why, and what would reopen it. |
+| [measurements/](measurements/README.md) | The spikes: what was built, how it was measured, the numbers. |
+
+### Plan
+
+| Page | Content |
+|---|---|
+| [build-plan.md](build-plan.md) | Open questions, the vision feature table, the rules for every step, and the ordered steps. |
+
+## How these docs are kept
+
+- **The docs are the specification.** When code must differ from a page, the page changes in the same pull request.
+- **Decisions are recorded.** A choice that changes gets a new or amended record, with the reason.
+- **Provisional means the owner has not approved it yet.** Work proceeds on the recommendation. The open questions in the build plan list every such item.
+- **Provider and protocol facts go stale.** Pages that depend on them say when they were read. The steps that implement them begin by reading the current documentation.
+- **Generated files are checked.** Protocol schemas and the configuration reference are generated from code and verified in CI.
+
+## Ground rules
+
+1. **Original work.** Pi and Opencode were studied to understand problems. Nothing is copied from them: no code, structure, names, prompt text, UI or configuration format. No dependency that is a port or extract of their code.
+2. **Speed and efficiency come first,** in the product and in the tooling. The blocking pull-request checks finish in under 5 minutes per OS.
+3. **No personal details** in commits, docs, code, configuration or fixtures, and no absolute home-directory paths.
+4. **Everything fresh.** Nothing is carried over from earlier attempts.
+5. **The brand is Cortex-Harness.** Crates use the `cortex-` prefix. The licence is MIT.
