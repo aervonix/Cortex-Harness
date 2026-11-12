@@ -86,6 +86,21 @@ debug = "line-tables-only"
 opt-level = 1
 debug = false
 
+# What the blocking CI test jobs and `cargo xtask ci` build with: `dev`, with
+# third-party crates unoptimised and no debug info. Optimising them is worth
+# it at a desk, where they are built once and kept. On a hosted runner with a
+# cold cache it is the difference between fitting in 5 minutes and not: a
+# clean build of the planned dependency set took 129 s on Linux and 259 s on
+# Windows with opt-level 1, and 42 s and 77 s with opt-level 0
+# (docs/testing-and-ci.md).
+[profile.ci]
+inherits = "dev"
+debug = false
+
+[profile.ci.package."*"]
+opt-level = 0
+debug = false
+
 [profile.release]
 opt-level = 3
 lto = "thin"

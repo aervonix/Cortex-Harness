@@ -103,14 +103,18 @@ fn require_nextest() -> Result<()> {
     )
 }
 
-/// The blocking test job: tiers 1 to 3 in the `ci` profile. Building and
-/// running are separate steps so that their times are reported separately.
+/// The blocking test job: tiers 1 to 3, in nextest's `ci` profile, built with
+/// cargo's `ci` profile (third-party crates unoptimised, so that a cold cache
+/// still fits the time budget). Building and running are separate steps so
+/// that their times are reported separately.
 fn ci_test_steps() -> Vec<Step> {
-    const RUN: [&str; 6] = [
+    const RUN: [&str; 8] = [
         "nextest",
         "run",
         "--workspace",
         "--locked",
+        "--cargo-profile",
+        "ci",
         "--profile",
         "ci",
     ];

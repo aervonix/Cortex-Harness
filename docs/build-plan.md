@@ -69,7 +69,8 @@ Three items that step 1 left outstanding, and the repository's name. Step 2 reco
 | Item | Who | When |
 |---|---|---|
 | **The Windows Terminal checklist** ([measurements/windows-terminal-checklist.md](measurements/windows-terminal-checklist.md)). Decisions 0001 and 0002 stay provisional until it is run. | The owner | Before step 20 |
-| **QuickJS with the Windows toolchain.** If it does not build cleanly, the step switches to Lua, as agreed. | Step 28, in its first hour | |
+| **The name clash on `cortex`.** Step 2 ran the clash check of [decision 0013](decisions/0013-naming.md) on 2026-11-12. Nothing in a default Ubuntu, Debian, Fedora, Arch or Windows install uses either name. One clash is serious: Snowflake's Cortex Code CLI, which is also a terminal coding agent, installs a command named `cortex` on Linux, macOS and Windows and puts it on the path. `cx` is used by two vendor tools (the Checkmarx One CLI and the Coralogix CLI) and a few small ones; that is minor. The names are unchanged. The owner chooses between keeping them under the "never overwrite" rule and the other options in the step 2 report. | The owner | Before anything is published; ideally before step 13, which writes the command's help text |
+| **QuickJS with the Windows toolchain.** Step 2's dependency probe compiled and ran it with the MSVC toolchain on a hosted Windows runner ([testing-and-ci.md](testing-and-ci.md)). Step 28 still confirms it in the real crate, and switches to Lua if it gives trouble, as agreed. | Step 28, in its first hour | |
 | **Which step builds the opt-in refresh of `/usage` limits.** It is designed ([architecture/18-usage.md](architecture/18-usage.md)) and not yet placed in the steps below. | The owner | Any time; nothing waits on it |
 
 ## Features: first release or later
