@@ -173,9 +173,24 @@ pub(crate) fn union_schema(
 /// }
 /// ```
 macro_rules! open_enum {
+    ($(#[doc = $doc:literal])* $vis:vis enum $name:ident { $($body:tt)+ }) => {
+        open_enum!(
+            @define Unknown,
+            "A value this version of the protocol does not know, as it was written on the wire.",
+            [$($doc),*] $vis $name { $($body)+ }
+        );
+    };
+    // The same, with the catch-all variant named: for an enumeration whose
+    // other values are expected and meaningful, not merely newer.
     (
         $(#[doc = $doc:literal])*
-        $vis:vis enum $name:ident {
+        $vis:vis enum $name:ident, other = $other:ident($odoc:literal) { $($body:tt)+ }
+    ) => {
+        open_enum!(@define $other, $odoc, [$($doc),*] $vis $name { $($body)+ });
+    };
+    (
+        @define $other:ident, $odoc:literal, [$($doc:literal),*]
+        $vis:vis $name:ident {
             $(
                 $(#[doc = $vdoc:literal])*
                 $variant:ident => $wire:literal
@@ -184,18 +199,18 @@ macro_rules! open_enum {
     ) => {
         $(#[doc = $doc])*
         ///
-        /// Open: a value this version does not know is kept as `Unknown` and
-        /// written back unchanged.
+        /// Open: a value that is not listed is kept, and written back unchanged.
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
         $vis enum $name {
             $(
                 $(#[doc = $vdoc])*
                 $variant,
             )+
-            /// A value this version of the protocol does not know, as it was
-            /// written on the wire. Build values with [`Self::from_wire`], so
-            /// that a known string is never held here.
-            Unknown(String),
+            #[doc = $odoc]
+            ///
+            /// Build values with [`Self::from_wire`], so that a listed string
+            /// is never held here.
+            $other(String),
         }
 
         impl $name {
@@ -207,24 +222,24 @@ macro_rules! open_enum {
             pub fn as_str(&self) -> &str {
                 match self {
                     $(Self::$variant => $wire,)+
-                    Self::Unknown(other) => other,
+                    Self::$other(other) => other,
                 }
             }
 
-            /// Reads a wire value. A known string gives its variant; any
-            /// other string is kept as `Unknown`.
+            /// Reads a wire value. A listed string gives its variant; any
+            /// other string is kept.
             #[must_use]
             pub fn from_wire(value: &str) -> Self {
                 match value {
                     $($wire => Self::$variant,)+
-                    other => Self::Unknown(other.to_owned()),
+                    other => Self::$other(other.to_owned()),
                 }
             }
 
-            /// Whether this version of the protocol knows the value.
+            /// Whether the value is one of the listed ones.
             #[must_use]
             pub fn is_known(&self) -> bool {
-                !matches!(self, Self::Unknown(_))
+                !matches!(self, Self::$other(_))
             }
         }
 
