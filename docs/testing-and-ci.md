@@ -22,7 +22,24 @@ Tiers 1 to 3 are separated by where the test lives and by nextest filters, not b
 
 **One integration binary per crate.** Every extra test binary is another link step, and linking is the slow part on Windows. Doc tests are turned off (`doctest = false`); examples that must compile are ordinary tests.
 
-**No sleeping in tests.** Time is the fake clock. A lint bans `std::thread::sleep` and real timers in tiers 1 and 2. Tier 3 waits on conditions with deadlines, never on fixed delays.
+**No real waiting in tests.** This is rule 12 of the [build plan](build-plan.md).
+
+- Timeouts, retries, backoff, cooldowns, debouncing and anything else that depends on time passing are tested with time that is paused or simulated: the async runtime's test clock, which jumps to the next timer as soon as every task is idle, or the fake clock from `cortex-testkit` for code that takes time from the clock trait in `cortex-base`. A test of a 30-second timeout takes microseconds.
+- Production code never reads the system clock or sleeps directly. It goes through the runtime's timers or the clock trait, which is what makes the rule possible to follow.
+- A test never calls `std::thread::sleep`. Clippy's disallowed-methods list bans it everywhere, tests included.
+- Tier 3 cannot pause time, because the code under test is another process. It waits on a condition with a deadline (output seen, file present, process gone), never on a fixed delay, and the helper for that is in `cortex-testkit`.
+
+**Budgets are enforced.** This is rule 13 of the build plan.
+
+| Tier | A test is reported as slow at | A test is stopped, and fails, at | The tier's tests together |
+|---|---|---|---|
+| 1. Unit | 2 s | 10 s | 20 s |
+| 2. Integration | 2 s | 10 s | 40 s |
+| 3. System | 10 s | 60 s | 60 s on Linux, 90 s on Windows |
+
+- The limits on one test are nextest's `slow-timeout` and `terminate-after`, set per tier in `.config/nextest.toml`. They hold in every profile, at a desk as in CI.
+- The tier totals are the sum of the tests' own times, not the wall time of the run. `cargo xtask ci test` reads them from nextest's JUnit report after the run, prints them with the share of the budget used, writes them to the CI job's summary page, and fails the job with an annotation on the pull request when a tier is over.
+- A test over its slow mark needs a reason or moves to tier 6.
 
 ## Deterministic agent tests without a network
 
@@ -155,10 +172,20 @@ A failure in a non-blocking workflow opens or updates an issue. It does not bloc
 
 - `rustfmt` with a small checked-in configuration.
 - Clippy with warnings as errors, a workspace lint table, and three project-specific rules through `clippy.toml`:
-  - blocking calls (`std::fs`, `std::process`, `std::thread::sleep`) are disallowed in the async crates;
-  - `unwrap` and `expect` are disallowed outside tests, except where a comment gives the invariant;
-  - `println!` and `eprintln!` are disallowed outside `cortex-cli`, so nothing can write to standard output by accident.
+  - blocking calls (`std::fs`, `std::process`, `std::thread::sleep`) are disallowed. The lists are on in every crate. Code that is meant to block, because it runs on the blocking pool or the whole crate is synchronous, opts out for a module or the crate with an `allow` that gives the reason;
+  - `unwrap` and `expect` are disallowed outside tests, except where an attribute gives the invariant;
+  - `println!` and `eprintln!` are disallowed outside `cortex-cli` and `xtask`, so nothing can write to standard output by accident.
+- An `allow` or `expect` attribute must carry a `reason`. `todo!`, `unimplemented!`, `dbg!` and `std::process::exit` are warnings, and so errors in CI.
 - `unsafe` is denied by default and allowed per module in `cortex-sandbox` and `cortex-term`, where the OS interfaces need it, with a safety comment on each block.
+- Public items are documented (`missing_docs`).
+- Clippy runs on Linux and on Windows, so that code compiled only for Windows is linted.
+
+**The repo rules** are the checks no off-the-shelf tool does. `cargo xtask rules` runs them, and a test runs them again on both OSes:
+
+- no file contains an absolute home-directory path (every file is scanned, binary files included);
+- the crate dependency rules of [architecture/01-workspace.md](architecture/01-workspace.md), read from `cargo metadata`, and the manifest conventions (the `cortex-` prefix, `publish = false`, shared lints, no doc tests, one integration-test binary);
+- `docs/dependencies.md` agrees with the manifests;
+- workflow actions are pinned by commit hash, and the blocking workflow uses no secret and no token that can write.
 
 ## Dependency hygiene
 
@@ -176,9 +203,21 @@ A failure in a non-blocking workflow opens or updates an issue. It does not bloc
 
 The same budgets apply at a desk.
 
-| Action | Budget | How |
-|---|---|---|
-| `cargo check` after an edit in a leaf crate | Under 2 s | Small crates; heavy dependencies in leaf crates. |
-| Rebuild and relink the binary after an edit | Under 5 s | A tiny binary crate. Measured floor for relinking the full dependency set: 0.4 s. |
-| Tiers 1 and 2 | Under 30 s | `cargo nextest run --profile fast`. |
-| Everything that blocks a pull request | Under 3 min | `cargo xtask ci` runs exactly what CI runs. |
+| Action | Budget | How | Measured for the skeleton, step 2 |
+|---|---|---|---|
+| `cargo check` after an edit in a leaf crate | Under 2 s | Small crates; heavy dependencies in leaf crates. | 0.04 s |
+| Rebuild and relink the binary after an edit | Under 5 s | A tiny binary crate. Measured floor for relinking the full dependency set: 0.4 s. | 0.6 to 1.1 s |
+| No-op build | Under 0.5 s | | 0.03 s |
+| Tiers 1 and 2 | Under 30 s | `cargo xtask test --profile fast`. | 0.2 s |
+| The static checks | | `cargo xtask check`. | 0.3 s |
+| Everything that blocks a pull request | Under 3 min | `cargo xtask ci` runs exactly what CI runs. | 0.7 s warm; 3.6 s from an empty build directory on 4 cores |
+
+The measurements are from the desktop the earlier spikes used, with warm build directories unless it says otherwise. The crates are empty, so these are floors: what the tooling itself costs before there is any code. The relink figure is higher than the 0.4 s floor because the build directory was on an external disk; it varied from run to run with no change to the code.
+
+The commands, all through `cargo xtask` (or `./x`):
+
+| Command | Runs |
+|---|---|
+| `check` | The static checks: `fmt`, `rules`, `clippy`, `deny`. All of them run even when one fails, and the time of each is printed. |
+| `test` | All tests. Arguments go to nextest: `--profile fast` for tiers 1 and 2. |
+| `ci` | What the blocking jobs run: `check`, then the tests in the `ci` profiles, then the tier budgets. |

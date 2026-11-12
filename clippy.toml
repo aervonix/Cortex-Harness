@@ -15,9 +15,9 @@ allow-print-in-tests = true
 #   #![allow(clippy::disallowed_methods, clippy::disallowed_types,
 #            reason = "runs on the blocking pool")]
 #
-# `std::thread::sleep` is on the list for a second reason: tests never sleep.
-# Time in tests is the fake clock, and process tests wait on a condition with
-# a deadline. When the async runtime arrives, its real timers are added here.
+# `std::thread::sleep` is on the list for a second reason: tests never really
+# wait. Time in tests is paused or simulated (the async runtime's test clock,
+# or the fake clock), and process tests wait on a condition with a deadline.
 disallowed-methods = [
     { path = "std::thread::sleep", reason = "blocks the thread; tests use the fake clock and wait on conditions" },
     { path = "std::fs::canonicalize", reason = "blocking file I/O" },

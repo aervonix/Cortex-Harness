@@ -90,7 +90,8 @@ Features exist to keep build cost optional, not to create product variants.
 | Profile | Use | Settings |
 |---|---|---|
 | `dev` | Local work | `debug = "line-tables-only"`, dependencies built with `opt-level = 1` and `debug = false` |
-| `test` | CI tests | as `dev`, `debug = 0` in CI through the environment |
+| `test` | Local tests | as `dev` |
+| `ci` | The blocking CI test jobs, and `cargo xtask ci` | inherits `dev`, with dependencies at `opt-level = 0`. Added in step 2, when a clean build of the planned dependency set on a hosted Windows runner measured 259 s with optimised dependencies and 60 to 82 s without ([../testing-and-ci.md](../testing-and-ci.md)) |
 | `release` | Local optimised builds, perf runs | `opt-level = 3`, `lto = "thin"`, `codegen-units = 16`, `debug = 0` |
 | `dist` | Published binaries | inherits `release`, `lto = "fat"`, `codegen-units = 1`, `strip = true` |
 
