@@ -134,6 +134,8 @@ Some providers will run the same model faster, or slower and cheaper, at a diffe
 | Whether it shares the prompt cache with standard | Anthropic's does not: a change of speed is a cache miss. Where a provider does not say, the entry says "not stated". |
 | Whether it is a preview | Access may need to be granted, and the terms may change. |
 
+**The setting.** A session has a speed, which is what the `main` role runs at, and a role may have its own. The utility roles (`fast`, `judge`) do not inherit the session's speed: they run at `standard` unless the user sets theirs, so that a fast session does not also pay double for its summaries.
+
 **In a request.** The loop passes the speed in effect for the role. Each adapter maps it to its provider's mechanism: a body field (`speed` at Anthropic, `service_tier` at OpenAI and Google), an extra header, or, where a platform sells the tier as a separate deployment, another model id. A provider-side default such as `auto` is never relied on: the adapter sends an explicit tier, so that what was asked for is known.
 
 **In a response.** The adapter reads the tier that served the request wherever the provider reports it (`usage.speed`, a top-level `service_tier`, a response header) and puts it in the usage. That, not the setting, is what the request is recorded and priced at.

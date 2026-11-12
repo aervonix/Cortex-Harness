@@ -261,18 +261,16 @@ fn property_name(name: &str) -> String {
 fn plain_object(schema: &Value) -> Option<&Map<String, Value>> {
     let object = schema.as_object()?;
     let is_object = object.get("type").and_then(Value::as_str) == Some("object");
-    let combined = [
-        "anyOf",
-        "oneOf",
-        "allOf",
-        "$ref",
-        "enum",
-        "const",
-        "additionalProperties",
-    ]
-    .iter()
-    .any(|key| object.contains_key(*key));
-    (is_object && !combined).then_some(object)
+    let combined = ["anyOf", "oneOf", "allOf", "$ref", "enum", "const"]
+        .iter()
+        .any(|key| object.contains_key(*key));
+    // `additionalProperties: false` is an enforced type: the same fields,
+    // and a reader that refuses any other. A schema for the values of a map
+    // is not an interface.
+    let is_map = object
+        .get("additionalProperties")
+        .is_some_and(|additional| *additional != Value::Bool(false));
+    (is_object && !combined && !is_map).then_some(object)
 }
 
 /// `{ name: type; … }` for an object schema with named properties.
@@ -838,6 +836,46 @@ mod tests {
             json!({"jsonrpc": "2.0", "id": 1, "method": "turn/start", "params": {"input": []}}),
         );
         assert!(error.contains("missing `session_id`"), "{error}");
+
+        // Enforced values fail closed in the schema as in the types: an
+        // unknown field, an unknown value and an unknown scope.
+        let lease = |pointer: &str, key: &str, value: Value| {
+            let mut lease = json!({
+                "id": "l_1",
+                "grant": {
+                    "level": "supervised",
+                    "rules": [{"effect": "exec", "match": "cargo test *", "action": "allow"}],
+                    "sandbox": {"read": {"all": true}, "write": {"all": false}, "protect": {"all": false}, "network": "off"},
+                    "budget": {},
+                    "limits": {"merge_to_main": false},
+                },
+                "stop_when": [{"kind": "verification_failed", "rounds": 3}],
+                "expires": {"kind": "end_of_session"},
+                "granted_by": {"kind": "user"},
+            });
+            lease.pointer_mut(pointer).unwrap()[key] = value;
+            valid(&json!({"$ref": "#/$defs/Lease"}), &lease, &root, "lease")
+        };
+        assert_eq!(lease("", "id", json!("l_1")), Ok(()));
+        for (pointer, key, value) in [
+            ("/grant/budget", "tool_calls", json!(5)),
+            ("/grant/limits", "no_force_push", json!(true)),
+            ("/grant/sandbox", "hosts", json!(["example.org"])),
+            ("/grant/rules/0", "unless", json!("ci")),
+            ("/stop_when/0", "within_ms", json!(1000)),
+            ("/stop_when/0", "kind", json!("files_changed")),
+            ("/expires", "kind", json!("end_of_day")),
+            ("/grant/sandbox", "network", json!("allow_list")),
+            ("/grant/rules/0", "action", json!("allow_once")),
+            ("/grant", "level", json!("delegated")),
+            ("/grant/rules/0", "effect", json!("clipboard")),
+            ("/grant", "scope", json!("organisation")),
+        ] {
+            assert!(
+                lease(pointer, key, value.clone()).is_err(),
+                "the schema accepts {key} = {value} at {pointer}"
+            );
+        }
 
         // What the types accept, the schema accepts: an event type, an item
         // kind and an enumeration value added later.

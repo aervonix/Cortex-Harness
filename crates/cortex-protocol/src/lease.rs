@@ -3,14 +3,36 @@
 //!
 //! These types say what a lease *is* on the wire and in the session log. What
 //! a lease *means* (evaluating rules, narrowing, refusing a level the sandbox
-//! cannot back) is `cortex-policy`. A value this build does not know, such as
-//! a level added later, arrives as `Unknown`, and the policy engine refuses
-//! it: it never guesses.
+//! cannot back) is `cortex-policy`.
+//!
+//! # Enforced values fail closed
+//!
+//! Everywhere else in the protocol an unknown field is ignored and an
+//! unknown value is kept. Here that would be a security hole: a build that
+//! dropped a restriction it did not understand would turn a narrower lease
+//! into a wider one. So the types in this module are the exception
+//! (`docs/decisions/0028-enforced-values-fail-closed.md`):
+//!
+//! - **An unknown field is an error,** in a lease, a grant, a rule, a sandbox
+//!   policy, a path set, a budget, the hard limits, a stop condition, an
+//!   expiry and a grantor.
+//! - **An unknown value is an error:** a level, an effect, a rule action, a
+//!   network setting, a kind of stop condition, of expiry or of grantor.
+//! - **The whole value is refused.** Nothing is ignored and nothing is kept.
+//!   [`Lease::from_wire`] and its companions give the refusal as an error
+//!   with the code `lease_not_understood`.
+//!
+//! [`Level`] and [`Effect`] are also used where they only inform (a
+//! session's state, an approval prompt), so as types they are open. Inside a
+//! grant or a rule a value that is not listed is refused all the same.
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+use crate::error::{ErrorData, ErrorKind, code};
 use crate::ids::{LeaseId, ModelId, Timestamp};
-use crate::open::{open_enum, open_union};
+use crate::open::{closed_enum, closed_union, open_enum};
 
 open_enum! {
     /// How much a session may do without asking: who decides when no rule
@@ -48,7 +70,7 @@ open_enum! {
     }
 }
 
-open_enum! {
+closed_enum! {
     /// What a rule decides.
     pub enum RuleAction {
         /// The effect may happen without asking.
@@ -63,8 +85,11 @@ open_enum! {
 /// A permission rule. `deny` beats `ask` beats `allow`, whatever the order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct Rule {
-    /// The effect the rule is about.
+    /// The effect the rule is about. An effect that is not listed is refused.
+    #[serde(deserialize_with = "crate::open::listed")]
+    #[cfg_attr(feature = "schema", schemars(schema_with = "schema::effect"))]
     pub effect: Effect,
     /// What it matches: a path glob, a command pattern, a host, or a
     /// `server/tool` name.
@@ -77,6 +102,7 @@ pub struct Rule {
 /// A set of paths: everything, or the trees under some roots.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct PathSet {
     /// Every path. When set, `roots` is ignored.
     #[serde(default)]
@@ -86,7 +112,7 @@ pub struct PathSet {
     pub roots: Vec<String>,
 }
 
-open_enum! {
+closed_enum! {
     /// Whether sandboxed processes may use the network. There is no per-host list.
     pub enum NetworkAccess {
         /// No network.
@@ -99,6 +125,7 @@ open_enum! {
 /// What a child process may touch, whatever it runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct SandboxPolicy {
     /// What may be read.
     pub read: PathSet,
@@ -114,6 +141,7 @@ pub struct SandboxPolicy {
 /// What a lease may spend. A field that is absent is not limited by this lease.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct Budget {
     /// Money, in nano-dollars.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -133,6 +161,7 @@ pub struct Budget {
 /// harness.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct HardLimits {
     /// Whether work may be merged into the repository's main branch.
     #[serde(default)]
@@ -145,8 +174,11 @@ pub struct HardLimits {
 /// What a lease allows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct Grant {
-    /// The level.
+    /// The level. A level that is not listed is refused.
+    #[serde(deserialize_with = "crate::open::listed")]
+    #[cfg_attr(feature = "schema", schemars(schema_with = "schema::level"))]
     pub level: Level,
     /// The rules.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -167,6 +199,7 @@ pub struct Grant {
 /// Stop when the project's checks have failed this many rounds in a row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct VerificationFailedStop {
     /// The number of failed rounds in a row.
     pub rounds: u32,
@@ -175,11 +208,13 @@ pub struct VerificationFailedStop {
 /// Stop when an action outside the lease's scope is needed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct OutOfScopeStop {}
 
 /// Stop when spending passes a threshold below the budget.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct SpendingStop {
     /// The threshold, in nano-dollars.
     pub usd_nanos: u64,
@@ -188,12 +223,13 @@ pub struct SpendingStop {
 /// Stop at a moment in time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct TimeStop {
     /// The moment.
     pub at: Timestamp,
 }
 
-open_union! {
+closed_union! {
     /// A condition on which the holder of a lease must stop and report. The
     /// harness checks it. It is data, not an instruction to the model.
     pub enum StopCondition [kind] {
@@ -208,7 +244,7 @@ open_union! {
     }
 }
 
-open_enum! {
+closed_enum! {
     /// When a lease ends.
     pub enum ExpiryKind {
         /// It does not end.
@@ -225,6 +261,7 @@ open_enum! {
 /// When a lease ends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct Expiry {
     /// Which kind of end.
     pub kind: ExpiryKind,
@@ -233,7 +270,7 @@ pub struct Expiry {
     pub at: Option<Timestamp>,
 }
 
-open_enum! {
+closed_enum! {
     /// Who granted a lease.
     pub enum GrantorKind {
         /// The user. Only a person grants, extends or revokes a lease.
@@ -246,6 +283,7 @@ open_enum! {
 /// Who granted a lease.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct Grantor {
     /// Which kind of grantor.
     pub kind: GrantorKind,
@@ -255,8 +293,9 @@ pub struct Grantor {
 }
 
 /// Everything a session is allowed to do, as one value.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct Lease {
     /// The lease's id.
     pub id: LeaseId,
@@ -269,4 +308,78 @@ pub struct Lease {
     pub expires: Expiry,
     /// Who granted it.
     pub granted_by: Grantor,
+}
+
+/// Reads an enforced value, and turns a failure into the refusal a client
+/// is sent.
+///
+/// The error is boxed because it is large and rare: a lease that reads is
+/// the case to keep cheap.
+fn read_enforced<T: DeserializeOwned>(what: &str, value: Value) -> Result<T, Box<ErrorData>> {
+    T::deserialize(value).map_err(|error| {
+        Box::new(ErrorData::new(
+            ErrorKind::Permission,
+            code::LEASE_NOT_UNDERSTOOD,
+            format!(
+                "The {what} was refused: {error}. A {what} is enforced, so one that this \
+                 version does not understand in full is refused whole, never applied in part."
+            ),
+        ))
+    })
+}
+
+impl Lease {
+    /// Reads a lease. A lease with a field or a value this version does not
+    /// know is refused whole.
+    ///
+    /// # Errors
+    ///
+    /// With the code `lease_not_understood`, when the value is not a lease
+    /// this version understands in full.
+    pub fn from_wire(value: Value) -> Result<Self, Box<ErrorData>> {
+        read_enforced("lease", value)
+    }
+}
+
+impl Grant {
+    /// Reads a grant. A grant with a field or a value this version does not
+    /// know is refused whole.
+    ///
+    /// # Errors
+    ///
+    /// With the code `lease_not_understood`, when the value is not a grant
+    /// this version understands in full.
+    pub fn from_wire(value: Value) -> Result<Self, Box<ErrorData>> {
+        read_enforced("grant", value)
+    }
+}
+
+impl Rule {
+    /// Reads a rule. A rule with a field or a value this version does not
+    /// know is refused whole.
+    ///
+    /// # Errors
+    ///
+    /// With the code `lease_not_understood`, when the value is not a rule
+    /// this version understands in full.
+    pub fn from_wire(value: Value) -> Result<Self, Box<ErrorData>> {
+        read_enforced("rule", value)
+    }
+}
+
+/// Schemas for the two open enumerations where they sit in an enforced
+/// value: the listed values and nothing else.
+#[cfg(feature = "schema")]
+mod schema {
+    use schemars::{Schema, SchemaGenerator, json_schema};
+
+    use super::{Effect, Level};
+
+    pub(super) fn level(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({ "enum": Level::KNOWN })
+    }
+
+    pub(super) fn effect(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({ "enum": Effect::KNOWN })
+    }
 }

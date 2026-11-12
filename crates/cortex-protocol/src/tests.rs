@@ -17,7 +17,7 @@ use crate::error::{ErrorData, ErrorKind, code};
 use crate::event::{Delta, Event, Notice};
 use crate::item::{Item, StopReason};
 use crate::jsonrpc::{self, ErrorObject, Message, Notification, Request, RequestId, Response};
-use crate::lease::{Lease, Level, StopCondition};
+use crate::lease::{Grant, Lease, Level, Rule, StopCondition};
 use crate::message::Part;
 use crate::methods::{
     ApprovalDetail, InitializeParams, MethodError, Op, OpResult, ServerNotification, ServerRequest,
@@ -224,6 +224,10 @@ fn the_golden_transcript_covers_every_method_event_and_variant() {
 /// Free-form JSON: a field added inside one of these is data, and is kept.
 const FREE_FORM: [&str; 4] = ["config", "arguments", "payload", "details"];
 
+/// Enforced values: a field added inside one of these makes the value
+/// invalid. `enforced_values_fail_closed` and its neighbours cover them.
+const ENFORCED: [&str; 1] = ["rule"];
+
 /// Adds a field no version knows to every object the protocol defines.
 fn add_unknown_fields(value: &mut Value, depth: usize) {
     match value {
@@ -239,7 +243,8 @@ fn add_unknown_fields(value: &mut Value, depth: usize) {
                     {
                         add_unknown_fields(settings, depth + 2);
                     }
-                } else if !FREE_FORM.contains(&name.as_str()) {
+                } else if !FREE_FORM.contains(&name.as_str()) && !ENFORCED.contains(&name.as_str())
+                {
                     add_unknown_fields(child, depth + 1);
                 }
             }
@@ -334,11 +339,7 @@ fn every_enumeration_is_open_and_keeps_unknown_values() {
         item::StopReason,
         item::ToolOutcome,
         lease::Effect,
-        lease::ExpiryKind,
-        lease::GrantorKind,
         lease::Level,
-        lease::NetworkAccess,
-        lease::RuleAction,
         message::Role,
         methods::ApprovalChoice,
         methods::ApprovalScope,
@@ -432,7 +433,6 @@ fn unknown_union_variants_are_kept_whole() {
     let delta: Delta = round_trip(json!({"kind": "image", "bytes": 12}));
     assert_eq!(delta.tag(), "image");
     let _: PlanEdit = round_trip(json!({"kind": "split", "id": "p1", "into": 2}));
-    let _: StopCondition = round_trip(json!({"kind": "files_changed", "more_than": 50}));
     let _: ApprovalDetail = round_trip(json!({"kind": "merge", "branch": "main"}));
 }
 
@@ -528,6 +528,194 @@ fn unions_not_in_the_transcript_round_trip() {
         }],
     }));
     assert_eq!(message.role, crate::Role::Tool);
+}
+
+/// A lease this version understands in full, to change one thing in.
+fn a_lease() -> Value {
+    json!({
+        "id": "l_task1",
+        "grant": {
+            "level": "guided",
+            "rules": [{"effect": "exec", "match": "cargo test *", "action": "allow"}],
+            "sandbox": {
+                "read": {"all": true},
+                "write": {"all": false, "roots": ["/work/example"]},
+                "protect": {"all": false},
+                "network": "off",
+            },
+            "budget": {"usd_nanos": 2_000_000_000_u64},
+            "limits": {"merge_to_main": false},
+        },
+        "stop_when": [{"kind": "verification_failed", "rounds": 3}],
+        "expires": {"kind": "end_of_task"},
+        "granted_by": {"kind": "user"},
+    })
+}
+
+/// Sets the value at a JSON pointer, creating the last key if it is new.
+fn with(mut lease: Value, pointer: &str, value: Value) -> Value {
+    let (parent, key) = pointer.rsplit_once('/').expect("a pointer has a slash");
+    let parent = lease
+        .pointer_mut(parent)
+        .unwrap_or_else(|| panic!("no {parent}"));
+    match parent {
+        Value::Object(map) => drop(map.insert(key.to_owned(), value)),
+        Value::Array(items) => items[key.parse::<usize>().expect("an index")] = value,
+        _ => panic!("{pointer} is not inside an object or an array"),
+    }
+    lease
+}
+
+/// The lease is refused whole, with the code a client is told to expect,
+/// and the message says what was not understood.
+fn assert_refused(lease: Value, expected: &str) {
+    let error = Lease::from_wire(lease.clone()).expect_err(&format!("accepted: {lease}"));
+    assert_eq!(error.kind, ErrorKind::Permission);
+    assert_eq!(error.code, code::LEASE_NOT_UNDERSTOOD);
+    assert!(
+        error.message.contains(expected),
+        "{}\n  for {lease}",
+        error.message
+    );
+    // The plain deserializer refuses it too: there is no lenient way in.
+    assert!(serde_json::from_value::<Lease>(lease).is_err());
+}
+
+#[test]
+fn a_lease_this_version_understands_is_read() {
+    let lease = Lease::from_wire(a_lease()).unwrap();
+    assert_eq!(lease.grant.level, Level::Guided);
+    assert_eq!(serde_json::to_value(&lease).unwrap(), a_lease());
+}
+
+#[test]
+fn a_lease_with_an_unknown_restriction_field_is_refused() {
+    // A newer build added a restriction. Dropping the field would widen the
+    // lease, so every place a restriction can sit refuses a field it does
+    // not know.
+    for pointer in [
+        "/max_files_changed",
+        "/grant/deny_paths",
+        "/grant/rules/0/unless",
+        "/grant/sandbox/hosts",
+        "/grant/sandbox/write/except",
+        "/grant/budget/tool_calls",
+        "/grant/limits/no_force_push",
+        "/stop_when/0/within_ms",
+        "/expires/grace_ms",
+        "/granted_by/on_behalf_of",
+    ] {
+        let name = pointer.rsplit('/').next().unwrap();
+        assert_refused(
+            with(a_lease(), pointer, json!(1)),
+            &format!("unknown field `{name}`"),
+        );
+    }
+}
+
+#[test]
+fn a_lease_with_an_unknown_restriction_value_is_refused() {
+    for (pointer, value, expected) in [
+        // A kind of stop condition added later: never skipped.
+        (
+            "/stop_when/0",
+            json!({"kind": "files_changed", "more_than": 50}),
+            "unknown StopCondition `files_changed`",
+        ),
+        (
+            "/expires/kind",
+            json!("end_of_day"),
+            "unknown ExpiryKind `end_of_day`",
+        ),
+        (
+            "/granted_by/kind",
+            json!("manager"),
+            "unknown GrantorKind `manager`",
+        ),
+        (
+            "/grant/rules/0/action",
+            json!("allow_once"),
+            "unknown RuleAction `allow_once`",
+        ),
+        (
+            "/grant/sandbox/network",
+            json!("allow_list"),
+            "unknown NetworkAccess `allow_list`",
+        ),
+    ] {
+        assert_refused(with(a_lease(), pointer, value), expected);
+    }
+}
+
+#[test]
+fn a_grant_with_an_unknown_scope_is_refused() {
+    // What a grant covers: its level, the effects its rules are about, and
+    // its sandbox policy. Each is open or tolerant elsewhere in the
+    // protocol, and refused here.
+    assert_refused(
+        with(a_lease(), "/grant/level", json!("delegated")),
+        "unknown Level `delegated`",
+    );
+    assert_refused(
+        with(a_lease(), "/grant/rules/0/effect", json!("clipboard")),
+        "unknown Effect `clipboard`",
+    );
+
+    let grant = with(a_lease(), "/grant/scope", json!("organisation"))["grant"].take();
+    let error = Grant::from_wire(grant).unwrap_err();
+    assert_eq!(error.code, code::LEASE_NOT_UNDERSTOOD);
+    assert!(
+        error.message.contains("unknown field `scope`"),
+        "{}",
+        error.message
+    );
+
+    let error =
+        Rule::from_wire(json!({"effect": "exec", "match": "*", "action": "allow", "for": "team"}))
+            .unwrap_err();
+    assert_eq!(error.code, code::LEASE_NOT_UNDERSTOOD);
+    assert!(
+        error.message.contains("unknown field `for`"),
+        "{}",
+        error.message
+    );
+
+    // The same level and effect stay open where they only inform.
+    let state: Value = json!({"kind": "target", "effect": "clipboard", "target": "x"});
+    let _: ApprovalDetail = round_trip(state);
+    assert_eq!(Level::from_wire("delegated").as_str(), "delegated");
+}
+
+#[test]
+fn a_rule_in_a_message_is_enforced_too() {
+    // `permissions/list` carries rules. A field added to one is not ignored.
+    let result = json!({"approvals": [{
+        "id": "ap_1",
+        "rule": {"effect": "exec", "match": "cargo build *", "action": "allow", "unless": "ci"},
+        "scope": "session", "created_at": "2026-11-12T10:15:12Z",
+    }]});
+    let error = OpResult::from_wire("permissions/list", result)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("unknown field `unless`"), "{error}");
+}
+
+#[test]
+fn the_closed_enumerations_have_no_way_to_hold_an_unknown_value() {
+    use crate::lease::{ExpiryKind, GrantorKind, NetworkAccess, RuleAction};
+    macro_rules! check {
+        ($($name:ty),+) => {$(
+            for wire in <$name>::KNOWN {
+                let value: $name = round_trip(json!(wire));
+                assert_eq!(value.as_str(), *wire);
+                assert_eq!(<$name>::from_wire(wire), Some(value));
+            }
+            assert_eq!(<$name>::from_wire("a_value_added_later"), None);
+            assert!(serde_json::from_value::<$name>(json!("a_value_added_later")).is_err());
+        )+};
+    }
+    check!(ExpiryKind, GrantorKind, NetworkAccess, RuleAction);
+    assert!(serde_json::from_value::<StopCondition>(json!({"kind": "later"})).is_err());
 }
 
 #[test]

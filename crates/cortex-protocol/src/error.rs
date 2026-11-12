@@ -112,4 +112,8 @@ pub mod code {
     pub const UNKNOWN_VALUE: &str = "unknown_value";
     /// The level needs an enforcing sandbox and there is none.
     pub const SANDBOX_REQUIRED: &str = "sandbox_required";
+    /// A lease, a grant or a rule has a field or a value this version does
+    /// not know. It is refused whole: a restriction that is not understood
+    /// cannot be enforced, and must not be dropped.
+    pub const LEASE_NOT_UNDERSTOOD: &str = "lease_not_understood";
 }

@@ -37,9 +37,9 @@ pub struct RoleSettings {
     /// alias (`minimal`, `low`, `medium`, `high`, `max`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
-    /// The speed for this role. It overrides the session's speed. `inherit`
-    /// is not a value: to go back to the session's speed, send the session's
-    /// speed.
+    /// The speed for this role. For `main` it overrides the session's
+    /// speed. The utility roles (`fast`, `judge`) do not follow the session's
+    /// speed: they run at `standard` unless this is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed: Option<Speed>,
 }
@@ -53,7 +53,8 @@ pub struct SessionSettings {
     /// The level (permission mode). Raising it needs the `user` role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<Level>,
-    /// The speed for every role that does not set its own.
+    /// The session's speed: what the `main` role runs at unless it sets
+    /// its own. The utility roles do not inherit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed: Option<Speed>,
     /// Settings per model role.
@@ -75,7 +76,8 @@ pub struct RoleState {
     /// The model's own level that the setting maps to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort_in_effect: Option<String>,
-    /// The speed this role is set to: its own setting, or the session's.
+    /// The speed this role is set to: its own setting; without one, the
+    /// session's speed for `main` and `standard` for a utility role.
     /// Required, so that a reader never has to guess a default.
     pub speed: Speed,
     /// The speed its next request will ask for. It differs from `speed`
@@ -110,8 +112,8 @@ pub struct SessionState {
     pub lease_id: Option<LeaseId>,
     /// Whether the sandbox confines the session's commands.
     pub sandbox: SandboxStatus,
-    /// The session's speed setting: what a role runs at unless it sets its
-    /// own. Required.
+    /// The session's speed setting: what the `main` role runs at unless it
+    /// sets its own. Required.
     pub speed: Speed,
     /// The model roles.
     pub roles: BTreeMap<ModelRole, RoleState>,

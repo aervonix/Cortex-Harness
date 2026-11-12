@@ -387,6 +387,7 @@
       "description": "How the usage is paid for."
     },
     "Budget": {
+      "additionalProperties": false,
       "description": "What a lease may spend. A field that is absent is not limited by this lease.",
       "properties": {
         "requests": {
@@ -1738,6 +1739,7 @@
       "description": "One event of a session."
     },
     "Expiry": {
+      "additionalProperties": false,
       "description": "When a lease ends.",
       "properties": {
         "at": {
@@ -1778,11 +1780,6 @@
         {
           "const": "end_of_session",
           "description": "When the session ends."
-        },
-        {
-          "description": "A value this version of the protocol does not know. Receivers need a default branch.",
-          "type": "string",
-          "x-cortex-open": true
         }
       ],
       "description": "When a lease ends."
@@ -1804,6 +1801,7 @@
       "type": "object"
     },
     "Grant": {
+      "additionalProperties": false,
       "description": "What a lease allows.",
       "properties": {
         "budget": {
@@ -1812,8 +1810,14 @@
           "description": "What may be spent."
         },
         "level": {
-          "$ref": "#/$defs/Level",
-          "description": "The level."
+          "description": "The level. A level that is not listed is refused.",
+          "enum": [
+            "read-only",
+            "supervised",
+            "guided",
+            "autonomous",
+            "unrestricted"
+          ]
         },
         "limits": {
           "$ref": "#/$defs/HardLimits",
@@ -1848,6 +1852,7 @@
       "type": "object"
     },
     "Grantor": {
+      "additionalProperties": false,
       "description": "Who granted a lease.",
       "properties": {
         "kind": {
@@ -1880,16 +1885,12 @@
         {
           "const": "parent",
           "description": "The harness, narrowing the parent session's lease in `lease_id`."
-        },
-        {
-          "description": "A value this version of the protocol does not know. Receivers need a default branch.",
-          "type": "string",
-          "x-cortex-open": true
         }
       ],
       "description": "Who granted a lease."
     },
     "HardLimits": {
+      "additionalProperties": false,
       "description": "What no level relaxes. Set by the user in the grant and enforced by the\nharness.",
       "properties": {
         "merge_to_main": {
@@ -2385,6 +2386,7 @@
       "type": "object"
     },
     "Lease": {
+      "additionalProperties": false,
       "description": "Everything a session is allowed to do, as one value.",
       "properties": {
         "expires": {
@@ -2866,11 +2868,6 @@
         {
           "const": "full",
           "description": "The whole network."
-        },
-        {
-          "description": "A value this version of the protocol does not know. Receivers need a default branch.",
-          "type": "string",
-          "x-cortex-open": true
         }
       ],
       "description": "Whether sandboxed processes may use the network. There is no per-host list."
@@ -3155,10 +3152,6 @@
       ],
       "type": "object"
     },
-    "OutOfScopeStop": {
-      "description": "Stop when an action outside the lease's scope is needed.",
-      "type": "object"
-    },
     "Part": {
       "anyOf": [
         {
@@ -3302,6 +3295,7 @@
       "description": "One part of a message."
     },
     "PathSet": {
+      "additionalProperties": false,
       "description": "A set of paths: everything, or the trees under some roots.",
       "properties": {
         "all": {
@@ -4427,7 +4421,7 @@
               "type": "null"
             }
           ],
-          "description": "The speed for this role. It overrides the session's speed. `inherit`\nis not a value: to go back to the session's speed, send the session's\nspeed."
+          "description": "The speed for this role. For `main` it overrides the session's\nspeed. The utility roles (`fast`, `judge`) do not follow the session's\nspeed: they run at `standard` unless this is set."
         }
       },
       "type": "object"
@@ -4459,7 +4453,7 @@
         },
         "speed": {
           "$ref": "#/$defs/Speed",
-          "description": "The speed this role is set to: its own setting, or the session's.\nRequired, so that a reader never has to guess a default."
+          "description": "The speed this role is set to: its own setting; without one, the\nsession's speed for `main` and `standard` for a utility role.\nRequired, so that a reader never has to guess a default."
         },
         "speed_cooldown_until": {
           "anyOf": [
@@ -4486,6 +4480,7 @@
       "type": "object"
     },
     "Rule": {
+      "additionalProperties": false,
       "description": "A permission rule. `deny` beats `ask` beats `allow`, whatever the order.",
       "properties": {
         "action": {
@@ -4493,8 +4488,14 @@
           "description": "What it decides."
         },
         "effect": {
-          "$ref": "#/$defs/Effect",
-          "description": "The effect the rule is about."
+          "description": "The effect the rule is about. An effect that is not listed is refused.",
+          "enum": [
+            "read",
+            "write",
+            "exec",
+            "network",
+            "ext"
+          ]
         },
         "match": {
           "description": "What it matches: a path glob, a command pattern, a host, or a\n`server/tool` name.",
@@ -4521,11 +4522,6 @@
         {
           "const": "deny",
           "description": "The effect is refused."
-        },
-        {
-          "description": "A value this version of the protocol does not know. Receivers need a default branch.",
-          "type": "string",
-          "x-cortex-open": true
         }
       ],
       "description": "What a rule decides."
@@ -4549,6 +4545,7 @@
       "type": "object"
     },
     "SandboxPolicy": {
+      "additionalProperties": false,
       "description": "What a child process may touch, whatever it runs.",
       "properties": {
         "network": {
@@ -4972,7 +4969,7 @@
               "type": "null"
             }
           ],
-          "description": "The speed for every role that does not set its own."
+          "description": "The session's speed: what the `main` role runs at unless it sets\nits own. The utility roles do not inherit it."
         }
       },
       "type": "object"
@@ -5051,7 +5048,7 @@
         },
         "speed": {
           "$ref": "#/$defs/Speed",
-          "description": "The session's speed setting: what a role runs at unless it sets its\nown. Required."
+          "description": "The session's speed setting: what the `main` role runs at unless it\nsets its own. Required."
         },
         "title": {
           "description": "The session's title.",
@@ -5488,119 +5485,78 @@
       ],
       "description": "What the provider does when it cannot serve a request at the tier that was asked for."
     },
-    "SpendingStop": {
-      "description": "Stop when spending passes a threshold below the budget.",
-      "properties": {
-        "usd_nanos": {
-          "description": "The threshold, in nano-dollars.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "usd_nanos"
-      ],
-      "type": "object"
-    },
     "StopCondition": {
       "anyOf": [
         {
-          "allOf": [
-            {
-              "properties": {
-                "kind": {
-                  "const": "verification_failed"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "type": "object"
-            },
-            {
-              "$ref": "#/$defs/VerificationFailedStop"
-            }
-          ],
-          "description": "The project's checks failed some rounds in a row."
-        },
-        {
-          "allOf": [
-            {
-              "properties": {
-                "kind": {
-                  "const": "out_of_scope"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "type": "object"
-            },
-            {
-              "$ref": "#/$defs/OutOfScopeStop"
-            }
-          ],
-          "description": "An action outside the scope was needed."
-        },
-        {
-          "allOf": [
-            {
-              "properties": {
-                "kind": {
-                  "const": "spending"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "type": "object"
-            },
-            {
-              "$ref": "#/$defs/SpendingStop"
-            }
-          ],
-          "description": "Spending passed a threshold."
-        },
-        {
-          "allOf": [
-            {
-              "properties": {
-                "kind": {
-                  "const": "time"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "type": "object"
-            },
-            {
-              "$ref": "#/$defs/TimeStop"
-            }
-          ],
-          "description": "The time ran out."
-        },
-        {
-          "description": "A variant this version of the protocol does not know. Receivers skip it or show it generically.",
+          "additionalProperties": false,
+          "description": "The project's checks failed some rounds in a row.",
           "properties": {
             "kind": {
-              "not": {
-                "enum": [
-                  "verification_failed",
-                  "out_of_scope",
-                  "spending",
-                  "time"
-                ]
-              },
-              "type": "string"
+              "const": "verification_failed"
+            },
+            "rounds": {
+              "description": "The number of failed rounds in a row.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "rounds"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "An action outside the scope was needed.",
+          "properties": {
+            "kind": {
+              "const": "out_of_scope"
             }
           },
           "required": [
             "kind"
           ],
-          "type": "object",
-          "x-cortex-open": true
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Spending passed a threshold.",
+          "properties": {
+            "kind": {
+              "const": "spending"
+            },
+            "usd_nanos": {
+              "description": "The threshold, in nano-dollars.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "usd_nanos"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The time ran out.",
+          "properties": {
+            "at": {
+              "$ref": "#/$defs/Timestamp",
+              "description": "The moment."
+            },
+            "kind": {
+              "const": "time"
+            }
+          },
+          "required": [
+            "kind",
+            "at"
+          ],
+          "type": "object"
         }
       ],
       "description": "A condition on which the holder of a lease must stop and report. The harness checks it. It is data, not an instruction to the model."
@@ -5786,19 +5742,6 @@
       },
       "required": [
         "text"
-      ],
-      "type": "object"
-    },
-    "TimeStop": {
-      "description": "Stop at a moment in time.",
-      "properties": {
-        "at": {
-          "$ref": "#/$defs/Timestamp",
-          "description": "The moment."
-        }
-      },
-      "required": [
-        "at"
       ],
       "type": "object"
     },
@@ -6695,21 +6638,6 @@
         }
       ],
       "description": "What the project's checks said at the end of a turn."
-    },
-    "VerificationFailedStop": {
-      "description": "Stop when the project's checks have failed this many rounds in a row.",
-      "properties": {
-        "rounds": {
-          "description": "The number of failed rounds in a row.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "rounds"
-      ],
-      "type": "object"
     }
   },
   "$ref": "#/$defs/JsonRpcMessage",

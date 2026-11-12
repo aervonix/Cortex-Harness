@@ -25,6 +25,15 @@ Every enumeration and every tagged union in the protocol is open: a later versio
 - **In the schema,** the last branch of such a type is marked `"x-cortex-open": true`. For a string enumeration it is "any other string". For a union it is "an object whose `type` or `kind` is none of the known ones".
 - **In the declarations,** a string enumeration ends with `(string & {})`, which accepts any string while editors still offer the known values. A union lists only the variants this version knows, so that narrowing on `type` or `kind` works; a client must still have a default branch for a variant that is not listed.
 
+## Enforced values
+
+Leases, grants, rules, sandbox policies, budgets, hard limits and stop conditions are the exception to "tolerate what you do not know": a reader refuses one that has a field or a value it does not know, whole ([decision 0028](../decisions/0028-enforced-values-fail-closed.md)).
+
+- **In the schema,** these types have `"additionalProperties": false`, and their enumerations have no open branch.
+- **In the declarations,** their enumerations are plain unions of literals, without `(string & {})`.
+
+A client that reads a lease must do the same, and must not strip fields it does not know before passing a lease on.
+
 ## Changing the protocol
 
 1. Change the types in `crates/cortex-protocol`.

@@ -25,6 +25,12 @@
 //! server that receives a level or a role it does not know refuses the
 //! request. The types keep the value so that the refusal can name it.
 //!
+//! **Enforced values are the exception, and fail closed.** A lease, a grant,
+//! a rule, a sandbox policy, a budget, the hard limits and a stop condition
+//! refuse an unknown field and an unknown value, and are refused whole: a
+//! restriction that is not understood cannot be enforced, and dropping it
+//! would widen what is allowed. See [`lease`].
+//!
 //! # Conventions on the wire
 //!
 //! - Field names and enumeration values are `snake_case`. The one exception
