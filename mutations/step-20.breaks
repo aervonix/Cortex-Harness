@@ -236,3 +236,99 @@ find: Reply::Mode { mode: 9001, state } => self.win32_input = matches!(state, 1.
 replace: Reply::Mode { mode: 9001, .. } => {}
 caught-by:
     terminal::tests::a_terminal_that_has_the_win32_input_mode_gets_it_until_the_end
+
+[break] escape-starved-by-wakes
+rule: A lone Escape is the Escape key once ESCAPE_WAIT has passed since it arrived, however often the wait is woken meanwhile.
+file: crates/cortex-term/src/terminal.rs
+in: Terminal::next
+find:
+    if left == Some(Duration::ZERO) {
+replace:
+    if left == Some(Duration::ZERO) && false {
+caught-by:
+    terminal::tests::a_pending_escape_is_the_escape_key_however_often_the_wait_is_woken
+
+[break] nothing-comes-back-after-a-suspension
+rule: After a suspension, everything that was turned on is turned on again.
+file: crates/cortex-term/src/terminal.rs
+in: Terminal::next
+find: self.resume()?;
+replace:
+caught-by:
+    terminal::tests::after_a_suspension_what_was_on_is_turned_on_again
+    system::sys_after_ctrl_z_and_fg_everything_is_on_again
+
+[break] bracketed-paste-left-on
+rule: Bracketed paste is turned off on the way out.
+file: crates/cortex-term/src/terminal.rs
+find: const END: &[u8] = b"\x1b[0m\x1b[?1004l\x1b[?2004l\x1b[?7h\x1b[?25h";
+replace: const END: &[u8] = b"\x1b[0m\x1b[?1004l\x1b[?7h\x1b[?25h";
+caught-by:
+    system::sys_keys_are_drawn_and_the_terminal_is_put_back_after_a_normal_exit
+
+[break] autowrap-left-off-after-a-panic
+rule: Putting the terminal back after a panic or a signal turns automatic wrap back on.
+file: crates/cortex-term/src/sys/mod.rs
+find: b"\x1b[?2026l\x1b[0m\r\x1b[J\x1b[?1004l\x1b[?2004l\x1b[?7h\x1b[?25h",
+replace: b"\x1b[?2026l\x1b[0m\r\x1b[J\x1b[?1004l\x1b[?2004l\x1b[?25h",
+caught-by:
+    sys::tests::the_restore_sequence_turns_off_what_was_turned_on
+
+[break] writes-after-the-terminal-was-put-back
+rule: Once the terminal has been put back, nothing more is written to it.
+file: crates/cortex-term/src/sys/unix.rs
+in: write
+find:
+    if !ACTIVE.load(Ordering::SeqCst) {
+        return Err(io::Error::other("the terminal has been put back"));
+    }
+replace:
+caught-by:
+    sys::unix::tests::nothing_is_written_while_the_terminal_is_not_the_programs
+
+[break] leaving-does-not-wait-for-the-last-reply
+rule: Leaving waits a little for the last reply to the capability queries, so it does not reach the shell as typed text.
+file: crates/cortex-term/src/terminal.rs
+in: Terminal::end
+find: self.drain_replies();
+replace:
+caught-by:
+    terminal::tests::leaving_waits_a_little_for_the_last_reply
+
+[break] a-link-address-with-an-escape
+rule: A link's address is used only when it is printable ASCII, so it cannot end the link's sequence early.
+file: crates/cortex-term/src/line.rs
+in: Span::link
+find: url.bytes().all(|byte| (0x21..0x7f).contains(&byte))
+replace: true
+caught-by:
+    line::tests::only_a_printable_address_becomes_a_link
+
+[break] c1-controls-passed-through
+rule: A C1 control character (U+0080 to U+009F, which some terminals take as ESC [) is shown as a symbol.
+file: crates/cortex-term/src/sanitize.rs
+in: visible
+find: '\u{80}'..='\u{9f}' => Some(C1_SYMBOL),
+replace:
+caught-by:
+    render::tests::no_control_character_from_content_reaches_the_terminal
+    presenter::content_cannot_write_an_escape_sequence
+
+[break] finishing-leaves-the-cursor-hidden
+rule: Finishing shows the cursor again.
+file: crates/cortex-term/src/inline.rs
+in: Inline::finish
+find: out.extend_from_slice(SHOW_CURSOR);
+replace:
+caught-by:
+    inline::tests::finishing_erases_the_region_and_shows_the_cursor
+    presenter::commits_go_into_the_scrollback_in_order_through_height_changes
+
+[break] paste-end-split-across-reads
+rule: The end of a paste split between two reads still ends it.
+file: crates/cortex-term/src/input.rs
+in: Decoder::decode
+find: .find(|&n| rest.len() >= n && rest.ends_with(&PASTE_END[..n]))
+replace: .find(|_| false)
+caught-by:
+    input::tests::every_split_decodes_the_same

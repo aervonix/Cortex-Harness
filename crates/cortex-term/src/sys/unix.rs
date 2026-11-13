@@ -123,13 +123,17 @@ pub(crate) fn emergency() {
 
 /// Puts the original settings back without writing anything: for a normal
 /// exit, where the presenter has already finished.
+///
+/// Raw mode is marked off only once the settings are back: a signal that
+/// comes in between still finds it on, and puts the terminal back itself.
 fn restore_modes() {
-    if ACTIVE.swap(false, Ordering::SeqCst)
+    if ACTIVE.load(Ordering::SeqCst)
         && let Some(original) = ORIGINAL.get()
     {
         // SAFETY: `original` is the complete `termios` the terminal had.
         unsafe { libc::tcsetattr(STDIN, libc::TCSADRAIN, original) };
     }
+    ACTIVE.store(false, Ordering::SeqCst);
 }
 
 /// Makes the pipe that wakes a wait, once.
@@ -220,7 +224,14 @@ fn install(signal: libc::c_int, handler: extern "C" fn(libc::c_int)) -> io::Resu
         let pointer = action.as_mut_ptr();
         (*pointer).sa_sigaction = handler as libc::sighandler_t;
         (*pointer).sa_flags = libc::SA_RESTART;
-        libc::sigemptyset(&raw mut (*pointer).sa_mask);
+        // While one handler runs, every other signal it shares the restore
+        // with waits: a second signal cannot find the terminal half put
+        // back and end the process before the first has finished.
+        let mask = &raw mut (*pointer).sa_mask;
+        libc::sigemptyset(mask);
+        for other in ENDING.into_iter().chain([libc::SIGTSTP, libc::SIGWINCH]) {
+            libc::sigaddset(mask, other);
+        }
         check(libc::sigaction(signal, pointer, old.as_mut_ptr()))?;
         PREVIOUS
             .lock()
@@ -266,7 +277,14 @@ pub(crate) fn size() -> io::Result<(u16, u16)> {
 
 /// Writes all of `bytes` to standard output: one call, unless the terminal
 /// takes only part of it.
+///
+/// Once the terminal has been put back (a panic on another thread, a
+/// signal), nothing more is written: a frame would turn modes on again in a
+/// terminal that is no longer the program's.
 pub(crate) fn write(bytes: &[u8]) -> io::Result<()> {
+    if !ACTIVE.load(Ordering::SeqCst) {
+        return Err(io::Error::other("the terminal has been put back"));
+    }
     let mut rest = bytes;
     while !rest.is_empty() {
         // SAFETY: the pointer and length are those of a live slice.
@@ -429,7 +447,9 @@ pub(crate) mod pty {
             rows: u16,
         ) -> io::Result<Self> {
             // SAFETY: `posix_openpt` returns a new descriptor or -1.
-            let master = check(unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) })?;
+            let master = check(unsafe {
+                libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC)
+            })?;
             // SAFETY: the descriptor was just made, and is ours alone.
             let master = unsafe { OwnedFd::from_raw_fd(master) };
             // SAFETY: both act on the master just made.
@@ -521,5 +541,17 @@ pub(crate) mod pty {
         // SAFETY: `kill` reads nothing but its arguments.
         check(unsafe { libc::kill(pid, signal) })?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nothing_is_written_while_the_terminal_is_not_the_programs() {
+        // The test process never entered raw mode: as after a restore.
+        assert!(!ACTIVE.load(Ordering::SeqCst));
+        assert!(write(b"\x1b[?25l").is_err());
     }
 }

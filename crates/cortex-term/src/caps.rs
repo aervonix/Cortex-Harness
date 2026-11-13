@@ -1,10 +1,10 @@
 //! What the terminal can do: detected from the environment at start, asked
-//! of the terminal with the first frame, and overridden by settings
+//! of the terminal as it is entered, and overridden by settings
 //! (`docs/architecture/09-tui.md`, "Terminal layer").
 //!
 //! Start-up never waits for an answer. [`Capabilities::detect`] decides from
 //! the environment alone, conservatively; the queries in
-//! [`Capabilities::QUERIES`] go out with the first frame; and each reply,
+//! [`Capabilities::QUERIES`] go out just before the first frame; and each reply,
 //! when it comes, goes to [`Capabilities::apply`], which upgrades what later
 //! frames do. An override always wins over both.
 
@@ -91,7 +91,7 @@ const LINK_TERMINALS: &[&str] = &["iTerm.app", "WezTerm", "vscode", "ghostty", "
 const NO_SYNC_TERMS: &[&str] = &["dumb", "linux"];
 
 impl Capabilities {
-    /// The queries sent with the first frame: whether synchronized updates
+    /// The queries sent as the terminal is entered: whether synchronized updates
     /// are supported (DECRQM 2026), whether the win32 input mode is (DECRQM
     /// 9001), the enhanced keyboard protocol's flags,
     /// the background colour, and last the device attributes, which every

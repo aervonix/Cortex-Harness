@@ -379,7 +379,9 @@ fn a_streaming_frame_is_small() {
     let mut rig = Rig::new(120, 40, true);
     let mut sizes = Vec::new();
     let mut text = String::new();
-    for token in 0..2000u32 {
+    // 600 frames commit about 25 lines: enough for the sizes to settle, and
+    // a fraction of a second in an unoptimised build.
+    for token in 0..600u32 {
         text.push_str(if token % 10 == 9 { " marker" } else { " word" });
         let commit = if text.len() > 110 {
             vec![Line::plain(std::mem::take(&mut text))]

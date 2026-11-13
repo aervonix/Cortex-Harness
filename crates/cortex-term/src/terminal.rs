@@ -16,10 +16,13 @@
 //! - **A signal** (SIGTERM, SIGHUP, SIGINT, SIGQUIT) **or a console event**
 //!   (Ctrl+Break, the console closing, logging off, shutting down): a handler
 //!   does the same, and then lets the signal or the event end the process as
-//!   it would have.
+//!   it would have. The handlers replace any installed before them. From then
+//!   on nothing more is written: a frame would turn modes on in a terminal
+//!   that is no longer the program's, so the next write fails.
 //! - **Suspending** (SIGTSTP, or [`Terminal::suspend`] on Ctrl+Z): the
-//!   terminal is put back while the program is stopped, and raw mode comes
-//!   back when it continues, with an [`Event::Resumed`].
+//!   terminal is put back while the program is stopped; when it continues,
+//!   raw mode and everything that was turned on come back, with an
+//!   [`Event::Resumed`].
 //!
 //! # The device
 //!
@@ -31,7 +34,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::io;
 use std::sync::{Arc, Once};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::caps::{Capabilities, Overrides, Platform};
 use crate::inline::Sink;
@@ -43,12 +46,20 @@ use crate::sys::{self, Ready};
 /// enough that Escape does not feel late.
 pub const ESCAPE_WAIT: Duration = Duration::from_millis(50);
 
-/// Turned on at the start: bracketed paste and focus events. Both are
-/// harmless where they are not known.
-const START: &[u8] = b"\x1b[?2004h\x1b[?1004h";
-/// Turned off at the end. The enhanced keyboard protocol, if it was turned
-/// on, is turned off first.
-const END: &[u8] = b"\x1b[0m\x1b[?1004l\x1b[?2004l\x1b[?25h";
+/// Turned on at the start, and again after a suspension: bracketed paste and
+/// focus events, both harmless where they are not known; and automatic wrap
+/// turned off, so that a character the terminal draws wider than it is
+/// counted can never push a row onto the next and throw the presenter's
+/// count of rows out.
+const START: &[u8] = b"\x1b[?2004h\x1b[?1004h\x1b[?7l";
+/// Turned off at the end, and automatic wrap turned back on. The enhanced
+/// keyboard protocol and the win32 input mode, if they were turned on, are
+/// turned off first.
+const END: &[u8] = b"\x1b[0m\x1b[?1004l\x1b[?2004l\x1b[?7h\x1b[?25h";
+/// How long leaving waits for the terminal's last reply to the capability
+/// queries, when it has not come yet, so that the reply does not arrive at
+/// the shell's prompt as typed text.
+pub const REPLY_WAIT: Duration = Duration::from_millis(100);
 /// Turns the enhanced keyboard protocol on, with the flag that tells apart
 /// keys that are otherwise the same bytes.
 const KEYBOARD_ON: &[u8] = b"\x1b[>1u";
@@ -111,6 +122,12 @@ pub trait Device {
 
     /// Puts the terminal's modes back. Called once, last.
     fn leave(&mut self);
+
+    /// The time now, on a clock that only goes forward. A device for tests
+    /// gives a time of its own, so that waits are tested without waiting.
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
 }
 
 /// The real terminal, through the operating system.
@@ -165,6 +182,12 @@ pub struct Terminal<D: Device = System> {
     keyboard: bool,
     win32: bool,
     active: bool,
+    /// When the decoder began to keep bytes that more input could complete
+    /// (a lone ESC): they are decoded as they stand once [`ESCAPE_WAIT`] has
+    /// passed, however often the wait is cut short meanwhile.
+    pending_since: Option<Instant>,
+    /// Whether the reply that ends the capability queries has come.
+    answered: bool,
 }
 
 impl Terminal<System> {
@@ -223,6 +246,8 @@ impl<D: Device> Terminal<D> {
             keyboard: false,
             win32: false,
             active: true,
+            pending_since: None,
+            answered: false,
         })
     }
 
@@ -263,37 +288,78 @@ impl<D: Device> Terminal<D> {
             if let Some(event) = self.events.pop_front() {
                 return Ok(Some(event));
             }
-            let pending = self.decoder.pending();
-            let wait = if pending {
-                Some(timeout.map_or(ESCAPE_WAIT, |timeout| timeout.min(ESCAPE_WAIT)))
-            } else {
-                timeout
+            let mut found = Vec::new();
+            // What is kept is decoded as it stands once it has waited long
+            // enough, whatever cut the earlier waits short.
+            let left = self.pending_since.map(|since| {
+                ESCAPE_WAIT.saturating_sub(self.device.now().saturating_duration_since(since))
+            });
+            if left == Some(Duration::ZERO) {
+                self.decoder.flush(&mut found);
+                self.pending_since = None;
+                self.take(found)?;
+                continue;
+            }
+            let wait = match (left, timeout) {
+                (Some(left), Some(timeout)) => Some(left.min(timeout)),
+                (Some(left), None) => Some(left),
+                (None, timeout) => timeout,
             };
             self.bytes.clear();
-            let mut found = Vec::new();
             match self.device.wait(wait, &mut self.bytes)? {
-                Ready::Input => self.decoder.feed(&self.bytes, &mut found),
+                Ready::Input => {
+                    self.decoder.feed(&self.bytes, &mut found);
+                    if !self.decoder.pending() {
+                        self.pending_since = None;
+                    } else if self.pending_since.is_none() {
+                        self.pending_since = Some(self.device.now());
+                    }
+                }
                 Ready::Resize => {
                     let (cols, rows) = self.device.size()?;
                     found.push(Event::Resize { cols, rows });
                 }
-                Ready::Resumed => found.push(Event::Resumed),
-                Ready::Woken => return Ok(None),
-                Ready::Timeout if pending && wait == Some(ESCAPE_WAIT) => {
-                    self.decoder.flush(&mut found);
+                Ready::Resumed => {
+                    self.resume()?;
+                    found.push(Event::Resumed);
                 }
+                Ready::Woken => return Ok(None),
+                // The escape's own wait: the next pass decodes it.
+                Ready::Timeout if left.is_some() && wait == left => {}
                 Ready::Timeout => return Ok(None),
             }
-            for event in found {
-                if let Event::Reply(reply) = &event {
-                    self.reply(*reply)?;
-                }
-                self.events.push_back(event);
-            }
+            self.take(found)?;
         }
     }
 
+    /// Queues decoded events, taking in the replies first.
+    fn take(&mut self, found: Vec<Event>) -> io::Result<()> {
+        for event in found {
+            if let Event::Reply(reply) = &event {
+                self.reply(*reply)?;
+            }
+            self.events.push_back(event);
+        }
+        Ok(())
+    }
+
+    /// After a suspension, which turned everything off: turns back on what
+    /// was on.
+    fn resume(&mut self) -> io::Result<()> {
+        let mut again = START.to_vec();
+        if self.keyboard {
+            again.extend_from_slice(KEYBOARD_ON);
+        }
+        if self.win32 {
+            again.extend_from_slice(WIN32_ON);
+        }
+        self.device.write(&again)
+    }
+
     fn reply(&mut self, reply: Reply) -> io::Result<()> {
+        if reply == Reply::DeviceAttributes {
+            self.answered = true;
+        }
         self.caps.apply(&reply);
         if self.caps.keyboard && !self.keyboard {
             self.keyboard = true;
@@ -334,6 +400,7 @@ impl<D: Device> Terminal<D> {
             return Ok(());
         }
         self.active = false;
+        self.drain_replies();
         let mut end = Vec::new();
         if self.keyboard {
             end.extend_from_slice(KEYBOARD_OFF);
@@ -351,6 +418,33 @@ impl<D: Device> Terminal<D> {
             sys::set_win32(false);
         }
         written
+    }
+}
+
+impl<D: Device> Terminal<D> {
+    /// Reads, and drops, input until the last reply to the capability
+    /// queries has come, for at most [`REPLY_WAIT`]. Once the terminal is
+    /// back in its ordinary mode, a late reply would reach the shell as
+    /// typed text.
+    fn drain_replies(&mut self) {
+        let deadline = self.device.now() + REPLY_WAIT;
+        let mut found = Vec::new();
+        while !self.answered {
+            let left = deadline.saturating_duration_since(self.device.now());
+            if left.is_zero() {
+                return;
+            }
+            self.bytes.clear();
+            match self.device.wait(Some(left), &mut self.bytes) {
+                Ok(Ready::Input) => {
+                    found.clear();
+                    self.decoder.feed(&self.bytes, &mut found);
+                    self.answered |= found.contains(&Event::Reply(Reply::DeviceAttributes));
+                }
+                Ok(Ready::Timeout) | Err(_) => return,
+                Ok(_) => {}
+            }
+        }
     }
 }
 
@@ -380,7 +474,15 @@ mod tests {
         written: Arc<Mutex<Vec<u8>>>,
         waits: Arc<Mutex<Vec<Option<Duration>>>>,
         left: Arc<Mutex<bool>>,
+        /// The script's own clock: how far it is past `base`. A wait that
+        /// times out moves it by the wait's length; any other step by
+        /// [`STEP`].
+        base: Option<Instant>,
+        elapsed: Arc<Mutex<Duration>>,
     }
+
+    /// How long a step of a script that is not a timeout takes.
+    const STEP: Duration = Duration::from_millis(20);
 
     impl Device for Script {
         fn size(&self) -> io::Result<(u16, u16)> {
@@ -396,8 +498,15 @@ mod tests {
                 .steps
                 .pop_front()
                 .unwrap_or((Ready::Timeout, Vec::new()));
+            *self.elapsed.lock().unwrap() += match ready {
+                Ready::Timeout => timeout.unwrap_or(Duration::ZERO),
+                _ => STEP,
+            };
             into.extend_from_slice(&bytes);
             Ok(ready)
+        }
+        fn now(&self) -> Instant {
+            self.base.unwrap() + *self.elapsed.lock().unwrap()
         }
         fn waker(&self) -> Waker {
             Waker::new(|| {})
@@ -415,6 +524,7 @@ mod tests {
     fn script(steps: &[(Ready, &[u8])]) -> Script {
         Script {
             steps: steps.iter().map(|(r, b)| (*r, b.to_vec())).collect(),
+            base: Some(Instant::now()),
             ..Script::default()
         }
     }
@@ -462,10 +572,99 @@ mod tests {
     }
 
     #[test]
-    fn a_shorter_timeout_of_the_caller_does_not_take_a_pending_escape() {
+    fn a_shorter_timeout_of_the_caller_returns_and_the_escape_still_comes() {
         let device = script(&[(Ready::Input, b"\x1b"), (Ready::Timeout, b"")]);
         let mut terminal = Terminal::with_device(device, caps()).unwrap();
         assert_eq!(terminal.next(Some(Duration::from_millis(5))).unwrap(), None);
+        // A longer wait of the caller's is cut to what is left of the
+        // escape's, and gives the escape.
+        assert_eq!(
+            terminal.next(Some(Duration::from_millis(100))).unwrap(),
+            Some(Event::Key(Key::plain(KeyCode::Esc)))
+        );
+    }
+
+    #[test]
+    fn a_pending_escape_is_the_escape_key_however_often_the_wait_is_woken() {
+        // While a stream runs, the loop is woken every few milliseconds. The
+        // escape comes once 50 ms have passed since it arrived.
+        let device = script(&[
+            (Ready::Input, b"\x1b"),
+            (Ready::Woken, b""),
+            (Ready::Woken, b""),
+            (Ready::Woken, b""),
+        ]);
+        let waits = device.waits.clone();
+        let mut terminal = Terminal::with_device(device, caps()).unwrap();
+        assert_eq!(
+            terminal.next(Some(Duration::from_millis(16))).unwrap(),
+            None
+        );
+        assert_eq!(
+            terminal.next(Some(Duration::from_millis(16))).unwrap(),
+            None
+        );
+        assert_eq!(
+            terminal.next(Some(Duration::from_millis(16))).unwrap(),
+            None,
+            "40 ms after the escape"
+        );
+        assert_eq!(
+            terminal.next(Some(Duration::from_millis(16))).unwrap(),
+            Some(Event::Key(Key::plain(KeyCode::Esc))),
+            "60 ms after the escape"
+        );
+        // Each wait was cut to what was left of the escape's.
+        let waits = waits.lock().unwrap().clone();
+        assert_eq!(waits[1], Some(Duration::from_millis(16)));
+        assert_eq!(waits[3], Some(Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn after_a_suspension_what_was_on_is_turned_on_again() {
+        let device = script(&[
+            (Ready::Input, b"\x1b[?1u\x1b[?9001;2$y"),
+            (Ready::Resumed, b""),
+        ]);
+        let written = device.written.clone();
+        let mut terminal = Terminal::with_device(device, caps()).unwrap();
+        terminal.next(None).unwrap();
+        terminal.next(None).unwrap();
+        written.lock().unwrap().clear();
+        assert_eq!(terminal.next(None).unwrap(), Some(Event::Resumed));
+        assert_eq!(
+            *written.lock().unwrap(),
+            [START, KEYBOARD_ON, WIN32_ON].concat()
+        );
+    }
+
+    #[test]
+    fn leaving_waits_a_little_for_the_last_reply() {
+        let device = script(&[
+            (Ready::Input, b"\x1b[?2026;2$y"),
+            (Ready::Input, b"x\x1b[?62;22c"),
+        ]);
+        let (waits, written) = (device.waits.clone(), device.written.clone());
+        let terminal = Terminal::with_device(device, caps()).unwrap();
+        terminal.leave().unwrap();
+        // Two reads, then no more: the reply had come.
+        assert_eq!(waits.lock().unwrap().len(), 2);
+        assert!(written.lock().unwrap().ends_with(END));
+        // With no reply at all, it gives up after the bound.
+        let device = script(&[]);
+        let waits = device.waits.clone();
+        Terminal::with_device(device, caps())
+            .unwrap()
+            .leave()
+            .unwrap();
+        assert_eq!(*waits.lock().unwrap(), [Some(REPLY_WAIT)]);
+        // Once the reply has come, leaving reads nothing.
+        let device = script(&[(Ready::Input, b"\x1b[?62c")]);
+        let waits = device.waits.clone();
+        let mut terminal = Terminal::with_device(device, caps()).unwrap();
+        terminal.next(None).unwrap();
+        terminal.leave().unwrap();
+        assert_eq!(waits.lock().unwrap().len(), 1);
     }
 
     #[test]

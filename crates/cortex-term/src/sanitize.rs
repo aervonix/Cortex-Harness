@@ -80,7 +80,17 @@ mod tests {
         assert_eq!(sanitize("win\r\nline"), "win\nline");
         assert_eq!(sanitize("bare\rreturn"), "bare\u{240d}return");
         // Nothing that is left could start a sequence.
-        for c in (0..=0x10ffff).filter_map(char::from_u32) {
+        // Every control character is below U+00A0; the planes above are
+        // sampled on a pull request and all checked in the nightly run.
+        let all = std::env::var("CORTEX_PROPERTY_SCALE")
+            .ok()
+            .and_then(|scale| scale.parse::<u32>().ok())
+            .is_some_and(|scale| scale > 1);
+        let step = if all { 1 } else { 97 };
+        for c in (0..0x3000)
+            .chain((0x3000..=0x10ffff).step_by(step))
+            .filter_map(char::from_u32)
+        {
             let shown = sanitize(&c.to_string()).into_owned();
             assert!(
                 shown
