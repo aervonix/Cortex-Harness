@@ -1,9 +1,7 @@
 //! The level table, row by row, through the engine
 //! (`docs/architecture/06-permissions-and-sandbox.md`, "Levels").
 
-use cortex_policy::{
-    Access, Engine, NoSandbox, Outcome, Request, SandboxState, StartError,
-};
+use cortex_policy::{Access, Engine, NoSandbox, Outcome, Request, SandboxState, StartError};
 use cortex_protocol::error::code;
 use cortex_protocol::lease::{Effect, ExpiryKind, GrantorKind, Level, RuleAction};
 
@@ -61,15 +59,21 @@ fn each_level_decides_as_its_row_of_the_table_says() {
     );
     assert_eq!(
         row(Level::Supervised),
-        [Allow, Ask, Allow, Ask, ReadOnly, Allow, Ask, Ask, Ask, Allow]
+        [
+            Allow, Ask, Allow, Ask, ReadOnly, Allow, Ask, Ask, Ask, Allow
+        ]
     );
     assert_eq!(
         row(Level::Autonomous),
-        [Allow, Ask, Allow, Ask, ReadOnly, Allow, Allow, Allow, Ask, Allow]
+        [
+            Allow, Ask, Allow, Ask, ReadOnly, Allow, Allow, Allow, Ask, Allow
+        ]
     );
     assert_eq!(
         row(Level::Unrestricted),
-        [Allow, Allow, Allow, Allow, ReadOnly, Allow, Allow, Allow, Allow, Allow]
+        [
+            Allow, Allow, Allow, Allow, ReadOnly, Allow, Allow, Allow, Allow, Allow
+        ]
     );
 }
 
@@ -84,10 +88,19 @@ fn at_read_only_no_rule_makes_a_write_happen() {
             user(Effect::Exec, "*", RuleAction::Allow),
         ];
     });
-    for file in ["/work/app/src/main.rs", "/work/app/notes.txt", "/tmp/x", "/etc/hosts"] {
+    for file in [
+        "/work/app/src/main.rs",
+        "/work/app/notes.txt",
+        "/tmp/x",
+        "/etc/hosts",
+    ] {
         let outcome = write(&engine, file);
         assert_eq!(said(&outcome), Deny, "{file}");
-        assert!(reason(&outcome).contains("`read-only`"), "{}", reason(&outcome));
+        assert!(
+            reason(&outcome).contains("`read-only`"),
+            "{}",
+            reason(&outcome)
+        );
     }
     assert_eq!(said(&shell(&engine, "echo x > src/main.rs")), Deny);
     // A command that may write is asked about, allowed by a rule or not,
@@ -101,7 +114,12 @@ fn at_read_only_no_rule_makes_a_write_happen() {
 /// Rules still settle what they match at the levels that ask least.
 #[test]
 fn a_deny_holds_at_every_level() {
-    for level in [Level::ReadOnly, Level::Supervised, Level::Autonomous, Level::Unrestricted] {
+    for level in [
+        Level::ReadOnly,
+        Level::Supervised,
+        Level::Autonomous,
+        Level::Unrestricted,
+    ] {
         let engine = engine_with(|parts| {
             parts.level = level.clone();
             parts.rules = vec![
@@ -114,13 +132,25 @@ fn a_deny_holds_at_every_level() {
         });
         assert_eq!(said(&shell(&engine, "git push origin")), Deny, "{level:?}");
         assert_eq!(said(&shell(&engine, "echo $(git push)")), Deny, "{level:?}");
-        assert_eq!(said(&read(&engine, "/work/app/secrets/key")), Deny, "{level:?}");
-        assert_eq!(said(&write(&engine, "/work/app/vendor/x.rs")), Deny, "{level:?}");
-        assert_eq!(said(&network(&engine, Some("evil.example"))), Deny, "{level:?}");
+        assert_eq!(
+            said(&read(&engine, "/work/app/secrets/key")),
+            Deny,
+            "{level:?}"
+        );
+        assert_eq!(
+            said(&write(&engine, "/work/app/vendor/x.rs")),
+            Deny,
+            "{level:?}"
+        );
+        assert_eq!(
+            said(&network(&engine, Some("evil.example"))),
+            Deny,
+            "{level:?}"
+        );
         assert_eq!(said(&ext(&engine, "docs/delete")), Deny, "{level:?}");
         // The harness's own files are closed at every level, to a tool and
         // to a command that names them.
-        let credentials = "/home/dev/.config/cortex-harness/credentials.toml";
+        let credentials = "/users/dev/.config/cortex-harness/credentials.toml";
         assert_eq!(said(&read(&engine, credentials)), Deny, "{level:?}");
         assert_eq!(said(&write(&engine, credentials)), Deny, "{level:?}");
         assert_eq!(
@@ -149,8 +179,16 @@ fn an_ask_rule_is_asked_at_every_level() {
             ];
         });
         assert_eq!(said(&shell(&engine, "git push")), Ask, "{level:?}");
-        assert_eq!(said(&write(&engine, "/work/app/migrations/1.sql")), Ask, "{level:?}");
-        assert_eq!(said(&write(&engine, "/work/app/src/a.rs")), Allow, "{level:?}");
+        assert_eq!(
+            said(&write(&engine, "/work/app/migrations/1.sql")),
+            Ask,
+            "{level:?}"
+        );
+        assert_eq!(
+            said(&write(&engine, "/work/app/src/a.rs")),
+            Allow,
+            "{level:?}"
+        );
     }
 }
 
@@ -217,13 +255,26 @@ fn the_engine_holds_the_sessions_standing_lease() {
         .grant
         .rules
         .iter()
-        .map(|rule| format!("{} {} {}", rule.action.as_str(), rule.effect.as_str(), rule.pattern))
+        .map(|rule| {
+            format!(
+                "{} {} {}",
+                rule.action.as_str(),
+                rule.effect.as_str(),
+                rule.pattern
+            )
+        })
         .collect();
     assert_eq!(rules, ["allow exec cargo test *", "deny write vendor/**"]);
-    assert_eq!(lease.grant.sandbox.write.roots, ["/work/app", "/tmp/cortex-s1"]);
+    assert_eq!(
+        lease.grant.sandbox.write.roots,
+        ["/work/app", "/tmp/cortex-s1"]
+    );
     // And it reads back through the protocol's strict reader.
     let wire = serde_json::to_value(lease).unwrap();
-    assert_eq!(&cortex_protocol::lease::Lease::from_wire(wire).unwrap(), lease);
+    assert_eq!(
+        &cortex_protocol::lease::Lease::from_wire(wire).unwrap(),
+        lease
+    );
 }
 
 #[test]
@@ -237,7 +288,11 @@ fn a_rule_that_cannot_be_compiled_stops_the_session_from_starting() {
         panic!("a session started with a deny rule dropped");
     };
     assert_eq!(errors.len(), 1);
-    assert!(errors[0].to_string().contains("`deny write src/[abc`"), "{}", errors[0]);
+    assert!(
+        errors[0].to_string().contains("`deny write src/[abc`"),
+        "{}",
+        errors[0]
+    );
 }
 
 #[test]

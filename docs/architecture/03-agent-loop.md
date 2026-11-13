@@ -6,7 +6,7 @@ The loop lives in `cortex-agent`. It owns no I/O: everything it touches it reach
 |---|---|---|
 | `ModelClient` (`cortex-llm`) | One request in, a stream of events out. | The scripted provider of the test kit, in tests. |
 | `ToolSet` | The definitions to declare, and the tool a call names. | Implemented for `Toolbox` of `cortex-tools`. |
-| `Policy` | Allow, deny or ask for a planned call, and put the question. | `AllowAll`. The engine is `cortex-policy` (step 12). |
+| `Policy` | Allow, deny or ask for a planned call, and put the question. It can also say that a call changes nothing, and that the turn stops here ("Approve", below). | `AllowAll`. The engine is `cortex-policy` (step 12), which the core adapts to this trait in step 13. |
 | `SessionStore` | Read the session once, append records, end a turn. | `MemorySessionStore`. The log is `cortex-session` (step 8), adapted in step 13. |
 | `Context` | What a request contains, whether to compact first, and the compaction. | `StubContext`: everything, never compacted. Step 15 builds the real one. |
 | `Verifier` | One round of the project's checks. | `NoVerifier`: skipped. Step 19 builds the real one. |
@@ -47,7 +47,7 @@ The picture leaves out three kinds of arrow that the table has: `Compacting` is 
 | `Streaming` | Decode events, emit deltas, build the assistant message. Plan each tool call as its block ends, and start the ones with no side effects. | Stream ends → `Deciding`. Retryable failure → `Backoff`. A speed tier refuses part-way and the request is sent again at standard speed → `Requesting`. The request does not fit → `Compacting`, once. Failure for good → `Finishing`, with what arrived kept on the item and the error attached. |
 | `Backoff` | The client waits before the next attempt. The retry notice is emitted on the way in. | The next event of the stream → `Requesting`: whatever it is, the wait is over and the request was sent again. (If that event is the final error, the turn then goes from `Requesting` to `Finishing`.) |
 | `Deciding` | Record the assistant item. Look at the stop reason. | Tool calls → `ToolRound`. No tool calls and files changed in this turn → `Verifying`. A stop reason that says the request did not fit → `Compacting`, once. Otherwise → `Finishing`, or `Preparing` if a continuation is required. |
-| `ToolRound` | Plan, approve, run and record every call. Calls that started early are joined here. | All results recorded → `Preparing`. The repetition guard stops the turn → `Finishing`. |
+| `ToolRound` | Plan, approve, run and record every call. Calls that started early are joined here. | All results recorded → `Preparing`. The repetition guard stops the turn → `Finishing`. The policy stopped the turn over a call → `Finishing`, with the outcome `denied`. |
 | `Verifying` | Run the project's checks ([15-efficiency.md](15-efficiency.md)). After the first release, a check that speculative verification already ran against exactly this state is used instead of being run again. | Passed, skipped or round limit reached → `Finishing`. Failed → append the failures as a notice → `Preparing`. |
 | `Finishing` | Flush the log. Emit `turn.completed`. | The turn completed and a prompt is waiting → `Preparing` as a new turn. Otherwise → `Idle`. After a turn that failed or hit a limit, prompts that were waiting are held ("Steering and queued prompts"). |
 | `Interrupted` | Cancel children, record what exists, emit `turn.completed` with outcome `interrupted`. | Always → `Idle`. Queued prompts are held and the front end is told. |
@@ -96,6 +96,15 @@ A round has four phases. The split exists so that policy and scheduling work fro
 
 **2. Approve.** The permission engine decides each plan: allow, deny, or ask (see [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)). Questions go to the front end one at a time, in call order. Calls that are already allowed start at once while a question for a later call is open. A denied call gets an error result that carries the user's reason if they gave one.
 
+Two more answers, built in step 12:
+
+- **"It changes nothing"** (`Decision::AllowReadOnly`). A shell command is planned as a call that may change anything, and so runs alone. When the engine has analysed the command and found every part of it on the table of commands that only read, the loop schedules the call as read-only: it runs beside other calls, and the shell tool does not look for what it changed. Its effects stay as declared, so it still waits for the response to end.
+- **"Stop the turn here"** (`Decision::Stop`, and `Verdict::Stop` as the answer to a question). A denial is normally a result for the model, and the round goes on: the model may find another way. Where that is wrong, the policy says stop: a front end that cannot ask and was told to fail on the first denial (`--fail-on-denial`, [10-headless.md](10-headless.md)), and later the edge of a task lease (step 37).
+  - The refused call gets its denial, with the reason.
+  - Every call that has not started gets a result that says it did not run, and an open question is withdrawn. **Nothing more starts**, whatever its place in the model's order. Calls that are already running finish: they were allowed.
+  - Once the round is recorded, so that every call has its result, the turn ends with the outcome `denied` and an error of the kind `permission` (code `permission_denied`).
+  - If the response the call came from is thrown away and sent again, the stop goes with it, and the policy is shown the call again.
+
 **3. Run.** The scheduler runs the allowed calls.
 
 | Concurrency class | Examples | Rule |
@@ -143,7 +152,7 @@ A safe boundary is the only place a user message can be appended without breakin
 |---|---|
 | `completed` | The next one starts as a new turn: a steering message that found no boundary first, then the queue, one at a time. When none is left the session is idle. |
 | `interrupted` | Steering messages that were never delivered are handed back to the front end, for its editor, in the answer to the interrupt. Queued prompts are **held**, and so is a steering message that arrives after the interrupt, while the turn is still ending. |
-| `failed` or `limit` | Steering messages that were never delivered, and the queue, are **held**, in that order. |
+| `failed`, `limit` or `denied` | Steering messages that were never delivered, and the queue, are **held**, in that order. |
 
 - **Held prompts are kept, and nothing runs by itself.** An interrupt means stop. And queued prompts are usually steps that assume the one before them worked ("then commit"): after an authentication error or a spent budget each would fail in turn.
 - **The front end is told.** `session.updated` carries the number of prompts waiting, and `session.idle` is not sent: by its definition the session has a queued prompt.

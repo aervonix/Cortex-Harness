@@ -60,7 +60,9 @@ pub mod trust;
 
 pub use approvals::{ApprovalError, ApprovalStore, SessionApprovals};
 pub use command::{Analysis, ShellSyntax, analyse};
-pub use engine::{Access, Engine, Lexical, Locate, Outcome, Parts, Question, Recorded, Request, StartError};
+pub use engine::{
+    Access, Engine, Lexical, Locate, Outcome, Parts, Question, Recorded, Request, StartError,
+};
 pub use lease::{LeaseExt, NarrowError, StandingTerms, default_sandbox, standing_lease};
 pub use level::{Decider, LevelError, Matter, NoSandbox, SandboxState, check_standing};
 pub use rules::{Protected, RuleContext, RuleError, RuleSet, RuleSource, SourcedRule};

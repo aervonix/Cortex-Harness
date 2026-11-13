@@ -247,8 +247,8 @@ impl ApprovalStore {
         }
         let text = std::fs::read_to_string(&self.file).map_err(read_error)?;
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-        let file: File =
-            toml::from_str(text).map_err(|error| self.not_understood(error.message().to_owned()))?;
+        let file: File = toml::from_str(text)
+            .map_err(|error| self.not_understood(error.message().to_owned()))?;
         if file.version != VERSION {
             return Err(self.not_understood(format!(
                 "its version is {}, and this version of Cortex-Harness reads version {VERSION}",
@@ -269,8 +269,9 @@ impl ApprovalStore {
     }
 
     fn write(&self, file: &File) -> Result<(), ApprovalError> {
-        let text = toml::to_string(file)
-            .map_err(|error| self.not_understood(format!("it could not be written out: {error}")))?;
+        let text = toml::to_string(file).map_err(|error| {
+            self.not_understood(format!("it could not be written out: {error}"))
+        })?;
         if let Some(directory) = self
             .file
             .parent()
@@ -343,7 +344,8 @@ impl SessionApprovals {
     /// Removes approvals by id, and says how many were there.
     pub fn remove(&mut self, ids: &[ApprovalId]) -> usize {
         let before = self.approvals.len();
-        self.approvals.retain(|approval| !ids.contains(&approval.id));
+        self.approvals
+            .retain(|approval| !ids.contains(&approval.id));
         before - self.approvals.len()
     }
 
@@ -388,7 +390,10 @@ mod tests {
         assert!(session.add(&[deny], &now).is_empty());
         assert_eq!(session.list().len(), 2);
 
-        assert_eq!(session.remove(&[ApprovalId::new("ap_s1"), ApprovalId::new("ap_x")]), 1);
+        assert_eq!(
+            session.remove(&[ApprovalId::new("ap_s1"), ApprovalId::new("ap_x")]),
+            1
+        );
         assert_eq!(session.list().len(), 1);
         // A removed approval's id is not given to the next one.
         let next = session.add(&[allow("make *")], &now);

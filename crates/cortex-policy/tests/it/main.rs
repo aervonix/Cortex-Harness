@@ -22,6 +22,7 @@ mod commands;
 mod differential;
 mod files;
 mod levels;
+mod measure;
 mod real_paths;
 mod trust;
 
@@ -40,7 +41,7 @@ use cortex_protocol::lease::{Budget, Effect, HardLimits, Level, Rule, RuleAction
 /// The workspace of the tests that read paths as text.
 pub(crate) const WORKSPACE: &str = "/work/app";
 /// Their home directory.
-pub(crate) const HOME: &str = "/home/dev";
+pub(crate) const HOME: &str = "/users/dev";
 
 pub(crate) fn path(text: &str) -> AbsPath {
     AbsPath::parse(text, PathStyle::Posix).unwrap()
@@ -69,11 +70,11 @@ pub(crate) fn project(effect: Effect, pattern: &str, action: RuleAction) -> Sour
 /// The harness's own directories, as the tests have them.
 pub(crate) fn protected() -> Protected {
     Protected::none()
-        .closed(path("/home/dev/.config/cortex-harness"))
-        .closed(path("/home/dev/.local/state/cortex-harness"))
-        .unwritable(path("/home/dev/.local/share/cortex-harness"))
+        .closed(path("/users/dev/.config/cortex-harness"))
+        .closed(path("/users/dev/.local/state/cortex-harness"))
+        .unwritable(path("/users/dev/.local/share/cortex-harness"))
         .other_sessions(
-            path("/home/dev/.local/share/cortex-harness/sessions"),
+            path("/users/dev/.local/share/cortex-harness/sessions"),
             ProjectKey::new("aaaa1111"),
         )
 }

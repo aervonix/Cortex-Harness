@@ -124,7 +124,10 @@ pub(crate) fn narrow_in(
 
     // `unrestricted` is chosen by a person for one session, and is never
     // handed on.
-    let level = level::lower(&level::lower(&ours.level, &theirs.level), &Level::Autonomous);
+    let level = level::lower(
+        &level::lower(&ours.level, &theirs.level),
+        &Level::Autonomous,
+    );
 
     let mut rules: Vec<Rule> = Vec::new();
     let restrictive = |rule: &&Rule| rule.action != RuleAction::Allow;
@@ -168,7 +171,10 @@ pub(crate) fn narrow_in(
                 .collect();
             if shared.is_empty() {
                 let names = |models: &[ModelId]| {
-                    models.iter().map(|model| model.as_str().to_owned()).collect()
+                    models
+                        .iter()
+                        .map(|model| model.as_str().to_owned())
+                        .collect()
                 };
                 return Err(NarrowError::NoModelInCommon {
                     parent: names(&ours.models),
@@ -229,7 +235,10 @@ pub(crate) fn is_within_in(child: &Lease, parent: &Lease, style: PathStyle) -> b
             .all(|rule| theirs.rules.contains(rule));
     let models_hold = theirs.models.is_empty()
         || (!ours.models.is_empty()
-            && ours.models.iter().all(|model| theirs.models.contains(model)));
+            && ours
+                .models
+                .iter()
+                .all(|model| theirs.models.contains(model)));
     let network_holds =
         ours.sandbox.network == NetworkAccess::Off || theirs.sandbox.network == NetworkAccess::Full;
     let stops_hold = parent
@@ -395,10 +404,13 @@ fn expiry_moment(expires: &Expiry) -> Option<(UtcTime, Timestamp)> {
 /// The latest moment a lease can still be in force, from its expiry and
 /// its `time` stop conditions. `None` when no moment bounds it.
 fn deadline(lease: &Lease) -> Option<UtcTime> {
-    let stops = lease.stop_when.iter().filter_map(|condition| match condition {
-        StopCondition::Time(stop) => Some(moment(&stop.at)),
-        _ => None,
-    });
+    let stops = lease
+        .stop_when
+        .iter()
+        .filter_map(|condition| match condition {
+            StopCondition::Time(stop) => Some(moment(&stop.at)),
+            _ => None,
+        });
     expiry_moment(&lease.expires)
         .map(|(time, _)| time)
         .into_iter()

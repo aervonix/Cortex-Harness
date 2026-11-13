@@ -206,7 +206,11 @@ impl NamePattern {
                     piece += 1;
                     continue;
                 }
-                Some(other) if text.get(at).is_some_and(|&character| other.takes(character)) => {
+                Some(other)
+                    if text
+                        .get(at)
+                        .is_some_and(|&character| other.takes(character)) =>
+                {
                     piece += 1;
                     at += 1;
                     continue;
@@ -393,8 +397,9 @@ fn alternative(
 
     // Where the pattern starts, the steps that come from that, and the rest
     // of the pattern.
-    let (start, mut steps, rest): (Start, Vec<Step>, &str) = if let Some(rest) =
-        text.strip_prefix("~/").or_else(|| (text == "~").then_some(""))
+    let (start, mut steps, rest): (Start, Vec<Step>, &str) = if let Some(rest) = text
+        .strip_prefix("~/")
+        .or_else(|| (text == "~").then_some(""))
     {
         let Some(home) = anchors.home else {
             return Err(GlobError::new(
@@ -404,12 +409,20 @@ fn alternative(
         };
         (root_of(home), literal_steps(home), rest)
     } else if let Some((root, rest)) = absolute_root(&text, style) {
-        (Start::Root(style.fold(&root).into_owned()), Vec::new(), rest)
+        (
+            Start::Root(style.fold(&root).into_owned()),
+            Vec::new(),
+            rest,
+        )
     } else if text == "**" || text.starts_with("**/") {
         (Start::Anywhere, Vec::new(), text.as_str())
     } else if text.contains('/') {
         let rest = text.strip_prefix("./").unwrap_or(&text);
-        (root_of(anchors.workspace), literal_steps(anchors.workspace), rest)
+        (
+            root_of(anchors.workspace),
+            literal_steps(anchors.workspace),
+            rest,
+        )
     } else {
         // A bare name: that name at any depth in the workspace.
         let mut steps = literal_steps(anchors.workspace);
@@ -433,7 +446,8 @@ fn alternative(
                 }
             }
             name => steps.push(Step::Name(
-                NamePattern::parse(&fold(name)).map_err(|error| GlobError::new(written, error.problem))?,
+                NamePattern::parse(&fold(name))
+                    .map_err(|error| GlobError::new(written, error.problem))?,
             )),
         }
     }
@@ -601,7 +615,7 @@ mod tests {
 
     fn glob(pattern: &str) -> PathGlob {
         let workspace = posix("/work/app");
-        let home = posix("/home/dev");
+        let home = posix("/users/dev");
         PathGlob::compile(
             pattern,
             Anchors {
@@ -653,7 +667,11 @@ mod tests {
             ("id_[rd]sa", "id_map", false),
             ("é*", "école", true),
         ] {
-            assert_eq!(name(pattern).matches(text), expected, "{pattern:?} on {text:?}");
+            assert_eq!(
+                name(pattern).matches(text),
+                expected,
+                "{pattern:?} on {text:?}"
+            );
         }
     }
 
@@ -689,11 +707,11 @@ mod tests {
             ("/etc/*", "/etc/ssh/config", false),
             ("/etc/*", "/etc", false),
             // Home.
-            ("~/notes/**", "/home/dev/notes/a/b.md", true),
-            ("~/notes/**", "/home/dev/notes", true),
-            ("~/notes/**", "/home/other/notes/a.md", false),
-            ("~", "/home/dev", true),
-            ("~/", "/home/dev/anything", true),
+            ("~/notes/**", "/users/dev/notes/a/b.md", true),
+            ("~/notes/**", "/users/dev/notes", true),
+            ("~/notes/**", "/users/other/notes/a.md", false),
+            ("~", "/users/dev", true),
+            ("~/", "/users/dev/anything", true),
             // Anywhere.
             ("**/.env", "/work/app/.env", true),
             ("**/.env", "/srv/other/deep/.env", true),
@@ -725,9 +743,21 @@ mod tests {
             ("{src,tests}/**", "/work/app/docs/a.md", false),
             ("**/*.{pem,key}", "/any/where/tls.key", true),
             ("**/*.{pem,key}", "/any/where/tls.crt", false),
-            ("**/id_{rsa,ed25519{,_sk}}", "/home/dev/.ssh/id_ed25519_sk", true),
-            ("**/id_{rsa,ed25519{,_sk}}", "/home/dev/.ssh/id_ed25519", true),
-            ("**/id_{rsa,ed25519{,_sk}}", "/work/app/src/id_map.rs", false),
+            (
+                "**/id_{rsa,ed25519{,_sk}}",
+                "/users/dev/.ssh/id_ed25519_sk",
+                true,
+            ),
+            (
+                "**/id_{rsa,ed25519{,_sk}}",
+                "/users/dev/.ssh/id_ed25519",
+                true,
+            ),
+            (
+                "**/id_{rsa,ed25519{,_sk}}",
+                "/work/app/src/id_map.rs",
+                false,
+            ),
         ] {
             assert_eq!(
                 glob(pattern).matches(&posix(path)),
@@ -802,7 +832,7 @@ mod tests {
     #[test]
     fn on_windows_a_folded_glob_ignores_case_and_an_exact_one_does_not() {
         let workspace = windows(r"C:\Work\App");
-        let home = windows(r"C:\Users\Dev");
+        let home = windows(r"C:\People\Dev");
         let anchors = Anchors {
             workspace: &workspace,
             home: Some(&home),
@@ -819,12 +849,17 @@ mod tests {
             (r"c:\Tools\**", r"C:\Tools\x.exe", true, true),
             (r"c:\tools\**", r"C:\Tools\x.exe", false, true),
             (r"D:\Tools\**", r"C:\Tools\x.exe", false, false),
-            (r"~\Notes\**", r"C:\Users\Dev\Notes\a.md", true, true),
-            (r"~\notes\**", r"C:\Users\Dev\Notes\a.md", false, true),
+            (r"~\Notes\**", r"C:\People\Dev\Notes\a.md", true, true),
+            (r"~\notes\**", r"C:\People\Dev\Notes\a.md", false, true),
             ("**/.ENV", r"C:\Work\App\.env", false, true),
             ("**/.env", r"C:\Work\App\.env", true, true),
             (r"\\Server\Share\**", r"\\SERVER\share\x", true, true),
-            (r"\\Server\Share\Dir\**", r"\\SERVER\share\dir\x", false, true),
+            (
+                r"\\Server\Share\Dir\**",
+                r"\\SERVER\share\dir\x",
+                false,
+                true,
+            ),
             // Letters outside ASCII fold too.
             ("**/É*", r"C:\Work\App\école", false, true),
         ] {
@@ -850,9 +885,7 @@ mod tests {
             None => text.is_empty(),
             Some(('*', rest)) => (0..=text.len()).any(|taken| reference(rest, &text[taken..])),
             Some(('?', rest)) => !text.is_empty() && reference(rest, &text[1..]),
-            Some((literal, rest)) => {
-                text.first() == Some(literal) && reference(rest, &text[1..])
-            }
+            Some((literal, rest)) => text.first() == Some(literal) && reference(rest, &text[1..]),
         }
     }
 
@@ -911,8 +944,12 @@ mod tests {
             workspace: &workspace,
             home: None,
         };
-        let names = ["src", "Src", "SRC", "main.rs", "Main.RS", ".env", ".ENV", "é", "É"];
-        let patterns = ["src", "Src", "*", "**", "*.rs", "*.RS", ".env", "?", "É", "[a-z]*"];
+        let names = [
+            "src", "Src", "SRC", "main.rs", "Main.RS", ".env", ".ENV", "é", "É",
+        ];
+        let patterns = [
+            "src", "Src", "*", "**", "*.rs", "*.RS", ".env", "?", "É", "[a-z]*",
+        ];
         cases::check(
             "folded_glob_is_a_superset",
             1500,
@@ -935,6 +972,190 @@ mod tests {
                 let exact = PathGlob::compile(pattern, anchors, Case::Exact)?.matches(&path);
                 let folded = PathGlob::compile(pattern, anchors, Case::Folded)?.matches(&path);
                 ensure!(!exact || folded, "exact matches and folded does not");
+                Ok(())
+            },
+        );
+    }
+
+    /// The cases `globset` documents for its syntax, where this matcher has
+    /// the same syntax: `globset` with `literal_separator` on, which is how
+    /// `cortex-tools` uses it for `list` and `search`. This crate may not
+    /// link `globset` (`docs/architecture/01-workspace.md`, rule 5), so the
+    /// cases are written out here.
+    #[test]
+    fn the_cases_globset_documents_hold_here_too() {
+        for (pattern, path, expected) in [
+            // `?` matches any single character, and not a separator.
+            ("/a?c", "/abc", true),
+            ("/a?c", "/ac", false),
+            ("/a?c", "/a/c", false),
+            // `*` matches zero or more characters, and not a separator.
+            ("/*.rs", "/main.rs", true),
+            ("/*.rs", "/.rs", true),
+            ("/*.rs", "/src/main.rs", false),
+            ("/a*", "/a", true),
+            ("/a*b", "/ab", true),
+            ("/a*b", "/axxb", true),
+            ("/a*b", "/a/b", false),
+            ("/*", "/a/b", false),
+            // `**/` at the start matches in any directory, the top included.
+            ("**/foo", "/foo", true),
+            ("**/foo", "/a/foo", true),
+            ("**/foo", "/a/b/foo", true),
+            ("**/foo", "/foo/bar", false),
+            ("**/foo", "/afoo", false),
+            // `/**/` matches zero or more directories.
+            ("/a/**/b", "/a/b", true),
+            ("/a/**/b", "/a/x/b", true),
+            ("/a/**/b", "/a/x/y/b", true),
+            ("/a/**/b", "/a/xb", false),
+            ("/a/**/b", "/ab", false),
+            // `/**` at the end matches everything inside.
+            ("/foo/**", "/foo/a", true),
+            ("/foo/**", "/foo/a/b", true),
+            ("/foo/**", "/foobar/a", false),
+            // Sets and their negation, and ranges.
+            ("/[ab]c", "/ac", true),
+            ("/[ab]c", "/bc", true),
+            ("/[ab]c", "/cc", false),
+            ("/[!ab]c", "/cc", true),
+            ("/[!ab]c", "/ac", false),
+            ("/[0-9]x", "/5x", true),
+            ("/[0-9]x", "/ax", false),
+            ("/[a-cx-z]", "/y", true),
+            ("/[a-cx-z]", "/m", false),
+            // A set of one writes a special character itself.
+            ("/[*]", "/*", true),
+            ("/[*]", "/a", false),
+            ("/[?]", "/?", true),
+            ("/[[]", "/[", true),
+            ("/[]]", "/]", true),
+            ("/a[]]b", "/a]b", true),
+            // Alternatives, the empty one included.
+            ("/{a,b}", "/a", true),
+            ("/{a,b}", "/b", true),
+            ("/{a,b}", "/c", false),
+            ("/*.{rs,toml}", "/Cargo.toml", true),
+            ("/*.{rs,toml}", "/Cargo.lock", false),
+            ("/a{,b}", "/a", true),
+            ("/a{,b}", "/ab", true),
+            ("/{a/b,c}/d", "/a/b/d", true),
+            ("/{a/b,c}/d", "/c/d", true),
+        ] {
+            assert_eq!(
+                glob(pattern).matches(&posix(path)),
+                expected,
+                "{pattern:?} on {path:?}"
+            );
+        }
+        // Where this matcher differs from `globset`, on purpose:
+        // - `dir/**` matches `dir` itself here, so that a rule on a tree
+        //   covers a listing of its top;
+        // - there is no backslash escape: a set of one does that;
+        // - alternatives may nest.
+        assert!(glob("/foo/**").matches(&posix("/foo")));
+        assert!(glob("/{a,{b,c}d}").matches(&posix("/cd")));
+    }
+
+    /// A matcher written as directly as the rules read, character by
+    /// character over the whole path, with nothing in common with the one
+    /// under test but the rules.
+    fn path_reference(pattern: &[char], text: &[char], at_boundary: bool) -> bool {
+        // `**` as a whole name.
+        if at_boundary && pattern.starts_with(&['*', '*']) {
+            match pattern.get(2) {
+                // At the end: everything that is left.
+                None => return true,
+                Some('/') => {
+                    let rest = &pattern[3..];
+                    // No directory at all, or any number of them.
+                    if path_reference(rest, text, true) {
+                        return true;
+                    }
+                    return (0..text.len())
+                        .filter(|&index| text[index] == '/')
+                        .any(|index| path_reference(rest, &text[index + 1..], true));
+                }
+                Some(_) => {}
+            }
+        }
+        // `/**` at the end also matches the directory itself, however many
+        // times it is written.
+        if text.is_empty()
+            && !pattern.is_empty()
+            && pattern.chunks(3).all(|chunk| chunk == ['/', '*', '*'])
+        {
+            return true;
+        }
+        let Some((&first, rest)) = pattern.split_first() else {
+            return text.is_empty();
+        };
+        // A name is never empty: `/*` does not match `/`.
+        if at_boundary && text.first().is_none_or(|&c| c == '/') {
+            return false;
+        }
+        match first {
+            '*' => {
+                path_reference(rest, text, false)
+                    || (text.first().is_some_and(|&c| c != '/')
+                        && path_reference(pattern, &text[1..], false))
+            }
+            '?' => {
+                text.first().is_some_and(|&c| c != '/') && path_reference(rest, &text[1..], false)
+            }
+            '[' => {
+                let close = rest.iter().position(|&c| c == ']').expect("a closed set");
+                let (members, after) = (&rest[..close], &rest[close + 1..]);
+                let (negated, members) = match members.split_first() {
+                    Some(('!', others)) => (true, others),
+                    _ => (false, members),
+                };
+                text.first()
+                    .is_some_and(|&c| c != '/' && members.contains(&c) != negated)
+                    && path_reference(after, &text[1..], false)
+            }
+            literal => {
+                text.first() == Some(&literal) && path_reference(rest, &text[1..], literal == '/')
+            }
+        }
+    }
+
+    #[test]
+    fn a_path_glob_agrees_with_a_matcher_written_from_the_rules() {
+        let names = [
+            "a", "b", "ab", "*", "?", "**", "[ab]", "[!a]", "a*", "*b", "?b", "a?",
+        ];
+        let files = ["a", "b", "ab", "ba", "aab", "c"];
+        cases::check(
+            "path_glob_matches_reference",
+            4000,
+            |rng| {
+                let pattern: Vec<&str> = (0..1 + rng.below(4))
+                    .map(|_| *cases::pick(rng, &names))
+                    .collect();
+                let path: Vec<&str> = (0..rng.below(5))
+                    .map(|_| *cases::pick(rng, &files))
+                    .collect();
+                (
+                    format!("/{}", pattern.join("/")),
+                    format!("/{}", path.join("/")),
+                )
+            },
+            |(pattern, path)| {
+                let workspace = posix("/w");
+                let anchors = Anchors {
+                    workspace: &workspace,
+                    home: None,
+                };
+                let Ok(compiled) = PathGlob::compile(pattern, anchors, Case::Exact) else {
+                    // More `**` than the matcher takes.
+                    return Ok(());
+                };
+                let got = compiled.matches(&posix(path));
+                let pattern: Vec<char> = pattern.chars().skip(1).collect();
+                let text: Vec<char> = path.chars().skip(1).collect();
+                let expected = path_reference(&pattern, &text, true);
+                ensure!(got == expected, "got {got}, the reference says {expected}");
                 Ok(())
             },
         );

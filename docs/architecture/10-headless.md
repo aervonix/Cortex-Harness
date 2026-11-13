@@ -81,7 +81,7 @@ Every line is flushed when written, so a consumer can follow along.
 Nothing can be asked in headless mode. A tool call that would need approval is denied, the model is told, and the call is listed in `permission_denials`.
 
 - The run continues after a denial: the model may find another way.
-- If the run ends without completing the task because of denials, the outcome is still what the model's last message makes it. Exit code 6 is used only when a denial makes the run stop (for example the model's only action was refused and it ended its turn with an error), or when `--fail-on-denial` is set, which turns the first denial into a failure.
+- If the run ends without completing the task because of denials, the outcome is still what the model's last message makes it. Exit code 6 is used only when a denial makes the run stop (for example the model's only action was refused and it ended its turn with an error), or when `--fail-on-denial` is set, which turns the first denial into a failure: the policy then answers "stop the turn here", and the turn ends with the outcome `denied` once every call of the round has its result ([03-agent-loop.md](03-agent-loop.md), "Tool rounds").
 - Pre-approve with `--allow` rules, with configuration, or with a permission mode. `--permission-mode unrestricted` approves everything and is meant for disposable environments.
 
 ## Exit codes

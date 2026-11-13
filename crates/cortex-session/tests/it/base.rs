@@ -242,7 +242,11 @@ fn the_gate_alone_decides_what_is_kept() {
         .filter(|omitted| omitted.reason == OmitReason::Protected)
         .map(|omitted| omitted.path.as_str())
         .collect();
-    assert_eq!(protected, ["notes.txt", "notes.txt"], "tracked, then untracked");
+    assert_eq!(
+        protected,
+        ["notes.txt", "notes.txt"],
+        "tracked, then untracked"
+    );
     assert!(
         !session
             .store()

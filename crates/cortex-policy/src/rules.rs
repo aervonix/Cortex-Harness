@@ -344,9 +344,9 @@ impl RuleSet {
                 Effect::Ext => NamePattern::parse(pattern)
                     .map(Matcher::Tool)
                     .map_err(|error| error.problem),
-                Effect::Unknown(effect) => Err(format!(
-                    "this version does not know the effect `{effect}`"
-                )),
+                Effect::Unknown(effect) => {
+                    Err(format!("this version does not know the effect `{effect}`"))
+                }
             };
             match matcher {
                 Ok(matcher) => compiled.push(Compiled { rule, matcher }),
@@ -476,9 +476,9 @@ impl RuleSet {
     /// its full name, `source/tool`.
     #[must_use]
     pub fn ext(&self, tool: &str) -> Option<Hit<'_>> {
-        self.strongest(|compiled| {
-            matches!(&compiled.matcher, Matcher::Tool(pattern) if pattern.matches(tool))
-        })
+        self.strongest(
+            |compiled| matches!(&compiled.matcher, Matcher::Tool(pattern) if pattern.matches(tool)),
+        )
     }
 }
 

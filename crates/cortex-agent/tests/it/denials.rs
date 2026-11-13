@@ -59,8 +59,10 @@ fn a_stop_from_the_policy_ends_the_turn_denied_with_a_result_for_every_call() {
     ]);
     let world = World::new("stop_decided", [response, says("Next."), says("Unused.")]);
     let rig = Setup::new(&world).start(&world);
-    rig.policy
-        .decide_for("shell", stop("nobody can be asked, and the run stops at a denial"));
+    rig.policy.decide_for(
+        "shell",
+        stop("nobody can be asked, and the run stops at a denial"),
+    );
     world.run(async {
         rig.prompt("go");
         rig.events.turns(1).await;
@@ -85,7 +87,11 @@ fn a_stop_from_the_policy_ends_the_turn_denied_with_a_result_for_every_call() {
     assert!(text(&results[1]).contains("the turn was stopped"));
     assert!(text(&results[1]).contains("nobody can be asked"));
     assert_eq!(results[2].outcome, ToolOutcome::Interrupted);
-    assert!(text(&results[2]).contains("did not run"), "{}", text(&results[2]));
+    assert!(
+        text(&results[2]).contains("did not run"),
+        "{}",
+        text(&results[2])
+    );
     // Neither the refused command nor the write after it ran.
     assert_eq!(world.log.count("start shell deploy"), 0);
     assert_eq!(world.log.count("start write b"), 0);
@@ -119,10 +125,18 @@ fn a_plain_denial_is_a_result_and_the_round_goes_on() {
         rig.events.turns(1).await;
     });
     assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Completed);
-    assert_eq!(world.provider.requests().len(), 2, "the model was told, and went on");
+    assert_eq!(
+        world.provider.requests().len(),
+        2,
+        "the model was told, and went on"
+    );
     let results = results(&rig);
     assert_eq!(results[0].outcome, ToolOutcome::Denied);
-    assert_eq!(results[1].outcome, ToolOutcome::Success, "the write still ran");
+    assert_eq!(
+        results[1].outcome,
+        ToolOutcome::Success,
+        "the write still ran"
+    );
 }
 
 #[test]
@@ -166,7 +180,8 @@ fn a_stop_withdraws_the_question_that_was_open() {
     let world = World::new("stop_withdraws", [response, says("Unused.")]);
     let rig = Setup::new(&world).start(&world);
     rig.policy.decide_for("write", Decision::Ask);
-    rig.policy.decide_for("shell", stop("the session stops at a denial"));
+    rig.policy
+        .decide_for("shell", stop("the session stops at a denial"));
     // The question about the write stays open: nobody opens its gate.
     rig.policy.wait_at(&world.gates);
     world.run(async {
@@ -176,7 +191,11 @@ fn a_stop_withdraws_the_question_that_was_open() {
     assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Denied);
     let results = results(&rig);
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].outcome, ToolOutcome::Interrupted, "never answered");
+    assert_eq!(
+        results[0].outcome,
+        ToolOutcome::Interrupted,
+        "never answered"
+    );
     assert_eq!(results[1].outcome, ToolOutcome::Denied);
     assert!(world.log.lines().is_empty(), "nothing ran");
     // The question was put, or was never put: either way none is left open
@@ -198,7 +217,8 @@ fn a_stop_while_the_response_is_arriving_lets_nothing_more_start() {
         .end(StopReason::ToolCalls);
     let world = World::new("stop_streaming", [response, says("Unused.")]);
     let rig = Setup::new(&world).start(&world);
-    rig.policy.decide_for("shell", stop("stop at the first denial"));
+    rig.policy
+        .decide_for("shell", stop("stop at the first denial"));
     world.run(async {
         rig.prompt("go");
         rig.policy.decisions(1).await;
@@ -245,7 +265,11 @@ fn prompts_queued_behind_a_denied_turn_are_held() {
         rig.events.turns(1).await;
         settle().await;
     });
-    assert_eq!(rig.events.ends().len(), 1, "the queued prompt did not start");
+    assert_eq!(
+        rig.events.ends().len(),
+        1,
+        "the queued prompt did not start"
+    );
     assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Denied);
     assert_eq!(rig.handle.state().queue_length, 1, "it is kept");
     assert_eq!(world.provider.requests().len(), 1);
@@ -291,7 +315,11 @@ fn a_command_marked_read_only_still_waits_for_the_write_before_it() {
         rig.prompt("go");
         world.log.has("start write a").await;
         settle().await;
-        assert_eq!(world.log.count("start shell cat"), 0, "it waits for the write");
+        assert_eq!(
+            world.log.count("start shell cat"),
+            0,
+            "it waits for the write"
+        );
         world.gates.open("write");
         rig.events.turns(1).await;
     });

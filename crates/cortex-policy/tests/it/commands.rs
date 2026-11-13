@@ -22,7 +22,10 @@ fn the_command_table_at_the_default_level() {
         ("ls -la src", ReadOnly),
         ("cat README.md", ReadOnly),
         ("cat src/main.rs | head -20", ReadOnly),
-        ("grep -rn TODO src | sort | uniq -c | sort -rn | head -5", ReadOnly),
+        (
+            "grep -rn TODO src | sort | uniq -c | sort -rn | head -5",
+            ReadOnly,
+        ),
         ("rg -n 'fn main' crates", ReadOnly),
         ("find . -name '*.rs' -type f", ReadOnly),
         ("wc -l src/main.rs && pwd", ReadOnly),
@@ -140,7 +143,12 @@ fn the_command_table_at_the_default_level() {
     let engine = engine();
     for (command, expected) in table {
         let outcome = shell(&engine, command);
-        assert_eq!(said(&outcome), *expected, "{command:?}: {}", reason(&outcome));
+        assert_eq!(
+            said(&outcome),
+            *expected,
+            "{command:?}: {}",
+            reason(&outcome)
+        );
     }
 }
 
@@ -219,7 +227,12 @@ fn the_command_table_with_rules() {
     ];
     for (command, expected) in table {
         let outcome = shell(&engine, command);
-        assert_eq!(said(&outcome), *expected, "{command:?}: {}", reason(&outcome));
+        assert_eq!(
+            said(&outcome),
+            *expected,
+            "{command:?}: {}",
+            reason(&outcome)
+        );
     }
 }
 
@@ -227,17 +240,32 @@ fn the_command_table_with_rules() {
 fn a_denial_and_a_question_say_why() {
     let engine = with_rules(vec![user(Effect::Exec, "rm *", RuleAction::Deny)]);
     let denied = reason(&shell(&engine, "rm -rf x"));
-    assert!(denied.contains("`deny exec rm *` from your configuration"), "{denied}");
+    assert!(
+        denied.contains("`deny exec rm *` from your configuration"),
+        "{denied}"
+    );
 
     let asked = reason(&shell(&engine, "cargo build"));
-    assert!(asked.contains("`cargo build` is not on a safe list"), "{asked}");
+    assert!(
+        asked.contains("`cargo build` is not on a safe list"),
+        "{asked}"
+    );
     let asked = reason(&shell(&engine, "cat $(id)"));
-    assert!(asked.contains("`$`") && asked.contains("does not model"), "{asked}");
+    assert!(
+        asked.contains("`$`") && asked.contains("does not model"),
+        "{asked}"
+    );
     let asked = reason(&shell(&engine, "cat /etc/passwd"));
-    assert!(asked.contains("`/etc/passwd`") && asked.contains("outside the workspace"), "{asked}");
+    assert!(
+        asked.contains("`/etc/passwd`") && asked.contains("outside the workspace"),
+        "{asked}"
+    );
     let asked = reason(&shell(&engine, "cat .env"));
     assert!(asked.contains("holds secrets"), "{asked}");
-    let asked = reason(&shell(&engine, "cat ~/.config/cortex-harness/credentials.toml"));
+    let asked = reason(&shell(
+        &engine,
+        "cat ~/.config/cortex-harness/credentials.toml",
+    ));
     assert!(asked.contains("built-in rule"), "{asked}");
     let asked = reason(&shell(&engine, "cd src; ls"));
     assert!(asked.contains("cannot follow"), "{asked}");
@@ -259,7 +287,10 @@ fn a_question_about_a_command_offers_the_rule_an_approval_would_add() {
             .collect()
     };
     assert_eq!(lifts("cargo build --release"), ["exec cargo build *"]);
-    assert_eq!(lifts("npm run build && npm test"), ["exec npm run *", "exec npm test *"]);
+    assert_eq!(
+        lifts("npm run build && npm test"),
+        ["exec npm run *", "exec npm test *"]
+    );
     assert_eq!(lifts("ls && make -j8"), ["exec make *"]);
     assert_eq!(lifts("sudo apt list"), ["exec sudo apt list"]);
     // A glob takes `ls` off the table of commands that only read. A rule
@@ -277,7 +308,11 @@ fn a_question_about_a_command_offers_the_rule_an_approval_would_add() {
         "cargo build && echo $HOME",
     ] {
         let question = question(shell(&engine, command));
-        assert!(question.lifts.is_empty(), "{command:?}: {:?}", question.lifts);
+        assert!(
+            question.lifts.is_empty(),
+            "{command:?}: {:?}",
+            question.lifts
+        );
         assert_eq!(question.choices().len(), 2, "{command:?}");
     }
 }
@@ -291,7 +326,7 @@ fn a_command_run_outside_the_workspace_is_asked_about() {
     assert_eq!(said(&shell_in(&engine, "ls", "/tmp")), Ask);
     assert_eq!(said(&shell_in(&engine, "make", "/work/app/sub")), Allow);
     assert_eq!(said(&shell_in(&engine, "make", "/srv/other")), Ask);
-    assert_eq!(said(&shell_in(&engine, "make", "/home/dev")), Ask);
+    assert_eq!(said(&shell_in(&engine, "make", "/users/dev")), Ask);
     // The session's own temporary directory is inside the scope.
     assert_eq!(said(&shell_in(&engine, "make", "/tmp/cortex-s1")), Allow);
 }
@@ -301,7 +336,12 @@ fn a_command_run_outside_the_workspace_is_asked_about() {
 #[test]
 fn git_is_asked_about_in_a_project_that_is_not_trusted() {
     let untrusted = engine_with(|parts| parts.trusted = false);
-    for command in ["git status", "git diff", "git log --oneline", "ls && git status"] {
+    for command in [
+        "git status",
+        "git diff",
+        "git log --oneline",
+        "ls && git status",
+    ] {
         assert_eq!(said(&shell(&untrusted, command)), Ask, "{command:?}");
     }
     assert_eq!(said(&shell(&untrusted, "ls -la")), ReadOnly);
@@ -326,9 +366,17 @@ fn a_projects_command_rules_tighten_at_once_and_loosen_only_with_trust() {
     });
     assert_eq!(said(&shell(&untrusted, "make deploy")), Ask);
     assert_eq!(said(&shell(&untrusted, "cargo build")), Ask);
-    assert_eq!(said(&shell(&untrusted, "cargo test")), Allow, "the user's own rule");
+    assert_eq!(
+        said(&shell(&untrusted, "cargo test")),
+        Allow,
+        "the user's own rule"
+    );
     assert_eq!(said(&shell(&untrusted, "cargo publish")), Deny);
-    let withheld: Vec<String> = untrusted.withheld().iter().map(|rule| rule.show()).collect();
+    let withheld: Vec<String> = untrusted
+        .withheld()
+        .iter()
+        .map(|rule| rule.show())
+        .collect();
     assert_eq!(withheld, ["allow exec make deploy", "allow exec cargo *"]);
 
     let trusted = engine_with(|parts| parts.rules = rules());
@@ -402,7 +450,12 @@ fn the_command_table_for_powershell() {
     ];
     for (command, expected) in table {
         let outcome = shell(&engine, command);
-        assert_eq!(said(&outcome), *expected, "{command:?}: {}", reason(&outcome));
+        assert_eq!(
+            said(&outcome),
+            *expected,
+            "{command:?}: {}",
+            reason(&outcome)
+        );
     }
 }
 

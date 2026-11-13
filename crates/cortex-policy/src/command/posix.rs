@@ -219,9 +219,9 @@ impl Reader<'_> {
             }
             '$' => refuse("`$`: a variable or another expansion"),
             '`' => refuse("a back-tick: command substitution"),
-            '(' | ')' => refuse(
-                "`(` or `)`: a subshell, a function, process substitution or an array",
-            ),
+            '(' | ')' => {
+                refuse("`(` or `)`: a subshell, a function, process substitution or an array")
+            }
             '{' | '}' => refuse("`{` or `}`: brace expansion or a group of commands"),
             '\\' => refuse("a backslash outside quotes: an escape or a line continuation"),
             '#' => refuse("`#`: a comment"),
@@ -501,7 +501,13 @@ mod tests {
         );
         assert_eq!(
             modelled("a | b || c ; d\ne"),
-            ["First: [a]", "Pipe: [b]", "Or: [c]", "Then: [d]", "Then: [e]"]
+            [
+                "First: [a]",
+                "Pipe: [b]",
+                "Or: [c]",
+                "Then: [d]",
+                "Then: [e]"
+            ]
         );
         // Blank lines, a trailing `;` and spaces around operators.
         assert_eq!(
@@ -512,7 +518,11 @@ mod tests {
         // A list goes on after a line break that follows its operator.
         assert_eq!(
             modelled("cargo build &&\n  cargo test |\n\n tail -3"),
-            ["First: [cargo] [build]", "And: [cargo] [test]", "Pipe: [tail] [-3]"]
+            [
+                "First: [cargo] [build]",
+                "And: [cargo] [test]",
+                "Pipe: [tail] [-3]"
+            ]
         );
         assert_eq!(
             modelled("grep -rn --include=*.rs foo src/"),
@@ -523,7 +533,10 @@ mod tests {
 
     #[test]
     fn quotes_are_taken_off_and_what_is_inside_is_literal() {
-        assert_eq!(modelled("echo 'a b' \"c d\""), ["First: [echo] [a b] [c d]"]);
+        assert_eq!(
+            modelled("echo 'a b' \"c d\""),
+            ["First: [echo] [a b] [c d]"]
+        );
         assert_eq!(modelled("echo ''"), ["First: [echo] []"]);
         assert_eq!(modelled("echo a'b'\"c\"d"), ["First: [echo] [abcd]"]);
         // Everything is literal in single quotes, the characters that are
@@ -559,7 +572,10 @@ mod tests {
         );
         assert_eq!(modelled("ls ~"), ["First: [ls] [~](home)"]);
         assert_eq!(modelled("ls ~/notes"), ["First: [ls] [~/notes](home)"]);
-        assert_eq!(modelled("ls ~;pwd"), ["First: [ls] [~](home)", "Then: [pwd]"]);
+        assert_eq!(
+            modelled("ls ~;pwd"),
+            ["First: [ls] [~](home)", "Then: [pwd]"]
+        );
         // Inside a word a `~` is itself.
         assert_eq!(
             modelled("git diff HEAD~1 a~ b~/c"),
@@ -569,7 +585,10 @@ mod tests {
 
     #[test]
     fn redirections_are_read_with_their_files() {
-        assert_eq!(modelled("echo hi > out.txt"), ["First: [echo] [hi] >[out.txt]"]);
+        assert_eq!(
+            modelled("echo hi > out.txt"),
+            ["First: [echo] [hi] >[out.txt]"]
+        );
         assert_eq!(modelled("echo hi>>log"), ["First: [echo] [hi] >>[log]"]);
         assert_eq!(modelled("sort < in.txt"), ["First: [sort] <[in.txt]"]);
         assert_eq!(modelled("make 2>&1"), ["First: [make] dup"]);
@@ -764,7 +783,10 @@ mod tests {
     /// The same word is a command in one place and an argument in another.
     #[test]
     fn a_keyword_is_only_refused_where_a_command_is_expected() {
-        assert_eq!(modelled("echo if then eval"), ["First: [echo] [if] [then] [eval]"]);
+        assert_eq!(
+            modelled("echo if then eval"),
+            ["First: [echo] [if] [then] [eval]"]
+        );
         assert_eq!(modelled("git stash pop"), ["First: [git] [stash] [pop]"]);
         assert_eq!(modelled("echo a=b"), ["First: [echo] [a=b]"]);
         assert!(parts("ls | eval x").is_err());
@@ -854,7 +876,10 @@ mod tests {
                         1 => *cases::pick(rng, &['é', '\u{a0}', '\u{2028}', '“', '–', '𝒳']),
                         _ => *cases::pick(
                             rng,
-                            &['a', ' ', '\'', '"', '|', '&', ';', '>', '<', '~', '*', '2', '-', '\n'],
+                            &[
+                                'a', ' ', '\'', '"', '|', '&', ';', '>', '<', '~', '*', '2', '-',
+                                '\n',
+                            ],
                         ),
                     })
                     .collect::<String>()

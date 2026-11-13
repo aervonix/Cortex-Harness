@@ -2,9 +2,7 @@
 //! build plan names for step 12.
 
 use cortex_base::{Rng, SeededRng};
-use cortex_protocol::lease::{
-    Effect, OutOfScopeStop, SpendingStop, VerificationFailedStop,
-};
+use cortex_protocol::lease::{Effect, OutOfScopeStop, SpendingStop, VerificationFailedStop};
 use cortex_testkit::cases::{self, Outcome, ensure};
 
 use super::*;
@@ -83,18 +81,33 @@ fn a_child_takes_the_lower_level_and_never_unrestricted() {
     let supervised = lease("l_parent", Level::Supervised);
     let autonomous = lease("l_child", Level::Autonomous);
     let unrestricted = lease("l_x", Level::Unrestricted);
-    assert_eq!(narrow(&supervised, &autonomous).grant.level, Level::Supervised);
-    assert_eq!(narrow(&autonomous, &supervised).grant.level, Level::Supervised);
+    assert_eq!(
+        narrow(&supervised, &autonomous).grant.level,
+        Level::Supervised
+    );
+    assert_eq!(
+        narrow(&autonomous, &supervised).grant.level,
+        Level::Supervised
+    );
     // `unrestricted` is not passed down, even by a parent that holds it.
     assert_eq!(
         narrow(&unrestricted, &unrestricted).grant.level,
         Level::Autonomous
     );
-    assert_eq!(narrow(&unrestricted, &supervised).grant.level, Level::Supervised);
+    assert_eq!(
+        narrow(&unrestricted, &supervised).grant.level,
+        Level::Supervised
+    );
     // A level nobody knows grants nothing, and stays.
     let unknown = lease("l_u", Level::Unknown("omnipotent".to_owned()));
-    assert_eq!(narrow(&supervised, &unknown).grant.level, unknown.grant.level);
-    assert_eq!(narrow(&unknown, &supervised).grant.level, unknown.grant.level);
+    assert_eq!(
+        narrow(&supervised, &unknown).grant.level,
+        unknown.grant.level
+    );
+    assert_eq!(
+        narrow(&unknown, &supervised).grant.level,
+        unknown.grant.level
+    );
 }
 
 #[test]
@@ -120,7 +133,12 @@ fn deny_and_ask_rules_are_carried_over_and_an_allow_needs_the_parents() {
     let narrower = rule(Effect::Exec, "cargo build --release", RuleAction::Allow);
 
     let mut parent = lease("l_parent", Level::Supervised);
-    parent.grant.rules = vec![deny.clone(), ask.clone(), shared.clone(), parents_own.clone()];
+    parent.grant.rules = vec![
+        deny.clone(),
+        ask.clone(),
+        shared.clone(),
+        parents_own.clone(),
+    ];
     let mut requested = lease("l_child", Level::Supervised);
     requested.grant.rules = vec![
         shared.clone(),
@@ -157,7 +175,10 @@ fn writable_roots_are_intersected_and_protected_paths_joined() {
     // `/work/app` is inside the proposal's `/work`, and the proposal's
     // `/work/app/src` is inside the parent's `/work/app`. `/srv/other` and
     // `/tmp/session` are in one only. A root that is not a path is dropped.
-    assert_eq!(child.grant.sandbox.write, set(&["/work/app", "/work/app/src"]));
+    assert_eq!(
+        child.grant.sandbox.write,
+        set(&["/work/app", "/work/app/src"])
+    );
     assert_eq!(child.grant.sandbox.read, set(&["/work"]));
     assert_eq!(
         child.grant.sandbox.protect,
@@ -168,10 +189,19 @@ fn writable_roots_are_intersected_and_protected_paths_joined() {
     // Everything writable, narrowed, is the other's roots.
     let mut open = lease("l_open", Level::Supervised);
     open.grant.sandbox.write = everything();
-    assert_eq!(narrow(&open, &parent).grant.sandbox.write, parent.grant.sandbox.write);
-    assert_eq!(narrow(&parent, &open).grant.sandbox.write, parent.grant.sandbox.write);
+    assert_eq!(
+        narrow(&open, &parent).grant.sandbox.write,
+        parent.grant.sandbox.write
+    );
+    assert_eq!(
+        narrow(&parent, &open).grant.sandbox.write,
+        parent.grant.sandbox.write
+    );
     assert_eq!(narrow(&open, &open).grant.sandbox.write, everything());
-    assert!(!within(&open, &parent), "everything is not inside two roots");
+    assert!(
+        !within(&open, &parent),
+        "everything is not inside two roots"
+    );
 
     // A child that stops protecting a path is not within.
     let mut unprotected = child.clone();
@@ -219,15 +249,17 @@ fn the_network_is_on_only_when_both_have_it_on() {
 
 #[test]
 fn models_are_those_both_name_and_none_in_common_is_refused() {
-    let models = |names: &[&str]| -> Vec<ModelId> {
-        names.iter().map(|name| ModelId::new(*name)).collect()
-    };
+    let models =
+        |names: &[&str]| -> Vec<ModelId> { names.iter().map(|name| ModelId::new(*name)).collect() };
     let mut parent = lease("l_parent", Level::Supervised);
     parent.grant.models = models(&["a", "b"]);
     let mut requested = lease("l_child", Level::Supervised);
 
     // The proposal names none: the parent's.
-    assert_eq!(narrow(&parent, &requested).grant.models, models(&["a", "b"]));
+    assert_eq!(
+        narrow(&parent, &requested).grant.models,
+        models(&["a", "b"])
+    );
     requested.grant.models = models(&["b", "c"]);
     assert_eq!(narrow(&parent, &requested).grant.models, models(&["b"]));
     // The parent names none: the proposal's.
@@ -296,7 +328,10 @@ fn budgets_and_hard_limits_take_the_smaller() {
         usd_nanos: Some(250_000_000),
         ..parent.grant.budget.clone()
     });
-    assert_eq!(narrow(&left, &requested).grant.budget.usd_nanos, Some(250_000_000));
+    assert_eq!(
+        narrow(&left, &requested).grant.budget.usd_nanos,
+        Some(250_000_000)
+    );
     // No limit is not within a limit.
     let unlimited = lease("l_free", Level::Supervised);
     assert!(!within(&unlimited, &parent));
@@ -328,11 +363,18 @@ fn a_child_ends_no_later_than_either() {
         lease.expires = expires;
         lease
     };
-    let time_stop = |text: &str| StopCondition::Time(TimeStop {
-        at: Timestamp::new(text),
-    });
+    let time_stop = |text: &str| {
+        StopCondition::Time(TimeStop {
+            at: Timestamp::new(text),
+        })
+    };
     let cases: Vec<(Expiry, Expiry, Expiry, Vec<StopCondition>)> = vec![
-        (ends(ExpiryKind::Never), ends(ExpiryKind::Never), ends(ExpiryKind::Never), vec![]),
+        (
+            ends(ExpiryKind::Never),
+            ends(ExpiryKind::Never),
+            ends(ExpiryKind::Never),
+            vec![],
+        ),
         (ends(ExpiryKind::Never), at(late), at(late), vec![]),
         (at(late), at(early), at(early), vec![]),
         (at(early), at(late), at(early), vec![]),
@@ -402,7 +444,10 @@ fn a_time_nobody_can_read_has_already_passed() {
     for unreadable in [&broken, &missing] {
         assert!(within(unreadable, &real));
         assert!(!within(&real, unreadable));
-        assert_eq!(narrow(&real, unreadable).expires, unreadable_expiry(unreadable));
+        assert_eq!(
+            narrow(&real, unreadable).expires,
+            unreadable_expiry(unreadable)
+        );
     }
 }
 
@@ -481,7 +526,11 @@ fn the_standing_lease_lasts_the_session_and_is_the_users() {
         .is_ok()
     );
     assert_eq!(
-        standing_lease(LeaseId::new("l_4"), terms(Level::Guided), SandboxState::Enforcing),
+        standing_lease(
+            LeaseId::new("l_4"),
+            terms(Level::Guided),
+            SandboxState::Enforcing
+        ),
         Err(LevelError::GuidedNotAvailable)
     );
     assert!(standing_lease(LeaseId::new("l_5"), terms(Level::Unrestricted), off).is_ok());
@@ -510,7 +559,9 @@ fn any_path_set(rng: &mut SeededRng) -> PathSet {
     if rng.below(5) == 0 {
         return everything();
     }
-    let roots: Vec<&str> = (0..rng.below(4)).map(|_| *cases::pick(rng, &ROOTS)).collect();
+    let roots: Vec<&str> = (0..rng.below(4))
+        .map(|_| *cases::pick(rng, &ROOTS))
+        .collect();
     set(&roots)
 }
 
@@ -593,7 +644,11 @@ fn any_lease(rng: &mut SeededRng, id: &str) -> Lease {
                     NetworkAccess::Full
                 },
             },
-            models: if rng.below(3) == 0 { Vec::new() } else { models },
+            models: if rng.below(3) == 0 {
+                Vec::new()
+            } else {
+                models
+            },
             budget: Budget {
                 usd_nanos: any_limit(rng),
                 tokens: any_limit(rng),
@@ -617,11 +672,23 @@ fn any_lease(rng: &mut SeededRng, id: &str) -> Lease {
 /// The paths a property asks about: each root, something under it, and
 /// places no root covers.
 fn probes() -> Vec<AbsPath> {
-    ["/", "/work", "/work/app", "/work/app/src", "/work/app/src/x.rs", "/work/app/tests/t.rs",
-     "/work/other", "/tmp/session/a", "/tmp", "/srv/data/d", "/srv", "/etc/passwd"]
-        .into_iter()
-        .map(|path| AbsPath::parse(path, POSIX).unwrap())
-        .collect()
+    [
+        "/",
+        "/work",
+        "/work/app",
+        "/work/app/src",
+        "/work/app/src/x.rs",
+        "/work/app/tests/t.rs",
+        "/work/other",
+        "/tmp/session/a",
+        "/tmp",
+        "/srv/data/d",
+        "/srv",
+        "/etc/passwd",
+    ]
+    .into_iter()
+    .map(|path| AbsPath::parse(path, POSIX).unwrap())
+    .collect()
 }
 
 /// What a narrowed lease may not exceed, stated field by field and without
@@ -636,7 +703,10 @@ fn never_wider(child: &Lease, parent: &Lease) -> Outcome {
         (Some(_), None) => return Err("a known level under an unknown one".into()),
         (None, _) => {}
     }
-    ensure!(ours.level != Level::Unrestricted, "`unrestricted` was passed down");
+    ensure!(
+        ours.level != Level::Unrestricted,
+        "`unrestricted` was passed down"
+    );
     // Rules.
     for rule in &theirs.rules {
         ensure!(
@@ -654,7 +724,8 @@ fn never_wider(child: &Lease, parent: &Lease) -> Outcome {
     // and nothing the parent protects that the child does not.
     for path in probes() {
         ensure!(
-            !covers(&ours.sandbox.write, &path, POSIX) || covers(&theirs.sandbox.write, &path, POSIX),
+            !covers(&ours.sandbox.write, &path, POSIX)
+                || covers(&theirs.sandbox.write, &path, POSIX),
             "{path} became writable"
         );
         ensure!(
@@ -690,7 +761,11 @@ fn never_wider(child: &Lease, parent: &Lease) -> Outcome {
         (ours.budget.usd_nanos, theirs.budget.usd_nanos, "money"),
         (ours.budget.tokens, theirs.budget.tokens, "tokens"),
         (ours.budget.requests, theirs.budget.requests, "requests"),
-        (ours.budget.wall_clock_ms, theirs.budget.wall_clock_ms, "time"),
+        (
+            ours.budget.wall_clock_ms,
+            theirs.budget.wall_clock_ms,
+            "time",
+        ),
         (
             ours.limits.team_size.map(u64::from),
             theirs.limits.team_size.map(u64::from),
@@ -711,7 +786,10 @@ fn never_wider(child: &Lease, parent: &Lease) -> Outcome {
     );
     // Stop conditions and expiry.
     for condition in &parent.stop_when {
-        ensure!(child.stop_when.contains(condition), "{condition:?} was dropped");
+        ensure!(
+            child.stop_when.contains(condition),
+            "{condition:?} was dropped"
+        );
     }
     ensure!(
         event_rank(child.expires.kind) >= event_rank(parent.expires.kind),
@@ -748,7 +826,10 @@ fn narrow_is_always_within_both_inputs() {
                 );
                 return Ok(());
             };
-            ensure!(is_within_in(&child, parent, POSIX), "not within its parent: {child:?}");
+            ensure!(
+                is_within_in(&child, parent, POSIX),
+                "not within its parent: {child:?}"
+            );
             ensure!(
                 is_within_in(&child, requested, POSIX),
                 "not within the proposal: {child:?}"
@@ -779,7 +860,10 @@ fn a_narrowed_lease_never_has_a_higher_level_a_later_expiry_or_a_larger_budget()
                 (child.grant.budget.usd_nanos, parent.grant.budget.usd_nanos),
                 (child.grant.budget.tokens, parent.grant.budget.tokens),
                 (child.grant.budget.requests, parent.grant.budget.requests),
-                (child.grant.budget.wall_clock_ms, parent.grant.budget.wall_clock_ms),
+                (
+                    child.grant.budget.wall_clock_ms,
+                    parent.grant.budget.wall_clock_ms,
+                ),
             ] {
                 ensure!(no_more(child_limit, parent_limit), "a budget grew");
             }
@@ -806,7 +890,10 @@ fn no_sequence_of_narrowing_widens_a_lease() {
                 let Ok(next) = narrow_in(&current, proposal, POSIX) else {
                     continue;
                 };
-                ensure!(is_within_in(&next, &current, POSIX), "wider than the one before");
+                ensure!(
+                    is_within_in(&next, &current, POSIX),
+                    "wider than the one before"
+                );
                 ensure!(is_within_in(&next, root, POSIX), "wider than the first");
                 never_wider(&next, &current)?;
                 never_wider(&next, root)?;
@@ -841,9 +928,10 @@ fn within_is_transitive_and_agrees_with_the_field_by_field_check() {
             let top = any_lease(rng, "l_top");
             // Leases made by narrowing are within each other often enough
             // to exercise the cases that matter.
-            let middle = narrow_in(&top, &any_lease(rng, "l_mid"), POSIX).unwrap_or_else(|_| top.clone());
-            let bottom =
-                narrow_in(&middle, &any_lease(rng, "l_low"), POSIX).unwrap_or_else(|_| middle.clone());
+            let middle =
+                narrow_in(&top, &any_lease(rng, "l_mid"), POSIX).unwrap_or_else(|_| top.clone());
+            let bottom = narrow_in(&middle, &any_lease(rng, "l_low"), POSIX)
+                .unwrap_or_else(|_| middle.clone());
             // Sometimes break the chain, so that "not within" is seen too.
             let stray = any_lease(rng, "l_stray");
             match rng.below(4) {

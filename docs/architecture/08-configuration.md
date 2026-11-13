@@ -204,7 +204,8 @@ A repository must not be able to take over the harness by containing a configura
 - **A limit can be tightened by anyone and loosened by the user alone.** A project's limit applies when it is lower than the one in effect, or when there was none. A higher one is ignored, trusted or not: a budget is the user's.
 - **Joining a list is not a way in.** The entries a project adds to a joined list are judged one by one: its `allow` rules and its writable paths wait for trust, and the user's entries stay.
 - **What is held back is listed.** A load returns every project setting that is waiting for trust, with its class, its value and the line it is on, so a front end can show exactly what trusting the project would turn on.
-- **Trust is an input.** `cortex-config` is told whether the project is trusted. The trust store, and the hashes that pin what was trusted, are `cortex-policy`'s.
+- **Trust is an input.** `cortex-config` is told whether the project is trusted. The trust store, and the hashes that pin what was trusted, are `cortex-policy`'s (built in step 12: [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md), "Project trust"). A project counts as trusted for its allow rules only while those rules are the ones the user approved: the core asks the trust store with the rules the project's files hold now, and passes the answer here and to the engine.
+- **The engine checks again.** Every rule reaches the permission engine with the layer it came from, and the engine sets a project's allow rules aside itself when it is told the project is not trusted. Holding them back here keeps them out of `cortex config show`; holding them back there is what enforces it.
 - **The rules apply to both project files and to a profile a project defines.** The user's own layers, the environment and the command line are not subject to them.
 
 The class of every key is part of the schema. A test snapshots the whole table, so a new key cannot arrive without a reviewer reading its class, and another checks the classes this page names.
@@ -287,11 +288,11 @@ Separate from configuration, in the state directory (`$XDG_STATE_HOME/cortex-har
 
 | File | Holds |
 |---|---|
-| `trust.toml` | Trusted projects and the hashes of what was trusted. |
+| `trust.toml` | Trusted projects and the hashes of what was trusted. `cortex-policy`'s: one `[[project]]` table per project, read strictly, so that a file this build does not understand in full trusts nothing. |
 | `projects/<project key>/knowledge.toml` | What the harness has learned about a project ([14-adaptation.md](14-adaptation.md)). |
 | `projects/<project key>/index/` | The repository-map cache ([15-efficiency.md](15-efficiency.md)). |
 | `stats/` | Local statistics ([14-adaptation.md](14-adaptation.md)). |
-| `approvals/<project key>.toml` | "Always allow in this project" rules. |
+| `approvals/<project key>.toml` | "Always allow in this project" rules. `cortex-policy`'s: one `[[approval]]` table per rule, read strictly, and only ever an allow. |
 | `catalog-overlay.toml` | Results of `cortex models refresh`, in the catalog file's own form: a `version` and `[[model]]` tables. |
 | `history` | Prompt history for the editor, per project. |
 | `logs/` | Log files and crash reports. |

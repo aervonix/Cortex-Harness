@@ -36,23 +36,50 @@ use super::{Joiner, NotModelled, Part, Word};
 /// The words PowerShell reads as part of its language when they stand where
 /// a command is expected. Compared without regard to case.
 pub const KEYWORDS: [&str; 38] = [
-    "begin", "break", "catch", "class", "continue", "data", "define", "do", "dynamicparam",
-    "else", "elseif", "end", "enum", "exit", "filter", "finally", "for", "foreach", "from",
-    "function", "hidden", "if", "in", "inlinescript", "parallel", "param", "process", "return",
-    "sequence", "static", "switch", "throw", "trap", "try", "until", "using", "var", "while",
+    "begin",
+    "break",
+    "catch",
+    "class",
+    "continue",
+    "data",
+    "define",
+    "do",
+    "dynamicparam",
+    "else",
+    "elseif",
+    "end",
+    "enum",
+    "exit",
+    "filter",
+    "finally",
+    "for",
+    "foreach",
+    "from",
+    "function",
+    "hidden",
+    "if",
+    "in",
+    "inlinescript",
+    "parallel",
+    "param",
+    "process",
+    "return",
+    "sequence",
+    "static",
+    "switch",
+    "throw",
+    "trap",
+    "try",
+    "until",
+    "using",
+    "var",
+    "while",
 ];
 
 /// Commands that start another shell or run text as code. A line with one
 /// is not modelled, whatever its arguments: `powershell -EncodedCommand …`
 /// is the plainest way to hide a command from a rule.
-pub const RUNS_TEXT: [&str; 6] = [
-    "powershell",
-    "pwsh",
-    "cmd",
-    "invoke-expression",
-    "iex",
-    ".",
-];
+pub const RUNS_TEXT: [&str; 6] = ["powershell", "pwsh", "cmd", "invoke-expression", "iex", "."];
 
 /// The quote characters PowerShell reads as `'` or `"` besides the ASCII
 /// ones.
@@ -183,9 +210,7 @@ fn bare(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Result<Word, No
             '$' => return refuse("`$`: a variable or a sub-expression"),
             '`' => return refuse("a back-tick: PowerShell's escape character"),
             '(' | ')' | '{' | '}' | '[' | ']' => {
-                return refuse(
-                    "a bracket: a sub-expression, a script block, a type or an index",
-                );
+                return refuse("a bracket: a sub-expression, a script block, a type or an index");
             }
             '<' | '>' => return refuse("`<` or `>`: a redirection"),
             '@' | ',' => return refuse("`@` or `,`: splatting or an array"),
@@ -225,7 +250,10 @@ fn check_command_word(word: &Word) -> Result<(), NotModelled> {
     }
     let text = word.text.as_str();
     let is_path = text.starts_with("./") || text.starts_with(".\\");
-    let starts_as_name = text.chars().next().is_some_and(|first| first.is_ascii_alphabetic());
+    let starts_as_name = text
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic());
     if text != "." && !is_path && !starts_as_name {
         return refuse(
             "a command that does not begin with a letter: PowerShell reads it as an expression \
@@ -308,11 +336,17 @@ mod tests {
             words("echo '$env:PATH `n ; | & ( ) { } @ , % # é'"),
             ["echo", "$env:PATH `n ; | & ( ) { } @ , % # é"]
         );
-        assert_eq!(words("echo \"; | & ( ) { } @ , % #\""), ["echo", "; | & ( ) { } @ , % #"]);
+        assert_eq!(
+            words("echo \"; | & ( ) { } @ , % #\""),
+            ["echo", "; | & ( ) { } @ , % #"]
+        );
         assert_eq!(words("ls *.rs"), ["ls", "*.rs(glob)"]);
         assert_eq!(words(r"ls ~\notes"), ["ls", r"~\notes(home)"]);
         assert_eq!(words("ls ~"), ["ls", "~(home)"]);
-        assert_eq!(words("Get-Content -Path:README.md"), ["Get-Content", "-Path:README.md"]);
+        assert_eq!(
+            words("Get-Content -Path:README.md"),
+            ["Get-Content", "-Path:README.md"]
+        );
     }
 
     /// Everything else is asked about.
@@ -435,8 +469,36 @@ mod tests {
     }
 
     const PIECES: [&str; 30] = [
-        "ls", "Get-Content", "git", "-Path", "src", " ", " ", " ", "'q'", "\"d\"", "*", "~", ";",
-        "|", "&", "$", "`", "(", ")", "{", "}", "[", "@", ",", "%", ">", "\n", "'", "\"", "x",
+        "ls",
+        "Get-Content",
+        "git",
+        "-Path",
+        "src",
+        " ",
+        " ",
+        " ",
+        "'q'",
+        "\"d\"",
+        "*",
+        "~",
+        ";",
+        "|",
+        "&",
+        "$",
+        "`",
+        "(",
+        ")",
+        "{",
+        "}",
+        "[",
+        "@",
+        ",",
+        "%",
+        ">",
+        "\n",
+        "'",
+        "\"",
+        "x",
     ];
 
     /// A modelled line is one command, and outside its quotes it holds none
@@ -477,8 +539,20 @@ mod tests {
                         None => ensure!(
                             !matches!(
                                 character,
-                                ';' | '|' | '&' | '$' | '`' | '(' | ')' | '{' | '}' | '[' | '@'
-                                    | ',' | '%' | '>' | '\n'
+                                ';' | '|'
+                                    | '&'
+                                    | '$'
+                                    | '`'
+                                    | '('
+                                    | ')'
+                                    | '{'
+                                    | '}'
+                                    | '['
+                                    | '@'
+                                    | ','
+                                    | '%'
+                                    | '>'
+                                    | '\n'
                             ),
                             "{character:?} outside quotes"
                         ),

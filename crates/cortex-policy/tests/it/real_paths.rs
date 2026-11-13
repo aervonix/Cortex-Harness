@@ -131,11 +131,19 @@ mod unix {
             ("echo x > dangling", Ask),
         ] {
             let outcome = run(&engine, &resolver, command);
-            assert_eq!(said(&outcome), expected, "{command:?}: {}", reason(&outcome));
+            assert_eq!(
+                said(&outcome),
+                expected,
+                "{command:?}: {}",
+                reason(&outcome)
+            );
         }
         let why = reason(&run(&engine, &resolver, "cat link.txt"));
         assert!(why.contains("outside the workspace"), "{why}");
-        assert!(why.contains("outside/secret.txt"), "the real location is named: {why}");
+        assert!(
+            why.contains("outside/secret.txt"),
+            "the real location is named: {why}"
+        );
 
         // `..` after a link is the parent of where the link leads.
         let outcome = run(&engine, &resolver, "cat dirlink/../ws/src/main.rs");
@@ -161,11 +169,22 @@ mod unix {
             RuleSource::User,
         );
         let (engine, resolver) = real_engine(&ws, ShellSyntax::Posix, vec![deny, allow_cp]);
-        assert_eq!(said(&run(&engine, &resolver, "cp src/main.rs copy.rs")), Allow);
-        for command in ["cp link.txt copy.txt", "cp dirlink/secret.txt copy.txt", "cat link.txt"] {
+        assert_eq!(
+            said(&run(&engine, &resolver, "cp src/main.rs copy.rs")),
+            Allow
+        );
+        for command in [
+            "cp link.txt copy.txt",
+            "cp dirlink/secret.txt copy.txt",
+            "cat link.txt",
+        ] {
             let outcome = run(&engine, &resolver, command);
             assert_eq!(said(&outcome), Ask, "{command:?}");
-            assert!(reason(&outcome).contains("deny read"), "{}", reason(&outcome));
+            assert!(
+                reason(&outcome).contains("deny read"),
+                "{}",
+                reason(&outcome)
+            );
         }
     }
 
@@ -237,7 +256,10 @@ mod windows {
             ("get-content SRC/MAIN.RS -TotalCount 3".to_owned(), ReadOnly),
             ("type README.md".to_owned(), ReadOnly),
             ("cat readme.MD".to_owned(), ReadOnly),
-            ("Select-String -Pattern hello -Path README.md".to_owned(), ReadOnly),
+            (
+                "Select-String -Pattern hello -Path README.md".to_owned(),
+                ReadOnly,
+            ),
             ("Test-Path Cargo.toml".to_owned(), ReadOnly),
             ("git status".to_owned(), ReadOnly),
             ("cargo test".to_owned(), Allow),
@@ -288,7 +310,12 @@ mod windows {
         ];
         for (command, expected) in &table {
             let outcome = run(&engine, &resolver, command);
-            assert_eq!(said(&outcome), *expected, "{command:?}: {}", reason(&outcome));
+            assert_eq!(
+                said(&outcome),
+                *expected,
+                "{command:?}: {}",
+                reason(&outcome)
+            );
         }
     }
 
@@ -333,7 +360,12 @@ mod windows {
             ("FORMAT.COM C:", Deny),
         ] {
             let outcome = run(&engine, &resolver, command);
-            assert_eq!(said(&outcome), expected, "{command:?}: {}", reason(&outcome));
+            assert_eq!(
+                said(&outcome),
+                expected,
+                "{command:?}: {}",
+                reason(&outcome)
+            );
         }
         let why = reason(&run(&engine, &resolver, "dir"));
         assert!(why.contains("not analysed"), "{why}");
@@ -365,7 +397,11 @@ mod windows {
         let stored = notes.join("Todo.md");
         let stored = stored.to_str().unwrap();
         // However the command spells the path, it is the stored file.
-        for spelling in [stored.to_owned(), stored.to_lowercase(), stored.to_uppercase()] {
+        for spelling in [
+            stored.to_owned(),
+            stored.to_lowercase(),
+            stored.to_uppercase(),
+        ] {
             let outcome = run(&engine, &resolver, &format!("Get-Content {spelling}"));
             assert_eq!(said(&outcome), ReadOnly, "{spelling}: {}", reason(&outcome));
         }
@@ -424,17 +460,35 @@ mod windows {
         };
         let mine = resolver.resolve("mine.txt").unwrap();
         assert!(mine.is_inside_workspace());
-        assert_eq!(decide(Access::Write { path: mine.abs().clone() }), Allow);
+        assert_eq!(
+            decide(Access::Write {
+                path: mine.abs().clone()
+            }),
+            Allow
+        );
 
         let theirs = parent.join("app").join("theirs.txt");
         let theirs = resolver.resolve(theirs.to_str().unwrap()).unwrap();
         assert!(!theirs.is_inside_workspace());
         assert!(theirs.abs().as_str().ends_with("/sensitive/app/theirs.txt"));
         // Not in the scope, and not granted by the allow for `App`.
-        assert_eq!(decide(Access::Write { path: theirs.abs().clone() }), Ask);
-        assert_eq!(decide(Access::Read { path: theirs.abs().clone() }), Ask);
+        assert_eq!(
+            decide(Access::Write {
+                path: theirs.abs().clone()
+            }),
+            Ask
+        );
+        assert_eq!(
+            decide(Access::Read {
+                path: theirs.abs().clone()
+            }),
+            Ask
+        );
         let outcome = run(&engine, &resolver, r"Get-Content ..\app\theirs.txt");
         assert_eq!(said(&outcome), Ask, "{}", reason(&outcome));
-        assert_eq!(said(&run(&engine, &resolver, "Get-Content mine.txt")), ReadOnly);
+        assert_eq!(
+            said(&run(&engine, &resolver, "Get-Content mine.txt")),
+            ReadOnly
+        );
     }
 }

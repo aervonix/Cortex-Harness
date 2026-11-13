@@ -392,7 +392,10 @@ fn an_exact_prefix_tells_two_casings_apart_and_folds_only_the_root() {
     let other_case = abs(r"C:\Work\app\src\main.rs", Windows);
     // Folded, both are under the base. Exactly, only the first is.
     assert!(inside.starts_with(&base) && other_case.starts_with(&base));
-    assert!(inside.starts_with_exactly(&base), "the drive letter is folded");
+    assert!(
+        inside.starts_with_exactly(&base),
+        "the drive letter is folded"
+    );
     assert!(!other_case.starts_with_exactly(&base));
     assert!(base.starts_with_exactly(&base));
     assert!(!base.starts_with_exactly(&inside));

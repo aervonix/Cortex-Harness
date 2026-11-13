@@ -51,6 +51,24 @@ A level says who decides when no rule has already settled the question: the **ho
 - **The decisions a team adds** (the plan, starting Employees, merging, spending past a threshold) follow the same ladder. Their rows are in [17-coordinator.md](17-coordinator.md).
 - A front end that cannot ask (headless without pre-approval) treats "supervisor" as "refused" and says so in the result.
 
+**As built in step 12** (`cortex-policy`, `level`). The table is one function, `decider(level, matter)`, with a column for each kind of thing to decide, and a test holds it against the rows above.
+
+| Level | Read | Read beyond the scope | Edit | Write beyond the scope | Read-only command | Safe command that may write | Other command | Network from a tool |
+|---|---|---|---|---|---|---|---|---|
+| `read-only` | holder | supervisor | refused | refused | holder | supervisor | supervisor | supervisor |
+| `supervised` | holder | supervisor | holder | supervisor | holder | holder | supervisor | supervisor |
+| `guided` | holder | supervisor | holder | supervisor | holder | holder | supervisor | supervisor |
+| `autonomous` | holder | supervisor | holder | supervisor | holder | holder | holder | supervisor |
+| `unrestricted` | holder | holder | holder | holder | holder | holder | holder | holder |
+
+- **The scope of a standing lease is its writable roots:** the workspace and the session's private temporary directory, plus `sandbox.write`. A read or an edit under one of them is inside the scope. The sandbox's `read` set is not asked: it says what a child process may read, and a file tool's read outside the workspace asks ([05-tools.md](05-tools.md), "Paths").
+- **Three things are beyond the scope wherever they are.** A path outside the writable roots. A write to a protected path (`.git/hooks`, `.git/config`, `.cortex/`, shell start-up files, `sandbox.protect`): whoever can write one can run code later. And a file that looks like a secret, read or written ("Files that look like secrets", below).
+- **A level that refuses is final.** At `read-only` a write does not happen, whatever a rule allows. Rules settle what a level leaves open; they do not open what it closes.
+- **A rule still holds at the levels that ask least.** A `deny` is a denial at `unrestricted`, and an `ask` is a question.
+- **`guided` reads like `supervised` in this table** because the kinds of command a guided lease names are allow rules of that lease, and rules are settled before the level is asked. It cannot be chosen until task leases exist (step 37).
+- **Where the sandbox does not enforce,** `autonomous` is refused when the session starts, with the reason and what to use instead (the error code `sandbox_required`), and every other level shows one line, "sandbox: off", that says what follows: commands on a safe list run without asking, every other command asks first, and one that is approved runs with the user's full rights. Until step 26 builds the sandbox, that is every session.
+- **A level this build does not know decides nothing:** every matter is refused, and a session cannot be started at it.
+
 ### Leases
 
 Everything a session is allowed to do is one value.
@@ -73,11 +91,12 @@ pub struct Grant {
     pub limits: HardLimits,             // what no level relaxes
 }
 
-impl Lease {
+// `LeaseExt`, in `cortex-policy`: the lease type is the protocol's.
+impl LeaseExt for Lease {
     /// The widest lease inside both. Never wider than `self`.
-    pub fn narrow(&self, requested: &Lease) -> Lease;
+    fn narrow(&self, requested: &Lease) -> Result<Lease, NarrowError>;
     /// True if everything `self` permits, `parent` permits too.
-    pub fn is_within(&self, parent: &Lease) -> bool;
+    fn is_within(&self, parent: &Lease) -> bool;
 }
 ```
 
@@ -98,6 +117,16 @@ There are three kinds of lease, and they are the same type.
 - The status line shows the level and, for a task lease, what remains of its time and budget. `/lease` shows the full terms.
 - Property tests check that `narrow` always returns a lease within both inputs, and that no sequence of narrowing widens anything.
 - **A lease that is not understood in full is refused whole.** The wire form of a lease, a grant, a rule, a sandbox policy, a budget, the hard limits and a stop condition rejects any field and any value it does not know, with the error code `lease_not_understood`. Elsewhere the protocol ignores what it does not know; here that would let a build that predates a restriction drop it, and hold a wider lease than was granted ([decision 0028](../decisions/0028-enforced-values-fail-closed.md)).
+
+**As built in step 12** (`cortex-policy`, `lease`). The lease type is the protocol's, so `narrow` and `is_within` are an extension trait on it, `LeaseExt`, and the engine adds no other way to read a lease.
+
+- **`narrow` returns a result.** One pair of leases has no lease inside both: a proposal that names models, under a parent that names models, with none in common. An empty list means "the configured models", which would be wider, so that pair is refused (`NarrowError::NoModelInCommon`) and nothing else is.
+- **`unrestricted` is never handed on.** The child's level is the lower of the two and at most `autonomous`.
+- **An allow rule is kept only when the parent has the same rule,** by its effect and its pattern as text. A child that asks for `cargo test *` under a parent that allows `cargo *` does not get the rule: deciding that one pattern lies inside another is where a mistake would widen a lease, so it is not attempted. A proposal names the parent's rules it wants.
+- **Roots are compared exactly.** A writable root reaches only folders spelled as it is, so that on Windows it never reaches a folder that differs only in case.
+- **An expiry that cannot be ordered becomes a stop condition.** A lease that ends "at the end of the session" and one that ends "at noon" cannot be put in order ahead of time. The child's expiry is the event, and the moment is added as a `time` stop condition, which the harness enforces the same way. A time nobody can read is taken to have passed.
+- **Budgets are narrowed as written.** To cap a child by what the parent has left, the caller narrows a copy of the parent's lease whose budget is the remainder (`with_budget`).
+- **Rule patterns are relative to each session's own workspace.** A parent's `deny write secrets/**`, carried to a child in another worktree, protects that worktree's `secrets/`. The Coordinator step checks that this is what a team wants.
 
 **In the first release:** the types, the standing lease, the levels `read-only`, `supervised`, `autonomous` and `unrestricted`, and `narrow` with its tests. Settings profiles, headless flags and the non-interactive policy of runs all compile to leases. **After it:** task leases and the `guided` level (one build step), then team leases with the Coordinator, which is built on that step. See the [build plan](../build-plan.md).
 
@@ -127,6 +156,69 @@ action = "allow"
 - **Layers.** Managed rules cannot be weakened by user rules, and user rules cannot be weakened by project rules. A project's rules can add `deny` and `ask`. A project's `allow` rules take effect only if the user has trusted the project and are shown at that time.
 - **Built-in deny rules** protect the harness's own files and credentials: the configuration directory, credential storage, and session logs of other projects.
 
+### Rules as built
+
+Built in step 12 (`cortex-policy`, `rules` and `glob`).
+
+**Patterns.**
+
+| Effect | The pattern is | Examples |
+|---|---|---|
+| `read`, `write` | A path glob. | `**/.env*`, `src/**`, `~/notes/**`, `*.lock` |
+| `exec` | Words, each a pattern for one word of the command. A last word that is `*` alone stands for any further words. | `cargo test *`, `git status`, `npm run test:*` |
+| `network` | A host, compared in lower case. | `docs.rs`, `*.example.com` |
+| `ext` | A tool's full name. | `docs/find`, `docs/*` |
+
+In every pattern `*` is any run of characters, `?` any one, and `[abc]`, `[a-z]`, `[!a-z]` a set. In a path glob `*` and `?` stay inside one name, `**` as a whole name is any number of names, and `{a,b}` is either. There is no escape character: a special character is written as a set of one, `[*]`. The matcher is our own (about 300 lines), because only `cortex-tools` may link the search libraries ([01-workspace.md](01-workspace.md)); it is tested against the cases `globset` documents and against a reference matcher.
+
+**Where a path glob is anchored.**
+
+| Written | Read as |
+|---|---|
+| `/etc/**`, `C:\Tools\**`, `\\server\share\**` | An absolute path. On Windows `\` and `/` both separate. |
+| `~/notes/**` | Under the home directory. |
+| `**/.env` | Anywhere, in the workspace or outside it. |
+| `src/**`, `docs/*.md` | With a separator: under the workspace root. |
+| `*.lock`, `Cargo.toml` | With none: that name at any depth in the workspace. |
+
+A pattern that ends in `/**`, or in a separator, matches the directory itself as well as what is in it, so that a rule on a tree covers a listing of its top.
+
+**A rule that holds back is matched as widely as it can be, and a rule that allows as narrowly.**
+
+- **Case, on Windows.** A `deny` or an `ask` matches a path without regard to case, and also exactly. An `allow` matches exactly, against the resolved path, which is in the file system's own spelling. So no spelling gets round a deny. And an allow for `App` never grants `app`, which is another folder in a directory marked case-sensitive. Since every path is resolved before it is matched, an allow works however the *path* was typed; it is the *rule* that must spell the folder as it is stored, and one that does not simply does not match. A drive letter, and a share's server and name, have no case on disk and are always folded.
+- **Commands.** An `allow` matches one whole simple command of a line the analysis models, from its first word: `git status` allows `git status` and not `git status --short`, and a rule for `git` does not allow `./git` or `/tmp/git`. In PowerShell, which finds commands without regard to case, the program's name is compared that way and `git.exe` is `git`. A `deny` or an `ask` matches wherever its words appear in the raw line, one after another: `rm *` matches `sudo rm -rf x`, `echo x; rm y`, `bash -c 'rm y'` and `/bin/rm y`. It matches too much on purpose, and it is the only match there is for a line that could not be analysed.
+- **A call that cannot say which host it reaches** meets every rule that holds back, and is allowed only by an allow for every host (`*`).
+
+**Who wrote a rule.** Each rule reaches the engine with its source: the managed configuration, the user's, the command line, the project's, the project's learned commands, a stored approval, a session approval, or a lease. An `allow` from the project or from its learned commands is set aside until the user has trusted the project, and the set-aside rules are kept for a front end to show. The configuration loader already holds such rules back ([08-configuration.md](08-configuration.md)); the engine applies the same rule again where rules are enforced, so that nothing upstream has to be right for it to hold. Layers need no rank beyond that: a managed `deny` stands whatever a user rule allows, because `deny` beats `allow` whoever wrote them.
+
+**A rule that cannot be compiled refuses the whole set,** and the session does not start: a rule that is skipped could be the one that denies.
+
+**The built-in protection** is not a list of rules but a part of every rule set that nobody wrote and nobody can remove. It denies, so no allow and no level lifts it.
+
+| Closed | To |
+|---|---|
+| The configuration directory (credentials, configuration) | Reading and writing. |
+| The state directory (trust, stored approvals, what was learned) | Reading and writing. |
+| The data directory | Writing. |
+| The session directories of other projects | Reading. This project's own are outside the workspace, so reading one asks. |
+
+Closing the state directory to writing is what makes trust and approvals mean something: a model that could write `trust.toml` could trust its own project.
+
+### Files that look like secrets
+
+Reading or writing a file whose name says it is likely to hold a secret asks first, at every level short of `unrestricted`, wherever the file is.
+
+| Looks like a secret | Does not |
+|---|---|
+| `.env`, `.env.local`, `.env.production` | `.env.example`, `.env.sample`, `.env.template`, `.env.dist`, `.env.defaults` |
+| `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks` | `keys.rs`, `pem-files.md` |
+| `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ecdsa_sk`, `id_ed25519`, `id_ed25519_sk` | `id_rsa.pub`, `src/id_map.rs` |
+| `.netrc`, `_netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `.envrc` | |
+
+- **It is a default, not a rule,** and that is deliberate: `ask` beats `allow`, so as a built-in `ask` rule nothing a user wrote could lift it. As the default for such files it is what happens when no rule has settled the question. A user's `allow` lifts it (`allow read **/.env.test`). A project's `allow` lifts it only after trust. A `deny` closes the file for good.
+- **The same default decides what a session's base state may keep** ([07-sessions-and-context.md](07-sessions-and-context.md), "The base state"): the store keeps a file only if the engine would let the agent read it without asking. The session store has no list of names of its own.
+- The list is by name and short on purpose. An earlier list had `id_*`, and so held back `src/id_map.rs`.
+
 ## Shell command analysis
 
 Rules on commands are a convenience. They are useful only if they fail closed.
@@ -139,7 +231,56 @@ Rules on commands are a convenience. They are useful only if they fail closed.
 
 On Windows the same rules apply to PowerShell through a conservative tokenizer: one command, literal arguments, no script blocks, no invocation operators, no encoded commands. Anything else is "ask". `cmd.exe` syntax is not analysed at all.
 
-Which parser to use for the POSIX shell grammar is decided in the permissions build step, between a pure-Rust parser and a hand-written tokenizer. A C grammar is excluded by the dependency policy.
+### Command analysis as built
+
+Built in step 12 (`cortex-policy`, `command`). **The analysis is two hand-written tokenizers that accept a small listed subset and refuse everything else**, not a parser of a shell's grammar ([decision 0031](../decisions/0031-command-analysis-by-allow-list.md), with the measurements). A parser returns a tree for everything a shell accepts and leaves the refusing to its user; a tokenizer that lists what it accepts refuses what nobody thought of.
+
+**The POSIX subset** means the same in bash, dash, zsh and ksh.
+
+| Modelled | Not modelled, and so asked about |
+|---|---|
+| Simple commands joined by `\|`, `&&`, `\|\|`, `;` and line breaks | `&` (a background job), `\|&`, `;;` |
+| Words of letters, digits and `_ - . / : = + , @ %` | `$`, a back-tick, `( )`, `{ }` anywhere in a word, a backslash outside quotes, `#`, `!`, `^`, any other character |
+| Single quotes; double quotes with no `$` and no back-tick | A quote left open |
+| `~` and `~/…` for the home directory; a `~` inside a word (`HEAD~1`) | `~user`, `~+`, `~-`, a `~` after `=` or `:`, a word that begins with `=` (zsh's `=cmd`) |
+| Globs `*`, `?`, `[…]`: kept, and flagged | A glob where a command is expected: `[`, `[[` |
+| `< file`, `> file`, `>> file` with one digit before or none; `2>&1`, `>&2`, `>&-` | `<<`, `<<<`, `<>`, `>\|`, `&>`, `>&file`, `<(…)`, `>(…)`, several digits before a redirection (`20>f` is a descriptor to bash and an argument to dash) |
+| | `NAME=value` where a command is expected |
+| | A keyword (`if`, `for`, `time`, …) or a builtin that runs text as code or changes what later commands mean (`eval`, `exec`, `source`, `.`, `trap`, `command`, `alias`, `export`, `set`, `unset`, `shopt`, `pushd`, `exit`, …) as the command |
+
+**The PowerShell subset** is one command with literal arguments: words of ASCII letters, digits and `_ - . / \ : = +`; a whole word in single or double quotes, with no `$` and no back-tick in double quotes; `~` for the home directory; `*` and `?`, flagged. Everything else is asked about: `;`, `\|`, `&`, a line break, `$`, a back-tick, any bracket, `@`, `,`, `%`, `#`, `!`, `<`, `>`, a quote that is not a whole word, a parameter that ends with `:`, any character outside ASCII that is not inside quotes, a typographic quote anywhere (PowerShell reads `‘ ’` as `'` and `“ ”` as `"`, and several dashes as `-`), a keyword, and `powershell`, `pwsh`, `cmd`, `Invoke-Expression`, `iex` and `.` as the command, which is where an encoded command would be.
+
+**`cmd.exe` is not analysed, and neither is a shell this build does not know** (`fish`, `nu`): the shell tool starts any unknown program as if it read `-c <command>`, which is no reason to believe it reads the line like a POSIX shell. The engine is told the shell by its program's name (`ShellSyntax::of_program`).
+
+**What "not modelled" means.** No allow rule applies to the line and no safe list does. The level then decides it as any other command: asked about at `read-only`, `supervised` and `guided`, and run at `autonomous`, where the sandbox confines it. A `deny` or `ask` rule is still matched against the raw line. This is rule 2 above, stated for every level: the analysis never turns an unmodelled line into "allow", and it does not ask where the level would not.
+
+**How a modelled line is decided.**
+
+1. A `deny` or `ask` rule on the raw line or on any part is settled first.
+2. Each part must be allowed: by the table of read-only commands, or by an allow rule. A line is on a safe list only if every part is.
+3. **What a command names is checked as a read.** `cat` only reads, and `cat ~/.ssh/id_rsa` reads a private key. So every file a table command names, and the directory it runs in, is put to the same judgement a `read` call gets, and the command is safe only if each would be allowed unasked. Where a rule denies a named path, the command is asked about, not refused: an argument that reads like a protected file may be a search pattern (`grep .env README.md`), and nothing is lost by asking. For every other modelled command, an argument that names a path a rule denies or asks about, or one of the harness's own files, makes the command one to ask about, whatever allows the command.
+4. **`cd dir && …` is followed:** the parts after it are judged from the new directory. A `cd` whose effect cannot be known (in a pipeline, before `;` or `||`, with no argument or two) takes the line off every safe list.
+5. **A redirection is a write of its file,** or a read, judged as one: outside the scope it asks, to a protected path or a secret it asks, and where a rule denies it the line is refused, because a redirection is a write for certain. `/dev/null` is nothing.
+6. **A line whose every part only reads is marked read-only,** which is how the loop comes to run it beside other calls ([03-agent-loop.md](03-agent-loop.md)).
+
+The paths a command names are followed by the same resolver the file tools use, so a link in the workspace leads where the file system says. The analysis itself looks only at text.
+
+**The table of commands that only read.** A command is on it with its options, never as a whole.
+
+| Shell | On the table |
+|---|---|
+| POSIX | `ls`, `cat`, `head`, `tail`, `wc`, `grep`, `egrep`, `fgrep`, `rg`, `fd`, `fdfind`, `find`, `sort`, `uniq`, `stat`, `file`, `du`, `df`, `tree`, `readlink`, `realpath`, `basename`, `dirname`, `pwd`, `whoami`, `id`, `uname`, `hostname`, `which`, `true`, `false`, `echo`, `printf`, `test`, `date`, `sed` (only as `sed -n '<lines>p'`), and `git` with `status`, `diff`, `show`, `log`, `branch`, `tag`, `rev-parse`, `ls-files`, `blame`, `describe`, `grep`, `remote`, `stash list`, `version` |
+| PowerShell | `Get-ChildItem`, `Get-Content`, `Select-String`, `Test-Path`, `Resolve-Path`, `Get-Item`, `Get-Location`, `Get-Date`, `Write-Output`, `Write-Host`, `Get-FileHash` and their aliases (`gci`, `ls`, `dir`, `gc`, `cat`, `type`, `sls`, `pwd`, `echo`, …), `whoami`, `hostname`, `rg`, `fd`, and `git` as above |
+
+- **Each entry lists the options that are safe, by their exact names.** An option that is not listed takes the command off the table: `sort -o`, `find -delete` and `-exec` and `-fprint`, `git diff --output`, `git -c …`, `rg --pre`, `fd -x`, `tail -f`, `date -s`. So does an abbreviation of a long option, which GNU programs accept and the table does not, and a parameter of a PowerShell command that is not written out in full.
+- **A subcommand that can write is listed only in the form that cannot:** `git branch` and `git tag` with no name, `git stash list`, `git remote` with no subcommand.
+- **Programs that are languages are not on it:** `awk`, `perl`, `python`, `xargs`, `env`, `tee`, and `less` and `more`, whose keys run commands. `sed` is on it only to print lines, because its scripts can write files and run commands.
+- **No option that follows links is listed** (`grep -R`, `rg -L`, `find -L`, `ls -L`), and `diff` is not on the table, because it reads through the links inside the directories it compares. What a command names is checked name by name; what it finds by walking a tree must stay in the tree.
+- **A glob takes a command off the table.** The names it expands to can begin with a `-`, which the program then reads as an option.
+- **The program is named plainly:** `ls`, not `./ls` or `/tmp/ls`.
+- **`git` is on the table only in a trusted project.** A repository's own configuration can name programs that `git status` and `git diff` run ([../security.md](../security.md), section 2), and an untrusted repository can arrive with that configuration.
+
+**The tokenizers are compared with the shells themselves.** A test generates lines, keeps the ones the analysis models, and checks that bash and dash pass exactly the words the analysis gave, and that PowerShell's own parser reads the line as one command with those words. The comparison found, on its first run, that dash and bash disagree about `20<file`.
 
 Published bypasses of command allow-lists in other agent tools are summarised in the research notes. They are the reason for rule 2 and for treating this layer as convenience only.
 
@@ -161,6 +302,16 @@ When the answer is "ask", the core sends an approval request to the front end an
 
 An approval never outlives its scope. Session approvals are not saved. Stored approvals are listed and removed with `cortex permissions`.
 
+**As built in step 12** (`cortex-policy`, `approvals` and `engine`).
+
+- **What a choice would add is worked out before the question is put,** and travels with it, so a front end shows it in full: "always allow `cargo build *` in this project". For a command that is the program and its subcommand, with any further words: `cargo build *`, `npm run *`, `make *`. For a path, that one path. For a host, that host. For an extension's tool, that tool.
+- **A program that runs its arguments is approved line by line.** For `sudo`, `env`, `xargs`, `timeout`, `nohup`, a shell, an interpreter, `ssh`, `docker` and the like, the rule is the exact line, word for word: approving `sudo apt list` must not become "allow `sudo *`". Where the line cannot be written as a pattern (`bash -c 'rm -rf x'` has a word with a space), no rule is offered.
+- **Where no rule could say the approval safely, only "allow once" and "deny" are offered:** a line the analysis does not model, a question an `ask` rule raised (an allow would not lift it), a call that reaches "any host". Rules are offered only when they would settle every reason the call was asked about.
+- **An approval is only ever an allow, and only ever lifts a default.** A `deny` or an `ask` rule still beats it, and so does the built-in protection.
+- **Stored approvals are the user's own:** they are kept outside the repository and apply whether or not the project is trusted. The file is `approvals/<project key>.toml` in the state directory, one `[[approval]]` table per rule with its id, the time it was given and the rule. It is written owner-only and atomically on every write, and read strictly: a key this build does not know, a newer `version`, or an entry that does anything but allow, refuses the whole file, which then grants nothing and is not overwritten.
+- **An answer the server does not know is a denial,** as [decision 0028](../decisions/0028-enforced-values-fail-closed.md) says. A choice that was not on offer allows the one call and adds nothing.
+- Two sessions of one project that store an approval in the same instant can lose one of the two: the file is replaced whole, with no lock. The loss is of a convenience, and the next question restores it.
+
 **In the RPC protocol** an approval is a request from the server to the client ([11-rpc-protocol.md](11-rpc-protocol.md)). If no client answers within the configured time, the answer is deny.
 
 **When a session is supervised** by another session, its approval requests go to the supervisor first. The supervisor may answer only what its own lease covers, and passes the rest up to the user. A user attached to the session can always answer directly. See [17-coordinator.md](17-coordinator.md).
@@ -173,6 +324,23 @@ Opening a project for the first time asks one question before anything from the 
 - **Does not need trust:** project instruction files (`AGENTS.md`, `CLAUDE.md`), the shared project profile, custom command files and skills. They are text for the model. They cannot grant anything, and the injection risk they carry is covered in [../security.md](../security.md).
 - Trust is stored per canonical project path in the user's state directory, with a hash of the trusted definitions. If a hook, extension or MCP server definition changes, it is disabled until the user approves the change. This closes the "approved once, changed later" hole.
 - Headless and RPC modes cannot ask. They skip untrusted project resources and report that they did, unless a flag grants trust for the run.
+
+**As built in step 12** (`cortex-policy`, `trust`).
+
+- **A project is known by its key** ([07-sessions-and-context.md](07-sessions-and-context.md), "On-disk layout"), made from its resolved root in the case stored on disk. A folder that differs from a trusted one only in case is another project.
+- **A definition is a kind, a name and a hash** of everything that decides what it does: a hook's command and each argument, an extension's manifest and script, an MCP server's command, arguments and tool definitions. The parts are hashed with their lengths, so moving one character from an argument to the next is another definition.
+- **A project's allow rules are a definition too,** hashed together and without regard to their order. Rules that deny or ask need no trust and are left out of the hash, so a project can tighten its rules without being asked about again.
+- **A definition stands in one of four ways.**
+
+| Standing | Meaning | Used |
+|---|---|---|
+| Approved | Its hash is the one the user approved. | Yes. |
+| Changed | It was approved, and has changed since. | No, until the user approves the change. |
+| New | The project is trusted, and this was not among what the user saw. | No, until approved. |
+| Untrusted | The project is not trusted. | No. |
+
+- **The file is `trust.toml` in the state directory:** one `[[project]]` table per trusted project with its key, its root as it should be shown, the time, and a `[[project.pinned]]` table per definition. It is written owner-only and atomically, and read strictly: a key this build does not know or a newer `version` refuses the whole file, and then **nothing is trusted**.
+- **Nothing a tool does can write it.** The state directory is closed to every tool by the built-in protection, at every level.
 
 ## The sandbox
 
