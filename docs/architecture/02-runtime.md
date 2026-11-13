@@ -20,13 +20,14 @@
 **Event backpressure.** A slow consumer must not make the core hold unbounded memory or stall a model stream.
 
 - Text, reasoning and tool-output deltas for the same item are merged in the channel when the consumer is behind. The consumer then sees fewer, larger deltas.
-- If the channel is still full, the core drops deltas for that item and sends one `item.resync` event when room appears. The consumer then asks for the item's current content. Completed-item events are never dropped.
+- If the channel is still full, the core drops deltas for that item and queues one `item.resync` event in their place. The consumer then asks for the item's current content. Completed-item events are never dropped.
 - The in-process TUI drains the channel every frame and in practice never falls behind. The rule exists for RPC clients.
 
 **As built in step 13a** (`cortex-core`, `events`). The "channel" is one queue for each connected client, which the session's sink gives a copy of every event.
 
 - **Merging.** A delta is added to the delta at the end of the queue when both are of the same kind for the same item; anything queued between two deltas keeps them apart, so order is never changed. The merged delta carries the later `seq`.
-- **Dropping.** A delta that finds the queue full is dropped, and so is every later delta of that item until the item completes. The item is owed one `item.resync`, which is queued when there is room, with the `seq` of the delta that was first dropped. An item that completes while its resync is still owed gets none: `item.completed` has all of it.
+- **Dropping.** A delta that finds the queue full is dropped, and so is every later delta of that item until the item completes. One `item.resync` is queued in place of the first, with its `seq`. (It was first built to wait for room. A resync that waits is queued behind whole events that came after it, and the client then reads `seq` going backwards, so it is queued at once: it is one small event an item, as an item's other whole events are.)
+- **What a client reads is in the session's order.** Every event keeps the `seq` the session gave it, a merged delta has its last part's, and nothing is queued out of order. A jump in `seq` is a delta the client was not sent: one it did not ask for, one merged into its neighbour, or one dropped, and only the last is a loss, which `item.resync` says.
 - **Whole events are queued even when the queue is full.** They are few and each is bounded (a tool result is bounded when it is made), so the queue's size is a limit on deltas, not a hard cap. Closing a connection that cannot take them in time is the RPC server's rule (step 27).
 - **A client that did not declare `deltas` is sent none.**
 - **What an item in progress holds** is kept by the same sink, from the same deltas, and is what `session/read` returns for an item that has not completed.

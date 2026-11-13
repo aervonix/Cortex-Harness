@@ -199,7 +199,10 @@ As built in step 13a:
 - **`approval/request` gained two optional fields,** as agreed additions: `reasons`, why the call needs an answer, and `adds`, the rules that `allow_session` or `allow_project` would add. A front end shows them, so that "always allow" is never a blank cheque.
 - **`request.resolved` is an event of the session,** with a `seq` like any other, so every client of the session receives it, the one that answered included. A client drops the prompt whose id it names and ignores an id it does not have.
 - **Only a `user` client that was sent the request may answer it.** Any other answer is refused with `role_not_allowed`. A `supervisor` is sent none until task leases exist (step 37).
-- **An `observer` cannot change a session:** `turn/start`, `turn/interrupt`, `session/set`, `plan/update` and `permissions/revoke` from one are refused with `role_not_allowed`.
+- **An `observer` watches, and that is all.** It may open a session that is running, read it, and close its own view of it. Everything that starts, changes or ends something is refused with `role_not_allowed`: `session/new`, `session/open` of a session that is not running (which starts it), `session/fork`, `session/rewind`, `turn/start`, `turn/interrupt`, `session/set`, `plan/update`, `permissions/revoke` and `shutdown`.
+- **A `user` client that opens a session is sent the approval requests that are waiting,** under their ids, and may answer them.
+- **`session/set` is applied whole or not at all.** Each part is checked and made ready first; a request refused in any part (`unknown_model`, `unknown_effort`, `role_not_allowed`, no key for the new provider) has changed nothing. A reasoning level that is only carried over from the role's earlier model, and that the new model does not have, is left behind with a notice, where one that is asked for is refused.
+- **`session/rewind` and `turn/start` exclude each other.** A rewind is refused while a turn runs (`turn_running`), and a prompt sent while a rewind is under way is refused with `history_changing`, to be sent again.
 
 ## Events
 
@@ -211,7 +214,7 @@ All events arrive as one notification method.
    "item_id":"i_88","delta":{"kind":"text","text":"The build fails because"}}}
 ```
 
-`seq` increases by one per event per session. It is how a client detects a gap.
+`seq` increases by one per event per session, and a client reads the events it is sent in that order. A client is not sent every event: deltas it did not ask for are left out, deltas are merged while it is behind (a merged delta has the `seq` of its last part), and deltas are dropped when its queue is full. So a jump in `seq` is not by itself a loss. A loss of deltas is said by `item.resync`, which has the `seq` of the first delta dropped, and no whole event is ever dropped. After a reconnect, the `seq` of the last event a client saw is where `session/read` takes it up.
 
 | Type | Meaning |
 |---|---|
