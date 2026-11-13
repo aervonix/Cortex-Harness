@@ -9,3 +9,28 @@ find: listener: Some(kept)
 replace: listener: None
 caught-by:
     server::tests::the_port_stays_open_until_the_accepting_thread_has_ended
+
+# The two below break the rule that decides what a Windows Job Object's list
+# of members means. The function is built on every system so that these run
+# anywhere. The code that asks the job is Windows-only: the test that puts
+# the question the instant a command has exited
+# (`tree::sys_a_command_that_left_nothing_is_never_counted_itself`) is what
+# holds it, on a Windows runner.
+
+[break] the-command-is-counted-among-what-it-left
+rule: On Windows a job lists a command for a moment after its exit; the command is never one of the processes it left running.
+file: crates/cortex-sandbox/src/tree/mod.rs
+in: others_among
+find: **member != command && !has_exited(**member)
+replace: !has_exited(**member)
+caught-by:
+    tree::tests::the_command_itself_is_never_one_of_the_processes_it_left
+
+[break] an-exited-member-is-counted-as-left-running
+rule: A member of the job that has already exited is not a process the command left running.
+file: crates/cortex-sandbox/src/tree/mod.rs
+in: others_among
+find: **member != command && !has_exited(**member)
+replace: **member != command
+caught-by:
+    tree::tests::a_member_that_has_exited_is_not_left_running

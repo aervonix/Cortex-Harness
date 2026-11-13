@@ -142,9 +142,71 @@ fn sys_ending_a_tree_kills_what_the_command_left_running() {
         both[1].is_alive(),
         "what the command started outlives the command"
     );
+    assert_eq!(
+        tree.others_running().expect("count"),
+        1,
+        "the one it left is counted, and the command that exited is not"
+    );
 
     tree.end();
     assert!(both[1].gone_within(LIMIT), "it outlived the tree");
+}
+
+/// The same for a process the command left that has no console of its own
+/// (Windows) or ignores the polite signals (Linux): it is in the tree, it
+/// is counted, and the tree's end takes it.
+#[test]
+fn sys_a_detached_process_the_command_left_is_counted_and_killed() {
+    let roll = Roll::new();
+    let command = ChildSpec::new(&roll, "parent")
+        .exiting(0)
+        .with_child(ChildSpec::new(&roll, "detached").stubborn())
+        .command(ENTRY);
+    let tree = Tree::spawn(command, None).expect("start the command");
+    let both = roll.all(&["parent", "detached"], LIMIT);
+
+    assert_eq!(tree.wait().expect("wait"), Exit::Code(0));
+    assert!(both[0].gone_within(LIMIT));
+    assert_eq!(tree.others_running().expect("count"), 1);
+    assert!(both[1].is_alive());
+
+    tree.end();
+    assert!(both[1].gone_within(LIMIT), "it outlived the tree");
+}
+
+/// A command that exits and leaves nothing is never counted itself.
+///
+/// On Windows a Job Object goes on listing a process for a moment after
+/// the process has exited. Asked in that moment, a count of the job's
+/// members said that the command had left one process running: on a hosted
+/// runner, for 18 to 62 of 120 commands. The shell tool then waited half a
+/// second for a process that was not there. The question is put the
+/// instant the command has exited, many times over, because the moment is
+/// short.
+#[test]
+fn sys_a_command_that_left_nothing_is_never_counted_itself() {
+    for round in 0..40 {
+        let mut command = if cfg!(windows) {
+            let mut command = std::process::Command::new("cmd.exe");
+            command.args(["/d", "/c", "echo hi"]);
+            command
+        } else {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "echo hi"]);
+            command
+        };
+        command.stdin(std::process::Stdio::null());
+        let (mut output, _stop) = Output::attach(&mut command).expect("make the pipe");
+        let tree = Tree::spawn(command, None).expect("start the command");
+        assert_eq!(tree.wait().expect("wait"), Exit::Code(0));
+        assert_eq!(
+            tree.others_running().expect("count"),
+            0,
+            "round {round}: a command that had exited was counted as left running"
+        );
+        assert_eq!(read_all(&mut output).trim_end(), "hi");
+        tree.end();
+    }
 }
 
 #[test]
