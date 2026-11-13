@@ -47,7 +47,9 @@ pub use sections::{
     ModelSettings, PermissionSettings, ProviderSettings, RetrySettings, RoleSettings,
     SandboxSettings, SessionSettings, Settings,
 };
-pub use types::{EnvText, Headers, Profiles, ReasoningVisibility, Reserved, StoreChoice};
+pub use types::{
+    EnvText, Headers, Profiles, ReasoningVisibility, Reserved, SessionDurability, StoreChoice,
+};
 
 use crate::key::KeyPath;
 

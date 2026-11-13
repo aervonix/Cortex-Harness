@@ -654,6 +654,17 @@
           "type": "string",
           "x-cortex-effect": "restart",
           "x-cortex-trust": "user only"
+        },
+        "durability": {
+          "default": "item",
+          "description": "When the session log is flushed to the disk: after every item (`item`), at the end of every turn (`turn`), or never, leaving it to the operating system (`never`). The user's alone: a project that could choose `never` could cost the user their sessions. A session already open keeps what it was opened with.",
+          "enum": [
+            "item",
+            "turn",
+            "never"
+          ],
+          "x-cortex-effect": "restart",
+          "x-cortex-trust": "user only"
         }
       },
       "type": "object"
