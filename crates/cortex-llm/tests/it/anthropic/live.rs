@@ -158,11 +158,19 @@ fn live_record() {
         "standard-named",
         "errors",
         "speed-not-offered",
+        "toolbox",
     ];
     let wanted = wanted(&known);
     let wants = |name: &str| wanted.is_empty() || wanted.iter().any(|wanted| wanted == name);
 
     let mut live = Live::start(target());
+    if wants("toolbox") {
+        live.record(
+            "toolbox",
+            "The whole built-in toolbox, as the binary declares it to this model (reduced for strict mode where the model has it), with a one-line task that needs no tool. It shows the provider accepts the real tools.",
+            &crate::toolbox::request("anthropic"),
+        );
+    }
     if wants("text") {
         live.record("text", "A plain text answer.", &scenario::text());
     }

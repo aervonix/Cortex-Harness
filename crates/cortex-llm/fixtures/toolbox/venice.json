@@ -1,0 +1,424 @@
+{
+  "model": "deepseek-v4-flash-0731",
+  "provider": "venice",
+  "tools": [
+    {
+      "function": {
+        "description": "Replace pieces of text in a file. Each edit gives `old`, the text to replace, copied exactly from the file as `read` shows it, and `new`, what to put in its place. `old` must occur exactly `count` times (1 unless given), and every occurrence is replaced: add lines around it until it names one place. All edits are matched against the file as it is before the call, they must not overlap, and either all apply or none does. The file must have been read in this session and not have changed since. If `old` is not found exactly, a match that ignores trailing white space and a uniform difference in indentation is tried, and the result says so. On failure the result shows the closest text and how it differs.",
+        "name": "edit",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "edits": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "count": {
+                    "description": "How many times `old` must occur. Default 1.",
+                    "maximum": 10000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "new": {
+                    "description": "The text to put in its place. Empty to remove `old`.",
+                    "type": "string"
+                  },
+                  "old": {
+                    "description": "The text to replace, exactly as it is in the file.",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "old",
+                  "new"
+                ],
+                "type": "object"
+              },
+              "maxItems": 100,
+              "minItems": 1,
+              "type": "array"
+            },
+            "path": {
+              "description": "The file: relative to the workspace, absolute, or starting with ~.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "edits"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "List a directory, or find files by name. Without `glob` it returns the directory's own entries; with one, such as `**/*.rs` or `*.toml`, every entry under the directory that matches, at any depth. A glob with no `/` matches a name anywhere; one with a `/` matches the path below the directory. Paths come back one per line, sorted, ready to pass to other tools, and a directory ends with `/`. Files that ignore files (.gitignore, .ignore) leave out, and hidden files, are not listed unless `include_ignored` is set.",
+        "name": "list",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "depth": {
+              "description": "How many levels down to go. 1 without a glob; no limit with one.",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "glob": {
+              "description": "Only entries that match, for example **/*.rs.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "include_ignored": {
+              "description": "Also list hidden files and files that ignore files leave out.",
+              "type": "boolean"
+            },
+            "max_results": {
+              "description": "The most entries to return. 200 unless given.",
+              "maximum": 5000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "path": {
+              "description": "The directory. Defaults to the workspace root.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Keep the plan for the current work: a short task list the user can see and edit while you work. Each call sends the full list and replaces the plan. Give each item a short `id` that stays the same from call to call, its `text` in one line, and its `status`. Mark an item `active` when you start it and `done` when it is finished. The user may reorder, reword, skip, add or remove items; you are told when they do, and if they did since you last saw the plan, your call replaces nothing and returns the current plan to work from.",
+        "name": "plan",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "items": {
+              "description": "The full list, in order.",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "description": "A short name for the item, the same in every call.",
+                    "maxLength": 40,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "pending",
+                      "active",
+                      "done",
+                      "skipped"
+                    ],
+                    "type": "string"
+                  },
+                  "text": {
+                    "description": "The task, in one line.",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "text",
+                  "status"
+                ],
+                "type": "object"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          "required": [
+            "items"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Read a text file, or part of one. The result is a header line (the path, the lines returned, the total number of lines) and then the lines, exactly as they are in the file, with no line numbers in front. Give `offset` and `limit` to read a range: `search` results carry line numbers. A file too long to return whole comes back as its first lines with a note saying where to continue. Reading a file you have already read returns one line if it has not changed, or a diff if little has; `fresh: true` returns the content regardless. To read the stored full output of an earlier call, give its id as `artifact` in place of `path`.",
+        "name": "read",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "artifact": {
+              "description": "An artifact id from the notice of a cut result, in place of `path`.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "fresh": {
+              "description": "Return the content even if you have already read it.",
+              "type": "boolean"
+            },
+            "limit": {
+              "description": "How many lines to return.",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "offset": {
+              "description": "The first line to return, counted from 1.",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "path": {
+              "description": "The file: relative to the workspace, absolute, or starting with ~.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Propose a fact or a convention for the project's memory, so that later sessions in this project start with it: how the project is built or tested, a rule its code follows, something that was costly to find out. Give the entry in one or two sentences and say where you learned it. The entry is a proposal: it is used only after the user accepts it, so do not rely on it in this session. Do not propose what the project's instruction files already say, or anything that is only true of the current task.",
+        "name": "remember",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "check": {
+              "additionalProperties": false,
+              "description": "Optional: a read-only test that shows the entry still holds.",
+              "properties": {
+                "command": {
+                  "description": "For `command`: a command that only reads.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "kind": {
+                  "description": "`exists`: `path` exists. `contains`: a search of `path` finds `pattern`. `command`: `command` exits with success.",
+                  "enum": [
+                    "exists",
+                    "contains",
+                    "command"
+                  ],
+                  "type": "string"
+                },
+                "path": {
+                  "description": "For `exists` and `contains`: a path inside the workspace.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "pattern": {
+                  "description": "For `contains`: a regular expression.",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            "evidence": {
+              "description": "Where this was learned: a path and line, a command, or the user's words.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "kind": {
+              "description": "A fact about the project, or a rule its code and its contributors follow.",
+              "enum": [
+                "fact",
+                "convention"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "description": "The entry, in one or two sentences.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text",
+            "evidence"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Search the contents of files with a regular expression (Rust regex syntax), one line at a time. `path` is a directory, searched with everything under it, or one file; it defaults to the workspace root. `glob` keeps only files that match, for example `*.rs` or `src/**/*.ts`. Results are grouped by file, in path order, each line with its line number, which `read` takes as `offset`. `mode: \"files\"` returns only the names of files with a match, and `mode: \"count\"` the number of matching lines in each. Files that ignore files (.gitignore, .ignore) leave out, hidden files and binary files are not searched. To search the stored full output of an earlier call, give its id as `artifact` in place of `path`.",
+        "name": "search",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "artifact": {
+              "description": "An artifact id from the notice of a cut result, in place of `path`.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "context": {
+              "description": "Lines to show before and after each match. 0 unless given.",
+              "maximum": 5,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "glob": {
+              "description": "Only files that match, for example *.rs.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "ignore_case": {
+              "description": "Match letters whatever their case.",
+              "type": "boolean"
+            },
+            "max_results": {
+              "description": "The most matches (or files) to return. 100 unless given.",
+              "maximum": 2000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mode": {
+              "description": "lines: the matching lines (the default). files: the names of files with a match. count: matching lines per file.",
+              "enum": [
+                "lines",
+                "files",
+                "count"
+              ]
+            },
+            "path": {
+              "description": "A directory or a file. Defaults to the workspace root.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "pattern": {
+              "description": "The regular expression. It is matched within a line.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "pattern"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Run a command in bash on Linux, and get back what it printed (standard output and standard error together, in order) and its exit code. The command runs in the workspace root unless `cwd` names another directory. It has no terminal and no input, so it cannot ask a question: pass the flags that make a tool run without one. It is stopped when it runs longer than `timeout_ms`. Nothing is left running: a process the command starts in the background is stopped when the command exits, because background processes are not supported yet.",
+        "name": "shell",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "description": "The command line.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "cwd": {
+              "description": "The directory to run in. Defaults to the workspace root.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "timeout_ms": {
+              "description": "The time limit in milliseconds. 120000 unless given, and at most 1800000.",
+              "maximum": 1800000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Run a tool found with `tool_search`. `tool` is its full name, `source/tool`, and `arguments` an object that fits the schema the search showed. The arguments are checked against that schema before the tool runs.",
+        "name": "tool_call",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "arguments": {
+              "description": "The tool's arguments. An empty object for a tool that takes none.",
+              "type": "object"
+            },
+            "tool": {
+              "description": "The tool's full name, as tool_search gave it.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "tool"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Find tools that are not in your tool list: tools from MCP servers and from extensions. Give words that describe what you need, or a source's name followed by `/` to list everything that source offers. Each result is a tool's full name, its description and the schema of its arguments. Run one with `tool_call`.",
+        "name": "tool_search",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "description": "The most tools to return. 8 unless given.",
+              "maximum": 25,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "query": {
+              "description": "Words to look for, or `source/` for all of one source's tools.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Create a file, or replace the whole content of one. Missing parent directories are created. A file that already exists must have been read in this session and not have changed since, or the call fails and says to read it first. To change part of a file, use `edit`: it sends less. The result is a one-line confirmation with the number of lines written.",
+        "name": "write",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "description": "The full new content of the file.",
+              "type": "string"
+            },
+            "path": {
+              "description": "The file: relative to the workspace, absolute, or starting with ~.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "content"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ]
+}

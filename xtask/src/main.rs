@@ -129,6 +129,10 @@ By hand only, against a real provider (never in CI)
   record [--provider PROVIDER] [--dry-run] [SCENARIO...]
                     Record provider fixtures, scrubbed. No name: all of them.
                     --dry-run prints the first request and sends nothing.
+  record --toolbox [--provider PROVIDER]
+                    Keep the tools the binary sends each provider, and record
+                    each one's toolbox fixture: the provider named, or every
+                    provider whose key file is named.
                     Both need CORTEX_LIVE_<PROVIDER>_KEY_FILE set to the path
                     of a file that holds that provider's API key. The key is
                     never given on a command line.

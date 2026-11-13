@@ -241,6 +241,7 @@ const COMMON: &[&str] = &[
     "conversation",
     "switch",
     "errors",
+    "toolbox",
 ];
 
 fn record(server: &Server, more: &[&str]) {
@@ -255,6 +256,13 @@ fn record(server: &Server, more: &[&str]) {
 
     let mut live = Live::start(target(server));
     let before = meter(&mut live);
+    if wants("toolbox") {
+        live.record(
+            &format!("{at}-toolbox"),
+            "The whole built-in toolbox, as the binary declares it to this model (reduced for strict mode where the model has it), with a one-line task that needs no tool. It shows the provider accepts the real tools.",
+            &crate::toolbox::request(at),
+        );
+    }
     if wants("text") {
         live.record(
             &format!("{at}-text"),
