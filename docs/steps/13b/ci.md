@@ -118,3 +118,7 @@ One review, on Opus, of the whole diff against the spec, before the first push. 
 | A 300 ms pause before the response's head, the Linux signal tests | both failed every time, the server's write a `BrokenPipe` | both passed, in 0.37 s, with the signal tests as they were on `main` |
 
 The failure is rare by itself, so the pause is the evidence that tells the cases apart, not the counts. `cargo xtask mutate step-13b/server-misses-an-early-hang-up`: caught by `server::tests::a_client_that_hangs_up_before_the_hold_still_opens_its_gate`.
+
+**On the pull request**, at `5d315c2`: `lint-linux` 46 s, `test-linux` 68 s, `lint-windows` 67 s, `test-windows` 142 s. The tiers, as time above process start against the budget: on Linux (4 ms a start), 5.5 s, 12.4 s and 11.9 s; on Windows (9 ms, a slow runner), 8.1 s, 24.4 s and 62.2 s of 90 s. The change adds one unit test, and takes nothing from the signal tests' time but the wait it removes.
+
+**`windows-try`** with `crate=cortex-cli`, `filter=signals::`, `count=200` (run 43456142065): the Windows signal tests, Ctrl-Break's among them, passed 200 times out of 200.
