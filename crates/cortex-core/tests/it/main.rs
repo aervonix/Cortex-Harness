@@ -24,6 +24,9 @@
               helpers are shared between the modules of this one binary"
 )]
 
+mod approvals;
+mod secrets;
+mod trust;
 mod turns;
 
 use std::ffi::OsString;
@@ -409,6 +412,44 @@ impl Front {
         self.prompt(text).await;
         self.turns(before + 1).await;
         self.ends().pop().unwrap()
+    }
+
+    /// Sends a prompt and waits for its turn to end, allowing every call
+    /// that is asked about, once. Returns the tools that were asked about,
+    /// in order.
+    pub async fn turn_allowing(&self, text: &str) -> Vec<String> {
+        let before = self.ends().len();
+        self.prompt(text).await;
+        let mut asked = Vec::new();
+        loop {
+            self.until(|seen| {
+                ends_in(seen).len() > before
+                    || requests_in(seen)
+                        .iter()
+                        .any(|(id, _)| !self.answered.borrow().contains(id))
+            })
+            .await;
+            if self.ends().len() > before {
+                return asked;
+            }
+            let (id, request) = self.approval().await;
+            asked.push(request.tool.clone());
+            self.answer(&id, ApprovalChoice::AllowOnce).unwrap();
+        }
+    }
+
+    /// The session's log on `world`'s disk, a line an entry.
+    pub fn log(&self, world: &World) -> Vec<Value> {
+        let path = world
+            .logs()
+            .into_iter()
+            .find(|path| path.to_string_lossy().contains(self.session.as_str()))
+            .expect("the session has a log");
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
     }
 
     /// Waits for the next approval request that has not been answered.

@@ -470,6 +470,9 @@ impl Providers {
         provider: &ProviderInfo,
         images: Arc<dyn ImageSource>,
     ) -> Result<Arc<dyn ModelClient>, Box<ErrorData>> {
+        // The key is looked for first, whoever makes the client: a key that
+        // is found is one the secret filter must know.
+        let auth = self.auth(settings, env, provider);
         if let Some(connector) = &self.connector
             && let Some(client) = connector.connect(provider, Arc::clone(&images))
         {
@@ -490,7 +493,7 @@ impl Providers {
                 ),
             )
         })?;
-        let auth = self.auth(settings, env, provider)?;
+        let auth = auth?;
         let client = ProviderClient::builder(
             Arc::clone(protocol),
             provider.clone(),
