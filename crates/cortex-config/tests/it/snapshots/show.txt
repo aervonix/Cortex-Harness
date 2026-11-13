@@ -39,4 +39,5 @@ sandbox.protect = [
     "/srv/keys",
 ]
 sandbox.write = []
+session.durability = "item"
 tui.theme = "dusk"

@@ -71,6 +71,9 @@ fn the_documented_classes_hold() {
         "sandbox.enabled",
         "usage.*",
         "session.data_dir",
+        // A project that could turn flushing off could cost the user
+        // their sessions.
+        "session.durability",
         "managed.locked",
         // A project may define a profile and may not select one.
         "profile",

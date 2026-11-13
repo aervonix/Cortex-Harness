@@ -12,7 +12,9 @@ use std::time::Duration;
 use cortex_protocol::lease::{NetworkAccess, Rule};
 use cortex_protocol::{Level, ModelRole, Speed};
 
-use super::types::{Headers, Profiles, ReasoningVisibility, Reserved, StoreChoice};
+use super::types::{
+    Headers, Profiles, ReasoningVisibility, Reserved, SessionDurability, StoreChoice,
+};
 use super::{CONFIG_VERSION, settings};
 
 settings! {
@@ -361,6 +363,13 @@ settings! {
         /// Without it the platform's usual place is used.
         [UserOnly, Restart]
         pub data_dir: Option<String>,
+        /// When the session log is flushed to the disk: after every item
+        /// (`item`), at the end of every turn (`turn`), or never, leaving
+        /// it to the operating system (`never`). The user's alone: a
+        /// project that could choose `never` could cost the user their
+        /// sessions. A session already open keeps what it was opened with.
+        [UserOnly, Restart]
+        pub durability: SessionDurability = SessionDurability::Item,
     }
 }
 

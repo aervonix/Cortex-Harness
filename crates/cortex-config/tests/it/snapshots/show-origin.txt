@@ -39,4 +39,5 @@ sandbox.protect = [
     "/srv/keys",                            # managed: ~/managed/config.toml:7
 ]
 sandbox.write = []                          # default
+session.durability = "item"                 # default
 tui.theme = "dusk"                          # user: ~/cortex/config.toml:36

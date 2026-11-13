@@ -110,6 +110,7 @@ Every key a Cortex-Harness configuration file may hold. The design is in [archit
 | Key | Type | Default | From a project | Takes effect | What it is |
 |---|---|---|---|---|---|
 | `session.data_dir` | text | not set | user only | restart | The data directory. A leading `~` is the home directory. Without it the platform's usual place is used. |
+| `session.durability` | `"item"`, `"turn"`, `"never"` | `"item"` | user only | restart | When the session log is flushed to the disk: after every item (`item`), at the end of every turn (`turn`), or never, leaving it to the operating system (`never`). The user's alone: a project that could choose `never` could cost the user their sessions. A session already open keeps what it was opened with. |
 
 ## `[compat]`
 

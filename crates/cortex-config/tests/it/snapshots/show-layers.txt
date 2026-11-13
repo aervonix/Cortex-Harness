@@ -23,6 +23,7 @@ sandbox.enabled = true
 sandbox.network = "off"
 sandbox.protect = []
 sandbox.write = []
+session.durability = "item"
 
 ## managed
 managed.locked = ["sandbox.enabled"]  # managed: ~/managed/config.toml:3

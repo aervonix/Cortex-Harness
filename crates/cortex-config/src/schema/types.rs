@@ -424,6 +424,20 @@ choice! {
     }
 }
 
+choice! {
+    /// When the session log is flushed to the disk.
+    pub enum SessionDurability {
+        /// After every item: a crash loses at most the item being written.
+        Item => "item",
+        /// At the end of every turn: a crash of the machine can lose the
+        /// turn in progress.
+        Turn => "turn",
+        /// Never: the operating system writes the log when it chooses. A
+        /// crash of the machine can lose anything not yet written.
+        Never => "never",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

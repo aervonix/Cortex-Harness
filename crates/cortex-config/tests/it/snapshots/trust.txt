@@ -54,6 +54,7 @@ limits.day.cost                    tighten only: a lower limit is a preference, 
 limits.day.time                    tighten only: a lower limit is a preference, a higher one user only  [enforced]
 credentials.store                  user only
 session.data_dir                   user only
+session.durability                 user only
 compat.instructions                user only
 compat.mcp                         user only
 compat.skills                      user only
