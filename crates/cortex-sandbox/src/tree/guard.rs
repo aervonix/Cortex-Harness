@@ -4,7 +4,10 @@
 //! Linux can tell one child to die with its parent, and no more: what that
 //! child started lives on. So the harness keeps one guard process, holds
 //! the writing end of a pipe to it, and tells it the process group of every
-//! tree it starts and of every tree that has ended. The guard does nothing
+//! tree it starts and of every tree that has ended. A tree's own first
+//! process tells the guard too, before it becomes the command, so that
+//! the guard knows of a command from before the command's first
+//! instruction, even if the harness dies in that instant. The guard does nothing
 //! until the pipe closes, which the kernel does when the harness is gone,
 //! however it went. Then it kills the groups it still knows, and exits.
 //!
@@ -87,6 +90,7 @@ mod imp {
     use std::collections::BTreeSet;
     use std::ffi::OsString;
     use std::io::{self, BufRead, Write};
+    use std::os::fd::{AsRawFd, RawFd};
     use std::path::PathBuf;
     use std::process::{Child, ChildStdin, Command, Stdio};
     use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -179,35 +183,104 @@ mod imp {
         }
     }
 
-    impl Guard {
-        /// Tells the guard of a tree's group, starting the guard if it is
-        /// not running.
-        pub(in super::super) fn watch(&self, group: u32) -> io::Result<Watch> {
-            let mut state = self.shared.lock();
-            state.watched.insert(group);
-            if state.tell(&format!("+{group}\n")).is_err() {
-                // It was never started, or it is gone. Start one, and tell
-                // it every tree that is still running.
+    impl Shared {
+        /// Makes sure a guard is running that knows every tree still
+        /// running: starts one if there is none, or if the one there has
+        /// died.
+        fn make_ready(&self, state: &mut State) -> io::Result<()> {
+            // Nothing told is the cheapest way to ask whether it listens.
+            if state.tell("").is_ok() {
+                return Ok(());
+            }
+            state.discard();
+            let told = self.start().and_then(|running| {
+                state.running = Some(running);
+                let all: String = state
+                    .watched
+                    .iter()
+                    .map(|group| format!("+{group}\n"))
+                    .collect();
+                state.tell(&all)
+            });
+            if told.is_err() {
                 state.discard();
-                let told = self.shared.start().and_then(|running| {
-                    state.running = Some(running);
-                    let all: String = state
-                        .watched
-                        .iter()
-                        .map(|group| format!("+{group}\n"))
-                        .collect();
-                    state.tell(&all)
-                });
-                if let Err(error) = told {
-                    state.discard();
-                    state.watched.remove(&group);
+            }
+            told
+        }
+    }
+
+    /// A tree that is about to be started: the guard is running, and is
+    /// held still until the command has been started or has failed to.
+    pub(in super::super) struct Pending<'a> {
+        guard: &'a Guard,
+        state: MutexGuard<'a, State>,
+        pipe: RawFd,
+    }
+
+    impl Guard {
+        /// Makes the guard ready for one tree, starting it if it is not
+        /// running, and keeps every other tree's start waiting until this
+        /// one is settled.
+        ///
+        /// The command's own process tells the guard its group, through
+        /// [`Pending::pipe`], before it becomes the command. So there is
+        /// no moment at which a command runs and the guard does not know
+        /// of it, however the harness dies. The harness then confirms
+        /// with [`Pending::started`], or takes it back with
+        /// [`Pending::failed`].
+        pub(in super::super) fn prepare(&self) -> io::Result<Pending<'_>> {
+            let mut state = self.shared.lock();
+            self.shared.make_ready(&mut state)?;
+            let pipe = match &state.running {
+                Some(running) => running.pipe.as_raw_fd(),
+                None => return Err(io::ErrorKind::NotConnected.into()),
+            };
+            Ok(Pending {
+                guard: self,
+                state,
+                pipe,
+            })
+        }
+    }
+
+    impl Pending<'_> {
+        /// The guard's pipe, for the command's own process to write its
+        /// line to. It is open for as long as this value lives.
+        pub(in super::super) fn pipe(&self) -> RawFd {
+            self.pipe
+        }
+
+        /// The command was started, as the leader of `group`.
+        pub(in super::super) fn started(mut self, group: u32) -> io::Result<Watch> {
+            self.state.watched.insert(group);
+            if self.state.tell(&format!("+{group}\n")).is_err() {
+                // The guard died since it was made ready. A new one is
+                // told every tree that is still running, this one among
+                // them.
+                if let Err(error) = self.guard.shared.make_ready(&mut self.state) {
+                    self.state.watched.remove(&group);
                     return Err(error);
                 }
             }
             Ok(Watch {
-                guard: self.clone(),
+                guard: self.guard.clone(),
                 group,
             })
+        }
+
+        /// The command could not be started. Its process may have told
+        /// the guard of itself before it failed, and it is gone now: the
+        /// guard is told to forget what was about to start.
+        ///
+        /// With `guard_died`, the start failed because the guard was no
+        /// longer listening: it is put away, so that the next tree
+        /// starts another.
+        pub(in super::super) fn failed(mut self, guard_died: bool) {
+            if guard_died {
+                self.state.discard();
+            } else {
+                let _ = self.state.tell("!\n");
+            }
         }
     }
 
@@ -247,22 +320,35 @@ mod imp {
         }
     }
 
-    /// Reads the harness's lines until the pipe closes, and returns the
-    /// groups that are still to be killed.
+    /// Reads the lines told to the guard until the pipe closes, and returns
+    /// the groups that are still to be killed.
     ///
-    /// A line is `+` or `-` and a group's id in decimal. Anything else is
-    /// passed over, and so is an id that is not a command's group: 0 and 1,
-    /// and the guard's own. A read that fails ends it like a closed pipe.
+    /// | Line | Who writes it | What it means |
+    /// |---|---|---|
+    /// | `?<id>` | The command's own process, before it becomes the command | A tree is about to start, as this group. |
+    /// | `+<id>` | The harness | The tree was started. Also how a new guard is told of the trees that are running. |
+    /// | `-<id>` | The harness | The tree has ended. |
+    /// | `!` | The harness | The start failed: forget what was about to start. |
+    ///
+    /// A tree that was about to start when the pipe closed is killed like
+    /// one that was started: the harness died between the two lines.
+    /// Anything else is passed over, and so is an id that is not a
+    /// command's group: 0 and 1, and the guard's own. A read that fails
+    /// ends it like a closed pipe.
     pub(super) fn follow(input: impl BufRead, own: u32) -> BTreeSet<u32> {
-        let mut groups = BTreeSet::new();
+        let mut started = BTreeSet::new();
+        let mut about_to_start = BTreeSet::new();
         for line in input.lines() {
             let Ok(line) = line else { break };
-            let (add, digits) = match line.as_bytes().first() {
-                Some(b'+') => (true, &line[1..]),
-                Some(b'-') => (false, &line[1..]),
-                _ => continue,
+            if line == "!" {
+                about_to_start.clear();
+                continue;
+            }
+            let Some(kind) = line.bytes().next().filter(|kind| b"?+-".contains(kind)) else {
+                continue;
             };
-            if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            let digits = &line[1..];
+            if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
                 continue;
             }
             let Ok(group) = digits.parse::<u32>() else {
@@ -271,13 +357,22 @@ mod imp {
             if group <= 1 || group == own || libc::pid_t::try_from(group).is_err() {
                 continue;
             }
-            if add {
-                groups.insert(group);
-            } else {
-                groups.remove(&group);
+            match kind {
+                b'?' => {
+                    about_to_start.insert(group);
+                }
+                b'+' => {
+                    about_to_start.remove(&group);
+                    started.insert(group);
+                }
+                _ => {
+                    about_to_start.remove(&group);
+                    started.remove(&group);
+                }
             }
         }
-        groups
+        started.extend(about_to_start);
+        started
     }
 
     #[cfg(test)]
@@ -297,6 +392,24 @@ mod imp {
             // A last line with no line break still counts: the harness may
             // die in the middle of a write, and a group told is a group.
             assert_eq!(left("+100\n+200"), vec![100, 200]);
+        }
+
+        #[test]
+        fn a_tree_that_was_about_to_start_is_killed_unless_its_start_failed() {
+            // The harness died after the command's process announced
+            // itself and before the harness confirmed it.
+            assert_eq!(left("+100\n?200\n"), vec![100, 200]);
+            // Confirmed, it is one tree and not two.
+            assert_eq!(left("?200\n+200\n"), vec![200]);
+            assert_eq!(left("?200\n+200\n-200\n"), Vec::<u32>::new());
+            // The start failed: what announced itself is forgotten, and
+            // what was started before it is not.
+            assert_eq!(left("+100\n?200\n!\n"), vec![100]);
+            assert_eq!(left("?200\n!\n?300\n"), vec![300]);
+            // Only the whole line means that.
+            assert_eq!(left("?200\n!!\n! \n"), vec![200]);
+            // The same ids are refused in an announcement as anywhere.
+            assert_eq!(left("?0\n?1\n?77\n?\n"), Vec::<u32>::new());
         }
 
         #[test]

@@ -99,14 +99,22 @@ fn sys_the_polite_interrupt_is_enough_for_a_command_that_listens() {
         &ChildSpec::new(&roll, "only").saying("started"),
     );
 
-    let (ran, graces_ended) = bench.directed(json!({ "command": command }), move |director| {
-        let only = roll.next(LIMIT);
-        director.cancel.cancel();
-        // No grace is ended: the interrupt alone must do it.
-        assert!(only.gone_within(LIMIT), "the command ignored the interrupt");
-        until(LIMIT, "the call to end", || director.call_has_ended());
-        director.timer.end(GRACE)
-    });
+    let live = bench::Live::default();
+    let watching = live.clone();
+    let (ran, graces_ended) =
+        bench.directed_into(json!({ "command": command }), &live, move |director| {
+            let only = roll.next(LIMIT);
+            // It says its word after it has reported, so the word is waited
+            // for: an interrupt a moment earlier would stop it first.
+            until(LIMIT, "the command's word", || {
+                watching.text().contains("started")
+            });
+            director.cancel.cancel();
+            // No grace is ended: the interrupt alone must do it.
+            assert!(only.gone_within(LIMIT), "the command ignored the interrupt");
+            until(LIMIT, "the call to end", || director.call_has_ended());
+            director.timer.end(GRACE)
+        });
     assert_eq!(ran.result.outcome(), &ToolOutcome::Interrupted);
     assert_eq!(ran.payload("stopped_with"), json!("interrupt"));
     assert_eq!(graces_ended, 0, "the run was over before its grace");

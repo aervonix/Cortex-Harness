@@ -363,14 +363,19 @@ fn sys_the_guard_kills_what_it_was_told_and_nothing_else() {
         .expect("start a tree")
     };
     let (told, forgotten, never_told) = (spawn("told"), spawn("forgotten"), spawn("never-told"));
+    let (announced, taken_back) = (spawn("announced"), spawn("taken-back"));
     let all = roll.all(
         &[
             "told",
             "told-child",
+            "announced",
+            "announced-child",
             "forgotten",
             "forgotten-child",
             "never-told",
             "never-told-child",
+            "taken-back",
+            "taken-back-child",
         ],
         LIMIT,
     );
@@ -385,11 +390,16 @@ fn sys_the_guard_kills_what_it_was_told_and_nothing_else() {
     let mut pipe = guard.stdin.take().expect("the guard's pipe");
     // A tree that ended, a tree that runs, and ids no tree has: everyone,
     // the caller's own group, the first process, and nonsense.
+    // And one that only announced itself, as when the harness dies before
+    // it can confirm, after one whose start was taken back.
     write!(
         pipe,
-        "+{forgotten}\n+{told}\n-{forgotten}\n+0\n+1\n+-1\nkill everything\n",
+        "?{taken_back}\n!\n+{forgotten}\n+{told}\n-{forgotten}\n?{announced}\n\
+         +0\n+1\n+-1\n?0\nkill everything\n",
+        taken_back = taken_back.id(),
         forgotten = forgotten.id(),
         told = told.id(),
+        announced = announced.id(),
     )
     .expect("tell the guard");
     pipe.flush().expect("tell the guard");
@@ -399,20 +409,15 @@ fn sys_the_guard_kills_what_it_was_told_and_nothing_else() {
     // The harness is gone: its end of the pipe closes.
     drop(pipe);
     assert!(guard.wait().expect("the guard ends").success());
-    assert!(
-        all[0].gone_within(LIMIT),
-        "the tree it was told of survived"
-    );
-    assert!(
-        all[1].gone_within(LIMIT),
-        "and so did what that tree started"
-    );
-    for other in &all[2..] {
+    for killed in &all[..4] {
+        assert!(killed.gone_within(LIMIT), "`{}` survived", killed.name());
+    }
+    for other in &all[4..] {
         assert!(other.is_alive(), "it killed `{}`", other.name());
     }
-    forgotten.end();
-    never_told.end();
-    told.end();
+    for tree in [forgotten, never_told, told, announced, taken_back] {
+        tree.end();
+    }
 }
 
 /// The harness's side of the pipe: the guard is told of a tree when it
@@ -440,26 +445,77 @@ fn sys_the_guard_is_told_of_each_tree_and_of_its_end() {
         .expect("start the second tree");
     let both = roll.all(&["first", "second"], LIMIT);
     let (a, b) = (first.id(), second.id());
+    // Each tree twice: by its own first process before that became the
+    // command, and by the harness once the command was started.
+    let starts = format!("?{a}\n+{a}\n?{b}\n+{b}\n");
     until(LIMIT, "the guard to be told of both trees", || {
-        told() == format!("+{a}\n+{b}\n")
+        told() == starts
     });
 
     first.end();
     until(LIMIT, "the guard to be told that a tree ended", || {
-        told() == format!("+{a}\n+{b}\n-{a}\n")
+        told() == format!("{starts}-{a}\n")
     });
     // Ending it again says nothing more.
     first.end();
     drop(second);
     assert!(both[0].gone_within(LIMIT) && both[1].gone_within(LIMIT));
     until(LIMIT, "the guard to be told that the other ended", || {
-        told() == format!("+{a}\n+{b}\n-{a}\n-{b}\n")
+        told() == format!("{starts}-{a}\n-{b}\n")
     });
     // The guard's pipe closes with its last handle, which a tree holds
     // too, and the stand-in ends having been told nothing more.
     drop(first);
     drop(guard);
-    assert_eq!(told(), format!("+{a}\n+{b}\n-{a}\n-{b}\n"));
+    assert_eq!(told(), format!("{starts}-{a}\n-{b}\n"));
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+/// A command that cannot be started may have told the guard of itself
+/// before it failed. The harness takes that back, so that the guard is
+/// not left holding the id of a process that is gone.
+#[cfg(unix)]
+#[test]
+fn sys_a_start_that_fails_is_taken_back_from_the_guard() {
+    use cortex_sandbox::tree::Guard;
+    use cortex_testkit::children::until;
+
+    let directory =
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("cortex-sandbox-it-guard-failed");
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("create a directory");
+    let record = directory.join("told.txt");
+    let guard = Guard::new("sh", ["-c", "cat > \"$0\"", record.to_str().expect("text")]);
+    let told = || std::fs::read_to_string(&record).unwrap_or_default();
+
+    let missing = std::process::Command::new(directory.join("no-such-program"));
+    let error = Tree::spawn(missing, Some(&guard)).expect_err("there is no such program");
+    assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
+    until(LIMIT, "the guard to be told that the start failed", || {
+        told().ends_with("!\n")
+    });
+    // What announced itself, and then the taking back: nothing else.
+    let lines: Vec<String> = told().lines().map(str::to_owned).collect();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[0].starts_with('?') && lines[0][1..].bytes().all(|byte| byte.is_ascii_digit()),
+        "{lines:?}"
+    );
+    assert_eq!(lines[1], "!");
+
+    // The guard goes on serving the next tree.
+    let roll = Roll::new();
+    let tree = Tree::spawn(ChildSpec::new(&roll, "next").command(ENTRY), Some(&guard))
+        .expect("start a tree");
+    let next = roll.next(LIMIT);
+    let id = tree.id();
+    until(LIMIT, "the guard to be told of the next tree", || {
+        told().ends_with(&format!("!\n?{id}\n+{id}\n"))
+    });
+    tree.end();
+    assert!(next.gone_within(LIMIT));
+    drop(tree);
+    drop(guard);
     let _ = std::fs::remove_dir_all(&directory);
 }
 
