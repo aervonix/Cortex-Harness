@@ -24,7 +24,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -40,10 +40,11 @@ use cortex_protocol::item::NoticeSource;
 use cortex_protocol::jsonrpc::RequestId;
 use cortex_protocol::lease::{Level, Rule};
 use cortex_protocol::methods::{
-    ClientRole, ConfigGetResult, Empty, ExtensionsStatusResult, InitializeResult, McpStatusResult,
-    ModelsListResult, Op, OpResult, PROTOCOL_VERSION, PeerInfo, PermissionsListResult, PlanResult,
-    SUPPORTED_PROTOCOL_VERSIONS, ServerCapabilities, ServerResponse, SessionListResult,
-    SessionReadResult, SessionResult, UsageGetResult, negotiate_version,
+    ApprovalScope, ClientRole, ConfigGetResult, Empty, ExtensionsStatusResult, InitializeResult,
+    McpStatusResult, ModelsListResult, Op, OpResult, PROTOCOL_VERSION, PeerInfo,
+    PermissionsListResult, PlanResult, SUPPORTED_PROTOCOL_VERSIONS, ServerCapabilities,
+    ServerResponse, SessionListResult, SessionReadResult, SessionResult, UsageGetResult,
+    negotiate_version,
 };
 use cortex_protocol::model::ModelRole;
 use cortex_protocol::session::{SandboxStatus, SessionSettings, SessionSummary};
@@ -220,6 +221,36 @@ pub(crate) struct Live {
     loaded: Arc<Loaded>,
     images: Arc<dyn ImageSource>,
     lease_count: AtomicU64,
+    /// Set while the session's history is being changed (a rewind). No
+    /// turn starts then, and no second change.
+    changing: AtomicBool,
+}
+
+/// The mark that a session's history is being changed, taken down when the
+/// change is over, however it ends.
+struct Changing<'a>(&'a AtomicBool);
+
+impl<'a> Changing<'a> {
+    fn begin(flag: &'a AtomicBool) -> Result<Self, OpError> {
+        if flag.swap(true, Ordering::AcqRel) {
+            return Err(history_changing());
+        }
+        Ok(Self(flag))
+    }
+}
+
+impl Drop for Changing<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+fn history_changing() -> OpError {
+    error(
+        ErrorKind::Usage,
+        "history_changing",
+        "The session is being rewound. Send this again when that is done.",
+    )
 }
 
 impl std::fmt::Debug for Live {
@@ -303,10 +334,10 @@ impl Core {
             &user.dirs,
             Arc::clone(&options.clock),
         )
-        .map_err(|failure| {
+        .unwrap_or_else(|failure| {
             tracing::warn!(error = %failure, "the credential store could not be opened");
-        })
-        .ok();
+            Box::new(provider::Unopened(failure.to_string()))
+        });
         let mut protocols = provider::builtin_protocols();
         protocols.extend(options.protocols.clone());
         let transport: Arc<dyn Transport> = match &options.transport {
@@ -323,7 +354,7 @@ impl Core {
             connector: options.connector.clone(),
             store,
             flags: options.api_keys.clone(),
-            found: Mutex::new(Vec::new()),
+            filter: Arc::new(std::sync::RwLock::new(cortex_base::SecretFilter::new())),
             key_found: options.key_found.clone(),
         };
         let ids = IdGenerator::new(Arc::clone(&options.clock), Box::new(SystemRng::new()));
@@ -484,6 +515,7 @@ impl Core {
             loaded,
             images,
             lease_count: AtomicU64::new(lease_count),
+            changing: AtomicBool::new(false),
         });
         lock(&self.inner.sessions).insert(live.handle.id().clone(), Arc::clone(&live));
         Ok(live)
@@ -587,6 +619,7 @@ impl Core {
                 }))
             }
             Op::SessionNew(params) => {
+                self.may_drive(client)?;
                 let overrides = config_overrides(&params.config)?;
                 let live = self
                     .open(
@@ -613,10 +646,16 @@ impl Core {
                     if let Some(queue) = self.inner.clients.queue(client) {
                         live.sink.subscribe(client.0, queue);
                     }
+                    // A question that is waiting is put to a client that
+                    // may answer it.
+                    self.inner.clients.join(&params.session_id, client);
                     return Ok(OpResult::SessionOpen(SessionResult {
                         session: live.handle.state(),
                     }));
                 }
+                // Starting a stored session writes to it (its lock, its
+                // lease), which is more than watching.
+                self.may_drive(client)?;
                 let workspace = self.stored_workspace(&params.session_id).await?;
                 let live = self
                     .open(
@@ -700,6 +739,7 @@ impl Core {
             }
             Op::SessionFork(params) => {
                 let live = self.open_for(client, &params.session_id)?;
+                self.may_drive(client)?;
                 let id = self.inner.ids.session_id();
                 let fork = id.clone();
                 let log = Arc::clone(&live.log);
@@ -756,7 +796,11 @@ impl Core {
             }
             Op::SessionRewind(params) => {
                 let live = self.open_for(client, &params.session_id)?;
-                // History is not changed under a turn.
+                self.may_drive(client)?;
+                // History is not changed under a turn, and no turn starts
+                // while it is being changed: the rewind itself runs off
+                // this thread, and a prompt could arrive meanwhile.
+                let _changing = Changing::begin(&live.changing)?;
                 live.handle.reload()?;
                 let log = Arc::clone(&live.log);
                 let (plan, not_restored) = Self::blocking(move || {
@@ -832,6 +876,9 @@ impl Core {
             Op::TurnStart(params) => {
                 let live = self.open_for(client, &params.session_id)?;
                 self.may_drive(client)?;
+                if live.changing.load(Ordering::Acquire) {
+                    return Err(history_changing());
+                }
                 let result = live.handle.prompt(params.input, params.delivery)?;
                 Ok(OpResult::TurnStart(result))
             }
@@ -964,13 +1011,15 @@ impl Core {
                 extensions: Vec::new(),
             })),
             Op::Shutdown(_) => {
+                self.may_drive(client)?;
                 self.shutdown().await;
                 Ok(OpResult::Shutdown(Empty {}))
             }
         }
     }
 
-    /// Whether the client may change a session: an observer only watches.
+    /// Whether the client may change a session, start one or end the
+    /// core: an observer only watches.
     fn may_drive(&self, client: ClientId) -> Result<(), OpError> {
         match self.inner.clients.info(client).map(|info| info.role) {
             Some(ClientRole::User | ClientRole::Supervisor) => Ok(()),
@@ -983,6 +1032,9 @@ impl Core {
     }
 
     /// Changes a session's settings.
+    ///
+    /// Everything asked for is checked and made ready before anything is
+    /// changed, so a request that is refused in any part changes nothing.
     async fn set(
         &self,
         client: ClientId,
@@ -992,8 +1044,10 @@ impl Core {
         let inner = &self.inner;
         let has_history = live.handle.usage().totals.requests > 0;
         let mut uncached = false;
+        let mut told = Vec::new();
 
-        // The level first: it is the one that can be refused for who asks.
+        // ------------------------------------------------------ checked
+        let mut new_level = None;
         if let Some(level) = settings.level {
             if !level.is_known() {
                 return Err(error(
@@ -1013,30 +1067,15 @@ impl Core {
                         "Only a `user` client may raise a session's level.",
                     ));
                 }
-                self.set_level(live, level).await?;
+                new_level = Some(level);
             }
         }
 
-        if let Some(speed) = settings.speed {
-            let model = live.handle.role_model(&ModelRole::Main);
-            let shares = model
-                .as_ref()
-                .and_then(|model| model.entry.info.speed_offer(&speed))
-                .and_then(|offer| offer.shares_cache);
-            if live.handle.state().speed != speed && shares != Some(true) {
-                uncached = true;
-            }
-            live.handle.set_speed(speed);
-        }
-
+        let mut roles = Vec::new();
         for (role, change) in settings.roles {
-            if let Some(speed) = change.speed.clone() {
-                if role == ModelRole::Main {
-                    uncached = true;
-                }
-                live.handle.set_role_speed(role.clone(), speed);
-            }
+            let speed = change.speed.clone();
             if change.model.is_none() && change.effort.is_none() && change.provider.is_none() {
+                roles.push((role, speed, None));
                 continue;
             }
             let current = live.handle.role_model(&role);
@@ -1068,10 +1107,8 @@ impl Core {
                     ));
                 }
             };
-            let effort = change
-                .effort
-                .clone()
-                .or_else(|| current.as_ref().and_then(|model| model.effort.clone()));
+            let named = change.effort.clone();
+            let carried = current.as_ref().and_then(|model| model.effort.clone());
             let max_output = current
                 .as_ref()
                 .map_or(model_settings.max_output, |model| model.max_output);
@@ -1080,23 +1117,80 @@ impl Core {
             let images = Arc::clone(&live.images);
             let core = Arc::clone(inner);
             // Finding a key can read the credential store.
-            let model = Self::blocking(move || {
-                core.providers.role_model(
-                    &settings,
-                    &env,
-                    entry,
-                    effort.as_deref(),
-                    max_output,
-                    images,
-                )
+            let (model, left) = Self::blocking(move || {
+                let make = |effort: Option<&str>| {
+                    core.providers.role_model(
+                        &settings,
+                        &env,
+                        Arc::clone(&entry),
+                        effort,
+                        max_output,
+                        Arc::clone(&images),
+                    )
+                };
+                match (named, carried) {
+                    // A level that was asked for is refused if the model
+                    // has no such level.
+                    (Some(named), _) => make(Some(&named)).map(|model| (model, None)),
+                    // One that is only carried over from the model before
+                    // is left behind where the new model has no such
+                    // level: nobody asked for it here.
+                    (None, Some(carried)) => match make(Some(&carried)) {
+                        Err(refused) if refused.code == "unknown_effort" => {
+                            make(None).map(|model| (model, Some(carried)))
+                        }
+                        made => made.map(|model| (model, None)),
+                    },
+                    (None, None) => make(None).map(|model| (model, None)),
+                }
             })
             .await?;
-            if role == ModelRole::Main {
-                uncached = true;
+            if let Some(left) = left {
+                told.push(format!(
+                    "`{}` has no reasoning level `{left}`, so the role `{}` runs at the model's \
+                     own default.",
+                    model.entry.info.id,
+                    role.as_str()
+                ));
             }
-            live.handle.set_role_model(role, model);
+            roles.push((role, speed, Some(model)));
         }
 
+        // ------------------------------------------------------ applied
+        // The level first: it is the one change that can still fail (the
+        // level cannot be held, or its lease cannot be written), and then
+        // nothing else has been changed.
+        if let Some(level) = new_level {
+            self.set_level(live, level).await?;
+        }
+
+        if let Some(speed) = settings.speed {
+            let model = live.handle.role_model(&ModelRole::Main);
+            let shares = model
+                .as_ref()
+                .and_then(|model| model.entry.info.speed_offer(&speed))
+                .and_then(|offer| offer.shares_cache);
+            if live.handle.state().speed != speed && shares != Some(true) {
+                uncached = true;
+            }
+            live.handle.set_speed(speed);
+        }
+
+        for (role, speed, model) in roles {
+            if role == ModelRole::Main && (speed.is_some() || model.is_some()) {
+                uncached = true;
+            }
+            if let Some(speed) = speed {
+                live.handle.set_role_speed(role.clone(), speed);
+            }
+            if let Some(model) = model {
+                live.handle.set_role_model(role, model);
+            }
+        }
+
+        for notice in told {
+            live.hooks.tell(notice);
+        }
         if uncached && has_history {
             live.hooks.tell(UNCACHED);
         }
@@ -1112,9 +1206,16 @@ impl Core {
         let mut parts = lock(&live.template).parts.clone();
         parts.level = level.clone();
         parts.lease_id = lease_id.clone();
-        // What was approved so far stays approved.
-        parts.approved = old.approvals();
+        // What was approved so far stays approved, each as what it is:
+        // what is stored for the project is read as stored, and what was
+        // allowed for the session is taken over as the session's own.
+        parts.approved = old
+            .approvals()
+            .into_iter()
+            .filter(|approval| approval.scope == ApprovalScope::Project)
+            .collect();
         let engine = assemble::start_engine(parts.clone())?;
+        engine.keep_session_approvals_of(&old);
         let (ended, granted) = (old.lease().clone(), engine.lease().clone());
         let notice = engine.sandbox_notice();
         let log = Arc::clone(&live.log);

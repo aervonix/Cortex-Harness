@@ -141,7 +141,12 @@ impl World {
         // disk takes, and is not what these tests check.
         std::fs::write(
             path,
-            format!("[session]\ndurability = \"never\"\n\n[model]\nmain = \"{MODEL}\"\n\n{extra}"),
+            // The credentials are a file of the test's own on every OS:
+            // the machine's keychain is never read.
+            format!(
+                "[session]\ndurability = \"never\"\n\n[credentials]\nstore = \
+                 \"file\"\n\n[model]\nmain = \"{MODEL}\"\n\n{extra}"
+            ),
         )
         .unwrap();
     }

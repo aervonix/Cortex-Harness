@@ -455,3 +455,217 @@ fn allowed_for_the_project_is_stored_outlives_the_run_and_can_be_revoked() {
         front.close().await;
     });
 }
+
+/// A `user` client can attach to a session at any time and answer what is
+/// waiting (`docs/architecture/11-rpc-protocol.md`, "Client roles").
+#[test]
+fn a_user_who_joins_while_a_question_waits_is_put_it_and_may_answer() {
+    let world = World::new("late_join", [protected_write("c1"), says("Done.")]);
+    let core = world.core();
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        front.prompt("set up CI").await;
+        let (id, _) = front.approval().await;
+
+        // An observer that joins now is put nothing.
+        let observer = front.join(ClientInfo::observer()).await;
+        settle().await;
+        observer.drain();
+        assert!(observer.approvals().is_empty());
+
+        let late = front.join(ClientInfo::user()).await;
+        let (same, request) = late.approval().await;
+        assert_eq!(same, id, "the question that was waiting, under its id");
+        assert_eq!(request.call_id.as_str(), "c1");
+        late.answer(&id, ApprovalChoice::AllowOnce).unwrap();
+        front.turns(1).await;
+        assert_eq!(world.read(PROTECTED).as_deref(), Some("on: push\n"));
+        // The client that was asked first is told it was settled.
+        assert_eq!(resolutions(&front), [Resolution::Answered]);
+        front.close().await;
+    });
+}
+
+/// An observer watches. It starts nothing, changes no history and ends
+/// nothing.
+#[test]
+fn an_observer_starts_nothing_changes_no_history_and_ends_nothing() {
+    let world = World::new("observer", [says("One."), says("Two.")]);
+    world.put("a.txt", "original\n");
+    let core = world.core();
+    world.run(async {
+        let refused = |result: Result<OpResult, cortex_core::OpError>| {
+            let error = result.expect_err("an observer was let through");
+            assert_eq!(error.code, "role_not_allowed", "{}", error.message);
+        };
+        let started = Front::start_as(
+            &world,
+            &core,
+            ClientInfo::observer(),
+            SessionSettings::default(),
+        )
+        .await;
+        assert_eq!(started.err().unwrap().code, "role_not_allowed");
+
+        let front = Front::start(&world, &core).await;
+        front.turn("one").await;
+        let first = front
+            .items()
+            .iter()
+            .find_map(|item| match item {
+                cortex_protocol::Item::UserMessage(message) => Some(message.id.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let observer = front.join(ClientInfo::observer()).await;
+        refused(
+            observer
+                .op(Op::SessionRewind(
+                    cortex_protocol::methods::SessionRewindParams {
+                        session_id: front.session.clone(),
+                        to: first,
+                        restore_files: true,
+                    },
+                ))
+                .await,
+        );
+        refused(
+            observer
+                .op(Op::SessionFork(
+                    cortex_protocol::methods::SessionForkParams {
+                        session_id: front.session.clone(),
+                        at: None,
+                    },
+                ))
+                .await,
+        );
+        refused(
+            observer
+                .op(Op::Shutdown(cortex_protocol::methods::Empty {}))
+                .await,
+        );
+        // Nothing of it happened: the session is there, with its history.
+        front.turn("two").await;
+        assert_eq!(front.last_text(), "Two.");
+        assert_eq!(world.provider.requests()[1].messages.len(), 3);
+        observer.close().await;
+        front.close().await;
+
+        // A stored session is not started by one either.
+        let watcher = core.connect(ClientInfo::observer());
+        refused(
+            core.handle(
+                watcher.id,
+                Op::SessionOpen(SessionRef {
+                    session_id: front.session.clone(),
+                }),
+            )
+            .await,
+        );
+    });
+}
+
+/// The approvals in force for the session.
+async fn listed(front: &Front) -> Vec<cortex_protocol::methods::StoredApproval> {
+    let result = front
+        .op(Op::PermissionsList(SessionRef {
+            session_id: front.session.clone(),
+        }))
+        .await
+        .unwrap();
+    let OpResult::PermissionsList(listed) = result else {
+        panic!("not approvals");
+    };
+    listed.approvals
+}
+
+/// What the user allowed for the session is still the session's own after
+/// the level changed: it still allows, it is listed as the session's, and
+/// an approval given afterwards is another approval, with another id.
+#[test]
+fn what_was_allowed_for_the_session_stays_the_sessions_when_the_level_changes() {
+    let other = ".github/workflows/release.yml";
+    let world = World::new(
+        "allow_session_level",
+        [
+            protected_write("c1"),
+            says("Done."),
+            calls(&[("c2", "read", json!({"path": PROTECTED}))]),
+            calls(&[(
+                "c3",
+                "write",
+                json!({"path": PROTECTED, "content": "on: pull_request\n"}),
+            )]),
+            calls(&[(
+                "c4",
+                "write",
+                json!({"path": other, "content": "on: release\n"}),
+            )]),
+            says("Both."),
+        ],
+    );
+    let core = world.core();
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        front.prompt("set up CI").await;
+        let (id, _) = front.approval().await;
+        front.answer(&id, ApprovalChoice::AllowSession).unwrap();
+        front.turns(1).await;
+        let before = listed(&front).await;
+        assert_eq!(before.len(), 1);
+
+        // Down a level and up again: two new engines.
+        for level in [
+            cortex_protocol::lease::Level::ReadOnly,
+            cortex_protocol::lease::Level::Supervised,
+        ] {
+            front
+                .op(Op::SessionSet(cortex_protocol::methods::SessionSetParams {
+                    session_id: front.session.clone(),
+                    settings: SessionSettings {
+                        level: Some(level),
+                        ..SessionSettings::default()
+                    },
+                }))
+                .await
+                .unwrap();
+        }
+        let after = listed(&front).await;
+        assert_eq!(after, before, "the same approval, still the session's");
+        assert_eq!(
+            after[0].scope,
+            cortex_protocol::methods::ApprovalScope::Session
+        );
+
+        // It still allows; and another file under the same protection is
+        // another question, whose approval is another approval.
+        front.prompt("more CI").await;
+        let (id, request) = front.approval().await;
+        assert_eq!(
+            request.call_id.as_str(),
+            "c4",
+            "the first file was asked again"
+        );
+        front.answer(&id, ApprovalChoice::AllowSession).unwrap();
+        front.turns(2).await;
+        assert_eq!(world.read(PROTECTED).as_deref(), Some("on: pull_request\n"));
+        let both = listed(&front).await;
+        assert_eq!(both.len(), 2, "{both:?}");
+        assert_ne!(both[0].id, both[1].id, "two approvals under one id");
+
+        // Taking the first back takes back the first alone.
+        front
+            .op(Op::PermissionsRevoke(
+                cortex_protocol::methods::PermissionsRevokeParams {
+                    session_id: front.session.clone(),
+                    ids: vec![before[0].id.clone()],
+                },
+            ))
+            .await
+            .unwrap();
+        let left = listed(&front).await;
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].id, both[1].id);
+        front.close().await;
+    });
+}
