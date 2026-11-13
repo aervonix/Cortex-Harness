@@ -50,20 +50,25 @@ Each cost a session hours to find. The details are in [docs/steps/11/](docs/step
 | Run one crate's tests, and build only it | `cargo xtask test -p <crate>` |
 | Check that every link in the docs leads somewhere, and that the step records are in their places | `cargo xtask links` |
 | Run exactly what CI runs | `cargo xtask ci` |
-| See each tier's time and its slowest tests, built as CI builds | `cargo xtask ci --tiers` |
-| Run tests many times over, each under the next seed | `cargo xtask stress -p <crate> --count 300` |
-| Break the code on purpose and see which tests fail | `cargo xtask mutate` |
+| See each tier's time by crate and its slowest tests, built as CI builds | `cargo xtask ci --tiers` |
+| Compare a branch's tiers with `main`'s, by tier, crate and test | `cargo xtask ci --tiers --compare <run id or junit.xml> --against main` |
+| Get a run's job and tier tables for `ci.md` | `cargo xtask ci-times <run id> --against main` |
+| Run tests many times over, each under the next seed | `cargo xtask stress -p <crate> --count 300`, and `--cores 2 --load 6` to make a race show |
+| Break the code on purpose and see which tests fail | `cargo xtask mutate`, `--jobs 4` for four at a time |
+| Edit Rust code by its tokens, so the match survives `rustfmt` | `cargo xtask replace <file> --from '<code>' --to '<code>'` |
+| Ask the permission engine about a command | `cargo xtask decide [--rule '…'] -- <command>` |
 | Format | `cargo xtask fmt` |
 | Regenerate the protocol schema and TypeScript declarations | `cargo xtask schema` |
 | Regenerate every generated file, the configuration schema and reference included | `cargo xtask gen` |
 | Build `cortex` and its alias `cx` | `cargo xtask alias` |
 | Fuzz the stream decoders (needs a nightly toolchain and cargo-fuzz) | `cargo xtask fuzz` |
-| Run the live smoke test, or record provider fixtures: by hand, never in CI, and it costs money | `cargo xtask live [PROVIDER]`, `cargo xtask record [--provider PROVIDER]` |
+| Run the live smoke test, or record provider fixtures: by hand, never in CI, and it costs money | `cargo xtask live [PROVIDER]`, `cargo xtask record [--provider PROVIDER]`, `cargo xtask record --toolbox`; `record --dry-run` sends nothing, `live --spent` totals the spend |
 
 `./x <command>` is the same as `cargo xtask <command>`.
 
 - **Run `cargo xtask ci` before you call a change done**, and read its output: every step runs even when an earlier one fails, so one run shows everything that is wrong.
-- **Windows is checked only by CI** unless you have a Windows machine. Write for both from the start: paths, line endings, process handling, file names that differ only by case. To run a crate's tests on Windows before there is a pull request, push the branch and start the `windows-try` workflow: `gh workflow run windows-try --ref <branch> -f crate=<crate> -f filter=<part of a test's name>` ([docs/testing-and-ci.md](docs/testing-and-ci.md), "A Windows run without a pull request").
+- **Windows is checked only by CI** unless you have a Windows machine. Write for both from the start: paths, line endings, process handling, file names that differ only by case. To run an `xtask` command on Windows, Linux or both before there is a pull request, push the branch and start the `try` workflow: `gh workflow run try --ref <branch> -f os=windows -f command="test -p <crate> <filter>"`, or `-f command=startup -f profile=dist` to measure a release build's start-up ([docs/testing-and-ci.md](docs/testing-and-ci.md), "A run on the runners without a pull request"). The older `windows-try` workflow still works.
+- **When a test runs out of time,** read its output: a test that uses the test kit's gates, scripted server or children says what each thread was waiting for, and its process tree, before nextest stops it. `CORTEX_TESTKIT_PAUSE_MS=<n>` widens the scripted server's races on purpose ([docs/testing-and-ci.md](docs/testing-and-ci.md), "When a test runs out of time").
 - **Stress before you report.** Run `cargo xtask stress -p cortex-agent --count 300` after any change to the loop or its tests, and the same for every crate whose tests start processes, use sockets or cross threads. One green run hides a test that depends on the order things happened to run in. A failure prints its seed, and `CORTEX_TEST_SEED=<seed>` runs it again in the same order.
 - **Then show that the tests bite.** A step's rules are broken on purpose, one at a time, from a list in `mutations/step-NN.breaks`, with `cargo xtask mutate step-NN`: run it until it exits 0 or 1, and put its verdicts in the step's report. `cargo xtask check` fails when a break no longer finds its code: update the break to the code as it is now, or delete it if the rule is gone. The format is in [docs/testing-and-ci.md](docs/testing-and-ci.md), "Breaking the code on purpose".
 - **Before a push, look at the tier times in CI's own build:** `cargo xtask ci --tiers`. A desk's build optimises third-party crates and CI's does not.
