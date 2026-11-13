@@ -86,7 +86,8 @@ Not blocking (the `main` and `nightly` workflows run these)
 
 By hand only, against a real provider (never in CI)
   live [PROVIDER]   The live smoke test, against anthropic (when no provider
-                    is named), openrouter, deepseek or venice.
+                    is named), openrouter, deepseek or venice. For anthropic
+                    and deepseek, then one headless run of the real binary.
   record [--provider PROVIDER] [SCENARIO...]
                     Record provider fixtures, scrubbed. No name: all of them.
                     Both need CORTEX_LIVE_<PROVIDER>_KEY_FILE set to the path

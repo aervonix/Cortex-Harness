@@ -163,8 +163,11 @@ pub(crate) fn models(name: &'static str) -> Done {
             })?;
         let listed = runtime.block_on(async {
             let client = core.connect(ClientInfo::observer());
-            core.handle(client.id, Op::ModelsList(cortex_protocol::methods::Empty {}))
-                .await
+            core.handle(
+                client.id,
+                Op::ModelsList(cortex_protocol::methods::Empty {}),
+            )
+            .await
         });
         let models = match listed {
             Ok(OpResult::ModelsList(list)) => list.models,
@@ -203,7 +206,10 @@ pub(crate) fn config(command: ConfigCommand, name: &'static str) -> Done {
             layer,
             common,
         } => {
-            let layer = match layer.as_deref().map(|name| (name, LayerKind::from_name(name))) {
+            let layer = match layer
+                .as_deref()
+                .map(|name| (name, LayerKind::from_name(name)))
+            {
                 Some((name, None)) => {
                     context.say(&format!(
                         "'{name}' is not a layer: default, managed, user, project, \

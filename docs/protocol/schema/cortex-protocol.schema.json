@@ -1997,7 +1997,6 @@
           "type": "array"
         },
         "duration_ms": {
-          "default": 0,
           "description": "Milliseconds from the start of the process to this record.",
           "format": "uint64",
           "minimum": 0,
@@ -2015,7 +2014,6 @@
           "description": "The failure, when there was one."
         },
         "files_changed": {
-          "default": [],
           "description": "The files the run created, changed or deleted, relative to the\nworkspace, sorted.",
           "items": {
             "type": "string"
@@ -2027,7 +2025,6 @@
           "description": "How the run ended."
         },
         "permission_denials": {
-          "default": [],
           "description": "The calls that were refused because nothing could approve them.",
           "items": {
             "$ref": "#/$defs/PermissionDenial"
@@ -2035,19 +2032,17 @@
           "type": "array"
         },
         "requests": {
-          "default": 0,
           "description": "How many requests were made to a model.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "result": {
-          "default": "",
           "description": "The text of the assistant's last message. Empty when it wrote none.",
           "type": "string"
         },
         "schema": {
-          "description": "The version of the records' shape: [`HEADLESS_SCHEMA`].",
+          "description": "The version of the records' shape, 1 for this one.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
@@ -2075,7 +2070,6 @@
           "description": "Why the last response ended."
         },
         "tool_calls": {
-          "default": 0,
           "description": "How many tool calls were made.",
           "format": "uint64",
           "minimum": 0,
@@ -2083,18 +2077,19 @@
         },
         "usage": {
           "$ref": "#/$defs/TokenUsage",
-          "default": {
-            "cache_read": 0,
-            "cache_write": 0,
-            "input": 0,
-            "output": 0
-          },
           "description": "Tokens, by class."
         }
       },
       "required": [
         "schema",
-        "outcome"
+        "outcome",
+        "result",
+        "usage",
+        "requests",
+        "tool_calls",
+        "duration_ms",
+        "files_changed",
+        "permission_denials"
       ],
       "type": "object"
     },
@@ -2106,7 +2101,7 @@
           "description": "The main role's model."
         },
         "schema": {
-          "description": "The version of the records' shape: [`HEADLESS_SCHEMA`].",
+          "description": "The version of the records' shape, 1 for this one.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"

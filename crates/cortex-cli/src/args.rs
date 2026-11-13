@@ -498,7 +498,11 @@ fn subcommand(topic: Topic, parser: &mut Parser) -> Result<Command, UsageError> 
                         other => return Err(unexpected(&other)),
                     }
                 }
-                Ok(Command::Sessions(SessionsCommand::List { all, limit, json }))
+                Ok(Command::Sessions(SessionsCommand::List {
+                    all,
+                    limit,
+                    json,
+                }))
             }
             other => Err(wrong(other)),
         },
@@ -567,9 +571,8 @@ fn subcommand(topic: Topic, parser: &mut Parser) -> Result<Command, UsageError> 
                 }
             }
             let named = |provider: Option<String>| {
-                provider.ok_or_else(|| {
-                    UsageError(format!("'auth {action}' takes the provider's name"))
-                })
+                provider
+                    .ok_or_else(|| UsageError(format!("'auth {action}' takes the provider's name")))
             };
             match action.as_str() {
                 "status" => Ok(Command::Auth(AuthCommand::Status)),
@@ -696,7 +699,9 @@ mod tests {
         }
         assert_eq!(
             parse_words(&["--no-such-flag"]),
-            Err(UsageError("unexpected argument '--no-such-flag'".to_owned()))
+            Err(UsageError(
+                "unexpected argument '--no-such-flag'".to_owned()
+            ))
         );
     }
 
@@ -718,6 +723,9 @@ mod tests {
         );
         assert_eq!(parse_words(&["config"]), Ok(Command::Help(Topic::Config)));
         // After a flag, the same word is part of the prompt.
-        assert_eq!(run_of(&["-p", "sessions"]).prompt.as_deref(), Some("sessions"));
+        assert_eq!(
+            run_of(&["-p", "sessions"]).prompt.as_deref(),
+            Some("sessions")
+        );
     }
 }

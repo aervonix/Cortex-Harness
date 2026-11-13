@@ -73,7 +73,7 @@ const CRATES: &[(&str, &[&str])] = &[
     (RPC, &[PROTOCOL, CORE]),
     (TERM, &[BASE]),
     (TUI, &[PROTOCOL, BASE, TERM]),
-    (CLI, &[CORE, RPC, TUI, CONFIG]),
+    (CLI, &[PROTOCOL, BASE, SANDBOX, CORE, RPC, TUI, CONFIG]),
     (TESTKIT, &[PROTOCOL, BASE, LLM, TERM]),
 ];
 

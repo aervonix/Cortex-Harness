@@ -18,6 +18,8 @@
 //! | `runs` | Every exit code, each output format, and that standard output carries only the result. |
 //! | `signals` | Ctrl-C, SIGTERM and Ctrl-Break; the second Ctrl-C; the guard of a killed harness; a run with no console. |
 //! | `commands` | The subcommands, and a project trusted through one. |
+//! | `live` | The one run against a real model, ignored: `cargo xtask live` starts it. |
+//! | `tools` | The real toolbox as a strict variant declares it. |
 
 #![allow(
     clippy::disallowed_methods,
@@ -33,9 +35,11 @@
 )]
 
 mod commands;
+mod live;
 mod names;
 mod runs;
 mod signals;
+mod tools;
 
 use std::ffi::OsString;
 use std::fs;
@@ -151,6 +155,11 @@ impl Machine {
         .unwrap();
     }
 
+    /// Writes the user's configuration file as it is given.
+    pub fn raw_user_config(&self, content: &str) {
+        fs::write(self.dirs().user_config.unwrap(), content).unwrap();
+    }
+
     /// Writes the project's configuration file.
     pub fn project_config(&self, content: &str) {
         let dir = self.workspace.join(".cortex");
@@ -189,11 +198,18 @@ impl Machine {
         Run::of(self.command(arguments).output().expect("the binary runs"))
     }
 
-    /// The server's next answer: a recorded fixture of `cortex-llm`.
+    /// The server's next answer: a recorded Anthropic fixture of
+    /// `cortex-llm`.
     pub fn reply_fixture(&self, name: &str) {
+        self.reply_fixture_of("anthropic-messages", name);
+    }
+
+    /// The server's next answer: a recorded fixture of `cortex-llm`, of
+    /// `protocol`.
+    pub fn reply_fixture_of(&self, protocol: &str, name: &str) {
         let directory = fixture::directory(
             concat!(env!("CARGO_MANIFEST_DIR"), "/../cortex-llm"),
-            "anthropic-messages",
+            protocol,
         )
         .join(name);
         let recorded = Fixture::load(&directory).unwrap();
@@ -276,7 +292,13 @@ impl Run {
 
     /// Asserts the exit code, showing both streams when it is not.
     pub fn expect_code(&self, code: i32) -> &Self {
-        assert_eq!(self.code, Some(code), "stdout:\n{}\nstderr:\n{}", self.stdout, self.stderr);
+        assert_eq!(
+            self.code,
+            Some(code),
+            "stdout:\n{}\nstderr:\n{}",
+            self.stdout,
+            self.stderr
+        );
         self
     }
 

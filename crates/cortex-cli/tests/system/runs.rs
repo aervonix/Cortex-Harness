@@ -37,8 +37,16 @@ fn sys_exit_0_in_each_format_with_only_the_result_on_standard_output() {
     let lines = jsonl(&lines.stdout);
     assert_eq!(lines[0]["model"], crate::MODEL);
     assert_eq!(lines[0]["session_id"], record_session(&lines));
-    let types: Vec<&str> = lines.iter().filter_map(|line| line["type"].as_str()).collect();
-    for wanted in ["turn.started", "item.delta", "item.completed", "turn.completed"] {
+    let types: Vec<&str> = lines
+        .iter()
+        .filter_map(|line| line["type"].as_str())
+        .collect();
+    for wanted in [
+        "turn.started",
+        "item.delta",
+        "item.completed",
+        "turn.completed",
+    ] {
         assert!(types.contains(&wanted), "{wanted} in {types:?}");
     }
     assert_eq!(lines.last().unwrap()["outcome"], "completed");
@@ -47,7 +55,10 @@ fn sys_exit_0_in_each_format_with_only_the_result_on_standard_output() {
     machine.reply_fixture("text");
     let whole = machine.run(&["-p", "say hello", "--output", "jsonl"]);
     let whole = jsonl(&whole.expect_code(0).stdout);
-    assert!(whole.iter().all(|line| line["type"] != "item.delta"), "{whole:?}");
+    assert!(
+        whole.iter().all(|line| line["type"] != "item.delta"),
+        "{whole:?}"
+    );
 }
 
 fn record_session(lines: &[serde_json::Value]) -> serde_json::Value {
@@ -61,7 +72,12 @@ fn sys_piped_input_comes_before_the_prompt_and_a_tool_call_is_not_on_standard_ou
     machine.reply_tool("toolu_1", "read", &json!({"path": "notes.txt"}));
     machine.reply_text("Read it.");
     let mut child = machine
-        .command(&["-p", "summarise this"])
+        .command(&[
+            "-p",
+            "summarise this",
+            "--system-append",
+            "Answer in haiku.",
+        ])
         .stdin(Stdio::piped())
         .spawn()
         .unwrap();
@@ -79,6 +95,7 @@ fn sys_piped_input_comes_before_the_prompt_and_a_tool_call_is_not_on_standard_ou
         first.contains("context from a pipe\\n\\nsummarise this"),
         "{first}"
     );
+    assert!(first.contains("Answer in haiku."), "{first}");
 }
 
 #[test]
@@ -165,6 +182,7 @@ fn sys_exit_6_with_fail_on_denial_and_a_denial_listed_without_it() {
     let refused = machine.run(&["-p", "write a note", "--output", "json"]);
     let record = refused.expect_code(0).json();
     assert_eq!(record["result"], "I could not write it.");
+    assert_eq!(record["files_changed"], json!([]));
     assert_eq!(record["permission_denials"][0]["tool"], "write");
     assert_eq!(record["permission_denials"][0]["call_id"], "toolu_1");
     assert!(!machine.workspace.join(target).exists());
@@ -175,7 +193,11 @@ fn sys_exit_6_with_fail_on_denial_and_a_denial_listed_without_it() {
     let record = failed.expect_code(6).json();
     assert_eq!(record["outcome"], "denied");
     assert_eq!(record["permission_denials"][0]["call_id"], "toolu_2");
-    assert_eq!(machine.server.requests().len(), 3, "nothing was sent after the denial");
+    assert_eq!(
+        machine.server.requests().len(),
+        3,
+        "nothing was sent after the denial"
+    );
 
     // An allow rule on the command line lets it through.
     machine.reply_tool("toolu_3", "write", &write);
@@ -197,10 +219,19 @@ fn sys_exit_7_at_a_limit() {
     let machine = Machine::new("sys_exit_7");
     std::fs::write(machine.workspace.join("notes.txt"), "the notes\n").unwrap();
     machine.reply_tool("toolu_1", "read", &json!({"path": "notes.txt"}));
-    let run = machine.run(&["-p", "read the notes", "--max-requests", "1", "--output", "jsonl"]);
+    let run = machine.run(&[
+        "-p",
+        "read the notes",
+        "--max-requests",
+        "1",
+        "--output",
+        "jsonl",
+    ]);
     run.expect_code(7);
     let lines = jsonl(&run.stdout);
     assert_eq!(lines.last().unwrap()["outcome"], "limit");
+    // A read changes nothing.
+    assert_eq!(lines.last().unwrap()["files_changed"], json!([]));
     assert_eq!(machine.server.requests().len(), 1);
 }
 
@@ -241,13 +272,25 @@ fn sys_continue_resumes_the_latest_session_and_no_session_keeps_none() {
     let fresh = machine.run(&["-p", "three", "--no-session", "--output", "json"]);
     assert_ne!(fresh.expect_code(0).json()["session_id"], session);
     let listed = machine.run(&["sessions", "list", "--json"]);
-    assert_eq!(listed.expect_code(0).stdout.lines().count(), 1, "{}", shown(&listed));
+    assert_eq!(
+        listed.expect_code(0).stdout.lines().count(),
+        1,
+        "{}",
+        shown(&listed)
+    );
     assert!(listed.stdout.contains(session.as_str().unwrap()));
 
     // The flags that choose a model and a speed are the user's own.
     machine.reply_text("Fourth.");
     let chosen = machine.run(&[
-        "-p", "four", "--model", OTHER_MODEL, "--speed", "fast", "--output", "jsonl",
+        "-p",
+        "four",
+        "--model",
+        OTHER_MODEL,
+        "--speed",
+        "fast",
+        "--output",
+        "jsonl",
     ]);
     let lines = jsonl(&chosen.expect_code(0).stdout);
     assert_eq!(lines[0]["model"], OTHER_MODEL);

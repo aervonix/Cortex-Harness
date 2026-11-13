@@ -39,8 +39,16 @@ fn assert_same_under_both_names(machine: &Machine, args: &[&str], expected_code:
             .replace("`cortex", "`cx")
             .replace("'cortex ", "'cx ")
     };
-    assert_eq!(as_cx.stdout, swap(&as_cortex.stdout), "standard output of cx {args:?}");
-    assert_eq!(as_cx.stderr, swap(&as_cortex.stderr), "standard error of cx {args:?}");
+    assert_eq!(
+        as_cx.stdout,
+        swap(&as_cortex.stdout),
+        "standard output of cx {args:?}"
+    );
+    assert_eq!(
+        as_cx.stderr,
+        swap(&as_cortex.stderr),
+        "standard error of cx {args:?}"
+    );
 }
 
 #[test]
@@ -73,10 +81,19 @@ fn sys_help_differs_only_in_the_name_used() {
         assert_same_under_both_names(&machine, args, 0);
     }
     let alias = install_alias(&machine);
-    let help = |program: &Path| crate::Run::of(machine.command_as(program, &["--help"]).output().unwrap());
+    let help =
+        |program: &Path| crate::Run::of(machine.command_as(program, &["--help"]).output().unwrap());
     assert!(help(&alias).stdout.contains("Usage: cx [OPTIONS]"));
-    assert!(help(Path::new(CORTEX)).stdout.contains("Usage: cortex [OPTIONS]"));
-    assert!(!help(&alias).stdout.contains("cortex "), "{}", help(&alias).stdout);
+    assert!(
+        help(Path::new(CORTEX))
+            .stdout
+            .contains("Usage: cortex [OPTIONS]")
+    );
+    assert!(
+        !help(&alias).stdout.contains("cortex "),
+        "{}",
+        help(&alias).stdout
+    );
 }
 
 #[test]

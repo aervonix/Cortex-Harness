@@ -61,6 +61,7 @@ pub mod retry;
 pub mod speed;
 pub mod sse;
 pub mod stream;
+mod strict;
 pub mod time;
 pub mod transport;
 pub mod usage;

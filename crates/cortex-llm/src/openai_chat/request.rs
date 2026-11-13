@@ -423,6 +423,7 @@ fn tools(body: &mut Object<'_>, request: &ModelRequest) -> Result<(), BuildError
         return Ok(());
     }
     let strict = request.variants.tool_schema == ToolSchemaStyle::Strict;
+    let mut budget = crate::strict::Budget::new(crate::strict::Rules::OpenAi);
     let mut list = Array::open(body.key("tools"));
     for tool in &request.tools {
         if !is_valid_tool_name(&tool.name) {
@@ -436,7 +437,14 @@ fn tools(body: &mut Object<'_>, request: &ModelRequest) -> Result<(), BuildError
         let mut function = Object::open(object.key("function"));
         function.str("name", &tool.name);
         function.str("description", &tool.description);
-        function.value("parameters", &tool.schema);
+        // Strict functions are sent reduced to what OpenAI's strict mode
+        // takes; one that cannot be is sent whole, and not strict.
+        let (schema, strict) = if strict {
+            budget.reduce(&tool.schema)
+        } else {
+            (std::borrow::Cow::Borrowed(&tool.schema), false)
+        };
+        function.value("parameters", &schema);
         if strict {
             function.yes("strict");
         }

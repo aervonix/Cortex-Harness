@@ -7,7 +7,9 @@
 //! Both run ignored tests of `cortex-llm` (the `live` module of each
 //! protocol's tests), which is where the HTTP client is. Doing it here
 //! would mean building the whole HTTP and TLS stack into this crate, which
-//! every CI job builds before it does anything else.
+//! every CI job builds before it does anything else. For Anthropic, `live`
+//! then runs the one live run of the whole harness: an ignored system test
+//! of `cortex-cli` that starts the real binary headless (step 13b).
 //!
 //! Each takes the provider to talk to ([`PROVIDERS`]); without one it is
 //! Anthropic. The API key is never an argument and never in the
@@ -41,6 +43,9 @@ struct LiveProvider {
     /// Its smoke test and its recorder: ignored tests of `cortex-llm`.
     smoke: &'static str,
     record: &'static str,
+    /// A headless run of the real binary against it: an ignored test of
+    /// `cortex-cli`'s system tests, run by `live` after the smoke test.
+    headless: Option<&'static str>,
 }
 
 /// The providers the live commands can talk to. The first is the one a
@@ -51,24 +56,28 @@ const PROVIDERS: &[LiveProvider] = &[
         key_file: "CORTEX_LIVE_ANTHROPIC_KEY_FILE",
         smoke: "anthropic::live::live_smoke",
         record: "anthropic::live::live_record",
+        headless: Some("live::live_headless_run"),
     },
     LiveProvider {
         name: "openrouter",
         key_file: "CORTEX_LIVE_OPENROUTER_KEY_FILE",
         smoke: "openai_chat::live::live_smoke_openrouter",
         record: "openai_chat::live::live_record_openrouter",
+        headless: None,
     },
     LiveProvider {
         name: "deepseek",
         key_file: "CORTEX_LIVE_DEEPSEEK_KEY_FILE",
         smoke: "openai_chat::live::live_smoke_deepseek",
         record: "openai_chat::live::live_record_deepseek",
+        headless: Some("live::live_headless_run_deepseek"),
     },
     LiveProvider {
         name: "venice",
         key_file: "CORTEX_LIVE_VENICE_KEY_FILE",
         smoke: "openai_chat::live::live_smoke_venice",
         record: "openai_chat::live::live_record_venice",
+        headless: None,
     },
 ];
 
@@ -120,21 +129,26 @@ fn require_key_file(provider: &LiveProvider) -> Result<()> {
 /// fails unless exactly one test ran and passed. What the test prints has
 /// already been checked for the key by the test itself.
 fn ignored_test(name: &str, variables: &[(&str, &str)]) -> Result<()> {
-    let arguments = [
-        "test",
-        "--locked",
-        "--package",
-        "cortex-llm",
-        "--features",
-        "http",
-        "--test",
-        "it",
-        "--",
-        "--ignored",
-        "--exact",
+    run_ignored(
+        &[
+            "--package",
+            "cortex-llm",
+            "--features",
+            "http",
+            "--test",
+            "it",
+        ],
         name,
-        "--nocapture",
-    ];
+        variables,
+    )
+}
+
+/// Runs one ignored test of the test binary `selection` names, and shows
+/// its output. Fails unless exactly one test ran and passed.
+fn run_ignored(selection: &[&str], name: &str, variables: &[(&str, &str)]) -> Result<()> {
+    let mut arguments = vec!["test", "--locked"];
+    arguments.extend_from_slice(selection);
+    arguments.extend_from_slice(&["--", "--ignored", "--exact", name, "--nocapture"]);
     println!("$ cargo {}", arguments.join(" "));
     let output = Command::new(workspace::cargo())
         .args(arguments)
@@ -178,7 +192,11 @@ pub(crate) fn live(arguments: &[String]) -> Result<()> {
         }
     };
     require_key_file(provider)?;
-    ignored_test(provider.smoke, &[])
+    ignored_test(provider.smoke, &[])?;
+    match provider.headless {
+        Some(name) => run_ignored(&["--package", "cortex-cli", "--test", "system"], name, &[]),
+        None => Ok(()),
+    }
 }
 
 /// `cargo xtask record [--provider PROVIDER] [SCENARIO…]`: record fixtures
