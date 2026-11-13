@@ -37,7 +37,12 @@ These are the rules of the build plan. They hold in every change.
 | Check formatting, repo rules, lints and licences | `cargo xtask check` |
 | Run all tests | `cargo xtask test` |
 | Run tiers 1 and 2 only | `cargo xtask test --profile fast` |
+| Run one crate's tests, and build only it | `cargo xtask test -p <crate>` |
+| Check that every link in the docs leads somewhere, and that the step records are in their places | `cargo xtask links` |
 | Run exactly what CI runs | `cargo xtask ci` |
+| See each tier's time and its slowest tests, built as CI builds | `cargo xtask ci --tiers` |
+| Run tests many times over, each under the next seed | `cargo xtask stress -p <crate> --count 300` |
+| Break the code on purpose and see which tests fail | `cargo xtask mutate` |
 | Format | `cargo xtask fmt` |
 | Regenerate the protocol schema and TypeScript declarations | `cargo xtask schema` |
 | Regenerate every generated file, the configuration schema and reference included | `cargo xtask gen` |
@@ -48,7 +53,11 @@ These are the rules of the build plan. They hold in every change.
 `./x <command>` is the same as `cargo xtask <command>`.
 
 - **Run `cargo xtask ci` before you call a change done**, and read its output: every step runs even when an earlier one fails, so one run shows everything that is wrong.
-- **Windows is checked only by CI** unless you have a Windows machine. Write for both from the start: paths, line endings, process handling, file names that differ only by case.
+- **Windows is checked only by CI** unless you have a Windows machine. Write for both from the start: paths, line endings, process handling, file names that differ only by case. To run a crate's tests on Windows before there is a pull request, push the branch and start the `windows-try` workflow: `gh workflow run windows-try --ref <branch> -f crate=<crate> -f filter=<part of a test's name>` ([docs/testing-and-ci.md](docs/testing-and-ci.md), "A Windows run without a pull request").
+- **Stress before you report.** Run `cargo xtask stress -p cortex-agent --count 300` after any change to the loop or its tests, and the same for every crate whose tests start processes, use sockets or cross threads. One green run hides a test that depends on the order things happened to run in. A failure prints its seed, and `CORTEX_TEST_SEED=<seed>` runs it again in the same order.
+- **Then show that the tests bite.** A step's rules are broken on purpose, one at a time, from a list in `mutations/step-NN.breaks`, with `cargo xtask mutate step-NN`: run it until it exits 0 or 1, and put its verdicts in the step's report. `cargo xtask check` fails when a break no longer finds its code: update the break to the code as it is now, or delete it if the rule is gone. The format is in [docs/testing-and-ci.md](docs/testing-and-ci.md), "Breaking the code on purpose".
+- **Before a push, look at the tier times in CI's own build:** `cargo xtask ci --tiers`. A desk's build optimises third-party crates and CI's does not.
+- **In a Claude Code worktree session, the shell guard refuses a compound command that mentions `git` or `.git` together with a pipe, a heredoc or an `&&` chain of other tools.** Write such work as a script with the Write tool and run it in a separate call; run `git` and `gh` as short commands of their own.
 - **Which crate may depend on which** is fixed by [docs/architecture/01-workspace.md](docs/architecture/01-workspace.md) and checked by `cargo xtask rules`. Do not add an edge to make something compile. If the design is wrong, say so and change the page.
 - **Tests:** unit tests in `#[cfg(test)]` modules; one integration binary per crate at `tests/it/main.rs`; tests that start a process are named `sys_…`. No sleeping, no network, no doc tests.
 - **A pull request that touches only `docs/**` and `*.md`** skips the Rust build and tests in CI and runs only the repo rules. Anything else runs everything, and so does a change to the generated files in `docs/protocol/` or `docs/configuration/`.
