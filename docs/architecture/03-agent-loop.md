@@ -78,9 +78,11 @@ A round has four phases. The split exists so that policy and scheduling work fro
 
 | Concurrency class | Examples | Rule |
 |---|---|---|
-| Read-only | read, search, list | Run in parallel, up to the limit (default 8). |
-| Mutating, keyed | write and edit, keyed by canonical path | Calls on the same path run one at a time in call order. Calls on different paths run in parallel. |
+| Read-only | read, search, list | Run in parallel, up to the limit (default 8). A read-only call still waits its turn behind a keyed call it conflicts with (below). |
+| Mutating, keyed | write and edit, keyed by canonical path | Calls on the same path run one at a time in call order, and so do calls where one path is inside the other. Calls on unrelated paths run in parallel. |
 | Exclusive | shell (default), tools from extensions unless they declare otherwise | Runs alone: it waits for running calls to finish, and later calls wait for it. |
+
+**A read conflicts with a write to what it reads.** A keyed call conflicts with a read-only call that reads one of its paths, lists or walks a directory that holds one, or reads something inside one. `edit a.rs` followed by `read a.rs` in one response therefore sees the edit, and `write src/new.rs` followed by `list src` sees the file. Two read-only calls never conflict. The rule is `Plan::conflicts_with` in `cortex-tools` ([05-tools.md](05-tools.md), "The tool trait"), which works from each plan's effects and paths; it was settled in step 6. A tool from an extension or an MCP server whose spec says exclusive is exclusive whatever its plan says.
 
 Conflicting calls always run in the model's order. Calls that do not conflict run together. The class is part of each tool's contract ([05-tools.md](05-tools.md)), and a tool may refine it per call (for example a shell command that the policy has proven read-only).
 

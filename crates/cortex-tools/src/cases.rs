@@ -1,6 +1,11 @@
 //! Property tests without a property-testing crate
 //! (`docs/testing-and-ci.md`, "Property tests").
 //!
+//! TODO(step 7): this is a copy of the helper in `cortex-base`, which is
+//! private to that crate's tests. The test kit has the shared copy since
+//! step 5 (`cortex_testkit::cases`). Step 7 makes the test kit a
+//! dev-dependency of this crate, uses that copy, and deletes this file.
+//!
 //! A property is checked against many generated inputs. Each input comes
 //! from a [`SeededRng`] whose seed is derived from the property's name and
 //! the case number, so a run is the same on every machine, and one failing
