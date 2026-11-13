@@ -985,6 +985,8 @@ pub(crate) fn assemble(
             path: temp_path,
             made,
         },
+        &root.to_fs_path(),
+        options.protect_limits.unwrap_or_default(),
     ));
     let policy = Arc::new(EnginePolicy::new(PolicyParts {
         engine,
@@ -1035,10 +1037,12 @@ pub(crate) fn assemble(
         if let Some(inherited) = &options.shell_env {
             tool = tool.with_inherited_env(inherited.iter().cloned());
         }
-        toolbox = match &rounds {
-            Some(rounds) => toolbox.with(RecordingShell::new(tool, Arc::clone(rounds))),
-            None => toolbox.with(tool),
-        };
+        toolbox = toolbox.with(RecordingShell::new(
+            tool,
+            rounds.clone(),
+            Arc::clone(&sandbox),
+            Arc::clone(&policy),
+        ));
     }
 
     // ------------------------------------------- what the log starts with

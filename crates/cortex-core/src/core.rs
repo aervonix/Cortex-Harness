@@ -136,6 +136,9 @@ pub struct CoreOptions {
     /// (`cortex_sandbox::support::detect`): a test's, which says the kernel
     /// has no Landlock, or an old one.
     pub sandbox: Option<cortex_sandbox::support::Support>,
+    /// How far the look at protected paths around a confined command goes,
+    /// in place of its standard bounds: a test's, which reaches them.
+    pub protect_limits: Option<cortex_sandbox::protect::Limits>,
     /// API keys given on the command line, by provider. Looked at before
     /// the environment and the credential store.
     pub api_keys: BTreeMap<String, Secret>,
@@ -205,6 +208,7 @@ impl CoreOptions {
             guard: None,
             launcher: None,
             sandbox: None,
+            protect_limits: None,
             api_keys: BTreeMap::new(),
             key_found: None,
             connector: None,

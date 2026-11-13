@@ -266,6 +266,12 @@ fn spec(shell: &Shell, config: &ShellConfig) -> ToolSpec {
                     "description": format!(
                         "The time limit in milliseconds. {default_ms} unless given, and at most {max_ms}."
                     )
+                },
+                "sandbox": {
+                    "type": "boolean",
+                    "description": "Leave out, or true, to run in the sandbox. false runs the \
+                                    command outside it, with the user's full rights, after the \
+                                    user approves: only for a command the sandbox blocked."
                 }
             },
             "required": ["command"],
@@ -285,6 +291,7 @@ struct Arguments {
     command: String,
     cwd: Option<String>,
     timeout_ms: Option<u64>,
+    sandbox: Option<bool>,
 }
 
 /// A validated call.
@@ -294,6 +301,9 @@ struct Call {
     line: CommandLine,
     cwd: ResolvedPath,
     timeout: Duration,
+    /// Whether the command is started through the launcher: false when
+    /// the model asked to leave the sandbox.
+    confined: bool,
 }
 
 impl Tool for ShellTool {
@@ -326,9 +336,13 @@ impl Tool for ShellTool {
             .map_or(self.config.timeout, Duration::from_millis)
             .min(self.config.max_timeout);
 
+        let confined = arguments.sandbox != Some(false);
         let mut summary = format!("Run `{}`", summary_of(&arguments.command));
         if cwd != workspace {
             summary.push_str(&format!(" in {}", cwd.display()));
+        }
+        if !confined {
+            summary.push_str(" outside the sandbox");
         }
         let mut plan = Plan::new(
             summary,
@@ -337,6 +351,7 @@ impl Tool for ShellTool {
                 line,
                 cwd: cwd.clone(),
                 timeout,
+                confined,
             },
         )
         .with_effect(Effect::Exec {
@@ -347,6 +362,9 @@ impl Tool for ShellTool {
         .with_concurrency(Concurrency::Exclusive);
         if !cwd.is_inside_workspace() {
             plan = plan.with_effect(Effect::Write(cwd));
+        }
+        if !confined {
+            plan = plan.with_effect(Effect::Unconfined);
         }
         Ok(plan)
     }
@@ -390,15 +408,19 @@ impl Tool for ShellTool {
                 None => None,
             };
 
-            let launch = match self
-                .launcher
-                .launch(call.line, &LaunchCx::new(cx.paths.root(), call.cwd.abs()))
-            {
-                Ok(launch) => launch,
-                Err(reason) => {
-                    return ToolResult::error(format!("The command was not started: {reason}"));
-                }
+            // A call the user let leave the sandbox is started as it is.
+            let launcher: Arc<dyn Launcher> = if call.confined {
+                Arc::clone(&self.launcher)
+            } else {
+                Arc::new(Direct)
             };
+            let launch =
+                match launcher.launch(call.line, &LaunchCx::new(cx.paths.root(), call.cwd.abs())) {
+                    Ok(launch) => launch,
+                    Err(reason) => {
+                        return ToolResult::error(format!("The command was not started: {reason}"));
+                    }
+                };
             // The plain spelling: a program is not given the form of
             // path that only file calls understand.
             let cwd: std::path::PathBuf = call.cwd.abs().to_native_string().into();
@@ -456,10 +478,7 @@ impl Tool for ShellTool {
             let payload = payload(&self.shell, &finished, changes.as_ref());
             let limits = cx.limits;
             let store = Arc::clone(&cx.store);
-            let explain = {
-                let launcher = Arc::clone(&self.launcher);
-                move |exit: Option<Exit>, output: &str| launcher.explain(exit, output)
-            };
+            let explain = move |exit: Option<Exit>, output: &str| launcher.explain(exit, output);
             let fallback = finished.clone();
             let written = run_blocking(&free, move |_| {
                 write_result(&finished, &limits, keep, store.as_ref(), &explain)

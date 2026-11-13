@@ -79,6 +79,9 @@ pub(crate) struct EnginePolicy {
     /// follows the session's level, since nothing is confined at
     /// `unrestricted`.
     sandboxed: std::sync::atomic::AtomicBool,
+    /// The turn whose later calls are stopped, and why: a confined command
+    /// changed protected paths in it.
+    stopped: Mutex<Option<(u64, String)>>,
     denials: Mutex<Vec<PermissionDenial>>,
 }
 
@@ -114,6 +117,7 @@ impl EnginePolicy {
             timeout: parts.timeout,
             fail_on_denial: parts.fail_on_denial,
             sandboxed: std::sync::atomic::AtomicBool::new(parts.sandboxed),
+            stopped: Mutex::new(None),
             denials: Mutex::new(Vec::new()),
         }
     }
@@ -121,6 +125,23 @@ impl EnginePolicy {
     /// The engine in force.
     pub(crate) fn engine(&self) -> Arc<Engine> {
         Arc::clone(&self.engine.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Stops turn `turn` at its next call: a confined command changed
+    /// protected paths, and the user is to look before anything else runs.
+    pub(crate) fn stop_turn(&self, turn: u32, reason: String) {
+        *self.stopped.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((u64::from(turn), reason));
+    }
+
+    /// Why `call`'s turn was stopped, if it was.
+    fn stopped(&self, call: &PlannedCall<'_>) -> Option<String> {
+        let number = cortex_base::IdCounter::new("t_").number_of(call.turn.as_str())?;
+        let stopped = self.stopped.lock().unwrap_or_else(PoisonError::into_inner);
+        stopped
+            .as_ref()
+            .filter(|(turn, _)| *turn == number)
+            .map(|(_, reason)| reason.clone())
     }
 
     /// Says whether commands run confined from now on.
@@ -222,6 +243,7 @@ fn accesses(call: &PlannedCall<'_>) -> Option<Vec<Access>> {
                 },
                 Effect::Network(NetworkTarget::Any) => Access::Network { host: None },
                 Effect::Ext { tool } => Access::Ext { tool: tool.clone() },
+                Effect::Unconfined => Access::Unconfined,
                 // An effect this version does not know cannot be shown to
                 // the engine as something it knows, and leaving it out
                 // would have the engine decide on less than the call does.
@@ -234,6 +256,9 @@ fn accesses(call: &PlannedCall<'_>) -> Option<Vec<Access>> {
 /// Exactly what an approval would let happen, for the front end to show.
 fn detail(call: &PlannedCall<'_>, sandboxed: bool) -> ApprovalDetail {
     let effects = &call.plan.effects;
+    // A call that asked to leave the sandbox runs outside it, whatever the
+    // session's other commands do.
+    let sandboxed = sandboxed && !effects.contains(&Effect::Unconfined);
     let command = effects.iter().find_map(|effect| match effect {
         Effect::Exec { command, cwd } => Some(ApprovalDetail::Command(CommandDetail {
             command: command.clone(),
@@ -298,6 +323,9 @@ impl Drop for Asked<'_> {
 
 impl Policy for EnginePolicy {
     fn decide(&self, call: &PlannedCall<'_>) -> Decision {
+        if let Some(reason) = self.stopped(call) {
+            return Decision::Stop { reason };
+        }
         match self.outcome(call) {
             Outcome::Allow { read_only: true } => Decision::AllowReadOnly,
             Outcome::Allow { read_only: false } => Decision::Allow,
@@ -310,6 +338,9 @@ impl Policy for EnginePolicy {
 
     fn ask<'a>(&'a self, call: PlannedCall<'a>) -> BoxFuture<'a, Verdict> {
         Box::pin(async move {
+            if let Some(reason) = self.stopped(&call) {
+                return Verdict::Stop { reason };
+            }
             // Decided again: an answer to an earlier question of the round
             // may have settled this one.
             let question = match self.outcome(&call) {

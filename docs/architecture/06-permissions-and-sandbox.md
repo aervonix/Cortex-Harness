@@ -53,21 +53,22 @@ A level says who decides when no rule has already settled the question: the **ho
 
 **As built in step 12** (`cortex-policy`, `level`). The table is one function, `decider(level, matter)`, with a column for each kind of thing to decide, and a test holds it against the rows above.
 
-| Level | Read | Read beyond the scope | Edit | Write beyond the scope | Read-only command | Safe command that may write | Other command | Network from a tool |
-|---|---|---|---|---|---|---|---|---|
-| `read-only` | holder | supervisor | refused | refused | holder | supervisor | supervisor | supervisor |
-| `supervised` | holder | supervisor | holder | supervisor | holder | holder | supervisor | supervisor |
-| `guided` | holder | supervisor | holder | supervisor | holder | holder | supervisor | supervisor |
-| `autonomous` | holder | supervisor | holder | supervisor | holder | holder | holder | supervisor |
-| `unrestricted` | holder | holder | holder | holder | holder | holder | holder | holder |
+| Level | Read | Read beyond the scope | Edit | Write beyond the scope | Read-only command | Safe command that may write | Other command | Network from a tool | Leave the sandbox |
+|---|---|---|---|---|---|---|---|---|---|
+| `read-only` | holder | supervisor | refused | refused | holder | supervisor | supervisor | supervisor | supervisor |
+| `supervised` | holder | supervisor | holder | supervisor | holder | holder | supervisor | supervisor | supervisor |
+| `guided` | holder | supervisor | holder | supervisor | holder | holder | supervisor | supervisor | supervisor |
+| `autonomous` | holder | supervisor | holder | supervisor | holder | holder | holder | supervisor | supervisor |
+| `unrestricted` | holder | holder | holder | holder | holder | holder | holder | holder | holder |
 
 - **The scope of a standing lease is its writable roots:** the workspace and the session's private temporary directory, plus `sandbox.write`. A read or an edit under one of them is inside the scope. The sandbox's `read` set is not asked: it says what a child process may read, and a file tool's read outside the workspace asks ([05-tools.md](05-tools.md), "Paths").
 - **Three things are beyond the scope wherever they are.** A path outside the writable roots. A write to a protected path ("Protected paths", below): whoever can write one can run code later. And a file that looks like a secret, read or written ("Files that look like secrets", below).
 - **A level that refuses is final.** At `read-only` a write does not happen, whatever a rule allows. Rules settle what a level leaves open; they do not open what it closes.
 - **A rule still holds at the levels that ask least.** A `deny` is a denial at `unrestricted`, and an `ask` is a question.
 - **`guided` reads like `supervised` in this table** because the kinds of command a guided lease names are allow rules of that lease, and rules are settled before the level is asked. It cannot be chosen until task leases exist (step 37).
-- **Where the sandbox does not enforce,** `autonomous` is refused when the session starts, with the reason and what to use instead (the error code `sandbox_required`), and every other level shows one line, "sandbox: off", that says what follows: commands on a safe list run without asking, every other command asks first, and one that is approved runs with the user's full rights. Until step 26 builds the sandbox, that is every session.
+- **Where the sandbox does not enforce,** `autonomous` is refused when the session starts, with the reason and what to use instead (the error code `sandbox_required`), and every other level shows one line, "sandbox: off", that says what follows: commands on a safe list run without asking, every other command asks first, and one that is approved runs with the user's full rights. Since step 26 that is a session on Windows, on a Linux kernel without Landlock or with Landlock older than version 3, in a build without the `sandbox` feature, or with `sandbox.enabled = false` ([decision 0032](../decisions/0032-what-the-linux-sandbox-needs.md)).
 - **A level this build does not know decides nothing:** every matter is refused, and a session cannot be started at it.
+- **Leaving the sandbox,** the last column, was added in step 26: a command the model asked to run outside the sandbox ("Leaving the sandbox", below). It is asked about at every level but `unrestricted`, where nothing is confined to leave. Where the sandbox does not enforce there is nothing to leave either, and it decides nothing.
 
 ### Leases
 
@@ -496,6 +497,44 @@ The shell tool has the hook for it since step 11 (`cortex_tools::process::Launch
   - Reads are not restricted by default, so a sandboxed command can read files such as SSH keys. It cannot send them anywhere while the network is off. A stricter read policy is a configuration option.
   - Network control is all or nothing. There is no per-host allow-list.
 
+### As built in step 26
+
+Step 26 built the Linux sandbox in `cortex-sandbox` and wired it into the core and the binary. What the kernel must offer, and what a command may reach, are [decision 0032](../decisions/0032-what-the-linux-sandbox-needs.md).
+
+**The parts.**
+
+| Part | Where | What it does |
+|---|---|---|
+| The policy | `cortex_sandbox::policy::Policy` | What the launcher applies: what may be read (everything, or the trees under some roots), the write roots, the network, the session's temporary directory, and the Landlock version the harness counted on. It is made from the lease's grant: the lease's `SandboxPolicy` stays the policy of record, and the protocol type is not changed. Its wire form is a list of NUL-terminated fields read strictly: a field or a value it does not know, a field given twice, a missing one, or anything after its end refuses it whole ([decision 0028](../decisions/0028-enforced-values-fail-closed.md)). |
+| Detection | `cortex_sandbox::support::detect` | One system call at start-up for the kernel's Landlock version. `Support::assess` says whether the sandbox enforces and names what it leaves open. |
+| The launcher's two sides | `cortex_sandbox::launch` | `Launcher` (the harness's side): what to start in place of a command, and the policy's bytes. `run` (the launcher's side): the body of the hidden subcommand `cortex __sandbox -- <command>`. It reads the policy to its end, applies Landlock and then the seccomp filters to itself, marks every descriptor above the standard three to close, gives the command a closed input and `TMPDIR`, and becomes the command. |
+| The backends | `cortex_sandbox::confine`, behind the feature `backends` | Landlock and seccomp ([decision 0032](../decisions/0032-what-the-linux-sandbox-needs.md)). Off by default, so that `cortex-tools`, which needs only process trees, links neither; `cortex-core`'s `sandbox` feature, on by default, turns it on. Without it the launcher refuses to run anything and detection says the build has no sandbox. |
+| What the model is told | `cortex_sandbox::explain` | One line added to the result of a command that failed: the path of a write the sandbox refused (an absolute path outside the write roots, named in a line that reports a refusal), that the network is off (from what programs print when they cannot make a socket or look up a name), or the launcher's own reason when the command did not run. It names only what it can: a refusal of a path inside the workspace is the file system's own, and is not explained as the sandbox's. |
+| The session's sandbox | `cortex-core`, `sandbox` | The state a session reports, the launcher it hands the shell tool, and its private temporary directory. |
+
+**The state a session reports.**
+
+| The system | `sandbox.enabled` | The binary gave a launcher | State | `autonomous` |
+|---|---|---|---|---|
+| Linux, Landlock 6 or newer, `sandbox` feature | true | yes | enforcing | starts |
+| Linux, Landlock 3 to 5 | true | yes | enforcing, with one line at the session's start: a command can still signal a process outside the sandbox | starts |
+| Linux, Landlock 1 or 2 | any | any | off: `NoSandbox::LandlockTooOld`, which names the version and what it lacks | refused |
+| Linux without Landlock, or with it turned off | any | any | off: `NoLandlock` | refused |
+| A build without the `sandbox` feature, or a core given no launcher | any | | off: `NotBuilt` | refused |
+| Windows | any | any | off: `UnsupportedSystem` | refused |
+| any | false | any | off: `TurnedOff` | refused |
+
+- **The state follows the level.** At `unrestricted` nothing is confined, so a session there reports the sandbox off (`SessionInfo::sandbox`, and the session's state after a `session/set`), and an approval's `outside_sandbox` is true. The `initialize` result reports whether a session with the sandbox enabled would be confined on this machine.
+- **The binary gives the core its own executable** (`CoreOptions::launcher`) as it gives the guard's: the same path, the subcommand `__sandbox`. `CoreOptions::sandbox` replaces detection for a test, which can then say the kernel has no Landlock, or an old one.
+
+**Every command below `unrestricted` is started through the launcher** where the sandbox enforces: the shell tool hands the shell's command line to the session's launcher, and starts `cortex __sandbox -- <shell> <arguments>` with the policy on its standard input. The process tree is set up by the runner before the launcher starts, as before.
+
+**It fails closed.** Once the session reports the sandbox enforcing, a failure to apply it fails the call and says why; nothing is run unconfined in its place. Each failure is tested: a policy the launcher does not understand, Landlock refused by the kernel (a parent that refuses its system call), a seccomp filter that does not load (the same), and a launcher that cannot start at all, which the runner reports as a command that was not started. The launcher's own line begins `cortex-sandbox:` and its exit code is 125.
+
+**The temporary directory.** The lease names `cortex-harness-<session>` in the system's temporary directory among its write roots (step 12). Since step 26 the core makes it when the session is assembled, open to the user alone, gives it to every confined command as `TMPDIR`, and removes it, with everything in it, when the session ends. Something already at that path that is not a private directory of the user's own (another user's, or a link) is not used: commands are then given no temporary directory, it is taken out of the launcher's write roots, and the user is told.
+
+**Measured** on the desktop, release build, 200 runs, nothing else running: `bash -c 'exit 0'` alone 0.93 ms; through `cortex __sandbox` 1.71 ms. The launcher adds 0.78 ms, to the runner's 0.18 ms and the tool's 0.24 ms of step 11: about 1.2 ms in all against the 5 ms budget ([performance-budgets.md](../performance-budgets.md)).
+
 ### Linux: later, opt-in
 
 A namespace-based backend (mount and network namespaces, with protected paths mounted read-only and a proxy for per-host network rules) where the system allows unprivileged user namespaces. It gives prevention where the default gives detection. It is optional because it cannot be relied on to work.
@@ -504,7 +543,8 @@ A namespace-based backend (mount and network namespaces, with protected paths mo
 
 | Mechanism | Used for |
 |---|---|
-| Job Object, kill on close | The whole process tree dies with the command or the harness. Built in step 11 (`cortex_sandbox::tree`). Limits on process count and memory are available, and are not set yet. |
+| Job Object, kill on close | The whole process tree dies with the command or the harness. Built in step 11 (`cortex_sandbox::tree`). |
+| Job Object limits | Since step 26 every tree is held to 1,024 processes at once and, where Windows says how much memory the machine has, three quarters of it committed by the whole tree (`cortex_sandbox::tree::Limits`). A command that starts processes without end, or takes the machine's memory, fails there instead of taking the machine with it. |
 | Approvals | Every shell command that no rule allows is asked. |
 
 There is no filesystem or network confinement of child processes on Windows in the first release. The status line says "sandbox: off", and the `guided` and `autonomous` levels are not available. Extension scripts are still confined, because their confinement is the script runtime and not the OS.

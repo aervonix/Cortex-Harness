@@ -482,3 +482,75 @@ fn at_autonomous(workspace: &cortex_base::AbsPath) -> Engine {
         );
     })
 }
+
+/// A command the model asked to run outside the sandbox: what the `shell`
+/// tool declares for it.
+fn outside(engine: &Engine, command: &str) -> Outcome {
+    engine.decide(&Request {
+        tool: "shell",
+        default: RuleAction::Ask,
+        accesses: &[
+            Access::Exec {
+                command: command.to_owned(),
+                cwd: crate::path(crate::WORKSPACE),
+            },
+            Access::Write {
+                path: crate::path(crate::WORKSPACE),
+            },
+            Access::Unconfined,
+        ],
+    })
+}
+
+/// Leaving the sandbox is asked about at every level but `unrestricted`,
+/// whatever rule allows the command, and only "allow once" or "deny" is
+/// offered: no rule can say "outside the sandbox", so no answer is kept.
+#[test]
+fn leaving_the_sandbox_is_asked_every_time_below_unrestricted() {
+    use cortex_protocol::methods::ApprovalChoice;
+    for level in [Level::ReadOnly, Level::Supervised, Level::Autonomous] {
+        let engine = engine_with(|parts| {
+            parts.level = level.clone();
+            parts.rules = vec![user(Effect::Exec, "make *", RuleAction::Allow)];
+        });
+        let asked = crate::question(outside(&engine, "make all"));
+        assert_eq!(
+            asked.choices(),
+            vec![ApprovalChoice::AllowOnce, ApprovalChoice::Deny],
+            "{level:?}"
+        );
+        assert!(
+            asked
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("outside the sandbox")),
+            "{level:?}: {:?}",
+            asked.reasons
+        );
+        assert!(asked.lifts.is_empty(), "{level:?}: {:?}", asked.lifts);
+    }
+    // In the sandbox, the same command runs unasked where the level lets it.
+    assert_eq!(
+        said(&shell(
+            &engine_with(|parts| {
+                parts.rules = vec![user(Effect::Exec, "make *", RuleAction::Allow)];
+            }),
+            "make all"
+        )),
+        Allow
+    );
+    // At `unrestricted` nothing is confined to leave.
+    assert_eq!(said(&outside(&at(Level::Unrestricted), "make all")), Allow);
+    // Where the sandbox does not enforce there is nothing to leave: the
+    // command is decided as any other.
+    let off = engine_with(|parts| {
+        parts.sandbox = SandboxState::NotEnforcing(NoSandbox::NoLandlock);
+        parts.rules = vec![user(Effect::Exec, "make *", RuleAction::Allow)];
+    });
+    assert_eq!(said(&outside(&off, "make all")), Allow);
+    // A rule that refuses the command still refuses it.
+    let refused = engine_with(|parts| {
+        parts.rules = vec![user(Effect::Exec, "make *", RuleAction::Deny)];
+    });
+    assert_eq!(said(&outside(&refused, "make all")), Deny);
+}

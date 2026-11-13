@@ -117,6 +117,10 @@ pub enum Access {
         /// The tool's full name, `source/tool`.
         tool: String,
     },
+    /// Runs the call's commands outside the sandbox: the model asked to
+    /// leave it (`docs/architecture/06-permissions-and-sandbox.md`,
+    /// "Leaving the sandbox").
+    Unconfined,
 }
 
 /// A planned call, as the engine is shown it.
@@ -1054,6 +1058,7 @@ impl Engine {
                 Access::Ext { tool } => {
                     findings.push(self.judge_ext(rules, tool, request.default));
                 }
+                Access::Unconfined => findings.push(self.judge_unconfined()),
             }
         }
         // What a command might write, declared beside it: nothing for a
@@ -1294,6 +1299,26 @@ impl Engine {
                     action: RuleAction::Allow,
                 }),
             },
+        }
+    }
+
+    /// Leaving the sandbox. No rule settles it, so no answer can be kept
+    /// as one: only "allow once" and "deny" are offered. Where nothing
+    /// confines commands there is nothing to leave, and at `unrestricted`
+    /// nothing is confined to begin with.
+    fn judge_unconfined(&self) -> Finding {
+        if self.sandbox != SandboxState::Enforcing {
+            return Finding::Allow;
+        }
+        match level::decider(self.level(), Matter::LeaveSandbox) {
+            Decider::Holder => Finding::Allow,
+            Decider::Supervisor => Finding::ask(
+                "The command would run outside the sandbox, with your full rights: it could write \
+                 anywhere you can and reach the network.",
+            ),
+            Decider::Refused => {
+                Finding::deny("Leaving the sandbox is not allowed at this permission mode.")
+            }
         }
     }
 

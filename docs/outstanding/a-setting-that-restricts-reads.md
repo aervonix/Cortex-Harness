@@ -1,0 +1,3 @@
+| Item | Who | When |
+|---|---|---|
+| **A setting that restricts what a sandboxed command may read.** [architecture/06-permissions-and-sandbox.md](../architecture/06-permissions-and-sandbox.md) says a stricter read policy is a configuration option. Step 26 built the launcher's side (`cortex_sandbox::policy::Reach::Only`: reads beneath a list of roots, tested in `confined::sys_a_read_policy_keeps_reads_to_its_roots`), and no setting fills it: every session reads everything. A setting needs the system's own directories (`/usr`, `/etc`, `/lib`, …) beside the user's roots, or no program starts, and so a design for what the user writes and what the harness adds. | The owner, then the step that adds it (step 32, the hardening pass, unless sooner) | Before the first release |

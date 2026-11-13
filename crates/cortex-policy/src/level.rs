@@ -61,11 +61,15 @@ pub enum Matter {
     OtherCommand,
     /// Network access from a tool.
     Network,
+    /// A command run outside the sandbox, where the sandbox enforces
+    /// (`docs/architecture/06-permissions-and-sandbox.md`, "Leaving the
+    /// sandbox").
+    LeaveSandbox,
 }
 
 impl Matter {
     /// Every matter, in the order of the table's columns.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Read,
         Self::ReadBeyond,
         Self::Edit,
@@ -74,6 +78,7 @@ impl Matter {
         Self::SafeCommand,
         Self::OtherCommand,
         Self::Network,
+        Self::LeaveSandbox,
     ];
 }
 
@@ -85,15 +90,19 @@ pub fn decider(level: &Level, matter: Matter) -> Decider {
         Level::ReadOnly => match matter {
             Matter::Read | Matter::ReadOnlyCommand => Holder,
             Matter::Edit | Matter::WriteBeyond => Refused,
-            Matter::ReadBeyond | Matter::SafeCommand | Matter::OtherCommand | Matter::Network => {
-                Supervisor
-            }
+            Matter::ReadBeyond
+            | Matter::SafeCommand
+            | Matter::OtherCommand
+            | Matter::Network
+            | Matter::LeaveSandbox => Supervisor,
         },
         Level::Supervised | Level::Guided => match matter {
             Matter::Read | Matter::Edit | Matter::ReadOnlyCommand | Matter::SafeCommand => Holder,
-            Matter::ReadBeyond | Matter::WriteBeyond | Matter::OtherCommand | Matter::Network => {
-                Supervisor
-            }
+            Matter::ReadBeyond
+            | Matter::WriteBeyond
+            | Matter::OtherCommand
+            | Matter::Network
+            | Matter::LeaveSandbox => Supervisor,
         },
         Level::Autonomous => match matter {
             Matter::Read
@@ -101,7 +110,9 @@ pub fn decider(level: &Level, matter: Matter) -> Decider {
             | Matter::ReadOnlyCommand
             | Matter::SafeCommand
             | Matter::OtherCommand => Holder,
-            Matter::ReadBeyond | Matter::WriteBeyond | Matter::Network => Supervisor,
+            Matter::ReadBeyond | Matter::WriteBeyond | Matter::Network | Matter::LeaveSandbox => {
+                Supervisor
+            }
         },
         Level::Unrestricted => Holder,
         // A level this build has never heard of: it cannot know what the
@@ -335,13 +346,18 @@ mod tests {
     #[test]
     fn the_table_is_the_one_on_the_page() {
         use Decider::{Holder as H, Refused as R, Supervisor as S};
-        let rows: [(Level, [Decider; 8]); 5] = [
-            (Level::ReadOnly, [H, S, R, R, H, S, S, S]),
-            (Level::Supervised, [H, S, H, S, H, H, S, S]),
-            (Level::Guided, [H, S, H, S, H, H, S, S]),
-            (Level::Autonomous, [H, S, H, S, H, H, H, S]),
-            (Level::Unrestricted, [H, H, H, H, H, H, H, H]),
+        let rows: [(Level, [Decider; 9]); 5] = [
+            (Level::ReadOnly, [H, S, R, R, H, S, S, S, S]),
+            (Level::Supervised, [H, S, H, S, H, H, S, S, S]),
+            (Level::Guided, [H, S, H, S, H, H, S, S, S]),
+            (Level::Autonomous, [H, S, H, S, H, H, H, S, S]),
+            (Level::Unrestricted, [H, H, H, H, H, H, H, H, H]),
         ];
+        assert_eq!(
+            Matter::ALL.len(),
+            rows[0].1.len(),
+            "a column of the table is not checked"
+        );
         for (level, expected) in rows {
             for (matter, expected) in Matter::ALL.into_iter().zip(expected) {
                 assert_eq!(decider(&level, matter), expected, "{level:?} {matter:?}");

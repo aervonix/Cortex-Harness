@@ -40,12 +40,17 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use cortex_base::{AbsPath, ContentHash};
+use cortex_protocol::Part;
+use cortex_sandbox::protect::{Before as Was, Changed};
 use cortex_session::entry::FileVersion;
 use cortex_session::{Before, Body, DiskStore, Git, RoundCheckpoint, SessionError};
 use cortex_tools::{
-    BoxFuture, CheckpointError, Checkpoints, FileSnapshot, Json, Plan, PlanCx, RunCx, ShellTool,
-    Tool, ToolError, ToolOutput, ToolResult, ToolSpec,
+    BoxFuture, CheckpointError, Checkpoints, Concurrency, Effect, FileSnapshot, Json, Plan, PlanCx,
+    RunCx, ShellTool, Tool, ToolError, ToolOutput, ToolResult, ToolSpec,
 };
+
+use crate::policy::EnginePolicy;
+use crate::sandbox::{SessionSandbox, protected_note};
 
 /// The checkpoint of the tool round that is running, shared by the tools
 /// that fill it and the session store that writes it.
@@ -154,6 +159,36 @@ impl Rounds {
         }
     }
 
+    /// Records protected paths a command changed, with what they held
+    /// before it, so that undoing the round puts them back. It comes before
+    /// [`record_changes`](Self::record_changes): only the first record of
+    /// a file in a round counts, and this one is exact. Blocks: it stores
+    /// the content.
+    pub(crate) fn record_protected(&self, changed: &[Changed]) {
+        for changed in changed {
+            let Some(file) = changed
+                .path
+                .strip_prefix(self.root.to_fs_path())
+                .ok()
+                .and_then(|relative| relative.to_str())
+                .and_then(|relative| self.root.join(relative).ok())
+            else {
+                // Outside the workspace (a `sandbox.protect` entry): not
+                // the round's to put back.
+                continue;
+            };
+            let _ = match &changed.before {
+                Was::Absent => self.before(&file, None),
+                Was::File(content) => self.before(&file, Some(content)),
+                Was::Unknown => {
+                    self.lock().seen_changed(&file, Before::Unknown);
+                    Ok(())
+                }
+                Was::Directory => Ok(()),
+            };
+        }
+    }
+
     /// The content of `path` at `commit`, stored. `None` when git cannot
     /// give it, or it is not content the store can keep a record of.
     fn earlier_content(&self, commit: &str, path: &str) -> Option<FileVersion> {
@@ -229,16 +264,31 @@ impl Checkpoints for Rounds {
 }
 
 /// The shell tool, with what each command changed recorded in the round's
-/// checkpoint when the command is over.
+/// checkpoint when the command is over, and the protected paths looked at
+/// around each confined command (`docs/architecture/06-permissions-and-sandbox.md`,
+/// "Protected paths").
 #[derive(Debug)]
 pub(crate) struct RecordingShell {
     tool: ShellTool,
-    rounds: Arc<Rounds>,
+    /// The session's checkpoints. `None` for a session kept in memory.
+    rounds: Option<Arc<Rounds>>,
+    sandbox: Arc<SessionSandbox>,
+    policy: Arc<EnginePolicy>,
 }
 
 impl RecordingShell {
-    pub(crate) fn new(tool: ShellTool, rounds: Arc<Rounds>) -> Self {
-        Self { tool, rounds }
+    pub(crate) fn new(
+        tool: ShellTool,
+        rounds: Option<Arc<Rounds>>,
+        sandbox: Arc<SessionSandbox>,
+        policy: Arc<EnginePolicy>,
+    ) -> Self {
+        Self {
+            tool,
+            rounds,
+            sandbox,
+            policy,
+        }
     }
 }
 
@@ -258,22 +308,67 @@ impl Tool for RecordingShell {
         out: &'a mut dyn ToolOutput,
     ) -> BoxFuture<'a, ToolResult> {
         Box::pin(async move {
+            // A confined command that may write has its protected paths
+            // looked at before and after it. One the engine vouched only
+            // reads is not, nor one the user let leave the sandbox.
+            let watch = self
+                .sandbox
+                .watch()
+                .filter(|_| {
+                    plan.concurrency != Concurrency::ReadOnly
+                        && !plan.effects.contains(&Effect::Unconfined)
+                })
+                .cloned();
+            let before = match &watch {
+                Some(watch) => {
+                    let watch = watch.clone();
+                    tokio::task::spawn_blocking(move || watch.take()).await.ok()
+                }
+                None => None,
+            };
             // The command itself runs on this thread, the core's: the
             // kernel's death signal is tied to the thread that started it.
-            let result = self.tool.run(plan, cx, out).await;
+            let mut result = self.tool.run(plan, cx, out).await;
+            let found = match (watch, before) {
+                (Some(watch), Some(before)) => tokio::task::spawn_blocking(move || {
+                    let (changed, after) = watch.changes_since(&before);
+                    (changed, before.is_complete() && after.is_complete())
+                })
+                .await
+                .ok(),
+                _ => None,
+            };
             let changes = result
                 .payload()
                 .and_then(|payload| payload.get("changes"))
                 .filter(|changes| !changes.is_null())
                 .cloned();
-            if let Some(changes) = changes {
-                let rounds = Arc::clone(&self.rounds);
+            if let Some(rounds) = &self.rounds {
+                let rounds = Arc::clone(rounds);
+                let protected = found.as_ref().map(|(changed, _)| changed.clone());
                 // Not cancelled: the command ran, and what it changed is
                 // recorded whether or not the turn goes on.
-                let recorded =
-                    tokio::task::spawn_blocking(move || rounds.record_changes(&changes)).await;
+                let recorded = tokio::task::spawn_blocking(move || {
+                    if let Some(protected) = protected {
+                        rounds.record_protected(&protected);
+                    }
+                    if let Some(changes) = changes {
+                        rounds.record_changes(&changes);
+                    }
+                })
+                .await;
                 if recorded.is_err() {
                     tracing::warn!("what a shell command changed could not be recorded");
+                }
+            }
+            if let Some((changed, complete)) = found {
+                let root = cx.paths.root().to_fs_path();
+                if let Some(note) = protected_note(&changed, complete, &root, self.rounds.is_some())
+                {
+                    result = result.with_part(Part::text(note.clone()));
+                    if !changed.is_empty() {
+                        self.policy.stop_turn(cx.turn, note);
+                    }
                 }
             }
             result
