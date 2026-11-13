@@ -1,0 +1,11 @@
+# The Windows CI health job of 2026-11-13: what it fixed, broken again one
+# rule at a time (docs/steps/11/answered.md, "Windows CI health").
+
+[break] test-server-port-closes-with-its-thread
+rule: The scripted server's port stays open until its accepting thread has ended, so that the connection that wakes the thread is never refused (a refusal takes two seconds on Windows).
+file: crates/cortex-testkit/src/server.rs
+in: SseServer::start
+find: listener: Some(kept)
+replace: listener: None
+caught-by:
+    server::tests::the_port_stays_open_until_the_accepting_thread_has_ended

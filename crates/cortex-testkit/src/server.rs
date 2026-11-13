@@ -211,6 +211,9 @@ pub struct SseServer {
     address: SocketAddr,
     shared: Arc<Shared>,
     acceptor: Option<JoinHandle<()>>,
+    /// A second handle on the listening socket, so that the port stays
+    /// open until the accepting thread has ended ([`Drop`]).
+    listener: Option<TcpListener>,
 }
 
 #[derive(Debug, Default)]
@@ -259,6 +262,9 @@ impl SseServer {
     pub fn start() -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind a loopback port");
         let address = listener.local_addr().expect("the listener has an address");
+        let kept = listener
+            .try_clone()
+            .expect("a second handle on the listener");
         let shared = Arc::new(Shared::default());
         let for_thread = Arc::clone(&shared);
         let acceptor = std::thread::spawn(move || accept(&listener, &for_thread));
@@ -266,6 +272,7 @@ impl SseServer {
             address,
             shared,
             acceptor: Some(acceptor),
+            listener: Some(kept),
         }
     }
 
@@ -297,10 +304,18 @@ impl Drop for SseServer {
     fn drop(&mut self) {
         self.shared.stopping.store(true, Ordering::SeqCst);
         // Wake the accepting thread, which is blocked waiting for a client.
+        //
+        // A client's own connection may wake it first: one the test made a
+        // moment ago, which the thread takes only now. The thread then ends
+        // before this connection is made. The port must still be open, or
+        // the connection is refused, and Windows takes two seconds to say
+        // so: it tries three times. So the server holds a second handle on
+        // the listening socket until the thread has ended.
         let _ = TcpStream::connect(self.address);
         if let Some(acceptor) = self.acceptor.take() {
             let _ = acceptor.join();
         }
+        drop(self.listener.take());
         // Closing the connections ends every thread that is reading or
         // writing one, and opening the gates ends every thread that is
         // waiting for the test.
@@ -567,6 +582,23 @@ mod tests {
         let mut rest = Vec::new();
         let _ = connection.read_to_end(&mut rest);
         assert!(rest.is_empty(), "nothing was sent: {rest:?}");
+    }
+
+    #[test]
+    fn the_port_stays_open_until_the_accepting_thread_has_ended() {
+        let mut server = SseServer::start();
+        // A server that is stopping, whose accepting thread is woken by a
+        // client's connection and not by the server's own.
+        server.shared.stopping.store(true, Ordering::SeqCst);
+        let _client = TcpStream::connect(server.address).unwrap();
+        let acceptor = server.acceptor.take().expect("the thread");
+        acceptor.join().expect("the accepting thread ends");
+        // The connection that dropping the server makes is not refused. A
+        // refusal is what cost two seconds on Windows.
+        assert!(
+            TcpStream::connect(server.address).is_ok(),
+            "the port closed with the accepting thread"
+        );
     }
 
     #[test]
