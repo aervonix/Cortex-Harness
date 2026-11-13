@@ -581,7 +581,6 @@ fn powershell_commands_that_only_read_are_on_the_table() {
         ("gc -Tail 20 -LiteralPath 'my log.txt'", &["my log.txt"]),
         ("cat README.md", &["README.md"]),
         ("type README.md", &["README.md"]),
-        ("Get-Content -Path:README.md -Raw", &["README.md"]),
         (
             "Select-String -Pattern TODO -Path src\\main.rs",
             &["src\\main.rs"],
@@ -607,6 +606,12 @@ fn powershell_commands_that_only_read_are_on_the_table() {
         ("rg -n TODO src", &["TODO", "src"]),
         ("Get-Content C:\\work\\a.txt", &["C:\\work\\a.txt"]),
         ("Get-Content C:/work/a.txt", &["C:/work/a.txt"]),
+        // A pattern where the command takes text is its own business.
+        (
+            "Select-String -Pattern 'a.*b?' -Path README.md",
+            &["README.md"],
+        ),
+        ("Get-ChildItem -Filter '*.rs' src", &["src"]),
     ];
     for (command, expected) in cases {
         assert_eq!(
@@ -648,9 +653,18 @@ fn a_powershell_command_with_anything_unlisted_is_not_on_the_table() {
         "ls -la",
         "cat -n x",
         "echo -n hi",
-        // Patterns, which the command expands itself.
+        // Patterns, which the command expands itself, quoted or not.
         "Get-Content *.env",
         "ls src\\*.rs",
+        "Get-Content '*.env'",
+        "Get-Content '.en?'",
+        "Get-Content \"[.]env\"",
+        "Get-Content -Path '.e*'",
+        "Get-Content -Path:'.e*'",
+        "gc -LiteralPath '.e*'",
+        "Select-String -Pattern KEY -Path '*.pem'",
+        "Get-FileHash 'id_*'",
+        "Get-ChildItem 'secrets\\*'",
         // Commands that write, run or change something.
         "Set-Content x y",
         "Out-File x",

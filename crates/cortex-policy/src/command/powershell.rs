@@ -24,6 +24,7 @@
 //! | `$`, a back-tick | A variable, a sub-expression, an escape. |
 //! | `(`, `)`, `{`, `}`, `[`, `]` | A sub-expression, a script block, a type or an index. |
 //! | `@`, `,`, `%`, `#`, `!`, `<`, `>` | Splatting and arrays, the `ForEach-Object` alias and the stop-parsing token `--%`, a comment, negation, redirection. |
+//! | A parameter with a `.` or a `:` in it: `-Path.5`, `-Path:x` | PowerShell ends a parameter's name there and reads the rest as another word. |
 //! | A quote that is not a whole word | PowerShell splits `"a b"c` in a way that depends on what follows. |
 //! | Any character outside ASCII that is not inside quotes | PowerShell reads several dashes as `-` and several spaces as a space. |
 //! | A typographic quote, anywhere | PowerShell reads `‘ ’ ‚ ‛` as `'` and `“ ” „` as `"`, inside a quoted text too. |
@@ -96,6 +97,19 @@ fn plain(character: char) -> bool {
         || matches!(character, '_' | '-' | '.' | '/' | '\\' | ':' | '=' | '+')
 }
 
+/// Whether a word with no quotes is one PowerShell reads as a parameter:
+/// a `-` and then a letter or `_`. Its name ends at the first `.` or `:`,
+/// and what follows is another word, to PowerShell's own commands and to
+/// the programs it starts. `--opt=1.5` and `-5.5` are not parameters, and
+/// stay whole. (Found by comparing with PowerShell's parser in CI.)
+fn is_parameter(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next() == Some('-')
+        && chars
+            .next()
+            .is_some_and(|second| second.is_ascii_alphabetic() || second == '_')
+}
+
 fn blank(character: char) -> bool {
     matches!(character, ' ' | '\t')
 }
@@ -122,9 +136,10 @@ pub(crate) fn parts(command: &str) -> Result<Vec<Part>, NotModelled> {
             }
             _ => bare(&mut chars)?,
         };
-        if !word.quoted && word.text.starts_with('-') && word.text.ends_with(':') {
+        if !word.quoted && is_parameter(&word.text) && word.text.contains(['.', ':']) {
             return refuse(
-                "a parameter that ends with `:`, which takes the next word as its value",
+                "a parameter with a `.` or a `:` in it, which PowerShell reads as two words: \
+                 `-Path.5` is `-Path` and `.5`, and `-Path:x` is `-Path:` and `x`",
             );
         }
         words.push(word);
@@ -343,9 +358,23 @@ mod tests {
         assert_eq!(words("ls *.rs"), ["ls", "*.rs(glob)"]);
         assert_eq!(words(r"ls ~\notes"), ["ls", r"~\notes(home)"]);
         assert_eq!(words("ls ~"), ["ls", "~(home)"]);
+        // Not parameters, though they begin with a dash: whole words.
         assert_eq!(
-            words("Get-Content -Path:README.md"),
-            ["Get-Content", "-Path:README.md"]
+            words("cargo test --manifest-path=a/Cargo.toml -5.5 - -- -.5"),
+            [
+                "cargo",
+                "test",
+                "--manifest-path=a/Cargo.toml",
+                "-5.5",
+                "-",
+                "--",
+                "-.5"
+            ]
+        );
+        // A quoted text is never a parameter.
+        assert_eq!(
+            words("echo '-Path.5' \"-a:b\""),
+            ["echo", "-Path.5", "-a:b"]
         );
     }
 
@@ -394,8 +423,18 @@ mod tests {
             "echo 'a'b",
             "echo \"a b\"c",
             "git commit -m=\"x y\"",
+            // A parameter with a `.` or a `:` in it, which PowerShell
+            // reads as two words.
             "Get-Content -Path: README.md",
             "Get-Content -Path:",
+            "Get-Content -Path:README.md",
+            "git -Path.5",
+            "git -n.5",
+            "tool -Patha.b",
+            "tool -Recurse..",
+            "tool -n1e3.",
+            "tool -_x.y",
+            "cargo test -p:x",
             "echo 'unterminated",
             "echo \"unterminated",
             // Characters PowerShell reads as their ASCII look-alikes.
