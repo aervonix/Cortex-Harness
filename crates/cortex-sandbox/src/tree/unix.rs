@@ -20,7 +20,13 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::guard::{Guard, Watch};
-use super::{Exit, ReadOutcome, ended};
+use super::{Exit, Limits, ReadOutcome, ended};
+
+/// How much memory the machine has. Linux trees have no memory limit, so
+/// it is not asked.
+pub(super) fn installed_memory() -> Option<u64> {
+    None
+}
 
 /// What the child finds in place of the guard's pipe when there is no
 /// guard: no file descriptor is negative.
@@ -59,7 +65,11 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Inner {
-    pub(super) fn spawn(mut command: Command, guard: Option<&Guard>) -> io::Result<Self> {
+    pub(super) fn spawn(
+        mut command: Command,
+        guard: Option<&Guard>,
+        _limits: Limits,
+    ) -> io::Result<Self> {
         keep_exited_children();
         let harness = libc::pid_t::try_from(std::process::id())
             .map_err(|_| io::Error::other("the process id does not fit"))?;
@@ -147,6 +157,10 @@ impl Inner {
             }
         }
         Ok(inner)
+    }
+
+    pub(super) fn limits(&self) -> io::Result<Limits> {
+        Ok(Limits::NONE)
     }
 
     pub(super) fn id(&self) -> u32 {
@@ -640,7 +654,7 @@ mod tests {
             .stderr(Stdio::null());
         let (reader, input) = io::pipe().expect("make a pipe");
         command.stdin(reader);
-        let tree = Inner::spawn(command, None).expect("start the command");
+        let tree = Inner::spawn(command, None, Limits::NONE).expect("start the command");
 
         let young = Duration::ZERO;
         let old = Duration::from_secs(60);

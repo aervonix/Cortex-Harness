@@ -41,18 +41,20 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows_sys::Win32::System::IO::CancelIoEx;
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+    JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
     SetInformationJobObject, TerminateJobObject,
 };
+use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows_sys::Win32::System::Threading::{
     CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, GetExitCodeProcess, INFINITE, OpenProcess,
     OpenThread, PROCESS_SYNCHRONIZE, ResumeThread, THREAD_SUSPEND_RESUME, WaitForSingleObject,
 };
 
 use super::guard::Guard;
-use super::{Exit, ReadOutcome, ended, others_among, unopened_is_gone};
+use super::{Exit, Limits, ReadOutcome, ended, others_among, unopened_is_gone};
 
 /// The exit code of a process the harness killed.
 const KILLED: u32 = 1;
@@ -86,8 +88,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Inner {
-    pub(super) fn spawn(mut command: Command, _guard: Option<&Guard>) -> io::Result<Self> {
-        let job = create_job()?;
+    pub(super) fn spawn(
+        mut command: Command,
+        _guard: Option<&Guard>,
+        limits: Limits,
+    ) -> io::Result<Self> {
+        let job = create_job(limits)?;
         // Suspended, so that it cannot start a process of its own before
         // it is in the job: a process started earlier would be outside it.
         command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
@@ -108,6 +114,36 @@ impl Inner {
             job,
             state: Mutex::new(false),
             exit: Mutex::new(None),
+        })
+    }
+
+    pub(super) fn limits(&self) -> io::Result<Limits> {
+        // SAFETY: the structure is plain data, for which all zeroes is a
+        // valid value.
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        let size = u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
+            .map_err(|_| io::Error::other("the limits structure is too large"))?;
+        // SAFETY: `self.job` is open, the class matches the structure, and
+        // the pointer and the size describe `info`, which is writable for
+        // the length of the call. The last argument may be null.
+        let asked = unsafe {
+            QueryInformationJobObject(
+                self.job.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                (&raw mut info).cast(),
+                size,
+                ptr::null_mut(),
+            )
+        };
+        if asked == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let flags = info.BasicLimitInformation.LimitFlags;
+        Ok(Limits {
+            processes: (flags & JOB_OBJECT_LIMIT_ACTIVE_PROCESS != 0)
+                .then_some(info.BasicLimitInformation.ActiveProcessLimit),
+            memory: (flags & JOB_OBJECT_LIMIT_JOB_MEMORY != 0)
+                .then(|| u64::try_from(info.JobMemoryLimit).unwrap_or(u64::MAX)),
         })
     }
 
@@ -330,8 +366,23 @@ fn has_exited_by_id(pid: u32) -> bool {
     unsafe { WaitForSingleObject(process.as_raw_handle(), 0) == WAIT_OBJECT_0 }
 }
 
-/// A job that kills its processes when its last handle is closed.
-fn create_job() -> io::Result<OwnedHandle> {
+/// How much physical memory the machine has.
+pub(super) fn installed_memory() -> Option<u64> {
+    // SAFETY: the structure is plain data, for which all zeroes is a valid
+    // value; its length field is set as the call requires.
+    let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    status.dwLength = u32::try_from(size_of::<MEMORYSTATUSEX>()).ok()?;
+    // SAFETY: `status` is a valid, writable structure of the length its
+    // first field gives, for the length of the call.
+    if unsafe { GlobalMemoryStatusEx(&raw mut status) } == 0 {
+        return None;
+    }
+    Some(status.ullTotalPhys)
+}
+
+/// A job that kills its processes when its last handle is closed, and
+/// holds them to `limits`.
+fn create_job(limits: Limits) -> io::Result<OwnedHandle> {
     // SAFETY: both arguments may be null: default security, which makes
     // the handle not inheritable, and no name.
     let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
@@ -343,18 +394,26 @@ fn create_job() -> io::Result<OwnedHandle> {
     let job = unsafe { OwnedHandle::from_raw_handle(handle) };
     // SAFETY: the structure is plain data (integers and sizes), for which
     // all zeroes is a valid value meaning "no limit".
-    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if let Some(processes) = limits.processes {
+        info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+        info.BasicLimitInformation.ActiveProcessLimit = processes;
+    }
+    if let Some(memory) = limits.memory {
+        info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+        info.JobMemoryLimit = usize::try_from(memory).unwrap_or(usize::MAX);
+    }
     let size = u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
         .map_err(|_| io::Error::other("the limits structure is too large"))?;
     // SAFETY: `job` is open, the class matches the structure, and the
-    // pointer and the size describe `limits`, which lives for the length
+    // pointer and the size describe `info`, which lives for the length
     // of the call. The call reads the structure and keeps no pointer.
     let set = unsafe {
         SetInformationJobObject(
             job.as_raw_handle(),
             JobObjectExtendedLimitInformation,
-            (&raw const limits).cast(),
+            (&raw const info).cast(),
             size,
         )
     };

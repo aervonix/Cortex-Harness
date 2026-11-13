@@ -10,9 +10,12 @@ publish.workspace = true
 doctest = false
 
 [features]
-default = ["mcp"]
+default = ["mcp", "sandbox"]
 # Links the MCP client.
 mcp = ["dep:cortex-mcp"]
+# Links the OS sandbox's backends (Landlock and seccomp on Linux). Without it
+# every session reports the sandbox off, and `autonomous` is refused.
+sandbox = ["cortex-sandbox/backends"]
 
 [dependencies]
 cortex-protocol.workspace = true

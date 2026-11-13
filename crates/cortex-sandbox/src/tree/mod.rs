@@ -81,6 +81,48 @@ impl Exit {
     }
 }
 
+/// What a whole tree may use, where the system can hold a tree to it.
+///
+/// On Windows these are the Job Object's limits
+/// (`docs/architecture/06-permissions-and-sandbox.md`, "Windows: in the first
+/// release"): the job refuses to start a process past [`processes`](Self::processes),
+/// and an allocation that would take the tree's committed memory past
+/// [`memory`](Self::memory) fails. They stop a command that starts
+/// processes without end, or takes the machine's memory, from taking the
+/// machine with it. Linux has no limit an unprivileged process can set on a
+/// whole tree, and a tree there has none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// The most processes of the tree running at once.
+    pub processes: Option<u32>,
+    /// The most memory the tree's processes may commit together, in bytes.
+    pub memory: Option<u64>,
+}
+
+impl Limits {
+    /// The process limit of an ordinary tree: far above what a parallel
+    /// build starts, far below what a process that starts processes
+    /// without end reaches.
+    pub const PROCESSES: u32 = 1024;
+
+    /// No limit.
+    pub const NONE: Self = Self {
+        processes: None,
+        memory: None,
+    };
+
+    /// The limits of an ordinary tree: [`PROCESSES`](Self::PROCESSES)
+    /// processes, and three quarters of the machine's memory where the
+    /// system says how much it has.
+    #[must_use]
+    pub fn standard() -> Self {
+        Self {
+            processes: Some(Self::PROCESSES),
+            memory: imp::installed_memory().map(|bytes| bytes / 4 * 3),
+        }
+    }
+}
+
 /// A command and everything it started. Clones are handles to the one tree.
 #[derive(Debug, Clone)]
 pub struct Tree {
@@ -106,10 +148,26 @@ impl Tree {
     /// command ends, so a command started from a pool thread dies when the
     /// pool lets that thread go. The harness's core thread is the right one.
     pub fn spawn(command: Command, guard: Option<&Guard>) -> io::Result<Self> {
-        let inner = imp::Inner::spawn(command, guard)?;
+        Self::spawn_limited(command, guard, Limits::standard())
+    }
+
+    /// As [`spawn`](Self::spawn), with other [`Limits`] than the standard
+    /// ones.
+    pub fn spawn_limited(
+        command: Command,
+        guard: Option<&Guard>,
+        limits: Limits,
+    ) -> io::Result<Self> {
+        let inner = imp::Inner::spawn(command, guard, limits)?;
         Ok(Self {
             inner: Arc::new(inner),
         })
+    }
+
+    /// The limits the system holds the whole tree to: on Windows, as the
+    /// Job Object reports them; on Linux, none.
+    pub fn limits(&self) -> io::Result<Limits> {
+        self.inner.limits()
     }
 
     /// The process id of the command itself.

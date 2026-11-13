@@ -44,6 +44,8 @@ grep-regex = { version = "0.1.14", default-features = false }
 grep-searcher = { version = "0.1.17", default-features = false }
 ignore = { version = "0.4.34", default-features = false }
 keyring-core = { version = "1.0.1", default-features = false }
+# The Linux sandbox's file-system rules (step 26). It has no features.
+landlock = { version = "0.4.7", default-features = false }
 # The command line (decision 0011): a lexer for arguments. It has no features.
 lexopt = { version = "0.3.1", default-features = false }
 libc = { version = "0.2.191", default-features = false }
@@ -55,6 +57,9 @@ serde_json = { version = "1.0.145", default-features = false, features = ["std"]
 sha2 = { version = "0.11.1", default-features = false }
 similar = { version = "3.2.1", default-features = false, features = ["std"] }
 thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
+# The Linux sandbox's system-call filter (step 26). Without `json`, which
+# brings serde for filters written as data.
+seccompiler = { version = "0.5.0", default-features = false }
 # Each crate names the tokio features it uses; none are on here.
 tokio = { version = "1.54.1", default-features = false }
 # The logging facade (decision 0019). Without `attributes`, which is a
