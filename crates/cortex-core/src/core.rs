@@ -278,6 +278,10 @@ pub(crate) struct Inner {
     /// The shells found so far, by the program and arguments configured:
     /// a shell is asked its version once in the life of a core.
     pub(crate) shells: Mutex<BTreeMap<ShellKey, cortex_tools::Shell>>,
+    /// The threads asking a shell its version, to keep the answer for the
+    /// runs after this one ([`crate::shell_cache`]). [`Core::shutdown`]
+    /// waits for them, so that a short run still keeps it.
+    pub(crate) probes: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 /// What a shell was looked for with: `shell.program` and `shell.args`.
@@ -371,6 +375,7 @@ impl Core {
                 ids,
                 sessions: Mutex::new(BTreeMap::new()),
                 shells: Mutex::new(BTreeMap::new()),
+                probes: Mutex::new(Vec::new()),
             }),
         })
     }
@@ -566,6 +571,17 @@ impl Core {
         let sessions: Vec<SessionId> = lock(&self.inner.sessions).keys().cloned().collect();
         for session in sessions {
             self.end(&session).await;
+        }
+        // A shell still being asked its version is waited for, so that the
+        // answer is kept: each ask is bounded by its own time limit.
+        let probes = std::mem::take(&mut *lock(&self.inner.probes));
+        if !probes.is_empty() {
+            let _ = tokio::task::spawn_blocking(move || {
+                for probe in probes {
+                    let _ = probe.join();
+                }
+            })
+            .await;
         }
     }
 
