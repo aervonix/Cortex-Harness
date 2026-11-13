@@ -53,6 +53,20 @@ use cortex_protocol::Speed;
 use cortex_protocol::usage::Billing;
 use cortex_testkit::fixture::Scrubber;
 
+/// Set by `cargo xtask record --dry-run`: a request is built and printed,
+/// and nothing is sent. No key is read.
+pub(crate) const DRY_RUN: &str = "CORTEX_LIVE_DRY_RUN";
+
+/// Set by `cargo xtask live` and `record` to a file outside the repository:
+/// each call's provider, model, tokens and cost is a line added to it, and
+/// `cargo xtask live --spent` totals them. Never the key: a line is checked
+/// for it like everything else a live run writes.
+pub(crate) const LEDGER: &str = "CORTEX_LIVE_LEDGER";
+
+pub(crate) fn dry_run() -> bool {
+    std::env::var_os(DRY_RUN).is_some()
+}
+
 /// The variable that names the scenarios to record, separated by commas.
 /// Unset or empty records every scenario.
 pub(crate) const SCENARIOS: &str = "CORTEX_LIVE_SCENARIOS";
@@ -63,6 +77,9 @@ pub(crate) const SPEND_LIMIT_NANOS: u64 = 500_000_000;
 /// One request and its response, as the network saw them.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Exchange {
+    /// How and where it went: kept for a dry run, which prints them.
+    pub(crate) method: String,
+    pub(crate) url: String,
     pub(crate) request: Vec<u8>,
     pub(crate) status: u16,
     pub(crate) headers: Headers,
@@ -75,6 +92,8 @@ pub(crate) struct Exchange {
 pub(crate) struct Recording {
     inner: Arc<HttpTransport>,
     exchanges: Arc<Mutex<Vec<Exchange>>>,
+    /// Keeps each request and sends none.
+    dry_run: bool,
 }
 
 impl Transport for Recording {
@@ -85,6 +104,25 @@ impl Transport for Recording {
     ) -> BoxFuture<'_, Result<HttpResponse, TransportError>> {
         Box::pin(async move {
             let sent = request.body.clone();
+            if self.dry_run {
+                self.exchanges
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(Exchange {
+                        method: format!("{:?}", request.method).to_uppercase(),
+                        url: request.url.clone(),
+                        request: sent,
+                        ..Exchange::default()
+                    });
+                return Err(TransportError {
+                    kind: cortex_llm::error::TransportErrorKind::InvalidRequest,
+                    message: "a dry run sends nothing".to_owned(),
+                });
+            }
+            let (method, url) = (
+                format!("{:?}", request.method).to_uppercase(),
+                request.url.clone(),
+            );
             let response = self.inner.send(request, cancel).await?;
             let HttpResponse {
                 status,
@@ -97,6 +135,8 @@ impl Transport for Recording {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
                 exchanges.push(Exchange {
+                    method,
+                    url,
                     request: sent,
                     status,
                     headers: headers.clone(),
@@ -196,7 +236,12 @@ pub(crate) fn wanted(known: &[&str]) -> Vec<String> {
 
 impl Live {
     pub(crate) fn start(target: Target) -> Self {
-        let real = key(target.key_file);
+        // A dry run reads no key: it sends nothing to send one with.
+        let real = if dry_run() {
+            Secret::new("a-dry-run-has-no-key")
+        } else {
+            key(target.key_file)
+        };
         let sent = Secret::new(real.expose());
         Self::with_keys(target, real, sent)
     }
@@ -207,6 +252,7 @@ impl Live {
         let transport = Recording {
             inner: Arc::new(HttpTransport::default()),
             exchanges: Arc::clone(&exchanges),
+            dry_run: dry_run(),
         };
         let client = ProviderClient::builder(
             Arc::clone(&target.protocol),
@@ -266,8 +312,77 @@ impl Live {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)[before..]
             .to_vec();
+        if dry_run() {
+            self.end_dry_run(&exchanges);
+        }
         self.account(request, &events);
         (events, exchanges)
+    }
+
+    /// Prints the requests a dry run built, and ends the run: what follows
+    /// a request is built from its response, which a dry run does not have.
+    fn end_dry_run(&self, exchanges: &[Exchange]) -> ! {
+        for exchange in exchanges {
+            let body = String::from_utf8_lossy(&exchange.request);
+            let body = serde_json::from_str::<serde_json::Value>(&body)
+                .and_then(|value| serde_json::to_string_pretty(&value))
+                .unwrap_or_else(|_| body.into_owned());
+            self.say(&format!(
+                "dry run: {} {}\n{body}",
+                exchange.method, exchange.url
+            ));
+        }
+        self.say(
+            "dry run: nothing was sent. What a run sends after this request is built from its \
+             response, so a dry run ends here.",
+        );
+        // A dry run ends at its first request, and the test harness must
+        // not report the rest of the scenario as a failure.
+        std::process::exit(0)
+    }
+
+    /// Adds a call's spend to the ledger `cargo xtask live --spent` totals,
+    /// when there is one.
+    fn ledger(&self, model: &str, record: &cortex_protocol::usage::RequestUsage, stated: bool) {
+        let Some(path) = std::env::var_os(LEDGER) else {
+            return;
+        };
+        let tokens = &record.tokens;
+        let line = serde_json::json!({
+            "date": self.today,
+            "provider": self.target.provider.id.as_str(),
+            "model": model,
+            "input": tokens.input,
+            "cache_read": tokens.cache_read,
+            "cache_write": tokens.cache_write,
+            "output": tokens.output,
+            "usd_nanos": record.cost.as_ref().map_or(0, |cost| cost.usd_nanos),
+            "stated_by_provider": stated,
+            "test": std::thread::current().name().unwrap_or(""),
+        })
+        .to_string();
+        // Checked for the key like everything else a run writes.
+        let line = match self.scrubber.printable(&line) {
+            Ok(line) => line,
+            Err(error) => panic!("{error}"),
+        };
+        #[expect(
+            clippy::disallowed_types,
+            reason = "a line added to a file by a test run by hand"
+        )]
+        let opened = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path);
+        let written = opened.and_then(|mut file| {
+            use std::io::Write as _;
+            writeln!(file, "{line}")
+        });
+        if let Err(error) = written {
+            self.say(&format!(
+                "  (the spend could not be added to the ledger: {error})"
+            ));
+        }
     }
 
     fn taken(&self) -> usize {
@@ -281,6 +396,14 @@ impl Live {
     /// context probe) with the session's credential, and returns the
     /// status, the headers and the whole body.
     pub(crate) fn fetch(&mut self, mut request: HttpRequest) -> (u16, Headers, Vec<u8>) {
+        if dry_run() {
+            self.end_dry_run(&[Exchange {
+                method: format!("{:?}", request.method).to_uppercase(),
+                url: request.url.clone(),
+                request: request.body.clone(),
+                ..Exchange::default()
+            }]);
+        }
         let auth = (self.target.auth)(Secret::new(key(self.target.key_file).expose()));
         let transport = self.transport.clone();
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -327,6 +450,7 @@ impl Live {
                 );
                 let cost = record.cost.as_ref().map_or(0, |cost| cost.usd_nanos);
                 self.spent_nanos += cost;
+                self.ledger(&info.id.to_string(), &record, stated);
                 let tokens = &record.tokens;
                 self.say(&format!(
                     "  {} asked={asked} served={} stop={raw_stop} input={} cache_read={} \

@@ -48,6 +48,15 @@ where
         return Ok(true);
     }
 
+    // Asked once before any job starts, so that a run with no time left
+    // starts nothing. After this it is asked as pieces finish, and a job
+    // may start one more piece in the moment before the answer reaches it.
+    if items.is_empty() {
+        return Ok(true);
+    }
+    if out_of_time() {
+        return Ok(false);
+    }
     let next = AtomicUsize::new(0);
     let halt = AtomicBool::new(false);
     let (sender, received) = mpsc::channel::<(usize, R)>();
