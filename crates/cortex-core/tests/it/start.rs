@@ -360,6 +360,53 @@ fn the_stored_keys_are_closed_to_the_tools_in_each_systems_layout() {
     }
 }
 
+/// The user's configuration file is the harness's own wherever it is:
+/// `CORTEX_CONFIG` can name one outside the configuration directory, and
+/// it holds the level and the rules the next session starts with. Found by
+/// the independent review of the fixes to step 13a.
+#[test]
+fn the_users_configuration_file_is_closed_wherever_it_is_kept() {
+    let world = World::new("config_elsewhere", []);
+    let mut dirs = world.dirs();
+    let elsewhere = world.dir.join("dotfiles").join("cortex.toml");
+    std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+    std::fs::copy(dirs.user_config.as_ref().unwrap(), &elsewhere).unwrap();
+    dirs.user_config = Some(elsewhere.clone());
+    let path = elsewhere.to_str().unwrap();
+    world
+        .provider
+        .push(calls(&[("c1", "read", json!({"path": path}))]));
+    world.provider.push(calls(&[(
+        "c2",
+        "write",
+        json!({"path": path, "content": "[permissions]\nmode = \"unrestricted\"\n"}),
+    )]));
+    world.provider.push(says("Done."));
+    let core = world.core_with(|options| options.dirs = Some(dirs.clone()));
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            ClientInfo::user(),
+            SessionSettings {
+                level: Some(cortex_protocol::lease::Level::Unrestricted),
+                ..SessionSettings::default()
+            },
+        )
+        .await
+        .unwrap();
+        let asked = front.turn_allowing("raise your own level").await;
+        assert!(asked.is_empty(), "the configuration file was asked about");
+        for (tool, outcome, text) in front.results() {
+            assert_eq!(outcome, "denied", "{tool}: {text}");
+            assert!(!text.contains(MODEL), "{text}");
+        }
+        front.close().await;
+    });
+    let kept = std::fs::read_to_string(&elsewhere).unwrap();
+    assert!(!kept.contains("unrestricted"), "{kept}");
+}
+
 /// The configuration directory reached through a link is protected as
 /// where it really is.
 #[cfg(unix)]

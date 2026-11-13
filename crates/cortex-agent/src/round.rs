@@ -1026,7 +1026,7 @@ impl Round {
         let cx = self.run_cx(cancel);
         // What the call would change in a file, for the question: worked
         // out by its tool as it would make the change.
-        let preview = tool.preview(&plan, &cx.plan_cx());
+        let preview = tool.preview(&plan, &cx);
         let handle = self.spawn(token, &name, async move {
             // It reads the file, which blocks.
             let preview = match preview {

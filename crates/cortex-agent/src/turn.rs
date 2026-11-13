@@ -359,7 +359,7 @@ impl Session {
                 usage: cortex_protocol::usage::SessionUsage::default(),
                 reload: false,
                 changing: false,
-                restored: Vec::new(),
+                history_changed: false,
                 history: !opened.items.is_empty(),
                 closed: false,
             }),
@@ -484,31 +484,19 @@ impl Session {
     /// every reason the history is read again: what the model was shown
     /// may not be in the history any more (a rewind took it away), so the
     /// next read of any file is in full and never "unchanged" or a diff
-    /// against a version the model does not have. Files a rewind put back
-    /// are forgotten whole: what the table recorded of them is a version
-    /// the rewind took away. This is the one place a change of history
+    /// against a version the model does not have. After a change of history
+    /// ([`HistoryChange::made`](crate::HistoryChange::made)) it forgets
+    /// every file whole, snapshots too: one read or written only in a turn
+    /// the rewind took away would otherwise pass the staleness guard and be
+    /// overwritten unseen. This is the one place a change of history
     /// reaches the table, and where compaction starts its epochs too
     /// (`docs/architecture/07-sessions-and-context.md`, "What each part of
     /// a session's state follows").
     async fn reload(&mut self) -> Result<(), StoreError> {
-        let restored = std::mem::take(&mut self.shared.lock().restored);
+        let changed = std::mem::take(&mut self.shared.lock().history_changed);
         self.env.workspace.files.begin_epoch();
-        if !restored.is_empty() {
-            // Placing a path follows its links, which reads the file
-            // system: not on this thread.
-            let paths = Arc::clone(&self.env.workspace.paths);
-            let placed = cortex_tools::run_blocking(&CancelToken::new(), move |_| {
-                restored
-                    .iter()
-                    .filter_map(|file| paths.resolve(file).ok())
-                    .map(|path| path.abs().clone())
-                    .collect::<Vec<_>>()
-            })
-            .await
-            .unwrap_or_default();
-            for path in &placed {
-                self.env.workspace.files.forget(path);
-            }
+        if changed {
+            self.env.workspace.files.forget_all();
         }
         let opened = self.store.open().await?;
         self.context.load(&opened.items);

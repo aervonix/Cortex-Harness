@@ -533,6 +533,55 @@ fn a_file_a_rewind_put_back_is_read_again_before_it_is_changed() {
     });
 }
 
+/// The same when the rewind puts no file back: a file read only in a turn
+/// the rewind took away is one the model has not seen on this branch, and
+/// is not overwritten until it is read again, though it is as it was read.
+/// Found by the independent review of the fixes to step 13a: the table's
+/// snapshot from the rewound turn still let the write through.
+#[test]
+fn a_file_read_only_in_a_rewound_turn_is_read_again_before_it_is_overwritten() {
+    let world = World::new(
+        "rewind_unseen",
+        [
+            says("Hello."),
+            calls(&[("c1", "read", json!({"path": "config.yaml"}))]),
+            says("Read it."),
+            // After the rewind, which put nothing back: a write from
+            // content the model never saw on this branch.
+            calls(&[(
+                "c2",
+                "write",
+                json!({"path": "config.yaml", "content": "imagined: true\n"}),
+            )]),
+            says("Could not."),
+        ],
+    );
+    world.put("config.yaml", "real: true\n");
+    let core = world.core();
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        front.turn("hello").await;
+        let keep = last_answer(&front);
+        front.turn("read the configuration").await;
+        front
+            .op(Op::SessionRewind(SessionRewindParams {
+                session_id: front.session.clone(),
+                to: keep,
+                restore_files: false,
+            }))
+            .await
+            .unwrap();
+        front.turn("rewrite the configuration").await;
+        let refused = last_result_of(&front, "write");
+        assert!(
+            refused.contains("has not been read in this session"),
+            "a write of a file not read on this branch: {refused}"
+        );
+        assert_eq!(world.read("config.yaml").unwrap(), "real: true\n");
+        front.close().await;
+    });
+}
+
 /// A rewind works on the session's files off the core's thread, and a
 /// prompt that arrives meanwhile does not start a turn under it.
 ///

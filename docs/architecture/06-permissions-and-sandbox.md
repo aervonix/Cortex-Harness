@@ -201,6 +201,7 @@ A pattern that ends in `/**`, or in a separator, matches the directory itself as
 | Closed | To |
 |---|---|
 | The configuration directory (configuration, and credentials on Linux) | Reading and writing. |
+| The user's configuration file, wherever `CORTEX_CONFIG` puts it | Reading and writing. |
 | The credentials file and its lock, wherever they are kept (on Windows, the local folder that is the data directory) | Reading and writing. |
 | The state directory (trust, stored approvals, what was learned) | Reading and writing. |
 | The data directory | Writing. |

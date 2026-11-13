@@ -54,6 +54,7 @@ pub mod log;
 pub mod nofollow;
 pub mod path;
 pub mod private;
+pub mod program;
 pub mod redact;
 pub mod rng;
 pub mod secret;

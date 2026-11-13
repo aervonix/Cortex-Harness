@@ -288,6 +288,18 @@ impl FileTable {
         self.lock().files.remove(path);
     }
 
+    /// Forgets every file: the session's history changed under it (a
+    /// rewind), and what it recorded may be of turns the history no longer
+    /// has. A file is then read again before it is changed. Unlike
+    /// [`begin_epoch`](Self::begin_epoch), which compaction starts, this
+    /// drops the snapshots too: after compaction the model still saw the
+    /// files in this branch's history, and after a rewind it may not have.
+    pub fn forget_all(&self) {
+        let mut inner = self.lock();
+        inner.files.clear();
+        inner.epoch += 1;
+    }
+
     /// The snapshot last recorded for `path`.
     #[must_use]
     pub fn snapshot(&self, path: &AbsPath) -> Option<FileSnapshot> {
@@ -473,6 +485,18 @@ mod tests {
 
         table.record_read(&file, snapshot, shown(b"a\nb\n", 1, 1));
         assert!(table.shown(&file).is_some(), "shown again in the new epoch");
+    }
+
+    #[test]
+    fn forgetting_every_file_drops_the_snapshots_too() {
+        let table = FileTable::new();
+        let file = path("/work/notes.md");
+        let snapshot = FileSnapshot::of_content(b"a\n", None);
+        table.record_read(&file, snapshot.clone(), shown(b"a\n", 1, 1));
+        table.forget_all();
+        assert_eq!(table.shown(&file), None);
+        assert_eq!(table.staleness(&file, &snapshot.hash), Staleness::Unseen);
+        assert!(table.seen().is_empty());
     }
 
     #[test]

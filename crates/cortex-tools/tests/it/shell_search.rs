@@ -315,6 +315,25 @@ fn a_configured_shell_given_as_a_relative_path_is_refused() {
     }
 }
 
+/// On Windows a name with a drive and no root (`C:bash.exe`) is a path to
+/// a file in that drive's current directory, which is usually the
+/// workspace: it is refused as a relative path, never looked up as a name.
+/// Found by the independent review of the fixes to step 13a.
+#[cfg(windows)]
+#[test]
+fn on_windows_a_shell_named_with_a_drive_and_no_root_is_refused() {
+    let ws = Workspace::new("search_drive_relative");
+    let bin = ws.dir.join("bin");
+    program(&bin, "bash.exe");
+    for configured in ["C:bash.exe", "D:bash.exe", "c:pwsh"] {
+        assert_eq!(
+            search(true, &[&bin]).find(Some(configured), None),
+            Err(ShellError::NotAbsolute(configured.to_owned())),
+            "{configured}"
+        );
+    }
+}
+
 /// On Windows the search is the harness's own: `.exe` and the name as
 /// given. The other extensions of `PATHEXT` (a batch file named `pwsh`)
 /// never make a shell, wherever they are on the path.

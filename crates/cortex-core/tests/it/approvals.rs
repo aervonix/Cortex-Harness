@@ -84,7 +84,8 @@ fn a_call_that_needs_an_answer_is_put_to_the_user_and_runs_when_allowed() {
 /// as a write, so that a front end needs none of the call's arguments to
 /// show it (`docs/architecture/11-rpc-protocol.md`, "`approval/request`").
 /// It is bounded: a change too large to carry says so and names the file,
-/// and one that cannot be worked out before the call runs says why.
+/// and one that cannot be worked out before the call runs says why. And it
+/// shows nothing the agent may not read without asking.
 #[test]
 fn an_approval_for_a_change_to_a_file_shows_the_change_within_a_bound() {
     let big: String = (0..10_000)
@@ -103,21 +104,27 @@ fn an_approval_for_a_change_to_a_file_shows_the_change_within_a_bound() {
             edit("c1", "push", "pull_request"),
             calls(&[("c2", "write", json!({"path": PROTECTED, "content": big}))]),
             edit("c3", "text that is not there", "x"),
+            calls(&[(
+                "c4",
+                "write",
+                json!({"path": ".env", "content": "TOKEN=new\n"}),
+            )]),
             says("Left alone."),
         ],
     );
     world.put(PROTECTED, "on: push\n");
+    world.put(".env", "TOKEN=the-old-secret\n");
     let core = world.core();
     world.run(async {
         let front = Front::start(&world, &core).await;
         front.prompt("change CI").await;
         let mut details = Vec::new();
-        for _ in 0..3 {
+        for file in [PROTECTED, PROTECTED, PROTECTED, ".env"] {
             let (id, request) = front.approval().await;
             let ApprovalDetail::Diff(change) = request.detail else {
                 panic!("not a change to a file: {:?}", request.detail);
             };
-            assert!(change.path.replace('\\', "/").ends_with(PROTECTED));
+            assert!(change.path.replace('\\', "/").ends_with(file));
             details.push((change.diff, change.omitted));
             front.answer(&id, ApprovalChoice::Deny).unwrap();
         }
@@ -139,6 +146,13 @@ fn an_approval_for_a_change_to_a_file_shows_the_change_within_a_bound() {
         let omitted = omitted.as_deref().unwrap();
         assert!(omitted.contains("cannot be worked out"), "{omitted}");
         assert!(omitted.contains("not found"), "{omitted}");
+        // A file the agent may not read without asking (it looks like a
+        // secret) is not shown in a question: its old content would be.
+        let (diff, omitted) = &details[3];
+        assert!(diff.is_empty(), "{diff}");
+        let omitted = omitted.as_deref().unwrap();
+        assert!(omitted.contains("may not read"), "{omitted}");
+        assert!(!omitted.contains("the-old-secret"), "{omitted}");
         // Nothing was changed by a question.
         assert_eq!(world.read(PROTECTED).as_deref(), Some("on: push\n"));
         front.close().await;

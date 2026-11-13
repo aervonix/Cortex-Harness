@@ -312,6 +312,7 @@ Each folder beside what the permission engine closes in it ([06-permissions-and-
 | What | Linux | Windows | Closed by the engine |
 |---|---|---|---|
 | The configuration directory: `config.toml` | `$XDG_CONFIG_HOME/cortex-harness`, usually `~/.config/cortex-harness` | `%APPDATA%\cortex-harness`, the roaming folder | Reading and writing, the whole directory. |
+| The user's configuration file, when `CORTEX_CONFIG` names one elsewhere | Where it names | Where it names | Reading and writing, the file by name (since the review of the fixes to step 13a): it holds the level and the rules the next session starts with. |
 | The stored keys: `credentials.toml` and its lock, `credentials.toml.lock` | In the configuration directory | In `%LOCALAPPDATA%\cortex-harness`, which is the data directory | Reading and writing, the two files by name, wherever they are kept. |
 | The state directory: trust, stored approvals, `shells.json`, logs | `$XDG_STATE_HOME/cortex-harness`, usually `~/.local/state/cortex-harness` | `%LOCALAPPDATA%\cortex-harness\state`, inside the data directory | Reading and writing, the whole directory. |
 | The data directory: sessions | `$XDG_DATA_HOME/cortex-harness`, usually `~/.local/share/cortex-harness`, or `session.data_dir` | `%LOCALAPPDATA%\cortex-harness`, or `session.data_dir` | Writing, the whole directory; and reading, the sessions of other projects. |

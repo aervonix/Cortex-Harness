@@ -176,12 +176,13 @@ impl Tool for WriteTool {
         })
     }
 
-    fn preview(&self, plan: &Plan, cx: &PlanCx) -> Option<Preview> {
+    fn preview(&self, plan: &Plan, cx: &RunCx) -> Option<Preview> {
         let call = plan.args::<Call>()?.clone();
         let paths = std::sync::Arc::clone(&cx.paths);
+        let gate = std::sync::Arc::clone(&cx.gate);
         let limit = self.editing.limit;
         Some(Box::new(move || {
-            change::preview(&call.path, &paths, limit, |old| {
+            change::preview(&call.path, &paths, gate.as_ref(), limit, |old| {
                 let content = call.content.strip_prefix(BOM).unwrap_or(&call.content);
                 Ok(match old {
                     // A new file is the content, exactly as it was given.

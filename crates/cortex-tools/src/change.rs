@@ -53,7 +53,7 @@ use cortex_base::{
 };
 
 use crate::checkpoint::Editing;
-use crate::context::RunCx;
+use crate::context::{ReadGate, RunCx};
 use crate::contract::ChangePreview;
 use crate::files::{FileSnapshot, FileTable, Staleness};
 use crate::output::{count, size};
@@ -501,11 +501,13 @@ fn too_large(shown: &str, bytes: u64, limit: u64) -> String {
 /// reads it (steps 1 to 3 above), `change` works out the new text from the
 /// old (`None` for a file that is not there yet) as the tool would, and the
 /// two are diffed as a result's payload is, under the same limit
-/// ([`MAX_PAYLOAD_DIFF`]). Nothing is written, and the table of seen files
-/// is not asked: the staleness guard is the call's, when it runs.
+/// ([`MAX_PAYLOAD_DIFF`]). A file `gate` keeps from the agent is not read.
+/// Nothing is written, and the table of seen files is not asked: the
+/// staleness guard is the call's, when it runs.
 pub(crate) fn preview(
     path: &ResolvedPath,
     paths: &PathResolver,
+    gate: &dyn ReadGate,
     limit: u64,
     change: impl FnOnce(Option<&str>) -> Result<String, String>,
 ) -> ChangePreview {
@@ -524,6 +526,16 @@ pub(crate) fn preview(
         Ok(target) => target,
         Err(refused) => return cannot(refused.text()),
     };
+    // What the agent may not read without asking (a file that looks like a
+    // secret, one a rule asks about or denies) is not put in a question,
+    // which goes to every front end of the session and is not filtered.
+    if !gate.may_read(path.abs()) {
+        return left_out(
+            "The diff is not shown: it would show the content of a file the agent may not \
+             read without asking."
+                .to_owned(),
+        );
+    }
     let found = match target.find_within(limit) {
         Ok(found) => found,
         Err(refused) => return cannot(refused.text()),
