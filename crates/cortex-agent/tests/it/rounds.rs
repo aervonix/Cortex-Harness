@@ -540,7 +540,10 @@ fn any_round_runs_conflicting_calls_in_order_and_records_every_result() {
     let case = std::sync::atomic::AtomicUsize::new(0);
     cases::check(
         "any_round_runs_conflicting_calls_in_order_and_records_every_result",
-        40,
+        // Each case is a session with a runtime of its own, and the nightly
+        // run multiplies the count by fifty: 24 keeps that under the mark
+        // at which a test is reported as slow.
+        24,
         |rng| {
             let count = 1 + rng.below(6) as usize;
             (0..count)
