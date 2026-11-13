@@ -21,10 +21,9 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::Result;
-use crate::steps;
 use crate::workspace;
 
 /// The environment variable that names the file the API key is in.
@@ -54,27 +53,57 @@ fn require_key_file() -> Result<()> {
     }
 }
 
-/// Runs one ignored test of `cortex-llm`'s integration binary, with its
-/// output shown.
+/// Runs one ignored test of `cortex-llm`'s integration binary, and shows
+/// its output.
+///
+/// A test that was renamed is a test that does not run: cargo then runs
+/// nothing and reports success. So the output is read, and the command
+/// fails unless exactly one test ran and passed. What the test prints has
+/// already been checked for the key by the test itself.
 fn ignored_test(name: &str, variables: &[(&str, &str)]) -> Result<()> {
-    steps::cargo_with(
-        &[
-            "test",
-            "--locked",
-            "--package",
-            "cortex-llm",
-            "--features",
-            "http",
-            "--test",
-            "it",
-            "--",
-            "--ignored",
-            "--exact",
-            name,
-            "--nocapture",
-        ],
-        variables,
-    )
+    let arguments = [
+        "test",
+        "--locked",
+        "--package",
+        "cortex-llm",
+        "--features",
+        "http",
+        "--test",
+        "it",
+        "--",
+        "--ignored",
+        "--exact",
+        name,
+        "--nocapture",
+    ];
+    println!("$ cargo {}", arguments.join(" "));
+    let output = Command::new(workspace::cargo())
+        .args(arguments)
+        .envs(variables.iter().copied())
+        .current_dir(workspace::root())
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(|error| format!("could not run cargo test: {error}"))?;
+    let shown = String::from_utf8_lossy(&output.stdout);
+    print!("{shown}");
+    if !output.status.success() {
+        return Err(format!("the test `{name}` failed"));
+    }
+    if ran_one_test(&shown) {
+        Ok(())
+    } else {
+        Err(format!(
+            "the test `{name}` did not run: cargo found no test of that name. Nothing was sent."
+        ))
+    }
+}
+
+/// Whether the output of `cargo test` says that exactly one test ran and
+/// passed.
+fn ran_one_test(output: &str) -> bool {
+    output
+        .lines()
+        .any(|line| line.starts_with("test result: ok. 1 passed; 0 failed;"))
 }
 
 /// `cargo xtask live`: the smoke test against the real API.
@@ -212,4 +241,41 @@ fn seed(fixtures: &Path, corpus: &Path) -> Result<usize> {
         seeded += 1;
     }
     Ok(seeded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_live_command_passes_only_when_its_one_test_ran() {
+        let ran = "running 1 test\nsmoke passed.\ntest anthropic::live::live_smoke ... ok\n\n\
+                   test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 142 filtered out; finished in 3.25s\n";
+        assert!(ran_one_test(ran));
+        // A test that was renamed: cargo runs nothing and calls it a success.
+        let none = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 143 filtered out; finished in 0.00s\n";
+        assert!(!ran_one_test(none));
+        let failed = "running 1 test\ntest result: FAILED. 0 passed; 1 failed; 0 ignored;\n";
+        assert!(!ran_one_test(failed));
+        assert!(!ran_one_test(""));
+    }
+
+    #[test]
+    fn the_fuzz_targets_have_fixtures_to_start_from() {
+        let root = workspace::root();
+        for (target, fixtures) in FUZZ_TARGETS {
+            assert!(
+                root.join("fuzz/fuzz_targets")
+                    .join(format!("{target}.rs"))
+                    .is_file(),
+                "{target}"
+            );
+            assert!(
+                root.join("crates/cortex-llm/fixtures")
+                    .join(fixtures)
+                    .is_dir(),
+                "{fixtures}"
+            );
+        }
+    }
 }

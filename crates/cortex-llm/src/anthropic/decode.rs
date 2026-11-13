@@ -24,7 +24,7 @@
 //! | `text` | text |
 //! | `thinking`, `redacted_thinking` | reasoning |
 //! | `tool_use` | a tool call |
-//! | anything else | a provider block: a server-side tool's use or result, and whatever is added next month |
+//! | anything else | a provider block: a server-side tool's use or result, a compaction block, and whatever is added next month |
 //!
 //! **The whole block is put together here.** The provider never sends a
 //! block whole when it streams: it sends the block as it starts, and then
@@ -34,6 +34,17 @@
 //! streamed member replaced by what the deltas added up to. The result is
 //! the block as the provider would have sent it without streaming, which is
 //! what a later request sends back.
+//!
+//! **A block of a kind this build does not know keeps what is added to
+//! it.** An addition of an unknown kind to such a block is laid over the
+//! block: each of its members becomes the block's member of the same name,
+//! text appended to text. A compaction block arrives that way, with all of
+//! its content in one addition. An addition of an unknown kind to text,
+//! reasoning or a tool call is skipped: where it would go in the block is
+//! not something to guess at.
+//!
+//! **An index names one block for the whole response.** A block that starts
+//! under an index that was already used, open or closed, is an error.
 //!
 //! A tool call's arguments are kept as the text the model wrote. When that
 //! text is not a JSON object (a response cut off by the output limit, or a
@@ -195,13 +206,77 @@ enum Shape {
         thinking: String,
         signature: String,
     },
-    /// A tool call, the harness's own or a server-side tool's: the
-    /// arguments arrive as fragments of JSON text.
+    /// A call to one of the harness's tools: the arguments arrive as
+    /// fragments of JSON text.
     Call {
         input: String,
     },
+    /// A block of a kind this build does not name.
+    Provider {
+        /// The arguments of a server-side tool's call, which stream like
+        /// any other call's.
+        input: String,
+        /// What additions of other kinds laid over the block's members.
+        laid: Vec<(String, Laid)>,
+    },
     /// A block that arrives whole.
     Whole,
+}
+
+/// What the stream laid over one member of a block of an unknown kind.
+enum Laid {
+    /// Text, which each addition appends to.
+    Text(String),
+    /// Any other value, as the provider sent it. A later one replaces it.
+    Raw(Box<RawValue>),
+}
+
+/// Lays an addition of an unknown kind over a block of an unknown kind:
+/// each member of the addition, apart from its `type`, becomes the block's
+/// member of the same name. Text is appended to the text before it, as
+/// every kind of addition the provider has so far does with text; any
+/// other value replaces what was there.
+///
+/// It is the reading that loses nothing. A compaction block, for one,
+/// starts with no content and gets all of it in a single addition; skipped,
+/// the block would be stored empty and the summary would be gone.
+fn lay(
+    laid: &mut Vec<(String, Laid)>,
+    started: &[(String, Box<RawValue>)],
+    addition: &RawValue,
+) -> Result<(), serde_json::Error> {
+    for (key, value) in ordered_members(addition)? {
+        if key == "type" {
+            continue;
+        }
+        let text = if value.get().starts_with('"') {
+            Some(serde_json::from_str::<String>(value.get())?)
+        } else {
+            None
+        };
+        let at = laid.iter().position(|(known, _)| *known == key);
+        match (text, at) {
+            (Some(more), Some(at)) => match &mut laid[at].1 {
+                Laid::Text(text) => text.push_str(&more),
+                other => *other = Laid::Text(more),
+            },
+            (Some(more), None) => {
+                // The text the block started with, when it started with
+                // text, comes first.
+                let mut text: String = started
+                    .iter()
+                    .find(|(known, _)| *known == key)
+                    .filter(|(_, value)| value.get().starts_with('"'))
+                    .and_then(|(_, value)| serde_json::from_str(value.get()).ok())
+                    .unwrap_or_default();
+                text.push_str(&more);
+                laid.push((key, Laid::Text(text)));
+            }
+            (None, Some(at)) => laid[at].1 = Laid::Raw(value),
+            (None, None) => laid.push((key, Laid::Raw(value))),
+        }
+    }
+    Ok(())
 }
 
 /// The usage reported so far.
@@ -297,6 +372,9 @@ pub(crate) struct Decoder {
     started: bool,
     ended: bool,
     blocks: BTreeMap<u32, Block>,
+    /// The index of every block that has started, open or not. An index is
+    /// a block's name for the whole response: it is never used twice.
+    seen: std::collections::BTreeSet<u32>,
     usage: UsageSoFar,
     /// The stop reason, its detail, once `message_delta` has given them.
     stop: Option<(String, Option<String>)>,
@@ -312,6 +390,7 @@ impl Decoder {
             started: false,
             ended: false,
             blocks: BTreeMap::new(),
+            seen: std::collections::BTreeSet::new(),
             usage: UsageSoFar::default(),
             stop: None,
         }
@@ -349,7 +428,9 @@ impl Decoder {
         let bad = |error: serde_json::Error| {
             DecodeError::new(format!("the block {index} could not be read: {error}"))
         };
-        if self.blocks.contains_key(&index) {
+        // Whoever reads the events keys a block by its index. A second
+        // block under an index that was used would overwrite the first.
+        if !self.seen.insert(index) {
             return Err(DecodeError::new(format!("the block {index} started twice")));
         }
         let members = ordered_members(raw).map_err(bad)?;
@@ -402,8 +483,9 @@ impl Decoder {
                 // other call, and may start without an `input` member. A
                 // block that arrives whole has nothing added to it, and
                 // then this shape leaves it exactly as it started.
-                Shape::Call {
+                Shape::Provider {
                     input: String::new(),
+                    laid: Vec::new(),
                 }
             }
         };
@@ -427,11 +509,8 @@ impl Decoder {
                 "an addition to the block {index} could not be read: {error}"
             ))
         })?;
-        let tool_call = block
-            .members
-            .iter()
-            .any(|(key, value)| key == "type" && value.get() == "\"tool_use\"");
-        match (delta.kind.as_deref().unwrap_or_default(), &mut block.shape) {
+        let Block { members, shape } = block;
+        match (delta.kind.as_deref().unwrap_or_default(), shape) {
             ("text_delta", Shape::Text { text, .. }) => {
                 let more = delta.text.as_deref().unwrap_or_default();
                 if !more.is_empty() {
@@ -458,14 +537,28 @@ impl Decoder {
                 let more = delta.partial_json.as_deref().unwrap_or_default();
                 if !more.is_empty() {
                     input.push_str(more);
-                    if tool_call {
-                        out.tool_args_delta(index, more);
-                    }
+                    out.tool_args_delta(index, more);
                 }
             }
-            // A kind of addition this build does not know, or one that does
-            // not belong to this kind of block: skipped, like an event of an
-            // unknown type.
+            // A server-side tool's arguments are the provider's business:
+            // they are kept for the stored block and not handed to the loop.
+            ("input_json_delta", Shape::Provider { input, .. }) => {
+                input.push_str(delta.partial_json.as_deref().unwrap_or_default());
+            }
+            // An addition of a kind this build does not know, to a block of
+            // a kind it does not know either: laid over the block, so that
+            // the stored block has what the provider sent.
+            (_, Shape::Provider { laid, .. }) => {
+                lay(laid, members, raw).map_err(|error| {
+                    DecodeError::new(format!(
+                        "an addition to the block {index} could not be read: {error}"
+                    ))
+                })?;
+            }
+            // An addition of an unknown kind to text, reasoning or a tool
+            // call, or one that does not belong to the block's kind:
+            // skipped, like an event of an unknown type. Where it would go
+            // in such a block is not something to guess at.
             _ => {}
         }
         Ok(())
@@ -634,7 +727,7 @@ impl Block {
                 json::string(&mut written, signature);
                 extra.push(("signature", written));
             }
-            Shape::Call { input } => {
+            Shape::Call { input } | Shape::Provider { input, .. } => {
                 if json::is_object(input) {
                     extra.push(("input", input.trim().to_owned()));
                 } else if !input.trim().is_empty() {
@@ -646,6 +739,19 @@ impl Block {
                 }
                 // With nothing streamed, the block keeps the arguments it
                 // started with.
+                if let Shape::Provider { laid, .. } = &self.shape {
+                    for (key, value) in laid {
+                        let written = match value {
+                            Laid::Text(text) => {
+                                let mut written = String::new();
+                                json::string(&mut written, text);
+                                written
+                            }
+                            Laid::Raw(raw) => raw.get().to_owned(),
+                        };
+                        extra.push((key, written));
+                    }
+                }
             }
             Shape::Whole => {}
         }
@@ -884,6 +990,61 @@ mod tests {
         for block in [call(r#"{"path": "a"#), call("[1]"), call("{}")] {
             assert!(json::is_object(&block), "{block}");
         }
+    }
+
+    #[test]
+    fn additions_of_an_unknown_kind_are_laid_over_a_block_of_an_unknown_kind() {
+        let raw = |json: &str| -> Box<RawValue> { serde_json::from_str(json).unwrap() };
+        let start = r#"{"type":"compaction","content":null,"note":"so far: ","n":1}"#;
+        let mut laid = Vec::new();
+        let started = members(start);
+        // Text replaces a null, is appended to text the block started
+        // with, and to text an earlier addition brought.
+        lay(
+            &mut laid,
+            &started,
+            &raw(r#"{"type":"compaction_delta","content":"The user asked "}"#),
+        )
+        .unwrap();
+        lay(
+            &mut laid,
+            &started,
+            &raw(r#"{"type":"compaction_delta","content":"about \"Oslo\".","note":"one"}"#),
+        )
+        .unwrap();
+        // Any other value replaces what was there, and a new member is added.
+        lay(
+            &mut laid,
+            &started,
+            &raw(r#"{"type":"other_delta","n":2,"extra":{"b":1,"a":[1.50]}}"#),
+        )
+        .unwrap();
+        lay(&mut laid, &started, &raw(r#"{"type":"other_delta","n":3}"#)).unwrap();
+        let block = whole(
+            start,
+            Shape::Provider {
+                input: String::new(),
+                laid,
+            },
+        );
+        assert_eq!(
+            block,
+            r#"{"type":"compaction","content":"The user asked about \"Oslo\".","note":"so far: one","n":3,"extra":{"b":1,"a":[1.50]}}"#
+        );
+        // The addition's own `type` never becomes the block's.
+        assert!(block.starts_with(r#"{"type":"compaction""#));
+        // Nothing added: exactly what started.
+        assert_eq!(
+            whole(
+                start,
+                Shape::Provider {
+                    input: String::new(),
+                    laid: Vec::new()
+                }
+            ),
+            start
+        );
+        assert!(lay(&mut Vec::new(), &started, &raw("[1]")).is_err());
     }
 
     #[test]

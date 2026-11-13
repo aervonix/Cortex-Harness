@@ -21,6 +21,7 @@
 //! and the request's prefix stays the same.
 
 use cortex_base::{CancelToken, Classified, ErrorKind};
+use cortex_protocol::model::Modality;
 use cortex_protocol::{ArtifactId, Part};
 
 use crate::error::ProviderError;
@@ -120,6 +121,12 @@ pub(crate) async fn inline_images(
     let Some(source) = source else {
         return Inlined::Done;
     };
+    // A model that takes no images is told one was there, in words. The
+    // image itself is not needed, and a missing one must not fail a request
+    // that would never have sent it.
+    if !request.model.info.input.contains(&Modality::Image) {
+        return Inlined::Done;
+    }
     for message in &mut request.messages {
         for part in &mut message.parts {
             let nested = match part {
