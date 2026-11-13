@@ -13,6 +13,10 @@
 //!   state and data are in a temporary directory, so nothing of the
 //!   machine's own set-up is read.
 //!
+//! Three more headless rows show where its time goes, and have no budget:
+//! the run with `--no-session`, with a shell that starts fast, and with
+//! both.
+//!
 //! Each is run `--runs` times (30 by default); the median and the 95th
 //! percentile are printed against the budget of the column `--budget`
 //! names, and added to the job's summary in CI. With `--check` a median
@@ -82,12 +86,16 @@ pub(crate) fn run(arguments: &[String]) -> Result<()> {
     );
     let mut over = Vec::new();
     for (what, times) in &rows {
+        let (median, p95) = (percentile(times, 50), percentile(times, 95));
+        if what.starts_with(BREAKDOWN) {
+            table.push_str(&format!("| {what} | {median:.2} ms | {p95:.2} ms | |\n"));
+            continue;
+        }
         let limit = if what.starts_with("headless") {
             headless_budget
         } else {
             version_budget
         };
-        let (median, p95) = (percentile(times, 50), percentile(times, 95));
         table.push_str(&format!(
             "| {what} | {median:.2} ms | {p95:.2} ms | {limit:.0} ms |\n"
         ));
@@ -141,12 +149,13 @@ fn measure(binary: &Path, scratch: &Path, runs: usize) -> Result<Vec<(String, Ve
         }
         rows.push((format!("`{name} --version`"), times));
     }
-    for (name, program) in [("cortex", binary), ("cx", alias.as_path())] {
+    let headless = |program: &Path, extra: &[&str]| -> Result<Vec<f64>> {
         let mut times = Vec::with_capacity(runs);
         for run in 0..=runs {
             let started = Instant::now();
             let mut child = Command::new(program)
                 .args(["-p", "hi", "-q"])
+                .args(extra)
                 .current_dir(&workspace)
                 .envs(environment.iter().map(|(name, value)| (name, value)))
                 .env_remove("CORTEX_LOG")
@@ -166,10 +175,41 @@ fn measure(binary: &Path, scratch: &Path, runs: usize) -> Result<Vec<(String, Ve
                 times.push(millis(elapsed));
             }
         }
-        rows.push((format!("headless `{name} -p`, to its request"), times));
+        Ok(times)
+    };
+    for (name, program) in [("cortex", binary), ("cx", alias.as_path())] {
+        rows.push((
+            format!("headless `{name} -p`, to its request"),
+            headless(program, &[])?,
+        ));
     }
+    // Where the headless run's time goes: the same run without a session
+    // log (the session's files are owner-only, which costs on Windows),
+    // and with a shell that starts fast (a session asks its shell for its
+    // version before the first request: PowerShell on Windows).
+    rows.push((
+        format!("{BREAKDOWN} with `--no-session`"),
+        headless(binary, &["--no-session"])?,
+    ));
+    let quick_shell = if cfg!(windows) {
+        "shell.program=cmd"
+    } else {
+        "shell.program=sh"
+    };
+    rows.push((
+        format!("{BREAKDOWN} with `-c {quick_shell}`"),
+        headless(binary, &["-c", quick_shell])?,
+    ));
+    rows.push((
+        format!("{BREAKDOWN} with both"),
+        headless(binary, &["--no-session", "-c", quick_shell])?,
+    ));
     Ok(rows)
 }
+
+/// What a row that only shows where the time goes starts with. It has no
+/// budget of its own.
+const BREAKDOWN: &str = "breakdown: headless `cortex -p`";
 
 /// The environment of a headless run: a home of its own, a configuration
 /// that sends the request to `port`, and a key.
