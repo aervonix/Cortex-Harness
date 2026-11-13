@@ -502,7 +502,7 @@ fn a_project_cannot_select_a_profile() {
     assert_eq!(layer_of(&loaded, "profile"), "command-line");
 }
 
-/// Zac's decision of 2026-11-13: a fast tier costs about twice as much per
+/// The owner's decision of 2026-11-13: a fast tier costs about twice as much per
 /// token, so an untrusted repository must not be able to turn one on.
 #[test]
 fn a_project_raises_the_speed_only_when_trusted() {
