@@ -279,19 +279,19 @@ caught-by:
 rule: When the look at protected paths stops at its bound, the result says so.
 file: crates/cortex-core/src/sandbox.rs
 in: protected_note
-find: if !complete {
-replace: if !complete && false {
+find: } else if !complete_after {
+replace: } else if !complete_after && false {
 caught-by:
     cortex-core::it sandbox::sys_past_its_bound_the_look_at_protected_paths_warns_and_does_not_stop
 
 # What the independent review of step 26 found, each fix broken again.
 
 [break] a-process-leaves-the-tree
-rule: A confined process cannot leave the command's session or process group: it dies with the tree.
+rule: A confined process cannot leave the command's session: it dies with the tree.
 file: crates/cortex-sandbox/src/confine.rs
 in: seccomp
-find: stay.insert(call, Vec::new());
-replace: let _ = call;
+find: stay.insert(libc::SYS_setsid, Vec::new());
+replace: let _ = libc::SYS_setsid;
 packages: cortex-sandbox, cortex-core
 caught-by:
     cortex-sandbox::it confined::sys_the_calls_that_would_undo_or_get_round_the_sandbox_are_refused
@@ -316,21 +316,23 @@ packages: cortex-sandbox, cortex-core
 caught-by:
     cortex-sandbox::it confined::sys_the_calls_that_would_undo_or_get_round_the_sandbox_are_refused
 
-[break] unix-sockets-with-the-network-on
-rule: With the network on, a Unix socket of anyone else's is still not reached.
-file: crates/cortex-sandbox/src/confine.rs
-in: seccomp
-find: number(libc::AF_UNIX)?
-replace: number(libc::AF_DECnet)?
-packages: cortex-sandbox, cortex-core
-caught-by:
-    cortex-sandbox::it confined::sys_with_the_network_off_no_socket_reaches_anything
-
 [break] any-netlink-protocol
 rule: With the network off, netlink is open for its route protocol only.
 file: crates/cortex-sandbox/src/confine.rs
 in: seccomp
 find: number(libc::NETLINK_ROUTE)?
+occurrence: 1
+replace: number(libc::NETLINK_USERSOCK)?
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_with_the_network_off_no_socket_reaches_anything
+
+[break] any-netlink-protocol-with-the-network-on
+rule: With the network on, netlink is still open for its route protocol only.
+file: crates/cortex-sandbox/src/confine.rs
+in: seccomp
+find: number(libc::NETLINK_ROUTE)?
+occurrence: 2
 replace: number(libc::NETLINK_USERSOCK)?
 packages: cortex-sandbox, cortex-core
 caught-by:
@@ -375,11 +377,11 @@ caught-by:
     cortex-core::it sandbox::sys_undo_does_not_write_through_a_link_a_command_planted
 
 [break] a-stopped-turn-runs-another-command
-rule: Once a command stopped the turn, no command of the turn runs, even one decided before the stop.
+rule: Once a command stopped the turn, no call of the turn that changes anything runs, even one decided before the stop.
 file: crates/cortex-core/src/checkpoints.rs
-in: RecordingShell::run
-find: if let Some(reason) = self.policy.stopped_turn(cx.turn) {
-replace: if let Some(reason) = self.policy.stopped_turn(cx.turn).filter(|_| false) {
+in: StopsWithTurn::run
+find: && let Some(reason) = self.policy.stopped_turn(cx.turn)
+replace: && let Some(reason) = self.policy.stopped_turn(cx.turn).filter(|_| false)
 caught-by:
     cortex-core::it sandbox::sys_a_stopped_turn_runs_no_more_commands_of_the_same_response
 
@@ -387,8 +389,8 @@ caught-by:
 rule: A write root that holds the harness's own files cannot be confined: the session reports the sandbox off.
 file: crates/cortex-core/src/assemble.rs
 in: assemble
-find: && holds_harness_files(&parts.sandbox_policy, &loaded, state.as_ref())
-replace: && false
+find: && holds_harness_files(
+replace: && false && holds_harness_files(
 caught-by:
     cortex-core::it sandbox::a_workspace_that_holds_the_harness_files_is_not_confined
 
@@ -400,3 +402,124 @@ find: live.sandbox.set_level(&level);
 replace: let _ = &level;
 caught-by:
     cortex-core::it sandbox::sys_a_change_of_level_takes_the_sandbox_with_it
+
+# Found by the second review of step 26.
+
+[break] a-session-member-outlives-the-tree
+rule: Every process of a command's session dies with the tree, one that made a process group of its own included.
+file: crates/cortex-sandbox/src/tree/unix.rs
+in: Inner::end
+find: kill_session(self.pid);
+replace: let _ = self.pid;
+caught-by:
+    cortex-sandbox::it tree::sys_a_process_that_makes_a_group_of_its_own_is_still_killed_with_the_tree
+
+[break] a-session-member-is-not-counted
+rule: A process of the command's session outside its group is still counted as running.
+file: crates/cortex-sandbox/src/tree/unix.rs
+in: count_group
+find: if (its_group == leader || its_session == leader) && state != "Z" && state != "X" {
+replace: if its_group == leader && state != "Z" && state != "X" {
+caught-by:
+    cortex-sandbox::it tree::sys_a_process_that_makes_a_group_of_its_own_is_still_killed_with_the_tree
+
+[break] a-process-group-of-its-own-is-faked
+rule: A confined process may make a process group of its own (`timeout` needs one); only a session of its own is faked.
+file: crates/cortex-sandbox/src/confine.rs
+in: seccomp
+find: stay.insert(libc::SYS_setsid, Vec::new());
+replace: stay.insert(libc::SYS_setsid, Vec::new()); stay.insert(libc::SYS_setpgid, Vec::new());
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_the_calls_that_would_undo_or_get_round_the_sandbox_are_refused
+
+[break] the-network-on-has-no-socket-filter
+rule: With the network on, a command may open only the internet's sockets and netlink's route protocol: no Unix socket, no other netlink protocol.
+file: crates/cortex-sandbox/src/confine.rs
+in: seccomp
+find: refused.insert(libc::SYS_socket, socket);
+replace: if matches!(network, Network::Off) { refused.insert(libc::SYS_socket, socket); }
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_with_the_network_off_no_socket_reaches_anything
+
+[break] the-launcher-in-a-write-root
+rule: A write root that holds the program started as the launcher cannot be confined: a command could replace it.
+file: crates/cortex-core/src/assemble.rs
+in: holds_harness_files
+find: || programs.iter().any(|program| program.starts_with(&root))
+replace: || programs.iter().any(|_| false)
+caught-by:
+    cortex-core::it sandbox::a_write_root_that_holds_the_launcher_is_not_confined
+
+[break] a-write-root-inside-the-harness-files
+rule: A write root inside one of the harness's own directories cannot be confined either.
+file: crates/cortex-core/src/assemble.rs
+in: holds_harness_files
+find: .any(|dir| dir.starts_with(&root) || root.starts_with(dir))
+replace: .any(|dir| dir.starts_with(&root))
+caught-by:
+    cortex-core::it sandbox::a_write_root_inside_the_harness_files_is_not_confined
+
+[break] a-look-the-command-cut-short-goes-on
+rule: A command that makes the look after it stop at its bound, where the look before did not, stops the turn.
+file: crates/cortex-core/src/checkpoints.rs
+in: RecordingShell::run
+find: if !changed.is_empty() || (complete.0 && !complete.1) {
+replace: if !changed.is_empty() {
+caught-by:
+    cortex-core::it sandbox::sys_a_command_that_makes_the_look_stop_short_stops_the_turn
+
+[break] the-note-promises-undo-through-a-link
+rule: The note never says undo puts back a path that undo will refuse: one now reached through a link.
+file: crates/cortex-core/src/checkpoints.rs
+in: Rounds::record_protected
+find: if !recorded || changed.mode_changed || reached_through_a_link(&self.root, &file) {
+replace: if !recorded || changed.mode_changed {
+caught-by:
+    cortex-core::it sandbox::sys_undo_does_not_write_through_a_link_a_command_planted
+
+[break] a-change-of-mode-loses-the-content
+rule: A protected file whose content and mode a command changed keeps its content for undo; the mode is put back by hand.
+file: crates/cortex-sandbox/src/protect.rs
+in: Entry::change_from
+find: && self.content != old.content =>
+replace: && self.content != old.content && false =>
+caught-by:
+    cortex-sandbox protect::tests::a_change_of_content_and_mode_keeps_the_content
+
+[break] a-change-of-mode-is-not-said
+rule: A change of mode is reported as one to put back by hand.
+file: crates/cortex-sandbox/src/protect.rs
+in: Snapshot::compare
+find: mode_changed: new.kind == old.kind
+replace: mode_changed: false && new.kind == old.kind
+caught-by:
+    cortex-sandbox protect::tests::a_change_of_content_and_mode_keeps_the_content
+
+[break] a-linked-module-is-looked-through
+rule: The look never goes through a link: a module of `.git/modules` that is one is not looked into.
+file: crates/cortex-sandbox/src/protect.rs
+in: Look::record_git
+find: if is_dir {
+replace: if true {
+caught-by:
+    cortex-sandbox protect::tests::a_linked_module_or_worktree_is_not_looked_through
+
+[break] a-linked-worktree-is-looked-through
+rule: The look never goes through a link: a worktree of `.git/worktrees` that is one is not looked into.
+file: crates/cortex-sandbox/src/protect.rs
+in: Look::record_git
+find: if !is_dir {
+replace: if false {
+caught-by:
+    cortex-sandbox protect::tests::a_linked_module_or_worktree_is_not_looked_through
+
+[break] a-question-does-not-hold-later-calls-while-confined
+rule: While commands are confined, an answer may be to stop the turn, so nothing after an open question that changes anything starts until it is answered.
+file: crates/cortex-core/src/policy.rs
+in: EnginePolicy::answers_may_stop
+find: self.fail_on_denial || self.sandboxed.load(std::sync::atomic::Ordering::Acquire)
+replace: self.fail_on_denial
+caught-by:
+    cortex-core::it sandbox::while_commands_are_confined_a_later_call_waits_for_the_open_question

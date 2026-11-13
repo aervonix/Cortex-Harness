@@ -76,6 +76,11 @@ impl CoreSandbox {
         }
     }
 
+    /// The program started as the launcher, as the binary gave it.
+    pub(crate) fn program(&self) -> Option<&Path> {
+        self.program.as_ref().map(|(program, _)| program.as_path())
+    }
+
     /// What the `initialize` result reports: whether a session with the
     /// sandbox enabled would be confined.
     pub(crate) fn status(&self) -> SandboxStatus {
@@ -236,7 +241,7 @@ impl Launcher for SessionSandbox {
 /// when there is nothing to say.
 pub(crate) fn protected_note(
     changed: &[Changed],
-    complete: bool,
+    (complete_before, complete_after): (bool, bool),
     root: &Path,
     by_hand: &[PathBuf],
 ) -> Option<String> {
@@ -271,7 +276,15 @@ pub(crate) fn protected_note(
             all.join(", "),
         ));
     }
-    if !complete {
+    if complete_before && !complete_after {
+        lines.push(
+            "[The look at protected paths after the command stopped at its bound, where the \
+             look before it did not: the command made the workspace too large to look at \
+             whole, and a change it made further down would not be seen. The turn stops \
+             here, so that the user can look.]"
+                .to_owned(),
+        );
+    } else if !complete_after {
         lines.push(
             "[Protected paths were looked at only in part: the look stopped at its bound. A \
              change to one further down the workspace would not have been seen.]"

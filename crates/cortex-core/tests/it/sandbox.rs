@@ -653,11 +653,16 @@ fn sys_a_stopped_turn_runs_no_more_commands_of_the_same_response() {
     world.put(".git/config", "[core]\n");
     world.put(".git/hooks/pre-commit.sample", "#!/bin/sh\n");
     world.put("fix.sh", "echo evil > .git/hooks/pre-commit\n");
-    // Both calls in one response: the second is decided before the first
-    // runs.
+    // The calls in one response: the later ones are decided before the
+    // first runs, and wait for it.
     world.provider.push(calls(&[
         ("c1", "shell", json!({"command": "sh fix.sh"})),
         ("c2", "shell", json!({"command": "echo after > after.txt"})),
+        (
+            "c3",
+            "write",
+            json!({"path": "written.txt", "content": "x\n"}),
+        ),
     ]));
     world.provider.push(says("Done."));
     let core = world.core_with(|options| options.launcher = Some(launcher()));
@@ -673,6 +678,7 @@ fn sys_a_stopped_turn_runs_no_more_commands_of_the_same_response() {
         front.turn("fix it").await;
         assert!(world.read(".git/hooks/pre-commit").is_some());
         assert!(world.read("after.txt").is_none(), "{:?}", front.results());
+        assert!(world.read("written.txt").is_none(), "{:?}", front.results());
     });
 }
 
@@ -693,8 +699,9 @@ fn sys_undo_does_not_write_through_a_link_a_command_planted() {
     world.put(
         "swap.sh",
         format!(
-            "mv .git/hooks .git/hooks.old && ln -s '{}' .git/hooks\n",
-            elsewhere.join("hooks").display()
+            "mv .git/hooks .git/hooks.old && ln -s '{}' .git/hooks && ln -sf '{}' .git/config\n",
+            elsewhere.join("hooks").display(),
+            elsewhere.join("config").display()
         ),
     );
     world.provider.push(says("Ready."));
@@ -723,7 +730,15 @@ fn sys_undo_does_not_write_through_a_link_a_command_planted() {
                     .contains("`.git/hooks/pre-commit.sample` (deleted)"),
             "{results:?}"
         );
-        let _ = front
+        // The note does not promise what undo will refuse: every one of
+        // them is reached through a link now.
+        assert!(
+            results[0]
+                .2
+                .contains("Undoing this turn does not put them back"),
+            "{results:?}"
+        );
+        front
             .op(Op::SessionRewind(
                 cortex_protocol::methods::SessionRewindParams {
                     session_id: front.session.clone(),
@@ -731,7 +746,8 @@ fn sys_undo_does_not_write_through_a_link_a_command_planted() {
                     restore_files: true,
                 },
             ))
-            .await;
+            .await
+            .expect("the rewind runs");
         // Nothing outside the workspace was written by the undo.
         assert_eq!(
             std::fs::read_to_string(elsewhere.join("config")).unwrap(),
@@ -739,5 +755,108 @@ fn sys_undo_does_not_write_through_a_link_a_command_planted() {
         );
         assert!(!elsewhere.join("hooks/pre-commit.sample").exists());
         front.close().await;
+    });
+}
+
+#[test]
+fn a_write_root_that_holds_the_launcher_is_not_confined() {
+    let world = World::new("launcher_writable", []);
+    let (program, _) = launcher();
+    let directory = program.parent().expect("the test binary is in a directory");
+    world.user_config(&format!(
+        "[sandbox]\nwrite = [\"{}\"]\n",
+        directory.display().to_string().replace('\\', "\\\\")
+    ));
+    let core = world.core_with(|options| {
+        options.launcher = Some(launcher());
+        options.sandbox = Some(Support::Landlock(8));
+    });
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        assert_eq!(front.state.sandbox, SandboxStatus::Off);
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sys_a_command_that_makes_the_look_stop_short_stops_the_turn() {
+    if !enforcing_here() {
+        return;
+    }
+    let world = World::new("look_made_short", []);
+    world.put(".git/config", "[core]\n");
+    world.provider.push(calls(&[(
+        "c1",
+        "shell",
+        json!({"command": "for i in $(seq 60); do mkdir -p \"junk/d$i\"; done"}),
+    )]));
+    world.provider.push(calls(&[(
+        "c2",
+        "shell",
+        json!({"command": "echo after > after.txt"}),
+    )]));
+    world.provider.push(says("Done."));
+    let core = world.core_with(|options| {
+        options.launcher = Some(launcher());
+        options.protect_limits = Some(cortex_sandbox::protect::Limits {
+            directories: 40,
+            ..cortex_sandbox::protect::Limits::default()
+        });
+    });
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            cortex_core::ClientInfo::user(),
+            at(Level::Autonomous),
+        )
+        .await
+        .expect("the session starts");
+        front.turn("make directories").await;
+        let results = front.results();
+        assert!(
+            results[0].2.contains("where the look before it did not"),
+            "{results:?}"
+        );
+        assert!(world.read("after.txt").is_none(), "{results:?}");
+    });
+}
+
+/// While commands are confined, a command may stop the turn while a
+/// question is open, and the answer is then to stop: nothing after the
+/// question that changes anything starts until it is answered.
+#[test]
+fn while_commands_are_confined_a_later_call_waits_for_the_open_question() {
+    assert!(
+        !crate::approvals::later_write_ran_while_the_question_was_open(
+            "confined_question",
+            |options| {
+                options.launcher = Some(launcher());
+                options.sandbox = Some(Support::Landlock(8));
+            }
+        )
+    );
+}
+
+#[test]
+fn a_write_root_inside_the_harness_files_is_not_confined() {
+    let world = World::new("inside_own_files", []);
+    let inside = world
+        .dirs()
+        .config
+        .expect("a configuration directory")
+        .join("inside");
+    std::fs::create_dir_all(&inside).unwrap();
+    world.user_config(&format!(
+        "[sandbox]\nwrite = [\"{}\"]\n",
+        inside.display().to_string().replace('\\', "\\\\")
+    ));
+    let core = world.core_with(|options| {
+        options.launcher = Some(launcher());
+        options.sandbox = Some(Support::Landlock(8));
+    });
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        assert_eq!(front.state.sandbox, SandboxStatus::Off);
     });
 }

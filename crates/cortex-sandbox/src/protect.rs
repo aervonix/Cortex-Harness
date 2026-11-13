@@ -149,6 +149,9 @@ pub struct Changed {
     pub change: Change,
     /// What it was before, so that it can be put back.
     pub before: Before,
+    /// Whether its mode changed (a hook made executable), which putting
+    /// the content back does not undo.
+    pub mode_changed: bool,
 }
 
 /// What a changed path was before the command.
@@ -261,6 +264,7 @@ impl Snapshot {
                     path: path.clone(),
                     change: Change::Deleted,
                     before: old.before(),
+                    mode_changed: false,
                 }),
                 None => {}
                 Some(new) => {
@@ -269,6 +273,7 @@ impl Snapshot {
                             path: path.clone(),
                             change: Change::Modified,
                             before,
+                            mode_changed: new.kind == old.kind && new.stamp.mode != old.stamp.mode,
                         });
                     }
                 }
@@ -280,6 +285,7 @@ impl Snapshot {
                     path: path.clone(),
                     change: Change::Created,
                     before: Before::Absent,
+                    mode_changed: false,
                 });
             }
         }
@@ -313,8 +319,18 @@ impl Entry {
                 || self.stamp.mode != old.stamp.mode)
                 .then_some(Before::Directory),
             (old_kind, new_kind) if old_kind != new_kind => Some(old.before()),
-            // A change of mode (a hook made executable) is not put back by
-            // writing the content again: it is put back by hand.
+            // A change of mode alone (a hook made executable) is not put
+            // back by writing the content again: it is put back by hand.
+            // With the content changed as well, the content is still kept,
+            // and the mode is said to be put back by hand.
+            (Kind::File, Kind::File)
+                if self.stamp.mode != old.stamp.mode
+                    && self.content.is_some()
+                    && old.content.is_some()
+                    && self.content != old.content =>
+            {
+                Some(old.before())
+            }
             _ if self.stamp.mode != old.stamp.mode => Some(Before::Unknown),
             // Both contents are known: they decide. The same bytes written
             // again are no change.
@@ -522,13 +538,22 @@ impl Look {
         }
         let modules = git.join("modules");
         if fs::symlink_metadata(&modules).is_ok_and(|metadata| metadata.is_dir()) {
-            for (module, _) in self.list(&modules).unwrap_or_default() {
-                self.record_git(&module);
+            // A module that is a link is not looked through.
+            for (module, is_dir) in self.list(&modules).unwrap_or_default() {
+                if is_dir {
+                    self.record_git(&module);
+                } else {
+                    self.record(&module);
+                }
             }
         }
         let worktrees = git.join("worktrees");
         if fs::symlink_metadata(&worktrees).is_ok_and(|metadata| metadata.is_dir()) {
-            for (worktree, _) in self.list(&worktrees).unwrap_or_default() {
+            for (worktree, is_dir) in self.list(&worktrees).unwrap_or_default() {
+                if !is_dir {
+                    self.record(&worktree);
+                    continue;
+                }
                 // Where the worktree's repository is, and its own settings.
                 for part in WORKTREE_PARTS {
                     self.record(&worktree.join(part));

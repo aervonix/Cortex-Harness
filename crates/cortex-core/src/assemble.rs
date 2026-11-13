@@ -65,7 +65,7 @@ use cortex_tools::{
     ToolRegistry, Toolbox, WriteTool,
 };
 
-use crate::checkpoints::{RecordingShell, Rounds};
+use crate::checkpoints::{RecordingShell, Rounds, StopsWithTurn};
 use crate::content::{DiskContent, StoredImages};
 use crate::core::Inner;
 use crate::events::SessionSink;
@@ -514,11 +514,15 @@ fn engine_parts(
 }
 
 /// Whether a write root of `policy` holds the harness's configuration,
-/// state or data directory, or is one.
+/// state or data directory, or is one, or lies inside one; or holds the
+/// program started as the launcher, which a confined command could then
+/// replace with one that confines nothing (found by the second review of
+/// step 26).
 fn holds_harness_files(
     policy: &cortex_protocol::lease::SandboxPolicy,
     loaded: &Loaded,
     state: Option<&StateDir>,
+    launcher: Option<&Path>,
 ) -> bool {
     // Resolved paths against the lease's roots, which are resolved too, in
     // one spelling; names compared as the system compares them, folding
@@ -532,13 +536,33 @@ fn holds_harness_files(
     .flatten()
     .filter_map(|dir| resolve_dir(&dir))
     .collect();
+    // The program as it is started, and as it really is: its directory
+    // resolved, and its own name.
+    let programs: Vec<AbsPath> = launcher
+        .into_iter()
+        .flat_map(|program| {
+            [
+                Some(program.to_path_buf()),
+                std::fs::canonicalize(program).ok(),
+            ]
+        })
+        .flatten()
+        .filter_map(|program| {
+            let name = program.file_name()?.to_owned();
+            resolve_dir(program.parent()?)?.child(&name).ok()
+        })
+        .collect();
     policy.write.all
         || policy
             .write
             .roots
             .iter()
             .filter_map(|root| AbsPath::parse(root, cortex_base::PathStyle::NATIVE).ok())
-            .any(|root| own.iter().any(|dir| dir.starts_with(&root)))
+            .any(|root| {
+                own.iter()
+                    .any(|dir| dir.starts_with(&root) || root.starts_with(dir))
+                    || programs.iter().any(|program| program.starts_with(&root))
+            })
 }
 
 /// Starts an engine, with its failure as the error a front end is shown.
@@ -984,7 +1008,12 @@ pub(crate) fn assemble(
     let (mut sandbox_state, mut enforcing_with) =
         inner.sandbox.state(loaded.settings.sandbox.enabled);
     if sandbox_state == SandboxState::Enforcing
-        && holds_harness_files(&parts.sandbox_policy, &loaded, state.as_ref())
+        && holds_harness_files(
+            &parts.sandbox_policy,
+            &loaded,
+            state.as_ref(),
+            inner.sandbox.program(),
+        )
     {
         sandbox_state = SandboxState::NotEnforcing(NoSandbox::HarnessFilesWritable);
         enforcing_with = None;
@@ -1159,6 +1188,13 @@ pub(crate) fn assemble(
     let ledger = Ledger::new(Arc::clone(&clock))
         .with_account(Account::for_lease(&lease, Arc::clone(&clock)))
         .with_turn_budget(budget(&settings.limits.turn));
+    // Every tool is held to a stop a confined command made.
+    let names: Vec<String> = toolbox.names().map(str::to_owned).collect();
+    for name in names {
+        if let Some(tool) = toolbox.get(&name).cloned() {
+            toolbox.insert(Arc::new(StopsWithTurn::new(tool, Arc::clone(&policy))));
+        }
+    }
     let specs = toolbox.specs();
     let system = match &inner.options.system_append {
         Some(text) => format!("{SYSTEM_STUB}\n\n{text}"),

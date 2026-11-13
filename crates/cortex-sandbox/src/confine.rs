@@ -31,9 +31,11 @@
 //!   loopback included, no raw socket, and no Unix socket, so no D-Bus, no
 //!   SSH agent and no Docker socket. `socketpair` stays, so a command's own
 //!   processes can still talk to each other;
-//! - with the network on, still `socket` for Unix sockets: the session bus,
+//! - with the network on, `socket` for every family but the internet's
+//!   and netlink's route protocol: still no Unix socket (the session bus,
 //!   an agent or the Docker socket would let a command out of the sandbox
-//!   whatever the network setting;
+//!   whatever the network setting), no virtual machine's socket to its
+//!   host, no raw or packet socket;
 //! - `io_uring`, which can open a socket without the `socket` call;
 //! - a new user namespace (`unshare` and `clone` with `CLONE_NEWUSER`);
 //! - the kernel's keyrings, `bpf`, `perf_event_open` and `userfaultfd`;
@@ -41,13 +43,14 @@
 //!
 //! A second filter answers `clone3` with `ENOSYS`, because its flags are in
 //! memory a filter cannot read: the C library then falls back to `clone`,
-//! whose flags the first filter can. A third answers `setsid` and `setpgid`
-//! as done without doing them: every process the command starts stays in
-//! its process group, and dies with the tree, so nothing it started writes
-//! the workspace after the look at protected paths that follows the
-//! command. A 32-bit system call kills the process (the filter is for the
-//! build's own architecture), and on x86-64 the x32 form of each refused
-//! call is refused too. Tracing other processes is left to Landlock, which
+//! whose flags the first filter can. A third answers `setsid` as done
+//! without doing it: every process the command starts stays in its
+//! session, which the tree kills whole (`tree::unix::kill_session`), so
+//! nothing it started writes the workspace after the look at protected
+//! paths that follows the command. `setpgid` stays: `timeout` and every
+//! tool that signals its child's group need it. A 32-bit system call kills
+//! the process (the filter is for the build's own architecture), and on
+//! x86-64 the x32 form of each refused call is refused too. Tracing other processes is left to Landlock, which
 //! keeps it inside the sandbox.
 
 #![allow(
@@ -263,16 +266,47 @@ fn seccomp(network: Network) -> Result<(), String> {
             ])
             .map_err(|error| error.to_string())?,
         ],
-        // The network, and still no Unix socket: the user's session bus,
-        // agents and the Docker socket start or do what a confined command
-        // may not (found by the review of step 26).
+        // The network, and nothing else: the internet's families and
+        // netlink's route protocol. No Unix socket (the session bus, an
+        // agent, the Docker socket would let a command out), no virtual
+        // machine's socket to its host, no raw or packet socket (found by
+        // the reviews of step 26).
         Network::Full => vec![
-            when(vec![condition(
-                0,
-                SeccompCmpArgLen::Dword,
-                SeccompCmpOp::Eq,
-                number(libc::AF_UNIX)?,
-            )?])
+            when(vec![
+                condition(
+                    0,
+                    SeccompCmpArgLen::Dword,
+                    SeccompCmpOp::Ne,
+                    number(libc::AF_INET)?,
+                )?,
+                condition(
+                    0,
+                    SeccompCmpArgLen::Dword,
+                    SeccompCmpOp::Ne,
+                    number(libc::AF_INET6)?,
+                )?,
+                condition(
+                    0,
+                    SeccompCmpArgLen::Dword,
+                    SeccompCmpOp::Ne,
+                    number(libc::AF_NETLINK)?,
+                )?,
+            ])
+            .map_err(|error| error.to_string())?,
+            when(vec![
+                condition(
+                    0,
+                    SeccompCmpArgLen::Dword,
+                    SeccompCmpOp::Eq,
+                    number(libc::AF_NETLINK)?,
+                )?,
+                condition(
+                    2,
+                    SeccompCmpArgLen::Dword,
+                    SeccompCmpOp::Ne,
+                    number(libc::NETLINK_ROUTE)?,
+                )?,
+            ])
             .map_err(|error| error.to_string())?,
         ],
     };
@@ -311,16 +345,16 @@ fn seccomp(network: Network) -> Result<(), String> {
         arch,
     )
     .map_err(|error| error.to_string())?;
-    // Leaving the command's process group, or making a session of its own,
-    // is answered as done and not done: every process stays in the tree,
-    // and dies with it, so nothing the command started can write the
-    // workspace after the look that follows the command.
+    // Making a session of its own is answered as done and not done: every
+    // process stays in the command's session, which the tree kills whole
+    // when the command ends, so nothing the command started can write the
+    // workspace after the look that follows the command. A process group
+    // of its own stays allowed: `timeout` and every tool that signals its
+    // child's group need one, and the session still holds it.
     let mut stay = BTreeMap::new();
-    for call in [libc::SYS_setsid, libc::SYS_setpgid] {
-        stay.insert(call, Vec::new());
-        if arch == TargetArch::x86_64 {
-            stay.insert(call | X32, Vec::new());
-        }
+    stay.insert(libc::SYS_setsid, Vec::new());
+    if arch == TargetArch::x86_64 {
+        stay.insert(libc::SYS_setsid | X32, Vec::new());
     }
     let stay = SeccompFilter::new(stay, SeccompAction::Allow, SeccompAction::Errno(0), arch)
         .map_err(|error| error.to_string())?;

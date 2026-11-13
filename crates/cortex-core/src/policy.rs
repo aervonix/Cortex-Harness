@@ -462,14 +462,19 @@ impl Policy for EnginePolicy {
     }
 
     /// Whether an answer may be to stop the turn. A person's choices have
-    /// no "stop". The one answer that is one comes from here: a question
-    /// nobody can be asked, with `fail_on_denial` set. Whether somebody
-    /// can be asked is not known until the question is put (a client may
-    /// leave in between), so the setting alone decides: with it, the loop
-    /// holds later calls back while a question is open, which is slower
-    /// and never wrong.
+    /// no "stop". The answers that are one come from here: a question
+    /// nobody can be asked, with `fail_on_denial` set; and any question
+    /// while commands are confined, since a command beside it may change
+    /// protected paths and stop the turn. Whether somebody can be asked is
+    /// not known until the question is put (a client may leave in
+    /// between), so the settings alone decide: with either, the loop holds
+    /// later calls back while a question is open, which is slower and never
+    /// wrong.
     fn answers_may_stop(&self) -> bool {
-        self.fail_on_denial
+        // While commands are confined, a command may stop the turn while a
+        // question is open, and the answer is then to stop (found by the
+        // second review of step 26).
+        self.fail_on_denial || self.sandboxed.load(std::sync::atomic::Ordering::Acquire)
     }
 
     fn read_gate(&self) -> Arc<dyn ReadGate> {

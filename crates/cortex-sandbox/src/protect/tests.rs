@@ -341,3 +341,51 @@ fn past_its_limits_a_look_says_it_is_incomplete() {
         .unwrap();
     assert_eq!(config.before, Before::Unknown);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_change_of_content_and_mode_keeps_the_content() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = workspace("content_and_mode");
+    let ws = scratch.join("ws");
+    let watch = Watch::new(&ws, fixed(&ws));
+    let before = watch.take();
+    let config = ws.join(".git/config");
+    fs::write(&config, "[core]\nhooksPath = /srv/x\n").unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+    let (changed, _) = watch.changes_since(&before);
+    assert_eq!(changed.len(), 1, "{changed:?}");
+    // The content can still be put back; the mode is put back by hand.
+    assert_eq!(changed[0].before, Before::File(b"[core]\n".to_vec()));
+    assert!(changed[0].mode_changed);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_linked_module_or_worktree_is_not_looked_through() {
+    let scratch = workspace("linked_module");
+    scratch.file("elsewhere/config", "[core]\n");
+    scratch.file("elsewhere/gitdir", "/srv/one\n");
+    let ws = scratch.join("ws");
+    fs::create_dir_all(ws.join(".git/modules")).unwrap();
+    fs::create_dir_all(ws.join(".git/worktrees")).unwrap();
+    std::os::unix::fs::symlink(scratch.join("elsewhere"), ws.join(".git/modules/sub")).unwrap();
+    std::os::unix::fs::symlink(scratch.join("elsewhere"), ws.join(".git/worktrees/w")).unwrap();
+    let watch = Watch::new(&ws, fixed(&ws));
+    let before = watch.take();
+    // What the links lead to is not the workspace's, and is not looked at.
+    assert!(
+        !before
+            .entries
+            .keys()
+            .any(|path| path.starts_with(ws.join(".git/modules/sub/"))
+                && path != &ws.join(".git/modules/sub")
+                || path.starts_with(ws.join(".git/worktrees/w/"))
+                    && path != &ws.join(".git/worktrees/w")),
+        "{:?}",
+        before.entries.keys().collect::<Vec<_>>()
+    );
+    fs::write(scratch.join("elsewhere/config"), "[core]\nx = 1\n").unwrap();
+    fs::write(scratch.join("elsewhere/gitdir"), "/srv/two\n").unwrap();
+    assert_eq!(watch.changes_since(&before).0, Vec::new());
+}

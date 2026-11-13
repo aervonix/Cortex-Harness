@@ -321,6 +321,11 @@ fn sys_with_the_network_off_no_socket_reaches_anything() {
             "{kind} {at} with the network on: {ran:?}"
         );
     }
+    // Nor netlink's other protocols, nor any family but the internet's.
+    let ran = net(&place, Network::Full, landlock, &["netlink-user", "-"]);
+    assert_eq!(verdict(&ran), "refused PermissionDenied", "{ran:?}");
+    let ran = net(&place, Network::Full, landlock, &["netlink", "-"]);
+    assert_eq!(verdict(&ran), "ok", "{ran:?}");
     let ran = net(&place, Network::Full, landlock, &["pair", "-"]);
     assert_eq!(verdict(&ran), "ok", "a pair with the network on: {ran:?}");
 }
@@ -399,12 +404,13 @@ fn sys_the_calls_that_would_undo_or_get_round_the_sandbox_are_refused() {
     }
     // `bpf` is refused to unprivileged processes by most kernels anyway.
     assert_eq!(call(&place, landlock, "bpf", true), "EPERM");
-    // Leaving the command's group or session is answered as done, and
-    // nothing moves: the process stays in the tree and dies with it.
-    for name in ["setsid", "setpgid"] {
-        assert_eq!(call(&place, landlock, name, true), "same", "{name} inside");
-        assert_eq!(call(&place, landlock, name, false), "new", "{name} outside");
-    }
+    // Leaving the command's session is answered as done, and nothing
+    // moves: the process stays in the tree's session, which dies with it.
+    assert_eq!(call(&place, landlock, "setsid", true), "same");
+    assert_eq!(call(&place, landlock, "setsid", false), "new");
+    // A process group of its own stays allowed (`timeout` needs one): the
+    // session still holds it.
+    assert_eq!(call(&place, landlock, "setpgid", true), "new");
 }
 
 #[test]

@@ -316,6 +316,7 @@ mod imp {
         for group in left {
             if let Ok(group) = libc::pid_t::try_from(group) {
                 let _ = unix::signal_group(group, libc::SIGKILL);
+                unix::kill_session(group);
             }
         }
     }

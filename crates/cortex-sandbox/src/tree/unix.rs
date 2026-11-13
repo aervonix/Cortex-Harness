@@ -176,7 +176,16 @@ impl Inner {
     }
 
     pub(super) fn kill(&self) -> io::Result<()> {
-        self.signal(libc::SIGKILL)
+        let state = lock(&self.state);
+        if state.ended {
+            return Err(ended());
+        }
+        signal_group(self.pid, libc::SIGKILL)?;
+        // A process that made a process group of its own is still in the
+        // command's session, and dies with it. The lock is held, so the
+        // command is not reaped and the session's id is still its own.
+        kill_session(self.pid);
+        Ok(())
     }
 
     fn signal(&self, signal: libc::c_int) -> io::Result<()> {
@@ -215,8 +224,10 @@ impl Inner {
             if state.ended {
                 return;
             }
-            // The command is not reaped yet, so the group is still ours.
+            // The command is not reaped yet, so the group and the session
+            // are still ours.
             let _ = signal_group(self.pid, libc::SIGKILL);
+            kill_session(self.pid);
         }
         // A thread in `wait` returns now that the command is dead, and
         // gives up the lock. If nobody asked, the exit is read here, while
@@ -366,9 +377,108 @@ pub(super) fn signal_group(group: libc::pid_t, signal: libc::c_int) -> io::Resul
     Ok(())
 }
 
-/// How many live processes are in the group `group` leads, not counting
-/// the leader. A process that has exited and waits to be reaped is not
-/// alive.
+/// Kills every process of the session `leader` leads that is not in its
+/// process group: one that made a group of its own, which a signal to the
+/// group does not reach. In the sandbox no process can leave the session
+/// (the filter answers `setsid` as done without doing it), so this reaches
+/// all of a command's processes there.
+///
+/// Each process is held by a process descriptor before it is looked at
+/// again and signalled, so a signal never reaches a process that took the
+/// id of one that had ended. A kernel without process descriptors (before
+/// Linux 5.3) is sent the signal by id after the second look.
+///
+/// The caller holds that `leader` leads a session this process started and
+/// has not reaped.
+#[cfg(target_os = "linux")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a read of the process table, as `count_group`'s"
+)]
+pub(super) fn kill_session(leader: libc::pid_t) {
+    if leader <= 1 {
+        return;
+    }
+    let session = leader.to_string();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(id) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<libc::pid_t>().ok())
+        else {
+            continue;
+        };
+        if id == leader || !in_session(id, &session) {
+            continue;
+        }
+        // SAFETY: `pidfd_open` takes two integers and returns a new
+        // descriptor or -1; the descriptor is owned at once.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, id, 0) };
+        if fd < 0 {
+            // No process descriptors on this kernel: the second look and
+            // the signal by id.
+            if in_session(id, &session) {
+                // SAFETY: `kill` takes two integers; `id` is greater than
+                // one and a process, not a group.
+                unsafe { libc::kill(id, libc::SIGKILL) };
+            }
+            continue;
+        }
+        let fd = i32::try_from(fd).unwrap_or(-1);
+        // SAFETY: `fd` was just returned by `pidfd_open` and nothing else
+        // owns it.
+        let held = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+        // Looked at again while held: if the id is another process's now,
+        // its session is not this one.
+        if in_session(id, &session) {
+            // SAFETY: the call takes a descriptor this function owns, a
+            // signal number, a null pointer (no extra information) and no
+            // flags.
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    std::os::fd::AsRawFd::as_raw_fd(&held),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0u32,
+                )
+            };
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) fn kill_session(_leader: libc::pid_t) {}
+
+/// Whether the live process `id` is in the session `session` and outside
+/// its leader's group (the group is signalled as a whole).
+#[cfg(target_os = "linux")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a read of the process table, as `count_group`'s"
+)]
+fn in_session(id: libc::pid_t, session: &str) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{id}/stat")) else {
+        return false;
+    };
+    let Some((_, fields)) = stat.rsplit_once(") ") else {
+        return false;
+    };
+    let mut fields = fields.split(' ');
+    let (Some(state), Some(_parent), Some(group), Some(its_session)) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
+    else {
+        return false;
+    };
+    its_session == session && group != session && state != "Z" && state != "X"
+}
+
+/// How many live processes are in the group `group` leads, or in the
+/// session it leads, not counting the leader. A process that has exited
+/// and waits to be reaped is not alive.
 ///
 /// The process table has no list of a group's members, so the table is
 /// read: a line for each process. Most of it need not be. Everything in a
@@ -406,12 +516,12 @@ fn count_group(group: libc::pid_t, age: std::time::Duration) -> io::Result<usize
             continue;
         };
         let mut fields = fields.split(' ');
-        let (Some(state), Some(_parent), Some(its_group)) =
-            (fields.next(), fields.next(), fields.next())
+        let (Some(state), Some(_parent), Some(its_group), Some(its_session)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
         else {
             continue;
         };
-        if its_group == leader && state != "Z" && state != "X" {
+        if (its_group == leader || its_session == leader) && state != "Z" && state != "X" {
             count += 1;
         }
     }
