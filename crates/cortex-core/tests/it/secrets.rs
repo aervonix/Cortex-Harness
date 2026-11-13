@@ -385,3 +385,107 @@ fn a_resumed_session_does_not_replay_reasoning_against_a_history_redaction_chang
         front.close().await;
     });
 }
+
+/// A key of a second provider, and what one of its headers reads from the
+/// environment. Made up, and in no known format: only their values can
+/// give them away.
+const OTHER_KEY: &str = "other-provider-key-7f3a9c1e";
+const GATEWAY: &str = "gateway-pass-5b2d8e4f6a";
+
+const OTHER_PROVIDER: &str = "[providers.other]
+protocol = \"anthropic-messages\"
+base_url = \"https://llm.example.invalid\"
+key_env = \"OTHER_KEY\"
+
+[providers.other.headers]
+x-gateway = { env = \"GATEWAY_PASS\" }
+x-team = \"2026-11-13\"
+
+[models.elsewhere]
+provider = \"other\"
+id = \"elsewhere-model\"
+name = \"Elsewhere\"
+protocol = \"anthropic-messages\"
+context_window = 100000
+max_output = 8000
+input = [\"text\"]
+";
+
+/// A session that comes to use another provider while it runs masks that
+/// provider's key from then on, in its own log, and the log's filter is
+/// told too.
+#[test]
+fn a_key_found_while_a_session_runs_is_masked_in_that_session() {
+    let mut world = World::new(
+        "late_key",
+        [
+            says("One."),
+            calls(&[("c1", "read", json!({"path": "notes.txt"}))]),
+            says("Read."),
+        ],
+    );
+    world.user_config(OTHER_PROVIDER);
+    world.env = world
+        .env
+        .clone()
+        .with("OTHER_KEY", OTHER_KEY)
+        .with("GATEWAY_PASS", GATEWAY);
+    world.put(
+        "notes.txt",
+        format!("key {OTHER_KEY}\npass {GATEWAY}\ndate 2026-11-13\n"),
+    );
+    let told: Arc<Mutex<Vec<String>>> = Arc::default();
+    let core = world.core_with(|options| {
+        let told = Arc::clone(&told);
+        options.key_found = Some(Arc::new(move |secret: &Secret| {
+            told.lock().unwrap().push(secret.expose().to_owned());
+        }));
+    });
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        front.turn("one").await;
+        assert!(told.lock().unwrap().is_empty(), "no key was found yet");
+
+        front
+            .op(Op::SessionSet(cortex_protocol::methods::SessionSetParams {
+                session_id: front.session.clone(),
+                settings: cortex_protocol::session::SessionSettings {
+                    roles: [(
+                        cortex_protocol::model::ModelRole::Main,
+                        cortex_protocol::session::RoleSettings {
+                            model: Some(cortex_protocol::ModelId::new("elsewhere-model")),
+                            ..Default::default()
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    ..Default::default()
+                },
+            }))
+            .await
+            .unwrap();
+        // The log's filter is told each, once.
+        let mut heard = told.lock().unwrap().clone();
+        heard.sort();
+        assert_eq!(heard, [GATEWAY, OTHER_KEY]);
+
+        front.turn("read the notes").await;
+        // The model was shown the file as it is.
+        let request = world.provider.requests().pop().unwrap();
+        assert!(
+            request
+                .messages
+                .iter()
+                .any(|m| text_of(m).contains(OTHER_KEY))
+        );
+        front.close().await;
+    });
+    let log = world.log();
+    assert!(!log.contains(OTHER_KEY), "the key is in the log");
+    assert!(!log.contains(GATEWAY), "the header's secret is in the log");
+    assert!(log.contains("key [redacted]"), "{log}");
+    assert!(log.contains("pass [redacted]"), "{log}");
+    // A header written out in the configuration file is not taken for a
+    // secret: masking it would take a date out of every session.
+    assert!(log.contains("date 2026-11-13"), "{log}");
+}

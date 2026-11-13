@@ -98,6 +98,8 @@ struct Open {
     session: SessionId,
     /// The clients it was put to.
     asked: Vec<u64>,
+    /// What they were sent, for a client that joins while it is open.
+    request: ServerRequest,
     answer: oneshot::Sender<ApprovalResponse>,
 }
 
@@ -188,6 +190,7 @@ impl Clients {
         let number = self.next_request.fetch_add(1, Ordering::Relaxed) + 1;
         let id = RequestId::Number(i64::try_from(number).unwrap_or(i64::MAX));
         let (answer, receiver) = oneshot::channel();
+        let request = request(&id);
         // The request is open before any client can see it, so that an
         // answer cannot arrive for a request nobody knows.
         lock(&self.open).insert(
@@ -195,16 +198,36 @@ impl Clients {
             Open {
                 session: session.clone(),
                 asked: asked.to_vec(),
+                request: request.clone(),
                 answer,
             },
         );
         let clients = lock(&self.clients);
         for client in asked {
             if let Some(entry) = clients.get(client) {
-                entry.queue.push_request(id.clone(), request(&id));
+                entry.queue.push_request(id.clone(), request.clone());
             }
         }
         (id, receiver)
+    }
+
+    /// Puts the open requests of `session` to a client that has just
+    /// opened it, if it is one that may answer: a `user` client can attach
+    /// to a session at any time and answer what is waiting. A question
+    /// whose askers have all gone waits for this.
+    pub(crate) fn join(&self, session: &SessionId, client: ClientId) {
+        if self.approvers(&[client.0]).is_empty() {
+            return;
+        }
+        let Some(queue) = self.queue(client) else {
+            return;
+        };
+        for (id, open) in lock(&self.open).iter_mut() {
+            if open.session == *session && !open.asked.contains(&client.0) {
+                open.asked.push(client.0);
+                queue.push_request(id.clone(), open.request.clone());
+            }
+        }
     }
 
     /// Closes a request that will not be answered through here any more:
@@ -265,6 +288,7 @@ mod tests {
     use cortex_protocol::methods::{ApprovalChoice, QuestionRequest};
 
     use super::*;
+    use crate::Outgoing;
 
     fn request(session: &SessionId) -> ServerRequest {
         ServerRequest::Question(QuestionRequest {
@@ -326,6 +350,44 @@ mod tests {
         let late = clients.answer(user, &id, allow()).unwrap_err();
         assert_eq!(late.code, "request_not_open");
         assert!(!clients.close(&id), "an answered request is closed");
+    }
+
+    /// A user client that opens the session while a question waits is
+    /// put the question, and may answer it. Nobody else is.
+    #[test]
+    fn a_user_client_that_joins_is_put_what_is_waiting() {
+        let clients = Clients::default();
+        let (session, other) = (SessionId::new("s_1"), SessionId::new("s_2"));
+        let (first, _) = clients.connect(ClientInfo::user());
+        let (id, mut answer) = clients.ask(&session, &[first.0], |_| request(&session));
+        let (elsewhere, _) = clients.ask(&other, &[first.0], |_| request(&other));
+        // The first client goes away with the question unanswered.
+        clients.disconnect(first);
+
+        let (observer, watching) = clients.connect(ClientInfo::observer());
+        clients.join(&session, observer);
+        assert!(watching.is_empty(), "an observer is asked nothing");
+        let (headless, quiet) = clients.connect(ClientInfo::headless());
+        clients.join(&session, headless);
+        assert!(
+            quiet.is_empty(),
+            "nor is a client that answers no approvals"
+        );
+
+        let (late, queue) = clients.connect(ClientInfo::user());
+        clients.join(&session, late);
+        // Joining twice asks once.
+        clients.join(&session, late);
+        let Some(Outgoing::Request { id: put, .. }) = queue.try_next() else {
+            panic!("the open request was not put to the client that joined");
+        };
+        assert_eq!(put, id);
+        assert!(queue.is_empty(), "only this session's, and once");
+        // A question of another session is not this client's to answer.
+        let refused = clients.answer(late, &elsewhere, allow()).unwrap_err();
+        assert_eq!(refused.code, code::ROLE_NOT_ALLOWED);
+        assert_eq!(clients.answer(late, &id, allow()).unwrap(), session);
+        assert_eq!(answer.try_recv().unwrap().choice, ApprovalChoice::AllowOnce);
     }
 
     #[test]

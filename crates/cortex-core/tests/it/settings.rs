@@ -367,3 +367,150 @@ fn the_level_can_be_lowered_by_whoever_drives_and_raised_only_by_a_user() {
         front.close().await;
     });
 }
+
+/// A model of the user's catalog with two levels of its own.
+const TWO_LEVELS: &str = "[models.small]
+provider = \"anthropic\"
+id = \"small-model\"
+name = \"Small model\"
+protocol = \"anthropic-messages\"
+context_window = 100000
+max_output = 8000
+input = [\"text\"]
+
+[models.small.reasoning]
+levels = [\"low\", \"high\"]
+default = \"low\"
+";
+
+/// One request that is refused in one part changes none of its parts.
+#[test]
+fn a_request_refused_in_one_part_changes_nothing() {
+    let world = World::new("set_whole", [says("One.")]);
+    let core = world.core();
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        // A turn first, so that there is a log, and a cache to lose.
+        front.turn("one").await;
+        let before = set(&front, SessionSettings::default()).await.unwrap();
+        assert_eq!(before.level, Level::Supervised);
+        assert_eq!(before.speed, Speed::Standard);
+
+        let refused = set(
+            &front,
+            SessionSettings {
+                level: Some(Level::ReadOnly),
+                speed: Some(Speed::Fast),
+                roles: [
+                    (
+                        ModelRole::Fast,
+                        RoleSettings {
+                            model: Some(ModelId::new(OTHER_MODEL)),
+                            speed: Some(Speed::Fast),
+                            ..RoleSettings::default()
+                        },
+                    ),
+                    (
+                        ModelRole::Main,
+                        RoleSettings {
+                            speed: Some(Speed::Fast),
+                            ..RoleSettings::default()
+                        },
+                    ),
+                    // The part that is refused is the last one looked at.
+                    (
+                        ModelRole::Judge,
+                        RoleSettings {
+                            model: Some(ModelId::new("no-such-model")),
+                            ..RoleSettings::default()
+                        },
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.code, "unknown_model");
+        let after = set(&front, SessionSettings::default()).await.unwrap();
+        assert_eq!(after, before, "a refused request changed the session");
+        assert_eq!(warned(&front), 0);
+        // And the log has no new lease.
+        let leases = front
+            .log(&world)
+            .iter()
+            .filter(|line| line["kind"] == "lease")
+            .count();
+        assert_eq!(leases, 1, "the level was changed before the refusal");
+        front.close().await;
+    });
+}
+
+/// A level set for one model is that model's. When the model alone is
+/// changed and the new one has no such level, it runs at its own default,
+/// and the user is told; a level that is asked for and is not there is
+/// refused.
+#[test]
+fn a_level_the_new_model_does_not_have_is_left_behind_and_said() {
+    let world = World::new("effort_left", [says("One.")]);
+    world.user_config(TWO_LEVELS);
+    let core = world.core();
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        let state = set(
+            &front,
+            role(RoleSettings {
+                effort: Some("xhigh".to_owned()),
+                ..RoleSettings::default()
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            state.roles[&ModelRole::Main].effort_in_effect.as_deref(),
+            Some("xhigh")
+        );
+
+        // Asked for by name on the small model, it is refused.
+        let refused = set(
+            &front,
+            role(RoleSettings {
+                model: Some(ModelId::new("small-model")),
+                effort: Some("xhigh".to_owned()),
+                ..RoleSettings::default()
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.code, "unknown_effort");
+
+        // The model alone: nobody asked the small model for `xhigh`.
+        let state = set(
+            &front,
+            role(RoleSettings {
+                model: Some(ModelId::new("small-model")),
+                ..RoleSettings::default()
+            }),
+        )
+        .await
+        .unwrap();
+        let main = &state.roles[&ModelRole::Main];
+        assert_eq!(main.model.as_str(), "small-model");
+        assert_eq!(main.effort, None);
+        front.drain();
+        assert!(
+            front
+                .notices()
+                .iter()
+                .any(|notice| notice.contains("no reasoning level `xhigh`")),
+            "{:?}",
+            front.notices()
+        );
+        front.turn("one").await;
+        let request = &world.provider.requests()[0];
+        assert_eq!(request.model.info.id.as_str(), "small-model");
+        assert_eq!(request.reasoning.level, None);
+        front.close().await;
+    });
+}

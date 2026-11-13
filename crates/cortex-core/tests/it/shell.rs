@@ -318,3 +318,43 @@ fn sys_undo_puts_back_what_a_command_changed_where_git_still_has_it() {
         front.close().await;
     });
 }
+
+/// A shell keeps an inherited `PWD` that names the directory it starts
+/// in, by whatever path, and `cd ..` then goes to the parent of that name.
+/// For a workspace reached through a link that is not where the command
+/// analysis followed the `cd` to, so every command is told the directory
+/// as it was resolved.
+#[cfg(unix)]
+#[test]
+fn sys_a_command_in_a_workspace_behind_a_link_starts_where_it_really_is() {
+    let world = World::new(
+        "shell_pwd",
+        [
+            calls(&[("c1", "shell", json!({"command": "cd .. && pwd"}))]),
+            says("Seen."),
+        ],
+    );
+    // The workspace is moved somewhere deeper, and a link is left where it
+    // was: the harness is started in the link, as a user's shell would be.
+    let link = world.workspace.clone();
+    let real = world.dir.join("elsewhere").join("deep").join("app");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::rename(&link, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let real_parent = std::fs::canonicalize(real.parent().unwrap()).unwrap();
+
+    let core = world.core_with(|options| {
+        options.shell_env = Some(world.shell_env(&[("PWD", link.to_str().unwrap())]));
+    });
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        front.turn_allowing("where is the parent").await;
+        let text = shell_text(&front);
+        assert_eq!(
+            text.lines().next().map(str::trim),
+            real_parent.to_str(),
+            "the command went to the parent of the link: {text}"
+        );
+        front.close().await;
+    });
+}

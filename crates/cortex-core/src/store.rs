@@ -36,7 +36,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use cortex_agent::{Opened, Record, SessionHandle, SessionStore, StoreError};
-use cortex_base::SecretFilter;
 use cortex_protocol::event::{Actor, Event, InfoNotice, Notice, PlanUpdated, TurnCompleted};
 use cortex_protocol::item::NoticeSource;
 use cortex_protocol::{Item, Plan, TurnId};
@@ -56,7 +55,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) struct Disk {
     pub(crate) session: cortex_session::Session,
     pub(crate) rounds: Arc<Rounds>,
-    pub(crate) filter: Arc<SecretFilter>,
+    pub(crate) filter: crate::provider::SharedFilter,
     /// The capture of the workspace's starting state, until it is ready.
     pub(crate) base: Option<BaseCapture>,
 }
@@ -184,7 +183,13 @@ impl Kept {
         match self {
             Self::Disk(disk) => {
                 match record {
-                    Record::Item(item) => match redact::for_disk(&disk.filter, &item) {
+                    Record::Item(item) => match redact::for_disk(
+                        &disk
+                            .filter
+                            .read()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner),
+                        &item,
+                    ) {
                         Some(stored) => {
                             let body = Body::from_item(stored)
                                 .ok_or("an item of a kind this version does not know")?;

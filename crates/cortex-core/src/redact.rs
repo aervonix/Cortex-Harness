@@ -26,22 +26,52 @@
 //! projection, as a message from another provider would be.
 
 use std::borrow::Cow;
-use std::sync::Arc;
 
 use cortex_base::SecretFilter;
 use cortex_protocol::Item;
 use cortex_protocol::Part;
 use cortex_protocol::item::AssistantMessageItem;
 use cortex_session::{Body, Entry, Redactor};
+use serde_json::Value;
 
-/// The filter, as the session store's hook.
+/// The core's filter, as the session store's hook. It is read each time:
+/// a key the core finds while the session runs is masked from then on.
 #[derive(Debug, Clone)]
-pub(crate) struct LogRedactor(pub(crate) Arc<SecretFilter>);
+pub(crate) struct LogRedactor(pub(crate) crate::provider::SharedFilter);
 
 impl Redactor for LogRedactor {
     fn redact<'a>(&self, text: &'a str) -> Cow<'a, str> {
-        self.0.redact(text)
+        self.0
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .redact(text)
     }
+}
+
+/// Whether the filter finds a secret in a provider's block.
+///
+/// The block is JSON text, so what it says is written with escapes: a key
+/// that follows a line break stands after `\n`, and one may be spelled
+/// with `\u` escapes all through. The text is looked at as it is, and
+/// then each of its strings as it reads once the escapes are undone.
+fn raw_holds_secret(filter: &SecretFilter, raw: &str) -> bool {
+    if filter.finds(raw) {
+        return true;
+    }
+    if !raw.contains('\\') {
+        return false;
+    }
+    fn any(filter: &SecretFilter, value: &Value) -> bool {
+        match value {
+            Value::String(text) => filter.finds(text),
+            Value::Array(items) => items.iter().any(|item| any(filter, item)),
+            Value::Object(fields) => fields
+                .iter()
+                .any(|(key, item)| filter.finds(key) || any(filter, item)),
+            Value::Null | Value::Bool(_) | Value::Number(_) => false,
+        }
+    }
+    serde_json::from_str::<Value>(raw).is_ok_and(|value| any(filter, &value))
 }
 
 /// Whether the filter finds a secret in one of the message's raw blocks.
@@ -50,7 +80,7 @@ fn has_secret_in_raw(filter: &SecretFilter, message: &AssistantMessageItem) -> b
         .usage
         .as_ref()
         .and_then(|usage| usage.raw.as_ref())
-        .is_some_and(|raw| filter.finds(raw.as_str()));
+        .is_some_and(|raw| raw_holds_secret(filter, raw.as_str()));
     in_usage
         || message.parts.iter().any(|part| {
             let raw = match part {
@@ -60,7 +90,7 @@ fn has_secret_in_raw(filter: &SecretFilter, message: &AssistantMessageItem) -> b
                 Part::ProviderBlock(block) => Some(&block.raw),
                 _ => None,
             };
-            raw.is_some_and(|raw| filter.finds(raw.as_str()))
+            raw.is_some_and(|raw| raw_holds_secret(filter, raw.as_str()))
         })
 }
 
@@ -227,6 +257,42 @@ mod tests {
             error: None,
             created_at: None,
         }
+    }
+
+    /// A provider's block is JSON text. A key in it stands after a written
+    /// out line break, or is written with escapes all through, and is a key
+    /// all the same.
+    #[test]
+    fn a_secret_behind_the_escapes_of_a_raw_block_is_found() {
+        // In a known format, so that only its shape gives it away.
+        const TOKEN: &str = "ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
+        let known = filter();
+        let unknown = SecretFilter::new();
+        let after_break = serde_json::to_string(
+            &json!({"type": "thinking", "thinking": format!("Found in .env:\n{TOKEN}\tand more")}),
+        )
+        .unwrap();
+        assert!(after_break.contains("\\nghp_"), "{after_break}");
+        // Every character of the harness's own key as a `\u` escape.
+        let spelled: String = KEY
+            .chars()
+            .map(|c| format!("\\u{:04x}", c as u32))
+            .collect();
+        let escaped_value = format!("{{\"type\":\"thinking\",\"thinking\":\"{spelled}\"}}");
+        assert!(!escaped_value.contains(KEY));
+        // And one as an object's key.
+        let as_a_key = format!("{{\"note\\n{TOKEN}\":1}}");
+        for (filter, raw) in [
+            (&unknown, after_break.as_str()),
+            (&known, escaped_value.as_str()),
+            (&unknown, as_a_key.as_str()),
+        ] {
+            let stored = for_disk(filter, &Item::AssistantMessage(message(raw)));
+            assert!(stored.is_some(), "kept as it was: {raw}");
+        }
+        // A block with escapes and no secret is kept.
+        let clean = r#"{"type":"thinking","thinking":"line one\nline two \u00e9"}"#;
+        assert!(for_disk(&known, &Item::AssistantMessage(message(clean))).is_none());
     }
 
     #[test]

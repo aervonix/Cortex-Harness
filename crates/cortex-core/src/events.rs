@@ -11,9 +11,10 @@
 //!    queued between them, is added to it. The reader sees fewer, larger
 //!    deltas.
 //! 2. **When the queue is full, deltas of that item are dropped**, and one
-//!    `item.resync` is queued when there is room. From then until the item
-//!    completes, the reader gets none of its deltas: it reads what the item
-//!    has so far with `session/read`, and `item.completed` has all of it.
+//!    `item.resync` is queued in place of the first. From then until the
+//!    item completes, the reader gets none of its deltas: it reads what the
+//!    item has so far with `session/read`, and `item.completed` has all of
+//!    it.
 //! 3. **Nothing else is ever dropped.** A completed item, a turn's events
 //!    and a request to the client are queued even when the queue is full:
 //!    they are few, and each is bounded. (A transport that cannot hold them
@@ -22,11 +23,17 @@
 //! A client that did not ask for deltas (`capabilities.deltas`) is sent
 //! none.
 //!
+//! **A client reads `seq` in increasing order, with jumps.** Every event
+//! keeps the number the session gave it; a merged delta has its last
+//! part's, and a resync the number of the delta it stands for. Nothing is
+//! queued out of order. A jump is a delta the client was not sent, so it
+//! is no sign of a loss: a loss is said by `item.resync`.
+//!
 //! The sink also keeps **what each item in progress holds so far**
 //! ([`InProgress`]), built from the same deltas, which is what
 //! `session/read` returns for an item that has not completed.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use cortex_agent::EventSink;
@@ -74,9 +81,8 @@ pub enum Outgoing {
 #[derive(Debug, Default)]
 struct QueueState {
     items: VecDeque<Outgoing>,
-    /// The items whose deltas are being dropped, each with the resync it is
-    /// owed, until that is queued.
-    dropping: BTreeMap<ItemId, Option<SessionEvent>>,
+    /// The items whose deltas are being dropped, each told so once.
+    dropping: BTreeSet<ItemId>,
     closed: bool,
 }
 
@@ -110,8 +116,7 @@ impl EventQueue {
         }
         match &event.event {
             Event::ItemDelta(delta) => {
-                if !self.deltas || state.dropping.contains_key(&delta.item_id) {
-                    self.settle_resyncs(&mut state);
+                if !self.deltas || state.dropping.contains(&delta.item_id) {
                     return;
                 }
                 if let Some(Outgoing::Event(last)) = state.items.back_mut()
@@ -121,7 +126,9 @@ impl EventQueue {
                 }
                 if state.items.len() >= self.capacity {
                     // The reader is far behind: this item's deltas stop
-                    // here, and it is told once, when there is room.
+                    // here, and it is told once, in this delta's place and
+                    // under its number. One small event an item is queued
+                    // past the limit, as an item's other whole events are.
                     let resync = SessionEvent {
                         session_id: event.session_id.clone(),
                         seq: event.seq,
@@ -130,12 +137,15 @@ impl EventQueue {
                             item_id: delta.item_id.clone(),
                         }),
                     };
-                    state.dropping.insert(delta.item_id.clone(), Some(resync));
+                    state.dropping.insert(delta.item_id.clone());
+                    state.items.push_back(Outgoing::Event(resync));
+                    drop(state);
+                    self.wake.notify_one();
                     return;
                 }
             }
             Event::ItemCompleted(completed) => {
-                // The whole item follows: nothing is owed for it any more.
+                // The whole item follows, and its deltas flow again.
                 if let Some(id) = completed.item.id() {
                     state.dropping.remove(&ItemId::new(id));
                 }
@@ -145,7 +155,6 @@ impl EventQueue {
             }
             _ => {}
         }
-        self.settle_resyncs(&mut state);
         state.items.push_back(Outgoing::Event(event));
         drop(state);
         self.wake.notify_one();
@@ -162,36 +171,9 @@ impl EventQueue {
         self.wake.notify_one();
     }
 
-    /// Queues the resyncs that are owed, while there is room.
-    fn settle_resyncs(&self, state: &mut QueueState) {
-        if state.items.len() >= self.capacity {
-            return;
-        }
-        let QueueState {
-            items, dropping, ..
-        } = state;
-        for owed in dropping.values_mut() {
-            if items.len() >= self.capacity {
-                break;
-            }
-            if let Some(resync) = owed.take() {
-                items.push_back(Outgoing::Event(resync));
-            }
-        }
-    }
-
     /// The next thing for the client, if there is one. Never waits.
     pub fn try_next(&self) -> Option<Outgoing> {
-        let mut state = lock(&self.state);
-        let next = state.items.pop_front();
-        if next.is_some() {
-            // Taking one makes room.
-            self.settle_resyncs(&mut state);
-        } else if !state.dropping.is_empty() {
-            self.settle_resyncs(&mut state);
-            return state.items.pop_front();
-        }
-        next
+        lock(&self.state).items.pop_front()
     }
 
     /// The next thing for the client. `None` once the client is
@@ -657,52 +639,93 @@ mod tests {
     }
 
     #[test]
-    fn a_full_queue_drops_an_items_deltas_and_owes_it_one_resync() {
+    fn a_full_queue_drops_an_items_deltas_and_tells_it_once() {
         let queue = EventQueue::new(3, true);
         queue.push(event(1, Event::TurnStarted(TurnStarted {})));
         queue.push(text(2, "i_1", "a"));
         queue.push(event(3, Event::TurnStarted(TurnStarted {})));
-        // Full. This one cannot merge, and is dropped with all that follow
-        // for the item.
+        // Full. This one cannot merge: a resync stands in its place, and
+        // every later delta of the item is dropped.
         queue.push(text(4, "i_1", "b"));
         queue.push(text(5, "i_1", "c"));
         // Another item is dropped on its own account.
         queue.push(text(6, "i_2", "x"));
-        assert_eq!(queue.len(), 3);
-        // Taking one makes room for one resync; taking another, for the
-        // second.
-        assert_eq!(label(&drain_one(&queue)), "turn.started");
-        assert_eq!(queue.len(), 3);
-        // The item's deltas stay dropped after its resync is queued.
-        queue.push(text(7, "i_1", "d"));
+        queue.push(text(7, "i_2", "y"));
+        // A whole event in between is queued as ever.
+        queue.push(event(8, Event::TurnStarted(TurnStarted {})));
+        queue.push(text(9, "i_1", "d"));
+        let taken = drain(&queue);
         assert_eq!(
-            labels(&queue),
-            ["text:i_1:a", "turn.started", "resync:i_1", "resync:i_2"]
+            taken.iter().map(label).collect::<Vec<_>>(),
+            [
+                "turn.started",
+                "text:i_1:a",
+                "turn.started",
+                "resync:i_1",
+                "resync:i_2",
+                "turn.started",
+            ]
         );
-        queue.push(text(8, "i_1", "e"));
+        // What the client reads is in the session's order: each resync has
+        // the number of the delta it stands for.
+        assert_eq!(
+            taken.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 6, 8]
+        );
+        // The item's deltas stay dropped once the reader has caught up.
+        queue.push(text(10, "i_1", "e"));
         assert!(queue.is_empty(), "dropped until the item completes");
         // Its completion is never dropped, and its deltas flow again after
         // (a new item with the same id cannot be, but the state is clean).
-        queue.push(completed(9, "i_1"));
-        queue.push(text(10, "i_1", "after"));
+        queue.push(completed(11, "i_1"));
+        queue.push(text(12, "i_1", "after"));
         assert_eq!(labels(&queue), ["completed:i_1", "text:i_1:after"]);
     }
 
-    fn drain_one(queue: &EventQueue) -> SessionEvent {
-        match queue.try_next() {
-            Some(Outgoing::Event(event)) => event,
-            other => panic!("no event: {other:?}"),
+    /// Whatever is pushed, in the session's order, a reader that is behind
+    /// by any amount reads numbers that only go up.
+    #[test]
+    fn what_a_client_reads_is_always_in_the_sessions_order() {
+        use cortex_base::Rng as _;
+
+        let mut rng = cortex_base::SeededRng::new(13);
+        for capacity in 1..=6 {
+            let queue = EventQueue::new(capacity, true);
+            let mut read = Vec::new();
+            for seq in 1..=400_u64 {
+                let item = format!("i_{}", seq / 40 * 2 + rng.below(2));
+                match rng.below(10) {
+                    0 => queue.push(event(seq, Event::TurnStarted(TurnStarted {}))),
+                    1 => queue.push(completed(seq, &item)),
+                    _ => queue.push(text(seq, &item, "x")),
+                }
+                // The reader takes something now and then.
+                if rng.below(4) == 0
+                    && let Some(Outgoing::Event(event)) = queue.try_next()
+                {
+                    read.push(event.seq);
+                }
+            }
+            read.extend(drain(&queue).iter().map(|event| event.seq));
+            assert!(
+                read.windows(2).all(|pair| pair[0] < pair[1]),
+                "capacity {capacity}: {read:?}"
+            );
         }
     }
 
     #[test]
-    fn an_item_that_completes_while_its_resync_is_owed_gets_no_resync() {
+    fn an_item_that_completes_while_the_reader_is_behind_is_told_and_then_whole() {
         let queue = EventQueue::new(1, true);
         queue.push(event(1, Event::TurnStarted(TurnStarted {})));
         queue.push(text(2, "i_1", "a"));
-        queue.push(completed(3, "i_1"));
+        queue.push(text(3, "i_1", "b"));
+        queue.push(completed(4, "i_1"));
         // The completed item is queued although the queue was full.
-        assert_eq!(labels(&queue), ["turn.started", "completed:i_1"]);
+        assert_eq!(
+            labels(&queue),
+            ["turn.started", "resync:i_1", "completed:i_1"]
+        );
     }
 
     #[test]

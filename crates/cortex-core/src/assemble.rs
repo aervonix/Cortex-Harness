@@ -6,17 +6,26 @@
 //! session's files, and looks for a shell), so the core runs it on the
 //! blocking pool and opens the session's loop with what comes back.
 //!
-//! # One answer about trust
+//! # Trust, worked out once
 //!
-//! Whether the project is trusted is worked out once ([`trust`]) and that
-//! one answer goes to the four places that need it: configuration (which
-//! holds back what a project may only set once trusted), the permission
-//! engine (which sets a project's `allow` rules aside until then), the
-//! shell tool (which asks git what a command changed only in a trusted
-//! repository, because a repository's configuration can make git run a
-//! program) and the capture of the base state (for the same reason). A
-//! project is trusted for its rules only while they are the ones the user
-//! saw.
+//! Whether the project is trusted is worked out in one place ([`trust`]),
+//! and it is two answers, because trust lets a project do two different
+//! kinds of thing:
+//!
+//! - **Loosen what is asked, or raise what is spent** ([`Trust::rules`]):
+//!   given to configuration (which holds back what a project may only set
+//!   once trusted) and to the permission engine (which sets a project's
+//!   `allow` rules aside until then). This answer is yes only while the
+//!   project's rules are the ones the user saw: any change to them sets it
+//!   aside until the change is approved.
+//! - **Have git read the repository's own configuration**
+//!   ([`Trust::repository`]): given to the shell tool (which asks git what
+//!   a command changed only in a trusted repository, because a
+//!   repository's configuration can make git run a program) and to the
+//!   capture of the base state (for the same reason). A change to the
+//!   project's permission rules does not touch what git would run, so
+//!   this answer is the user's trust alone: a project that adds a `deny`
+//!   does not lose its base state for it.
 
 #![allow(
     clippy::disallowed_methods,
@@ -31,7 +40,7 @@ use cortex_agent::{
     Account, Ledger, LoopConfig, Models, NoStats, NoVerifier, SessionInfo, SessionParts,
     SpeedSettings, StubContext, Workspace,
 };
-use cortex_base::{AbsPath, CancelToken, PathOptions, PathResolver, SecretFilter};
+use cortex_base::{AbsPath, CancelToken, PathOptions, PathResolver};
 use cortex_config::{LayerKind, LoadOptions, Loaded, Override, Settings, StateDir};
 use cortex_llm::{BoxFuture, ImageError, ImageSource};
 use cortex_policy::{
@@ -195,13 +204,18 @@ fn sourced_rules(loaded: &Loaded) -> Vec<SourcedRule> {
 ///
 /// The one place the trust store's answer about a project's rules is
 /// asked for: every consumer of trust is given what this returns.
-fn rules_trusted(trust: &cortex_policy::ProjectTrust, project_rules: &[Rule]) -> bool {
+fn project_rules_approved(trust: &cortex_policy::ProjectTrust, project_rules: &[Rule]) -> bool {
     trust.allows_rules(project_rules)
 }
 
 /// What was learned about the project's trust.
 struct Trust {
-    trusted: bool,
+    /// Whether the project may loosen what is asked and raise what is
+    /// spent: it is trusted, and its rules are the ones the user saw.
+    rules: bool,
+    /// Whether git may read the repository's own configuration: the user
+    /// trusts the project.
+    repository: bool,
     loaded: Loaded,
     /// What went wrong reading the trust store, for the user.
     problem: Option<String>,
@@ -233,7 +247,8 @@ fn trust(
     if inner.options.trust_project {
         // The user's own command line says so, for this run.
         return Ok(Trust {
-            trusted: true,
+            rules: true,
+            repository: true,
             loaded: load(true)?,
             problem: None,
         });
@@ -257,7 +272,8 @@ fn trust(
     };
     if !stored.is_trusted() {
         return Ok(Trust {
-            trusted: false,
+            rules: false,
+            repository: false,
             loaded: load(false)?,
             problem,
         });
@@ -271,19 +287,24 @@ fn trust(
         .filter(|rule| rule.source == RuleSource::Project)
         .map(|rule| rule.rule)
         .collect();
-    if rules_trusted(&stored, &project_rules) {
+    if project_rules_approved(&stored, &project_rules) {
         Ok(Trust {
-            trusted: true,
+            rules: true,
+            repository: true,
             loaded: peek,
             problem,
         })
     } else {
+        // The user still trusts the project; what they have not seen is
+        // its rules as they are now. What the rules could loosen is set
+        // aside, and what has nothing to do with them is not.
         Ok(Trust {
-            trusted: false,
+            rules: false,
+            repository: true,
             loaded: load(false)?,
             problem: Some(
-                "This project's permission rules have changed since it was trusted, so it is \
-                 treated as not trusted until the change is approved."
+                "This project's permission rules have changed since it was trusted, so its \
+                 settings and its allow rules are set aside until the change is approved."
                     .to_owned(),
             ),
         })
@@ -613,7 +634,8 @@ pub(crate) fn assemble(
     load.overrides.extend(settings_overrides(&wanted.settings));
     let state = StateDir::from_dirs(&load.dirs);
     let Trust {
-        trusted,
+        rules: rules_trusted,
+        repository: repository_trusted,
         loaded,
         problem,
     } = trust(inner, state.as_ref(), &root, &load)?;
@@ -647,19 +669,10 @@ pub(crate) fn assemble(
     let models = models(inner, settings, &images)?;
 
     // -------------------------------------------- the store and the plan
-    // Every key the core has found is masked by value, in this session's
-    // log and artifacts.
-    let mut filter = SecretFilter::new();
-    for key in inner
-        .providers
-        .found
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-    {
-        filter.add_value(key);
-    }
-    let filter = Arc::new(filter);
+    // Every key the core has found, and every one it finds from now on,
+    // is masked by value in this session's log and artifacts: the filter
+    // is the core's, and the session reads it each time it writes.
+    let filter = Arc::clone(&inner.providers.filter);
 
     let (id, title, ephemeral, resume) = match &wanted.which {
         Which::New {
@@ -821,7 +834,7 @@ pub(crate) fn assemble(
             &resolver,
             &id,
             lease_id.clone(),
-            trusted,
+            rules_trusted,
             syntax,
             &mut told,
         ),
@@ -872,7 +885,7 @@ pub(crate) fn assemble(
             // Without trust, the look for what a command changed does not
             // ask git, which the repository's own configuration could make
             // run a program.
-            repository_trusted: trusted,
+            repository_trusted,
         };
         let mut tool = ShellTool::new(shell, config).with_runner(runner(inner));
         if let Some(launcher) = &options.launcher {
@@ -912,12 +925,12 @@ pub(crate) fn assemble(
                 .map_err(|failure| session_error(&failure))?;
         }
         if base_capture {
-            // Taken on a thread of its own, with the one answer about
-            // trust, and appended when it is ready: the first prompt never
-            // waits for it.
+            // Taken on a thread of its own, with the answer about the
+            // repository's trust, and appended when it is ready: the first
+            // prompt never waits for it.
             match BaseCapture::start(
                 root.clone(),
-                trusted,
+                repository_trusted,
                 disk.session.store(),
                 Arc::clone(&git),
                 Arc::clone(&clock),

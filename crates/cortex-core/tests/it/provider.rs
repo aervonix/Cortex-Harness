@@ -184,3 +184,59 @@ fn an_image_a_tool_stored_reaches_the_request_as_its_bytes() {
     assert!(second.contains("image/png"));
     assert!(!second.contains("a_0001"), "a reference was sent as it is");
 }
+
+/// Where no credential store can be opened, a key from the environment is
+/// used all the same: it is looked for before any store is asked. (On
+/// Linux no build has a keychain yet, so asking for one is a store that
+/// cannot be opened. On Windows there is one.)
+#[cfg(unix)]
+#[test]
+fn a_key_from_the_environment_needs_no_credential_store() {
+    let mut world = World::new("no_store", []);
+    world.raw_user_config(&format!(
+        "[session]\ndurability = \"never\"\n\n[credentials]\nstore = \
+         \"keychain\"\n\n[model]\nmain = \"{MODEL}\"\n"
+    ));
+
+    // With no key anywhere, the session says why the store is no help.
+    let transport = ScriptedTransport::new([]);
+    let core = world.core_with(|options| {
+        options.connector = None;
+        options.transport = Some(Arc::new(transport.clone()));
+    });
+    world.run(async {
+        let refused = Front::start_as(
+            &world,
+            &core,
+            ClientInfo::headless(),
+            SessionSettings::default(),
+        )
+        .await
+        .err()
+        .expect("a session started with no key");
+        assert_eq!(refused.kind, cortex_protocol::ErrorKind::Auth);
+        assert!(refused.message.contains("keychain"), "{}", refused.message);
+    });
+
+    // With the key in the environment, the store is never asked.
+    world.env = world.env.clone().with("ANTHROPIC_API_KEY", KEY);
+    let transport = ScriptedTransport::new([sse(text_stream("Hello."))]);
+    let core = world.core_with(|options| {
+        options.connector = None;
+        options.transport = Some(Arc::new(transport.clone()));
+    });
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            ClientInfo::headless(),
+            SessionSettings::default(),
+        )
+        .await
+        .unwrap();
+        let end = front.turn("hello").await;
+        assert_eq!(end.outcome, TurnOutcome::Completed, "{:?}", end.error);
+        front.close().await;
+    });
+    assert_eq!(transport.requests()[0].headers.get("x-api-key"), Some(KEY));
+}

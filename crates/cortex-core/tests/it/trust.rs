@@ -1,15 +1,18 @@
-//! One answer about trust, given to the four places that need it
+//! Trust, worked out once and given to the four places that need it
 //! (`docs/architecture/06-permissions-and-sandbox.md`, "Project trust").
 //!
 //! Each test sets a project up so that trust shows in four ways at once,
 //! runs one turn, and reads all four:
 //!
-//! | Consumer | What a trusted project gets |
-//! |---|---|
-//! | Configuration | Its own `model.main`, which raises cost and so waits for trust. |
-//! | The permission engine | Its `allow` rule: a write under `.github/` is not asked about. |
-//! | The shell tool | Git is asked what a command changed (`changes.method` is `git`). |
-//! | The base state | A complete record, marked as taken from a trusted project. |
+//! | Consumer | What a trusted project gets | Which answer |
+//! |---|---|---|
+//! | Configuration | Its own `model.main`, which raises cost and so waits for trust. | Trusted, and its rules are the ones the user saw. |
+//! | The permission engine | Its `allow` rule: a write under `.github/` is not asked about. And `git status` is a command that only reads. | The same. |
+//! | The shell tool | Git is asked what a command changed (`changes.method` is `git`). | Trusted. |
+//! | The base state | A complete record, marked as taken from a trusted project. | Trusted. |
+//!
+//! A project whose rules changed since the user saw them keeps the last
+//! two and loses the first two until the change is approved.
 //!
 //! The tests start a shell and git, so they are named `sys_…`.
 
@@ -117,6 +120,25 @@ impl Seen {
             base_complete: false,
         }
     }
+
+    /// A project the user trusts, whose rules are not the ones they saw:
+    /// nothing that loosens or costs, and everything that is only git
+    /// reading the repository's own configuration.
+    fn rules_set_aside() -> Self {
+        Self {
+            model: MODEL.to_owned(),
+            write_asked: true,
+            git_asked: true,
+            ..Self::trusted()
+        }
+    }
+}
+
+/// Puts the project's files back as they were committed, between two
+/// turns of one test.
+fn put_back(world: &World) {
+    let _ = std::fs::remove_dir_all(world.workspace.join(".github"));
+    assert!(git(&world.workspace, &["checkout", "--", "tracked.txt"]));
 }
 
 /// Runs one turn in the project and reads the four consumers. Returns the
@@ -263,15 +285,17 @@ fn sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_th
     assert_eq!(seen, Seen::trusted(), "{notices:?}");
 
     // The project's rules change behind the user's back: it allows itself
-    // more. Nothing of it is trusted until the user has looked again.
+    // more. Nothing that a rule or a setting of its could loosen holds
+    // until the user has looked again. What git reads of the repository
+    // has not changed, and the user's trust in that stands.
+    let more = "[[permissions.rules]]\neffect = \"exec\"\nmatch = \"curl *\"\naction = \"allow\"\n";
     world.project_config(&format!(
-        "[model]\nmain = \"{OTHER_MODEL}\"\n\n[[permissions.rules]]\neffect = \"write\"\nmatch = \
-         \".github/**\"\naction = \"allow\"\n\n[[permissions.rules]]\neffect = \"exec\"\nmatch = \
-         \"curl *\"\naction = \"allow\"\n"
+        "[model]\nmain = \"{OTHER_MODEL}\"\n\n[[permissions.rules]]\neffect = \"write\"\nmatch \
+         = \".github/**\"\naction = \"allow\"\n\n{more}"
     ));
-    std::fs::remove_file(world.workspace.join(PROTECTED)).unwrap();
+    put_back(&world);
     let (seen, notices) = observe(&world, |_| {});
-    assert_eq!(seen, Seen::untrusted());
+    assert_eq!(seen, Seen::rules_set_aside(), "{more}");
     assert!(
         notices
             .iter()

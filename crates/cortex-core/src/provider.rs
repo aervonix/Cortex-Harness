@@ -19,11 +19,12 @@
 //!   own control ([`reasoning`]).
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use cortex_agent::RoleModel;
-use cortex_base::{Secret, SharedClock, SharedTimer};
+use cortex_base::{Secret, SecretFilter, SharedClock, SharedTimer};
 use cortex_config::credentials::Lookup;
+use cortex_config::credentials::{CredentialError, StoreKind};
 use cortex_config::{CredentialStore, Env, KeyPath, Loaded, Settings};
 use cortex_llm::anthropic;
 use cortex_llm::{
@@ -235,6 +236,61 @@ pub(crate) fn provider_info(
     Ok(info)
 }
 
+/// What a provider's headers read from the environment: keys, by another
+/// name. A header written out in the configuration file is not one of
+/// them: it is in a file already, and is as often a version or a date as a
+/// token, which masking by value would then take out of every session.
+pub(crate) fn header_secrets(settings: &Settings, env: &Env, provider: &str) -> Vec<Secret> {
+    settings
+        .providers
+        .get(provider)
+        .into_iter()
+        .flat_map(|entry| entry.headers.0.values())
+        .filter(|value| matches!(value, cortex_config::schema::EnvText::Env(_)))
+        .filter_map(|value| value.resolve(env))
+        .collect()
+}
+
+/// The secret filter of a core: every session's log and artifacts are
+/// written through it, and it learns each key as the core finds it.
+pub(crate) type SharedFilter = Arc<RwLock<SecretFilter>>;
+
+/// The credential store that could not be opened. A key given on the
+/// command line or in the environment is found before any store is asked,
+/// so only a provider with neither meets this, and is told why.
+#[derive(Debug)]
+pub(crate) struct Unopened(pub(crate) String);
+
+impl Unopened {
+    fn error(&self) -> CredentialError {
+        CredentialError::Unavailable {
+            reason: self.0.clone(),
+        }
+    }
+}
+
+impl CredentialStore for Unopened {
+    fn kind(&self) -> StoreKind {
+        StoreKind::File
+    }
+
+    fn describe(&self, _env: &Env) -> String {
+        "no credential store".to_owned()
+    }
+
+    fn get(&self, _provider: &str) -> Result<Option<Secret>, CredentialError> {
+        Err(self.error())
+    }
+
+    fn set(&self, _provider: &str, _credential: &Secret) -> Result<(), CredentialError> {
+        Err(self.error())
+    }
+
+    fn remove(&self, _provider: &str) -> Result<bool, CredentialError> {
+        Err(self.error())
+    }
+}
+
 /// The environment variable a provider's key is read from.
 pub(crate) fn key_variable(settings: &Settings, provider: &str) -> Option<String> {
     settings
@@ -346,8 +402,11 @@ pub(crate) fn reasoning(
             let min = control.min_tokens.unwrap_or(0);
             let max = control.max_tokens.unwrap_or(min).max(min);
             let tokens = if let Some(alias) = alias {
-                let steps = (EFFORT_ALIASES.len() - 1) as u64;
-                min + (max - min) * alias as u64 / steps
+                // Worked out in a wider number: a catalog entry may give
+                // any range.
+                let steps = (EFFORT_ALIASES.len() - 1) as u128;
+                let along = u128::from(max - min) * alias as u128 / steps;
+                min.saturating_add(u64::try_from(along).unwrap_or(u64::MAX))
             } else if let Ok(tokens) = effort.parse::<u64>() {
                 if !(min..=max).contains(&tokens) {
                     return Err(config_error(
@@ -399,11 +458,14 @@ pub(crate) struct Providers {
     pub(crate) timer: SharedTimer,
     pub(crate) protocols: BTreeMap<String, Arc<dyn Protocol>>,
     pub(crate) connector: Option<Arc<dyn Connector>>,
-    pub(crate) store: Option<Box<dyn CredentialStore>>,
+    /// The credential store, or [`Unopened`] in its place.
+    pub(crate) store: Box<dyn CredentialStore>,
     /// Keys given on the command line, by provider.
     pub(crate) flags: BTreeMap<String, Secret>,
-    /// Every key that was found, so that the secret filter masks it.
-    pub(crate) found: Mutex<Vec<Secret>>,
+    /// The filter every session writes through. Every key that is found
+    /// is added to it, whenever that is: a session that is running masks a
+    /// key found after it started.
+    pub(crate) filter: SharedFilter,
     /// Told each key the first time it is found.
     pub(crate) key_found: Option<KeyFound>,
 }
@@ -424,6 +486,27 @@ pub(crate) fn builtin_protocols() -> BTreeMap<String, Arc<dyn Protocol>> {
 }
 
 impl Providers {
+    /// Takes a secret the core has come to hold: the sessions' filter masks
+    /// it by value from now on, and whoever asked to be told (the log's
+    /// filter) is told.
+    pub(crate) fn learn(&self, secret: &Secret) {
+        let known = self
+            .filter
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .knows(secret);
+        if known {
+            return;
+        }
+        self.filter
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .add_value(secret);
+        if let Some(tell) = &self.key_found {
+            tell(secret);
+        }
+    }
+
     /// The key of `provider`, placed the way its protocol wants it.
     ///
     /// # Errors
@@ -440,18 +523,15 @@ impl Providers {
         let variable = key_variable(settings, name);
         let auth_error =
             |code: &str, message: String| Box::new(ErrorData::new(ErrorKind::Auth, code, message));
-        let Some(store) = &self.store else {
-            return Err(auth_error(
-                "no_credential_store",
-                "The credential store could not be opened.".to_owned(),
-            ));
-        };
+        // The command line and the environment are looked at before the
+        // store is asked, so a store that could not be opened costs a
+        // provider nothing when its key is given one of those ways.
         let found = cortex_config::resolve(Lookup {
             provider: name,
             flag: self.flags.get(name),
             variable: variable.as_deref(),
             env,
-            store: store.as_ref(),
+            store: self.store.as_ref(),
         })
         .map_err(|error| auth_error("credentials_unreadable", error.to_string()))?;
         let Some(credential) = found else {
@@ -466,18 +546,7 @@ impl Providers {
                 ),
             ));
         };
-        {
-            let mut found = self.found.lock().unwrap_or_else(PoisonError::into_inner);
-            let known = found
-                .iter()
-                .any(|known| known.expose() == credential.secret.expose());
-            if !known {
-                found.push(credential.secret.clone());
-                if let Some(tell) = &self.key_found {
-                    tell(&credential.secret);
-                }
-            }
-        }
+        self.learn(&credential.secret);
         let source = credential.source.to_string();
         let auth: ApiKeyAuth = if provider.protocol == anthropic::NAME {
             anthropic::api_key(credential.secret, source)
@@ -608,6 +677,9 @@ impl Providers {
         images: Arc<dyn ImageSource>,
     ) -> Result<RoleModel, Box<ErrorData>> {
         let provider = provider_info(settings, env, entry.info.provider.as_str())?;
+        for secret in header_secrets(settings, env, provider.id.as_str()) {
+            self.learn(&secret);
+        }
         let visibility = match settings.model.reasoning {
             cortex_config::schema::ReasoningVisibility::None => ReasoningVisibility::None,
             _ => ReasoningVisibility::Summary,
@@ -655,6 +727,37 @@ mod tests {
         assert_eq!(none.visibility, ReasoningVisibility::None);
         let blank = reasoning(&fixtures::model(), Some("  "), ReasoningVisibility::Summary);
         assert_eq!(blank.unwrap().level, None);
+    }
+
+    /// A model with a token budget: an alias is placed along its range,
+    /// whatever the range, and a number is taken when it is inside.
+    #[test]
+    fn a_budget_is_placed_along_any_range() {
+        let budget = |min: u64, max: u64, effort: &str| {
+            let mut model = fixtures::model().as_ref().clone();
+            model.info.reasoning.kind = ReasoningControlKind::Budget;
+            model.info.reasoning.levels.clear();
+            model.info.reasoning.min_tokens = Some(min);
+            model.info.reasoning.max_tokens = Some(max);
+            reasoning(&model, Some(effort), ReasoningVisibility::Summary)
+                .map(|reasoning| reasoning.budget_tokens)
+                .map_err(|error| error.code.clone())
+        };
+        assert_eq!(budget(1_000, 5_000, "minimal"), Ok(Some(1_000)));
+        assert_eq!(budget(1_000, 5_000, "medium"), Ok(Some(3_000)));
+        assert_eq!(budget(1_000, 5_000, "max"), Ok(Some(5_000)));
+        assert_eq!(budget(1_000, 5_000, "2048"), Ok(Some(2_048)));
+        assert_eq!(
+            budget(1_000, 5_000, "6000"),
+            Err("unknown_effort".to_owned())
+        );
+        // A catalog entry may give any range: nothing overflows.
+        assert_eq!(budget(0, u64::MAX, "max"), Ok(Some(u64::MAX)));
+        assert_eq!(budget(0, u64::MAX, "medium"), Ok(Some(u64::MAX / 2)));
+        assert_eq!(
+            budget(7, u64::MAX, "high"),
+            Ok(Some(7 + (u64::MAX - 7) / 4 * 3))
+        );
     }
 
     #[test]

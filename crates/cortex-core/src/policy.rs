@@ -142,7 +142,17 @@ impl EnginePolicy {
     }
 
     fn outcome(&self, call: &PlannedCall<'_>) -> Outcome {
-        let accesses = accesses(call);
+        let Some(accesses) = accesses(call) else {
+            // The engine cannot be shown the whole of what the call does,
+            // so it cannot be asked to allow it.
+            return Outcome::Deny {
+                reason: format!(
+                    "The tool `{}` declared an effect this version of the permission engine does \
+                     not know, so the call was not run.",
+                    call.spec.name
+                ),
+            };
+        };
         self.engine().decide(&Request {
             tool: &call.spec.name,
             default: call.spec.permission,
@@ -178,12 +188,13 @@ impl EnginePolicy {
     }
 }
 
-/// The plan's effects, as the engine reads them.
-fn accesses(call: &PlannedCall<'_>) -> Vec<Access> {
+/// The plan's effects, as the engine reads them. `None` when one of them
+/// is an effect this version does not know: the call is then refused.
+fn accesses(call: &PlannedCall<'_>) -> Option<Vec<Access>> {
     call.plan
         .effects
         .iter()
-        .filter_map(|effect| {
+        .map(|effect| {
             Some(match effect {
                 Effect::Read(path) => Access::Read {
                     path: path.abs().clone(),
@@ -204,8 +215,8 @@ fn accesses(call: &PlannedCall<'_>) -> Vec<Access> {
                 Effect::Network(NetworkTarget::Any) => Access::Network { host: None },
                 Effect::Ext { tool } => Access::Ext { tool: tool.clone() },
                 // An effect this version does not know cannot be shown to
-                // the engine as something it knows. The loop refuses a plan
-                // it cannot place; nothing here widens it.
+                // the engine as something it knows, and leaving it out
+                // would have the engine decide on less than the call does.
                 _ => return None,
             })
         })
@@ -258,7 +269,11 @@ struct Asked<'a> {
 
 impl Drop for Asked<'_> {
     fn drop(&mut self) {
-        if !self.settled && self.policy.clients.close(&self.id) {
+        if !self.settled {
+            // An answer may have been taken in this very instant. Nobody
+            // will act on it, so the clients are told the same thing
+            // either way: the question is withdrawn.
+            self.policy.clients.close(&self.id);
             self.policy.resolved(&self.id, Resolution::Cancelled);
         }
     }
@@ -323,10 +338,16 @@ impl Policy for EnginePolicy {
             })
             .await;
             open.settled = true;
+            // The time is up. A request that is not open any more was
+            // answered in this instant, and the client was told its answer
+            // was taken: it is.
+            let answered = match answered {
+                None if !self.clients.close(&id) => answer.try_recv().ok(),
+                other => other,
+            };
 
             let Some(response) = answered else {
                 // Nobody answered in time: a denial, as the protocol says.
-                self.clients.close(&id);
                 self.resolved(&id, Resolution::TimedOut);
                 return Verdict::Deny {
                     note: Some(format!(
