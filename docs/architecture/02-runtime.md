@@ -54,6 +54,7 @@
 
 - A process-wide panic hook restores the terminal (leave raw mode, leave the alternate screen, show the cursor), writes a crash report with a backtrace to the log directory, and prints a one-line pointer to it.
 - Tool executions, extension calls and provider stream tasks run as separate tasks. A panic in one is caught at the join point and becomes an `Internal` error result for that item. The session continues.
+- A panic anywhere else in a turn ends that turn with an `Internal` error, and the session takes the next prompt ([03-agent-loop.md](03-agent-loop.md), "Interruption"). Built in step 7.
 - The session log is flushed at item boundaries, so a crash loses at most the item in progress. Resume repairs the tail (see [07-sessions-and-context.md](07-sessions-and-context.md)).
 
 ## Cancellation

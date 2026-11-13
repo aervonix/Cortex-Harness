@@ -397,34 +397,58 @@ fn an_interrupt_that_comes_as_the_turn_finishes_still_holds_the_queue() {
 fn an_answer_that_arrives_as_the_turn_is_interrupted_gives_the_call_one_result() {
     let world = World::new(
         "int_answer_in_flight",
-        [calls(&[("c1", "write", json!({"path": "a"}))])],
+        [calls(&[
+            ("c1", "write", json!({"path": "a"})),
+            // A call that goes on running after the interrupt keeps the
+            // round open, so that every report for the first call is read.
+            (
+                "c2",
+                "read",
+                json!({"path": "b", "gate": "slow", "stubborn": true}),
+            ),
+        ])],
     );
     let rig = Setup::new(&world).start(&world);
     rig.policy.decide_for("write", Decision::Ask);
     rig.policy.wait_at(&world.gates);
+    // The answer and the interrupt come in the same step: the task that
+    // asked interrupts the turn and then returns its answer, so the answer
+    // is on its way when the loop sees the interrupt and withdraws the
+    // question.
+    rig.policy.interrupt_as_it_answers(&rig.handle);
     world.run(async {
         rig.prompt("go");
+        world.log.has("start read b").await;
         rig.policy.questions(1).await;
         rig.events.seen("assistant", 1).await;
-        // The answer and the interrupt come in the same instant: the task
-        // that asked is woken first and its answer is on its way when the
-        // loop sees the interrupt and withdraws the question.
         world.gates.open("ask write");
-        let _ = rig.handle.interrupt();
+        // The first call has its result, and the late answer has arrived.
+        rig.events.seen("result:write:denied", 1).await;
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        world.gates.open("slow");
         rig.events.turns(1).await;
     });
     assert_interrupted(&rig);
     let results = results(&rig);
-    assert_eq!(results.len(), 1, "one call, one result");
-    assert_eq!(results[0].outcome, ToolOutcome::Denied);
-    assert!(world.log.lines().is_empty(), "the write did not run");
+    let outcomes: Vec<(&str, &ToolOutcome)> = results
+        .iter()
+        .map(|result| (result.call_id.as_str(), &result.outcome))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [("c1", &ToolOutcome::Denied), ("c2", &ToolOutcome::Success)],
+        "one result each"
+    );
+    assert_eq!(world.log.count("start write a"), 0, "the write did not run");
     let shown = rig
         .events
         .labels()
         .iter()
         .filter(|label| label.starts_with("result:"))
         .count();
-    assert_eq!(shown, 1, "and front ends saw it end once");
+    assert_eq!(shown, 2, "and front ends saw each end once");
     assert_the_next_request_is_accepted(&world, &rig);
 }
 

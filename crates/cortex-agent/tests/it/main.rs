@@ -524,6 +524,9 @@ pub struct ScriptedPolicy {
     answers: Mutex<BTreeMap<String, VecDeque<Verdict>>>,
     /// The calls it was shown to decide, by their plan's summary, in order.
     decided: Mutex<Vec<String>>,
+    /// A session to interrupt at the moment a question is answered, so
+    /// that the answer is on its way when the loop sees the interrupt.
+    interrupts: Mutex<Option<SessionHandle>>,
     /// The tools whose question, or whose decision, panics.
     panics_asked: Mutex<Vec<String>>,
     panics_deciding: Mutex<Vec<String>>,
@@ -557,6 +560,11 @@ impl ScriptedPolicy {
 
     pub fn asked(&self) -> Vec<String> {
         lock(&self.asked).clone()
+    }
+
+    /// Interrupts `session` in the same step as the next answer is given.
+    pub fn interrupt_as_it_answers(&self, session: &SessionHandle) {
+        *lock(&self.interrupts) = Some(session.clone());
     }
 
     /// Makes the question about `tool` panic.
@@ -649,6 +657,9 @@ impl Policy for ScriptedPolicy {
                 gate.opened().await;
             }
             open.summary = None;
+            if let Some(session) = lock(&self.interrupts).take() {
+                let _ = session.interrupt();
+            }
             lock(&self.answers)
                 .get_mut(&tool)
                 .and_then(VecDeque::pop_front)
