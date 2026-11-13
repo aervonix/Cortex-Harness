@@ -407,6 +407,53 @@ fn the_users_configuration_file_is_closed_wherever_it_is_kept() {
     assert!(!kept.contains("unrestricted"), "{kept}");
 }
 
+/// A configuration file that is a link (kept in a dotfiles repository) is
+/// closed where it leads too: a read or a write of either path reaches
+/// the same file. Found by the second look of the independent review of
+/// the fixes to step 13a.
+#[cfg(unix)]
+#[test]
+fn a_configuration_file_that_is_a_link_is_closed_where_it_leads() {
+    let world = World::new("config_link", []);
+    let config = world.dirs().user_config.unwrap();
+    let real = world.dir.join("dotfiles").join("cortex.toml");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::rename(&config, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &config).unwrap();
+    let real_path = real.to_str().unwrap();
+    world
+        .provider
+        .push(calls(&[("c1", "read", json!({"path": real_path}))]));
+    world.provider.push(calls(&[(
+        "c2",
+        "write",
+        json!({"path": real_path, "content": "[permissions]\nmode = \"unrestricted\"\n"}),
+    )]));
+    world.provider.push(says("Done."));
+    let core = world.core();
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            ClientInfo::user(),
+            SessionSettings {
+                level: Some(cortex_protocol::lease::Level::Unrestricted),
+                ..SessionSettings::default()
+            },
+        )
+        .await
+        .unwrap();
+        let asked = front.turn_allowing("raise your own level").await;
+        assert!(asked.is_empty(), "the configuration file was asked about");
+        for (tool, outcome, text) in front.results() {
+            assert_eq!(outcome, "denied", "{tool}: {text}");
+        }
+        front.close().await;
+    });
+    let kept = std::fs::read_to_string(&real).unwrap();
+    assert!(!kept.contains("unrestricted"), "{kept}");
+}
+
 /// The configuration directory reached through a link is protected as
 /// where it really is.
 #[cfg(unix)]

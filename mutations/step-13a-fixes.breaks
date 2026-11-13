@@ -352,13 +352,36 @@ caught-by:
     cortex-core::it settings::a_supervisor_cannot_start_a_session_above_the_level_it_could_set
 
 [break] user-configuration-file-left-open
-rule: The user's configuration file is closed to reading and writing wherever `CORTEX_CONFIG` puts it.
+rule: The user's configuration file is closed to reading and writing wherever `CORTEX_CONFIG` puts it. It is closed as named and where it leads, which for a file that is not a link are one path, so the break takes both out.
 file: crates/cortex-core/src/assemble.rs
 in: engine_parts
 find:
-    if let Some(file) = dirs.user_config.as_deref().and_then(resolve_dir) {
-        protected = protected.closed(file);
+    if let Some(file) = dirs.user_config.as_deref() {
+        if let Some(named) = resolve_dir(file) {
+            protected = protected.closed(named);
+        }
+        if let Some(target) = std::fs::canonicalize(file)
+            .ok()
+            .and_then(|target| AbsPath::from_os(&target).ok())
+        {
+            protected = protected.closed(target);
+        }
     }
 replace:
 caught-by:
     cortex-core::it start::the_users_configuration_file_is_closed_wherever_it_is_kept
+
+[break] linked-configuration-file-open-where-it-leads
+rule: A configuration file that is a link is closed where it leads too.
+file: crates/cortex-core/src/assemble.rs
+in: engine_parts
+find:
+    if let Some(target) = std::fs::canonicalize(file)
+        .ok()
+        .and_then(|target| AbsPath::from_os(&target).ok())
+    {
+        protected = protected.closed(target);
+    }
+replace:
+caught-by:
+    cortex-core::it start::a_configuration_file_that_is_a_link_is_closed_where_it_leads
