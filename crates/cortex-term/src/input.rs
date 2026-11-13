@@ -178,7 +178,9 @@ pub enum Event {
     /// A key was pressed, or repeated.
     Key(Key),
     /// Text was pasted, with line breaks as `\n`. Control characters are
-    /// kept: whoever shows it sanitises it like any other content.
+    /// kept: whoever shows it sanitises it like any other content. A paste
+    /// of more than 4 MiB arrives as several of these, one after another,
+    /// with nothing between them: append them until something else comes.
     Paste(String),
     /// The terminal window gained (`true`) or lost focus.
     Focus(bool),
@@ -410,10 +412,25 @@ const PASTE_PIECE: usize = 1 << 22;
 /// The front of a long paste as text, leaving in `paste` what may be the
 /// first half of a character or of a line break.
 fn paste_piece(paste: &mut Vec<u8>) -> String {
-    let mut cut = match std::str::from_utf8(paste) {
-        Ok(_) => paste.len(),
-        Err(error) => error.valid_up_to().max(paste.len().saturating_sub(3)),
-    };
+    // A character cut at the end starts in the last three bytes.
+    let mut cut = paste.len();
+    for back in 1..=3.min(paste.len()) {
+        let index = paste.len() - back;
+        let byte = paste[index];
+        if byte & 0xc0 == 0x80 {
+            continue;
+        }
+        let length = match byte {
+            0xc0..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf7 => 4,
+            _ => 1,
+        };
+        if length > back {
+            cut = index;
+        }
+        break;
+    }
     if cut > 0 && paste[cut - 1] == b'\r' {
         cut -= 1;
     }
@@ -1108,6 +1125,39 @@ mod tests {
             events.last(),
             Some(&Event::Key(Key::plain(KeyCode::Char('x'))))
         );
+    }
+
+    #[test]
+    fn a_piece_of_a_paste_never_ends_inside_a_character() {
+        for tail in ["😀", "é", "漢", "a\r"] {
+            // An invalid byte early on does not move the cut.
+            let mut paste = b"x\xffy ".to_vec();
+            paste.extend_from_slice(tail.as_bytes());
+            let whole = paste.clone();
+            for keep in 1..tail.len() {
+                let mut piece = whole[..whole.len() - keep].to_vec();
+                let text = paste_piece(&mut piece);
+                assert!(
+                    !text.ends_with('\u{fffd}'),
+                    "{tail:?} less {keep}: {text:?}"
+                );
+                assert_eq!(
+                    [text.replace('\u{fffd}', "\u{ff}").as_bytes(), &piece]
+                        .concat()
+                        .len()
+                        - usize::from(text.contains('\u{fffd}')),
+                    whole.len() - keep,
+                    "{tail:?} less {keep}"
+                );
+            }
+            let text = paste_piece(&mut paste);
+            if tail == "a\r" {
+                assert_eq!(paste, b"\r");
+            } else {
+                assert!(text.ends_with(tail), "{text:?}");
+                assert!(paste.is_empty());
+            }
+        }
     }
 
     #[test]

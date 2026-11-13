@@ -157,9 +157,17 @@ pub(crate) fn enter() -> io::Result<()> {
 /// Puts the modes and code pages back without writing anything. Safe to
 /// call more than once.
 pub(crate) fn leave() {
-    if ACTIVE.swap(false, Ordering::SeqCst) {
+    // Marked off only once the modes are back: a control event in between
+    // finds the console still the program's, and puts it back itself.
+    if ACTIVE.load(Ordering::SeqCst) {
         restore_modes();
     }
+    ACTIVE.store(false, Ordering::SeqCst);
+}
+
+/// Whether the console is in the program's modes.
+pub(crate) fn active() -> bool {
+    ACTIVE.load(Ordering::SeqCst)
 }
 
 fn restore_modes() {

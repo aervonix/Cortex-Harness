@@ -49,6 +49,9 @@ static RESIZED: AtomicBool = AtomicBool::new(false);
 static RESUMED: AtomicBool = AtomicBool::new(false);
 /// Set by a waker.
 static WOKEN: AtomicBool = AtomicBool::new(false);
+/// Set when the program is putting the terminal back for good: a
+/// suspension that ends after it does not turn raw mode on again.
+static LEAVING: AtomicBool = AtomicBool::new(false);
 /// The handlers that were in place before ours, put back on leaving.
 static PREVIOUS: Mutex<Vec<(libc::c_int, libc::sigaction)>> = Mutex::new(Vec::new());
 
@@ -91,6 +94,7 @@ pub(crate) fn enter() -> io::Result<()> {
     install_handlers()?;
     // SAFETY: `raw` is a complete `termios` made from the terminal's own.
     check(unsafe { libc::tcsetattr(STDIN, libc::TCSADRAIN, &raw const raw) })?;
+    LEAVING.store(false, Ordering::SeqCst);
     ACTIVE.store(true, Ordering::SeqCst);
     Ok(())
 }
@@ -104,6 +108,11 @@ pub(crate) fn leave() {
         // SAFETY: `action` is what `sigaction` gave back for this signal.
         unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
     }
+}
+
+/// Whether raw mode is on: the terminal is the program's.
+pub(crate) fn active() -> bool {
+    ACTIVE.load(Ordering::SeqCst)
 }
 
 /// Writes the restore sequence and puts the original settings back, if
@@ -127,6 +136,8 @@ pub(crate) fn emergency() {
 /// Raw mode is marked off only once the settings are back: a signal that
 /// comes in between still finds it on, and puts the terminal back itself.
 fn restore_modes() {
+    // A Ctrl+Z from here on must not put raw mode back when it continues.
+    LEAVING.store(true, Ordering::SeqCst);
     if ACTIVE.load(Ordering::SeqCst)
         && let Some(original) = ORIGINAL.get()
     {
@@ -203,36 +214,48 @@ extern "C" fn on_stop(_: libc::c_int) {
         libc::sigaddset(set.as_mut_ptr(), libc::SIGTSTP);
         libc::sigprocmask(libc::SIG_UNBLOCK, set.as_ptr(), std::ptr::null_mut());
         libc::raise(libc::SIGTSTP);
-        // Continued.
-        let handler: extern "C" fn(libc::c_int) = on_stop;
-        libc::signal(libc::SIGTSTP, handler as libc::sighandler_t);
-        if was_active && let Some(raw) = RAW.get() {
-            libc::tcsetattr(STDIN, libc::TCSADRAIN, raw);
+        // Continued: the handler back with its mask, then raw mode, marked
+        // on first so that a signal in between puts the terminal back.
+        let action = action(on_stop);
+        libc::sigaction(libc::SIGTSTP, &raw const action, std::ptr::null_mut());
+        if was_active
+            && !LEAVING.load(Ordering::SeqCst)
+            && let Some(raw) = RAW.get()
+        {
             ACTIVE.store(true, Ordering::SeqCst);
+            libc::tcsetattr(STDIN, libc::TCSADRAIN, raw);
         }
     }
     RESUMED.store(true, Ordering::SeqCst);
     poke();
 }
 
-fn install(signal: libc::c_int, handler: extern "C" fn(libc::c_int)) -> io::Result<()> {
-    let mut action = MaybeUninit::<libc::sigaction>::zeroed();
-    let mut old = MaybeUninit::<libc::sigaction>::zeroed();
-    // SAFETY: a zeroed `sigaction` is valid; the handler and the flags are
-    // set before it is used, and `old` is filled by the call.
+/// The action that runs `handler`, with every other signal it shares the
+/// restore with blocked while it runs: a second signal cannot find the
+/// terminal half put back and end the process before the first has
+/// finished. Async-signal-safe: `sigemptyset` and `sigaddset` only.
+fn action(handler: extern "C" fn(libc::c_int)) -> libc::sigaction {
+    // SAFETY: a zeroed `sigaction` is valid plain data; the handler, the
+    // flags and the mask are set before it is used.
     unsafe {
-        let pointer = action.as_mut_ptr();
-        (*pointer).sa_sigaction = handler as libc::sighandler_t;
-        (*pointer).sa_flags = libc::SA_RESTART;
-        // While one handler runs, every other signal it shares the restore
-        // with waits: a second signal cannot find the terminal half put
-        // back and end the process before the first has finished.
-        let mask = &raw mut (*pointer).sa_mask;
+        let mut action = MaybeUninit::<libc::sigaction>::zeroed().assume_init();
+        action.sa_sigaction = handler as libc::sighandler_t;
+        action.sa_flags = libc::SA_RESTART;
+        let mask = &raw mut action.sa_mask;
         libc::sigemptyset(mask);
         for other in ENDING.into_iter().chain([libc::SIGTSTP, libc::SIGWINCH]) {
             libc::sigaddset(mask, other);
         }
-        check(libc::sigaction(signal, pointer, old.as_mut_ptr()))?;
+        action
+    }
+}
+
+fn install(signal: libc::c_int, handler: extern "C" fn(libc::c_int)) -> io::Result<()> {
+    let action = action(handler);
+    let mut old = MaybeUninit::<libc::sigaction>::zeroed();
+    // SAFETY: `action` is complete, and `old` is filled by the call.
+    unsafe {
+        check(libc::sigaction(signal, &raw const action, old.as_mut_ptr()))?;
         PREVIOUS
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -285,6 +308,16 @@ pub(crate) fn write(bytes: &[u8]) -> io::Result<()> {
     if !ACTIVE.load(Ordering::SeqCst) {
         return Err(io::Error::other("the terminal has been put back"));
     }
+    let written = write_all(bytes);
+    // Put back while this frame was being written, from another thread:
+    // the frame may have landed after the restore, so it goes again.
+    if !ACTIVE.load(Ordering::SeqCst) {
+        let _ = write_all(restore_sequence());
+    }
+    written
+}
+
+fn write_all(bytes: &[u8]) -> io::Result<()> {
     let mut rest = bytes;
     while !rest.is_empty() {
         // SAFETY: the pointer and length are those of a live slice.
