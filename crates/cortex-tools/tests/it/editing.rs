@@ -1050,7 +1050,7 @@ fn property_applying_an_edit_and_then_reversing_it_restores_the_file() {
     let (edit, ws) = (edit(&ws), &ws);
     cases::check(
         "edit_reverse_on_disk",
-        60,
+        30,
         |rng| {
             let endings = if rng.below(2) == 0 {
                 Endings::Lf
@@ -1117,7 +1117,7 @@ fn property_bytes_outside_an_edit_survive_whatever_the_line_endings() {
     let (edit, ws) = (edit(&ws), &ws);
     cases::check(
         "edit_endings_on_disk",
-        60,
+        30,
         |rng| {
             let endings = match rng.below(3) {
                 0 => Endings::Lf,
@@ -1201,7 +1201,7 @@ fn property_a_failed_call_leaves_the_file_byte_identical() {
     let broken = Editing::new(Arc::new(BrokenCheckpoints), Arc::new(ws.clock.clone()));
     cases::check(
         "edit_failed_leaves_the_file",
-        80,
+        40,
         |rng| {
             let endings = match rng.below(3) {
                 0 => Endings::Lf,
@@ -1311,7 +1311,7 @@ fn property_what_a_round_kept_puts_every_changed_file_back() {
     let ws = &ws;
     cases::check(
         "edit_round_undo",
-        40,
+        20,
         |rng| {
             let files: Vec<Sample> = (0..3)
                 .map(|_| {

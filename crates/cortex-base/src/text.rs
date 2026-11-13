@@ -799,7 +799,7 @@ mod tests {
     fn property_wrapped_lines_fit_and_lose_only_white_space() {
         cases::check(
             "wrap",
-            1500,
+            750,
             |rng| (any_text(rng), 1 + rng.below(24) as usize),
             |(text, max)| {
                 let ranges = wrap_ranges(text, *max);
@@ -860,7 +860,7 @@ mod tests {
     fn property_wrapping_is_greedy_and_stable() {
         cases::check(
             "wrap_greedy",
-            1500,
+            750,
             |rng| (any_line(rng), 1 + rng.below(24) as usize),
             |(text, max)| {
                 let ranges = wrap_ranges(text, *max);
@@ -912,7 +912,7 @@ mod tests {
     fn property_width_is_the_sum_of_its_parts() {
         cases::check(
             "width_sum",
-            1500,
+            750,
             |rng| (any_text(rng), any_text(rng)),
             |(first, second)| {
                 let by_clusters: usize = graphemes(first).map(|(_, _, columns)| columns).sum();

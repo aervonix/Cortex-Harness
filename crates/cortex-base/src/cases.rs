@@ -85,6 +85,18 @@ fn number_from_env(variable: &str) -> Option<u64> {
     }
 }
 
+/// Whether this is a run with the property cases scaled up: the nightly
+/// run, which has the time for what a pull request only samples.
+///
+/// A test that checks a small space exhaustively, and takes a noticeable
+/// part of a second doing it, checks a sample of the space on a pull
+/// request and all of it when this holds. It must say which it did in its
+/// own comment, and the sample must reach every kind of case.
+#[must_use]
+pub(crate) fn exhaustive() -> bool {
+    number_from_env(SCALE).is_some_and(|scale| scale > 1)
+}
+
 /// Picks one element of a non-empty slice.
 pub(crate) fn pick<'a, T>(rng: &mut SeededRng, items: &'a [T]) -> &'a T {
     &items[rng.below(items.len() as u64) as usize]

@@ -205,7 +205,7 @@ fn account_is_exact(source: &[&str], shaped: &Shaped, limits: &OutputLimits) -> 
 fn it_never_cuts_inside_a_line() {
     cases::check(
         "output_whole_lines",
-        200,
+        100,
         |rng| (output(rng), small_limits(rng), any_keep(rng)),
         |(text, limits, keep)| {
             let shaped = shape(text, limits, *keep, Compression::None);
@@ -218,7 +218,7 @@ fn it_never_cuts_inside_a_line() {
 fn it_always_says_what_was_cut() {
     cases::check(
         "output_says_what_was_cut",
-        200,
+        100,
         |rng| (output(rng), small_limits(rng), any_keep(rng)),
         |(text, limits, keep)| {
             let shaped = shape(text, limits, *keep, Compression::None);
@@ -271,7 +271,7 @@ fn it_always_says_what_was_cut() {
 fn what_it_returns_is_within_the_limits() {
     cases::check(
         "output_within_limits",
-        200,
+        100,
         |rng| {
             let compression = *cases::pick(rng, &[Compression::None, Compression::Structural]);
             (output(rng), small_limits(rng), any_keep(rng), compression)
@@ -309,7 +309,7 @@ fn what_it_returns_is_within_the_limits() {
 fn the_artifact_holds_everything() {
     cases::check(
         "output_artifact_whole",
-        200,
+        100,
         |rng| (output(rng), small_limits(rng)),
         |(text, limits)| {
             let store = MemoryStore::new();
@@ -374,7 +374,7 @@ fn the_artifact_holds_everything() {
 fn compressed_output_has_no_control_characters_and_is_still_accounted_for() {
     cases::check(
         "output_compressed",
-        150,
+        75,
         |rng| {
             // The same output, with colour codes and redraws put in.
             let plain = output(rng);

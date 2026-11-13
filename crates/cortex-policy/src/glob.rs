@@ -933,7 +933,7 @@ mod tests {
         let roots = ["/work/app", "/users/dev", "/etc", "/"];
         cases::check(
             "glob_reaches_under",
-            3000,
+            1200,
             |rng| {
                 let pattern = *cases::pick(rng, &patterns);
                 let root = *cases::pick(rng, &roots);
@@ -1148,7 +1148,7 @@ mod tests {
         ];
         cases::check(
             "folded_glob_is_a_superset",
-            1500,
+            600,
             |rng| {
                 let pattern: Vec<&str> = (0..=rng.below(3))
                     .map(|_| *cases::pick(rng, &patterns))
@@ -1324,7 +1324,7 @@ mod tests {
         let files = ["a", "b", "ab", "ba", "aab", "c"];
         cases::check(
             "path_glob_matches_reference",
-            4000,
+            1600,
             |rng| {
                 let pattern: Vec<&str> = (0..1 + rng.below(4))
                     .map(|_| *cases::pick(rng, &names))

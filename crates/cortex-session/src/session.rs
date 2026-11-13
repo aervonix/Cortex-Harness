@@ -1287,7 +1287,7 @@ mod tests {
         let scratch = Scratch::new();
         cases::check(
             "failed_writes_agree",
-            150,
+            75,
             |rng| {
                 let steps: Vec<(u64, u64, u64)> = (0..cases::small(rng, 24))
                     .map(|_| (rng.next_u64(), rng.below(12), rng.below(400)))

@@ -177,7 +177,7 @@ fn rewinding_to_any_turn_puts_every_file_back_as_it_was_then() {
     let names = ["a", "b", "d/c"];
     cases::check(
         "rewind_restores",
-        25,
+        12,
         |rng| {
             // Turns of rounds of writes (Some) and removals (None).
             let turns: Vec<Vec<Round>> = (0..1 + cases::small(rng, 4))

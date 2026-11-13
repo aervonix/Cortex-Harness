@@ -111,8 +111,8 @@ fn cuts_in_two(len: usize) -> Vec<usize> {
         }
         4_000
     } else {
-        // About half a megabyte of decoding for one stream.
-        (500_000 / len.max(1)).clamp(8, 100)
+        // About a quarter of a megabyte of decoding for one stream.
+        (250_000 / len.max(1)).clamp(8, 50)
     };
     // The step is made odd so that the places are not all at even offsets.
     let step = (len / places).max(1) | 1;

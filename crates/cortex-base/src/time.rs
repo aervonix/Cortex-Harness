@@ -536,9 +536,29 @@ mod tests {
     fn every_day_of_the_calendar_converts_both_ways() {
         // Every day from 0000-01-01 to 9999-12-31, walked in order: the day
         // number must rise by one, and the date must follow the calendar.
-        let (mut year, mut month, mut day) = (0i64, 1i64, 1i64);
-        let mut number = days_from_civil(0, 1, 1);
-        assert_eq!(number * SECS_PER_DAY, MIN_SECS);
+        //
+        // That is 3.6 million days. On a pull request the walk is of the
+        // eight centuries from 1600 to 2399, which is two whole cycles of
+        // the calendar's rules and every date the harness will meet, and
+        // the two ends of the range are checked by themselves. The nightly
+        // run walks all of it.
+        assert_eq!(days_from_civil(0, 1, 1) * SECS_PER_DAY, MIN_SECS);
+        assert_eq!(civil_from_days(days_from_civil(0, 1, 1)), (0, 1, 1));
+        assert_eq!(
+            (days_from_civil(9999, 12, 31) + 1) * SECS_PER_DAY - 1,
+            MAX_SECS
+        );
+        assert_eq!(
+            civil_from_days(days_from_civil(9999, 12, 31)),
+            (9999, 12, 31)
+        );
+        let (first, last) = if cases::exhaustive() {
+            (0i64, 9999i64)
+        } else {
+            (1600, 2399)
+        };
+        let (mut year, mut month, mut day) = (first, 1i64, 1i64);
+        let mut number = days_from_civil(first, 1, 1);
         loop {
             assert_eq!(days_from_civil(year, month, day), number);
             assert_eq!(civil_from_days(number), (year, month, day));
@@ -549,14 +569,14 @@ mod tests {
                 if month > 12 {
                     month = 1;
                     year += 1;
-                    if year > 9999 {
+                    if year > last {
                         break;
                     }
                 }
             }
             number += 1;
         }
-        assert_eq!((number + 1) * SECS_PER_DAY - 1, MAX_SECS);
+        assert_eq!(number, days_from_civil(last, 12, 31));
     }
 
     #[test]

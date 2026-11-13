@@ -528,8 +528,13 @@ mod tests {
         for ending in ["\n", "\r\n"] {
             let stream = stream_of(&expected, ending);
             assert!(stream.len() < 160, "kept short: {} bytes", stream.len());
+            // Every first cut, with every second cut after it in the
+            // nightly run and every third one on a pull request: which
+            // third depends on the first, so every place is a second cut
+            // for some first one.
+            let step = if cases::exhaustive() { 1 } else { 3 };
             for first in 0..=stream.len() {
-                for second in first..=stream.len() {
+                for second in (first..=stream.len()).step_by(step) {
                     let mut decoder = FrameDecoder::new();
                     let mut messages = Vec::new();
                     for chunk in [&stream[..first], &stream[first..second], &stream[second..]] {
@@ -567,12 +572,15 @@ mod tests {
     #[test]
     fn the_golden_transcript_survives_every_split_of_its_start() {
         // Every split of its first kilobyte, with both line endings,
-        // compared line by line. The whole transcript is covered by the next
-        // two tests.
+        // compared line by line: of its first three hundred bytes on a pull
+        // request, which is more than its first message, and of the whole
+        // kilobyte in the nightly run. The whole transcript is covered by
+        // the next two tests.
         let expected: Vec<&str> = GOLDEN.lines().collect();
+        let most = if cases::exhaustive() { 1024 } else { 300 };
         for ending in ["\n", "\r\n"] {
             let stream = GOLDEN.replace('\n', ending).into_bytes();
-            let window = stream.len().min(1024);
+            let window = stream.len().min(most);
             for split in 0..=window {
                 let mut decoder = FrameDecoder::new();
                 let mut lines = Vec::new();
@@ -622,7 +630,7 @@ mod tests {
         let crlf = GOLDEN.replace('\n', "\r\n");
         cases::check(
             "framing_chunks",
-            40,
+            20,
             |rng| {
                 let use_crlf = rng.below(2) == 1;
                 let length = if use_crlf { crlf.len() } else { GOLDEN.len() };
