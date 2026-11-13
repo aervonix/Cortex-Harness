@@ -211,7 +211,7 @@ caught-by:
 rule: No feature of another crate passes a `test-hooks` feature on.
 file: xtask/src/rules/crate_graph.rs
 in: check_test_hooks
-find: if turned_on == TEST_HOOKS || passed_on
-replace: if turned_on == TEST_HOOKS
+find: if turned_on == test_only || passed_on
+replace: if turned_on == test_only
 caught-by:
     rules::crate_graph::tests::no_feature_turns_test_hooks_on

@@ -1,0 +1,213 @@
+# Step 20, the terminal layer: its rules broken one at a time, with the
+# tests that must fail. Written with the code.
+#
+# Two rules live in Windows-only code, which this command cannot break where
+# it runs (a break in code the build does not compile is never caught):
+# virtual-terminal processing turned on at start, and the console's modes
+# put back on every way out (`crates/cortex-term/src/sys/windows.rs`). They
+# were broken by hand on a Windows runner, each on a scratch branch, and the
+# system tests of `cortex-term` failed; docs/steps/20/answered.md has the
+# runs.
+
+[break] a-frame-in-two-writes
+rule: A frame is handed to the terminal in one write.
+file: crates/cortex-term/src/inline.rs
+in: Inline::draw
+find: let written = sink.write_frame(&out);
+replace:
+    let half = out.len() / 2;
+    let written = sink
+        .write_frame(&out[..half])
+        .and_then(|()| sink.write_frame(&out[half..]));
+caught-by:
+    presenter::every_frame_is_one_synchronized_write_that_clears_nothing_and_stays_in_the_live_region
+    presenter::commits_go_into_the_scrollback_in_order_through_height_changes
+
+[break] no-synchronized-update-brackets
+rule: Every frame is wrapped in a synchronized update when the terminal has them.
+file: crates/cortex-term/src/inline.rs
+in: Inline::draw
+find: out.extend_from_slice(SYNC_BEGIN);
+replace:
+caught-by:
+    presenter::every_frame_is_one_synchronized_write_that_clears_nothing_and_stays_in_the_live_region
+    inline::tests::the_first_frame_draws_everything_and_erases_below
+
+[break] clear-before-redraw
+rule: Nothing is cleared and then drawn again: rows are written over in place.
+file: crates/cortex-term/src/inline.rs
+in: Inline::draw
+find: up(&mut out, at);
+replace:
+    up(&mut out, at);
+    out.extend_from_slice(ERASE_BELOW);
+caught-by:
+    presenter::every_frame_is_one_synchronized_write_that_clears_nothing_and_stays_in_the_live_region
+
+[break] a-row-above-the-live-region-touched
+rule: Nothing above the live region is touched.
+file: crates/cortex-term/src/inline.rs
+in: Inline::draw
+find: up(&mut out, at);
+replace: up(&mut out, at + 1);
+caught-by:
+    presenter::every_frame_is_one_synchronized_write_that_clears_nothing_and_stays_in_the_live_region
+
+[break] old-rows-below-left-behind
+rule: When the live region shrinks, what is left of it below is erased.
+file: crates/cortex-term/src/inline.rs
+in: Inline::draw
+find: if self.stale || self.live.len() > frame.commit.len() + rows.len()
+replace: if self.stale
+caught-by:
+    presenter::every_frame_is_one_synchronized_write_that_clears_nothing_and_stays_in_the_live_region
+    inline::tests::an_empty_live_region_after_commits_erases_what_was_left
+
+[break] a-row-reaches-the-last-column
+rule: No row reaches the last column, where a terminal would wait to wrap and an erase would take a character.
+file: crates/cortex-term/src/inline.rs
+in: Inline::line_width
+find: self.cols.saturating_sub(1).max(1)
+replace: self.cols
+caught-by:
+    inline::tests::no_row_reaches_the_last_column
+
+[break] an-unchanged-frame-is-drawn
+rule: A frame that would change nothing on screen is skipped.
+file: crates/cortex-term/src/inline.rs
+in: Inline::draw
+find: && cursor == self.cursor
+replace: && cursor == self.cursor && false
+caught-by:
+    inline::tests::an_unchanged_frame_is_skipped_and_a_changed_row_is_written_alone
+
+[break] content-escape-not-sanitised
+rule: No control character from content reaches the terminal: the renderer shows each as a symbol.
+file: crates/cortex-term/src/render.rs
+in: push_grapheme
+find: let shown = visible(c).unwrap_or(c);
+replace: let shown = c;
+caught-by:
+    render::tests::no_control_character_from_content_reaches_the_terminal
+    presenter::content_cannot_write_an_escape_sequence
+
+[break] sanitize-keeps-escape
+rule: The sanitising function makes every control character but the line feed and the tab visible.
+file: crates/cortex-term/src/sanitize.rs
+in: sanitize
+find: '\n' | '\t' => out.push(c),
+replace: '\n' | '\t' | '\u{1b}' => out.push(c),
+caught-by:
+    sanitize::tests::every_control_character_but_line_feed_and_tab_is_made_visible
+
+[break] split-utf8-decoded-early
+rule: A UTF-8 character split between two reads waits for its end and decodes as one character.
+file: crates/cortex-term/src/input.rs
+in: utf8
+find:
+    if bytes.len() < length {
+        return None;
+    }
+replace:
+    if bytes.len() < length {
+        return Some(('\u{fffd}', bytes.len()));
+    }
+caught-by:
+    input::tests::every_split_decodes_the_same
+
+[break] split-escape-decoded-early
+rule: An escape sequence split between two reads waits for its end and decodes as one key.
+file: crates/cortex-term/src/input.rs
+in: escape
+find: None => Step::Incomplete
+replace: None => Step::Done(2, None)
+caught-by:
+    input::tests::every_split_decodes_the_same
+
+[break] key-release-kept
+rule: A key release is dropped.
+file: crates/cortex-term/src/input.rs
+in: kitty
+find: if kind == 3
+replace: if kind == 99
+caught-by:
+    input::tests::releases_and_unknown_sequences_are_dropped_whole
+
+[break] raw-mode-not-restored-on-panic
+rule: A panic puts the terminal back before its message is printed.
+file: crates/cortex-term/src/terminal.rs
+in: Terminal::enter
+find: sys::emergency();
+replace:
+caught-by:
+    system::sys_the_terminal_is_put_back_after_a_panic
+
+[break] raw-mode-not-restored-on-a-signal
+rule: A signal that ends the program puts the terminal back first.
+file: crates/cortex-term/src/sys/unix.rs
+in: on_ending
+find: emergency();
+replace:
+caught-by:
+    system::sys_the_terminal_is_put_back_after_a_signal_or_console_event
+
+[break] emergency-leaves-raw-mode
+rule: Putting the terminal back after a panic or a signal restores its original settings, not only its modes.
+file: crates/cortex-term/src/sys/unix.rs
+in: emergency
+find: unsafe { libc::tcsetattr(STDIN, libc::TCSADRAIN, original) };
+replace:
+caught-by:
+    system::sys_the_terminal_is_put_back_after_a_signal_or_console_event
+
+[break] keyboard-protocol-left-on
+rule: The enhanced keyboard protocol, once turned on, is turned off on the way out.
+file: crates/cortex-term/src/terminal.rs
+in: Terminal::end
+find: end.extend_from_slice(KEYBOARD_OFF);
+replace:
+caught-by:
+    terminal::tests::replies_update_the_capabilities_and_turn_on_the_keyboard_protocol
+
+[break] an-override-loses-to-a-reply
+rule: A setting's override wins over what the terminal replies.
+file: crates/cortex-term/src/caps.rs
+in: Capabilities::apply
+find: self.enforce();
+replace:
+caught-by:
+    caps::tests::replies_upgrade_and_overrides_win
+    terminal::tests::a_setting_keeps_the_keyboard_protocol_off
+
+[break] a-key-waits-for-the-frame-timer
+rule: A key is drawn at once; it never waits for the frame timer.
+file: crates/cortex-term/src/schedule.rs
+in: Scheduler::wake
+find:
+    if self.input {
+        return Wake::Now;
+    }
+replace:
+caught-by:
+    schedule::tests::a_key_is_drawn_at_once_even_right_after_a_frame
+
+[break] streamed-frames-not-capped
+rule: Streamed content is drawn at most 60 times a second.
+file: crates/cortex-term/src/schedule.rs
+in: Scheduler::wake
+find: Some(last) => last + self.interval,
+replace: Some(_) => now,
+caught-by:
+    schedule::tests::streamed_content_is_drawn_at_most_sixty_times_a_second
+
+[break] the-test-kit-may-not-turn-on-pty
+rule: Only tests and the test kit, which is only ever a dev-dependency, turn on cortex-term's pty feature.
+file: xtask/src/rules/crate_graph.rs
+in: check_test_hooks
+find:
+    if package.name == TESTKIT {
+        return;
+    }
+replace:
+caught-by:
+    rules::crate_graph::tests::pseudo_terminals_are_turned_on_by_tests_and_the_test_kit_only
