@@ -26,6 +26,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use cortex_base::CancelToken;
+use cortex_testkit::Gate;
 use cortex_testkit::children::{ChildSpec, until};
 use cortex_tools::process::{Runner, Sleep, Timer};
 use cortex_tools::{
@@ -310,8 +311,44 @@ impl Bench {
         self.run(serde_json::json!({ "command": command }))
     }
 
+    /// Runs a call that must end by itself, with nobody to end a wait for
+    /// it. If it has not ended within [`LIMIT`], every wait is let go and
+    /// the test fails saying which waits the runner was in: a hand-driven
+    /// timer otherwise turns a runner that waits for something that is
+    /// not there into a test that is stopped a minute later with nothing
+    /// to read. (That is how a Job Object that still counted a command
+    /// after its exit showed, one run in seven.)
     fn run_with(&self, arguments: Json, cancel: &CancelToken) -> Ran {
-        self.run_into(arguments, cancel, &CancelToken::new(), &Live::default())
+        let ended = Gate::new();
+        let watcher = {
+            let (ended, timer) = (ended.clone(), self.timer.clone());
+            std::thread::spawn(move || {
+                if ended.wait(LIMIT) {
+                    return None;
+                }
+                let waits = timer.running();
+                timer.release();
+                Some(waits)
+            })
+        };
+        let ran = self.run_into(arguments, cancel, &CancelToken::new(), &Live::default());
+        ended.open();
+        let stuck = match watcher.join() {
+            Ok(stuck) => stuck,
+            Err(panic) => std::panic::resume_unwind(panic),
+        };
+        if let Some(waits) = stuck {
+            panic!(
+                "the call did not end by itself within {LIMIT:?}. The runner was waiting \
+                 {waits:?} long, on a timer that only a test's director ends: beside the \
+                 time limit, a wait of {LINGER:?} is the grace for what a command left \
+                 running, and one of {:?} is for output that did not end. The result, \
+                 once the waits were let go:\n{}",
+                cortex_tools::process::SETTLE,
+                ran.text()
+            );
+        }
+        ran
     }
 
     fn run_into(

@@ -313,6 +313,7 @@ Three things on Windows are left as they are, and stated:
 - A stage that cannot be sent is passed over without its grace: there is no console to send a Ctrl-Break through when the harness has none.
 - **A signal never reaches a stranger.** On Linux a group's id is the command's process id, which the system may give away once the command has been reaped. So the command is waited for without being reaped, and reaped only after the last signal.
 - **The whole tree is killed when the call ends,** whatever way it ends. Long-lived background processes are not in the first release, and a process left running would be one that nothing could manage.
+- **What a command left running is found by asking, not by counting.** When the command has exited, the tree is asked what else of it is running: on Linux the members of its process group, on Windows the members of its Job Object, by process id, leaving out the command itself and any member that has exited. A Job Object goes on listing a process for a moment after its exit, and its own count of active processes includes it: read in that moment, the count said that a command which left nothing had left one process, itself, and the tool waited half a second for it (found on 2026-11-13, [steps/11/answered.md](../steps/11/answered.md)).
 
 **Output.**
 

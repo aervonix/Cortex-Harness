@@ -9,7 +9,7 @@
 //! | [`Tree::terminate`] | `SIGTERM` to the group | Not there: [`io::ErrorKind::Unsupported`] |
 //! | [`Tree::kill`] | `SIGKILL` to the group | The Job Object is terminated |
 //! | [`Tree::wait`] | Blocks until the command itself has exited | The same |
-//! | [`Tree::others_running`] | Counts the group's other members in the process table | Asks the Job Object |
+//! | [`Tree::others_running`] | Counts the group's other members in the process table | Asks the Job Object for its members, and leaves out the command and any that have exited |
 //! | [`Tree::end`], and dropping the last handle | Whatever is left of the tree is killed | The same |
 //!
 //! # What it promises, and what it does not
@@ -162,7 +162,10 @@ impl Tree {
     /// process on the machine, so for a command that is under a second
     /// old only the processes with a higher id than the command's are
     /// read, which is where its group's members are. On Windows it asks
-    /// the Job Object.
+    /// the Job Object for its members by process id, and counts the ones
+    /// that are not the command and have not exited: a job lists a process
+    /// for a moment after its exit, so its own count of active processes
+    /// says that a command which has just exited left itself running.
     pub fn others_running(&self) -> io::Result<usize> {
         self.inner.others_running()
     }
@@ -241,7 +244,49 @@ impl OutputStop {
     }
 }
 
+/// How many of a Job Object's members are processes the command left
+/// running: every member but the command itself and those that have
+/// already exited.
+///
+/// The job lists a process for a moment after it has exited, the command
+/// included, so neither a count of the members nor "the command has
+/// exited, so every member is another" can be trusted. It is here, and not
+/// with the Windows code that asks the job, so that it is built and tested
+/// on every system.
+#[cfg(any(windows, test))]
+fn others_among(members: &[u32], command: u32, has_exited: impl Fn(u32) -> bool) -> usize {
+    members
+        .iter()
+        .filter(|member| **member != command && !has_exited(**member))
+        .count()
+}
+
 /// The error of a call on a tree that has ended.
 fn ended() -> io::Error {
     io::Error::new(io::ErrorKind::NotFound, "the process tree has ended")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::others_among;
+
+    #[test]
+    fn the_command_itself_is_never_one_of_the_processes_it_left() {
+        // The job still lists the command in the moment after its exit,
+        // whether the system says it has exited or not.
+        assert_eq!(others_among(&[40], 40, |_| true), 0);
+        assert_eq!(others_among(&[40], 40, |_| false), 0);
+        assert_eq!(others_among(&[], 40, |_| false), 0);
+        // What it started and is still running is counted.
+        assert_eq!(others_among(&[40, 44, 48], 40, |_| false), 2);
+        assert_eq!(others_among(&[44], 40, |_| false), 1);
+    }
+
+    #[test]
+    fn a_member_that_has_exited_is_not_left_running() {
+        // A child that ended a moment before the command did is still
+        // listed too.
+        assert_eq!(others_among(&[40, 44, 48], 40, |member| member == 44), 1);
+        assert_eq!(others_among(&[44, 48], 40, |_| true), 0);
+    }
 }

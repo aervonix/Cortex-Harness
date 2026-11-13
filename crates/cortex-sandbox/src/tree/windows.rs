@@ -32,7 +32,9 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{
+    ERROR_MORE_DATA, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+};
 use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
@@ -40,17 +42,17 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 use windows_sys::Win32::System::IO::CancelIoEx;
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
-    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+    JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
+    SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, GetExitCodeProcess, INFINITE, OpenThread,
-    ResumeThread, THREAD_SUSPEND_RESUME, WaitForSingleObject,
+    CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, GetExitCodeProcess, INFINITE, OpenProcess,
+    OpenThread, PROCESS_SYNCHRONIZE, ResumeThread, THREAD_SUSPEND_RESUME, WaitForSingleObject,
 };
 
 use super::guard::Guard;
-use super::{Exit, ReadOutcome, ended};
+use super::{Exit, ReadOutcome, ended, others_among};
 
 /// The exit code of a process the harness killed.
 const KILLED: u32 = 1;
@@ -171,36 +173,79 @@ impl Inner {
         if *ended_now {
             return Err(ended());
         }
-        let size = u32::try_from(size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>())
-            .map_err(|_| io::Error::other("the accounting structure is too large"))?;
+        // The members are asked for by id, and not counted
+        // (`ActiveProcesses`): a job goes on counting a process for a
+        // moment after the process has exited. A count taken in that
+        // moment said that a command which had just exited, and left
+        // nothing, had left one process running: itself. So the command is
+        // left out by its id, and so is any member that has exited.
+        let members = self.members()?;
+        Ok(others_among(&members, self.pid, has_exited_by_id))
+    }
+
+    /// The process ids of the job's members: the command and everything it
+    /// started that the job still lists. A process that has just exited
+    /// may still be among them.
+    fn members(&self) -> io::Result<Vec<u32>> {
+        // The list is a header of two counts and then one id for each
+        // member. The buffer is made of `u64`s so that it is aligned for
+        // the header and for the ids, and is made larger until every
+        // member fits.
+        let header = size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() - size_of::<usize>();
+        let mut room = 32usize;
         loop {
-            // The job counts the command itself while it runs. Whether it
-            // does is asked on both sides of the count, and the count is
-            // taken again if the command exited in between.
-            let running_before = !self.has_exited();
-            // SAFETY: the structure is plain data (integers), for which
-            // all zeroes is a valid value.
-            let mut counts: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
-            // SAFETY: `self.job` is open, the class matches the structure,
-            // and the pointer and the size describe `counts`, which is
-            // writable for the length of the call. The last argument may
-            // be null: the size written is not wanted.
+            let bytes = header + room * size_of::<usize>();
+            let mut buffer = vec![0u64; bytes.div_ceil(size_of::<u64>())];
+            let size = u32::try_from(buffer.len() * size_of::<u64>())
+                .map_err(|_| io::Error::other("the list of a job's members is too large"))?;
+            // SAFETY: `self.job` is open, the class matches the structure
+            // the buffer is read as, and the pointer and the size describe
+            // `buffer`, which is writable and aligned for the structure
+            // for the length of the call. The last argument may be null.
             let asked = unsafe {
                 QueryInformationJobObject(
                     self.job.as_raw_handle(),
-                    JobObjectBasicAccountingInformation,
-                    (&raw mut counts).cast(),
+                    JobObjectBasicProcessIdList,
+                    buffer.as_mut_ptr().cast(),
                     size,
                     ptr::null_mut(),
                 )
             };
+            let list: *const JOBOBJECT_BASIC_PROCESS_ID_LIST = buffer.as_ptr().cast();
+            // SAFETY: the buffer is at least as large as the structure,
+            // aligned for it, and initialised (zeroes, or what the call
+            // wrote); the two counts are plain integers.
+            let (assigned, listed) = unsafe {
+                (
+                    (*list).NumberOfAssignedProcesses as usize,
+                    (*list).NumberOfProcessIdsInList as usize,
+                )
+            };
             if asked == 0 {
-                return Err(io::Error::last_os_error());
+                let error = io::Error::last_os_error();
+                // "More data": the job has more members than there was
+                // room for, and says how many.
+                if error.raw_os_error() == Some(ERROR_MORE_DATA.cast_signed()) && assigned > room {
+                    room = assigned + 16;
+                    continue;
+                }
+                return Err(error);
             }
-            if running_before == !self.has_exited() {
-                let active = usize::try_from(counts.ActiveProcesses).unwrap_or(usize::MAX);
-                return Ok(active.saturating_sub(usize::from(running_before)));
-            }
+            let listed = listed.min(room);
+            // SAFETY: the ids begin at the structure's last field and the
+            // buffer has room for `room` of them, of which the call wrote
+            // `listed`; they are plain integers, and the buffer outlives
+            // the slice.
+            let ids = unsafe {
+                std::slice::from_raw_parts(
+                    (&raw const (*list).ProcessIdList).cast::<usize>(),
+                    listed,
+                )
+            };
+            return Ok(ids
+                .iter()
+                .filter_map(|id| u32::try_from(*id).ok())
+                .collect());
         }
     }
 
@@ -262,6 +307,25 @@ impl Drop for Inner {
         // The job's handle closes after this, which would kill the tree if
         // anything of it were left.
     }
+}
+
+/// Whether the process with this id has exited, or is gone altogether.
+fn has_exited_by_id(pid: u32) -> bool {
+    // SAFETY: the call takes three integers: the one right that is needed,
+    // no inheritance, and a process id.
+    let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if process.is_null() {
+        // Nothing has this id any more, or it cannot be asked: there is
+        // nothing to wait for. A member of a job this process made can be
+        // opened by it for as long as it is there.
+        return true;
+    }
+    // SAFETY: `process` is a handle that was just opened and that nothing
+    // else owns.
+    let process = unsafe { OwnedHandle::from_raw_handle(process) };
+    // SAFETY: `process` is an open process handle with the right to wait.
+    // A wait of zero milliseconds only reads its state.
+    unsafe { WaitForSingleObject(process.as_raw_handle(), 0) == WAIT_OBJECT_0 }
 }
 
 /// A job that kills its processes when its last handle is closed.
