@@ -139,6 +139,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror",
+ "tracing",
+ "tracing-core",
  "unicode-segmentation",
  "unicode-width",
  "windows-sys 0.61.2",

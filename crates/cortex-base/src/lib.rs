@@ -50,6 +50,7 @@ pub mod framing;
 pub mod git;
 pub mod hash;
 pub mod id;
+pub mod log;
 pub mod nofollow;
 pub mod path;
 pub mod private;

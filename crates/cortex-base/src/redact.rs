@@ -39,6 +39,11 @@ pub const MASK: &str = REDACTED;
 /// mask ordinary text: a three-letter password is in every other word.
 pub const MIN_VALUE_LEN: usize = 8;
 
+/// A credential given by value can begin with this byte.
+const VALUE: u8 = 1;
+/// A key format, or one of the other shapes, can begin with this byte.
+const SHAPE: u8 = 2;
+
 /// Which characters a key's body is made of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Class {
@@ -177,6 +182,22 @@ pub const FORMATS: &[Format] = &[
     format("PyPI", "pypi-", Class::Token, 50, None, false),
 ];
 
+/// For every pair of bytes, whether a format's prefix begins with it: one
+/// bit each.
+const FORMAT_PAIRS: [u64; 1024] = format_pairs();
+
+const fn format_pairs() -> [u64; 1024] {
+    let mut table = [0u64; 1024];
+    let mut n = 0;
+    while n < FORMATS.len() {
+        let prefix = FORMATS[n].prefix.as_bytes();
+        let code = (prefix[0] as usize) << 8 | prefix[1] as usize;
+        table[code >> 6] |= 1 << (code & 63);
+        n += 1;
+    }
+    table
+}
+
 /// The beginning of a private key in PEM form, up to the kind of key.
 const PEM_BEGIN: &str = "-----BEGIN ";
 /// What ends the first line of a private key in PEM form.
@@ -207,8 +228,9 @@ pub struct SecretFilter {
     /// The credentials masked by value, longest first, so that a key that
     /// begins as another one does is masked whole.
     values: Vec<Box<[u8]>>,
-    /// For each byte, whether something the filter masks can begin with it.
-    starts: [bool; 256],
+    /// For each byte, what the filter masks that can begin with it:
+    /// [`VALUE`], [`SHAPE`], both or neither.
+    starts: [u8; 256],
 }
 
 impl Default for SecretFilter {
@@ -230,12 +252,12 @@ impl SecretFilter {
     /// A filter that knows the key formats and no credential by value.
     #[must_use]
     pub fn new() -> Self {
-        let mut starts = [false; 256];
+        let mut starts = [0u8; 256];
         for format in FORMATS {
-            starts[usize::from(format.prefix.as_bytes()[0])] = true;
+            starts[usize::from(format.prefix.as_bytes()[0])] = SHAPE;
         }
         for other in [PEM_BEGIN, JWT_BEGIN, BEARER_WORD, SCHEME_END] {
-            starts[usize::from(other.as_bytes()[0])] = true;
+            starts[usize::from(other.as_bytes()[0])] = SHAPE;
         }
         Self {
             values: Vec::new(),
@@ -260,7 +282,7 @@ impl SecretFilter {
         if value.len() < MIN_VALUE_LEN || self.values.iter().any(|known| &**known == value) {
             return;
         }
-        self.starts[usize::from(value[0])] = true;
+        self.starts[usize::from(value[0])] |= VALUE;
         self.values.push(value.into());
         self.values
             .sort_by_key(|value| std::cmp::Reverse(value.len()));
@@ -314,8 +336,9 @@ impl SecretFilter {
     fn next(&self, bytes: &[u8], from: usize) -> Option<Range<usize>> {
         let mut at = from;
         while at < bytes.len() {
-            if self.starts[usize::from(bytes[at])]
-                && let Some(found) = self.matches_at(bytes, at)
+            let starts = self.starts[usize::from(bytes[at])];
+            if starts != 0
+                && let Some(found) = self.matches_at(bytes, at, starts)
             {
                 return Some(found);
             }
@@ -327,12 +350,17 @@ impl SecretFilter {
     /// The credential that `at` is the beginning of, if it is one. What is
     /// masked can begin after `at`: the word before a bearer token stays,
     /// and so does the colon before a password.
-    fn matches_at(&self, bytes: &[u8], at: usize) -> Option<Range<usize>> {
+    fn matches_at(&self, bytes: &[u8], at: usize, starts: u8) -> Option<Range<usize>> {
         let rest = &bytes[at..];
-        for value in &self.values {
-            if rest.starts_with(value) {
-                return Some(at..at + value.len());
+        if starts & VALUE != 0 {
+            for value in &self.values {
+                if rest.starts_with(value) {
+                    return Some(at..at + value.len());
+                }
             }
+        }
+        if starts & SHAPE == 0 {
+            return None;
         }
         match rest[0] {
             b':' => return userinfo(bytes, at),
@@ -346,10 +374,18 @@ impl SecretFilter {
         match rest[0] {
             b'e' => jwt(rest).map(|len| at..at + len),
             b'B' => bearer(rest).map(|len| at + BEARER_WORD.len()..at + len),
-            _ => FORMATS
-                .iter()
-                .find_map(|format| format.matches(rest))
-                .map(|len| at..at + len),
+            first => {
+                // Most words that begin as a key does are not one, and the
+                // second byte says so before any format is tried.
+                let code = usize::from(first) << 8 | usize::from(*rest.get(1)?);
+                if FORMAT_PAIRS[code >> 6] & (1 << (code & 63)) == 0 {
+                    return None;
+                }
+                FORMATS
+                    .iter()
+                    .find_map(|format| format.matches(rest))
+                    .map(|len| at..at + len)
+            }
         }
     }
 }
