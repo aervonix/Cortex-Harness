@@ -214,6 +214,97 @@ fn a_link_is_compared_and_never_followed() {
 }
 
 #[test]
+fn a_look_that_stops_at_its_bound_reports_nothing_beyond_it() {
+    let scratch = workspace("bound_both_ways");
+    // Directories that come before the protected names in the walk.
+    for index in 0..30 {
+        scratch.dir(format!("ws/a{index:02}"));
+    }
+    scratch.file("ws/z/web/.npmrc", "registry=x");
+    let ws = scratch.join("ws");
+    let full = Watch::new(&ws, fixed(&ws));
+    let capped = Watch::new(&ws, fixed(&ws)).with_limits(Limits {
+        directories: 10,
+        ..Limits::default()
+    });
+    let whole = full.take();
+    let part = capped.take();
+    assert!(whole.is_complete() && !part.is_complete());
+    // Nothing changed: a later look that reached less sees nothing gone,
+    // and one that reached more sees nothing new.
+    assert_eq!(whole.compare(&part), Vec::new());
+    assert_eq!(part.compare(&whole), Vec::new());
+    // What both reached is still compared: the fixed list is always looked
+    // at.
+    fs::write(ws.join(".git/config"), "[core]\nx = 1\n").unwrap();
+    let changed = whole.compare(&capped.take());
+    assert_eq!(changed.len(), 1, "{changed:?}");
+    assert!(changed[0].path.ends_with(".git/config"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_linked_git_directory_is_not_looked_through() {
+    let scratch = workspace("linked_git");
+    scratch.file("elsewhere/config", "[core]\nsecret = 1\n");
+    scratch.file("elsewhere/hooks/post-merge", "#!/bin/sh\n");
+    let ws = scratch.join("ws");
+    let watch = Watch::new(&ws, fixed(&ws));
+    let before = watch.take();
+    fs::rename(ws.join(".git"), ws.join(".git.old")).unwrap();
+    std::os::unix::fs::symlink(scratch.join("elsewhere"), ws.join(".git")).unwrap();
+    let (changed, after) = watch.changes_since(&before);
+    assert!(after.is_complete());
+    // The link is what changed, and what was under the directory is gone;
+    // nothing beyond the link is looked at or reported.
+    let shown: Vec<(String, Change)> = changed
+        .iter()
+        .map(|one| {
+            let path = one.path.strip_prefix(&ws).unwrap();
+            (path.display().to_string(), one.change)
+        })
+        .collect();
+    assert!(
+        shown.contains(&(".git".to_owned(), Change::Created)),
+        "{shown:?}"
+    );
+    assert!(
+        shown.contains(&(".git/config".to_owned(), Change::Deleted)),
+        "{shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|(path, _)| path.contains("post-merge")),
+        "{shown:?}"
+    );
+    let config = changed
+        .iter()
+        .find(|one| one.path.ends_with(".git/config"))
+        .unwrap();
+    assert_eq!(config.before, Before::File(b"[core]\n".to_vec()));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_change_of_mode_alone_is_found_and_cannot_be_put_back_by_content() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = workspace("mode");
+    let ws = scratch.join("ws");
+    let watch = Watch::new(&ws, fixed(&ws));
+    let before = watch.take();
+    let hook = ws.join(".git/hooks/pre-commit.sample");
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let (changed, _) = watch.changes_since(&before);
+    assert_eq!(changed.len(), 1, "{changed:?}");
+    assert_eq!(changed[0].change, Change::Modified);
+    assert_eq!(changed[0].before, Before::Unknown);
+    // The same bytes written again change nothing that matters.
+    let before = watch.take();
+    let content = fs::read(ws.join(".git/config")).unwrap();
+    fs::write(ws.join(".git/config"), content).unwrap();
+    assert_eq!(watch.changes_since(&before).0, Vec::new());
+}
+
+#[test]
 fn past_its_limits_a_look_says_it_is_incomplete() {
     let scratch = workspace("limits");
     for index in 0..20 {

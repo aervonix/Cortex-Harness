@@ -45,8 +45,8 @@ use cortex_base::{AbsPath, CancelToken, PathOptions, PathResolver};
 use cortex_config::{LayerKind, LoadOptions, Loaded, Override, Settings, StateDir};
 use cortex_llm::{BoxFuture, ImageError, ImageSource};
 use cortex_policy::{
-    ApprovalStore, Engine, Parts, Protected, RuleSource, ShellSyntax, SourcedRule, StartError,
-    TrustStore, default_sandbox,
+    ApprovalStore, Engine, NoSandbox, Parts, Protected, RuleSource, SandboxState, ShellSyntax,
+    SourcedRule, StartError, TrustStore, default_sandbox,
 };
 use cortex_protocol::event::{Event, Notice, SandboxNotice};
 use cortex_protocol::lease::{Budget, HardLimits, Rule};
@@ -513,6 +513,31 @@ fn engine_parts(
     }
 }
 
+/// Whether a write root of `policy` holds the harness's configuration,
+/// state or data directory, or is one.
+fn holds_harness_files(
+    policy: &cortex_protocol::lease::SandboxPolicy,
+    loaded: &Loaded,
+    state: Option<&StateDir>,
+) -> bool {
+    let own: Vec<PathBuf> = [
+        loaded.dirs.config.clone(),
+        state.map(|state| state.root().to_path_buf()),
+        loaded.data_dir(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|dir| resolve_dir(&dir).map_or(dir, |resolved| resolved.to_fs_path()))
+    .collect();
+    policy.write.all
+        || policy
+            .write
+            .roots
+            .iter()
+            .map(PathBuf::from)
+            .any(|root| own.iter().any(|dir| dir.starts_with(&root)))
+}
+
 /// Starts an engine, with its failure as the error a front end is shown.
 pub(crate) fn start_engine(parts: Parts) -> Result<Engine, Box<ErrorData>> {
     Engine::start(parts).map_err(|failure| match failure {
@@ -938,27 +963,38 @@ pub(crate) fn assemble(
 
     // -------------------------------------------- the permission engine
     let lease_id = LeaseId::new(format!("l_{}", lease_count + 1));
-    let template = EngineTemplate {
-        parts: engine_parts(
-            inner,
-            &loaded,
-            state.as_ref(),
-            &resolver,
-            &id,
-            lease_id.clone(),
-            rules_trusted,
-            repository_trusted,
-            syntax,
-            &mut told,
-        ),
-    };
+    let mut parts = engine_parts(
+        inner,
+        &loaded,
+        state.as_ref(),
+        &resolver,
+        &id,
+        lease_id.clone(),
+        rules_trusted,
+        repository_trusted,
+        syntax,
+        &mut told,
+    );
+    // A write root that holds the harness's own files would let a confined
+    // command change what it is allowed: the sandbox does not enforce there
+    // (found by the review of step 26).
+    let (mut sandbox_state, mut enforcing_with) =
+        inner.sandbox.state(loaded.settings.sandbox.enabled);
+    if sandbox_state == SandboxState::Enforcing
+        && holds_harness_files(&parts.sandbox_policy, &loaded, state.as_ref())
+    {
+        sandbox_state = SandboxState::NotEnforcing(NoSandbox::HarnessFilesWritable);
+        enforcing_with = None;
+    }
+    parts.sandbox = sandbox_state;
+    let template = EngineTemplate { parts };
     let engine = start_engine(template.parts.clone())?;
     let lease = engine.lease().clone();
     let sandbox_notice = engine.sandbox_notice();
     let level = engine.level().clone();
 
     // ------------------------------------------------------- the sandbox
-    let (state, enforcing_with) = inner.sandbox.state(loaded.settings.sandbox.enabled);
+    let state = sandbox_state;
     let temp_path = resolve_dir(&sandbox::temp_path(&id))
         .map_or_else(|| sandbox::temp_path(&id), |path| path.to_fs_path());
     let made = match sandbox::make_temp(&temp_path) {

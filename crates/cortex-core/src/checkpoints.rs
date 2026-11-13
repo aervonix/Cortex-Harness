@@ -45,8 +45,8 @@ use cortex_sandbox::protect::{Before as Was, Changed};
 use cortex_session::entry::FileVersion;
 use cortex_session::{Before, Body, DiskStore, Git, RoundCheckpoint, SessionError};
 use cortex_tools::{
-    BoxFuture, CheckpointError, Checkpoints, Concurrency, Effect, FileSnapshot, Json, Plan, PlanCx,
-    RunCx, ShellTool, Tool, ToolError, ToolOutput, ToolResult, ToolSpec,
+    BoxFuture, CheckpointError, Checkpoints, Effect, FileSnapshot, Json, Plan, PlanCx, RunCx,
+    ShellTool, Tool, ToolError, ToolOutput, ToolResult, ToolSpec,
 };
 
 use crate::policy::EnginePolicy;
@@ -164,7 +164,12 @@ impl Rounds {
     /// [`record_changes`](Self::record_changes): only the first record of
     /// a file in a round counts, and this one is exact. Blocks: it stores
     /// the content.
-    pub(crate) fn record_protected(&self, changed: &[Changed]) {
+    ///
+    /// Returns the paths undo will not put back: outside the workspace (a
+    /// `sandbox.protect` entry), whose earlier state was not kept (a link,
+    /// a file too large, a change of mode), or a directory.
+    pub(crate) fn record_protected(&self, changed: &[Changed]) -> Vec<std::path::PathBuf> {
+        let mut by_hand = Vec::new();
         for changed in changed {
             let Some(file) = changed
                 .path
@@ -173,20 +178,23 @@ impl Rounds {
                 .and_then(|relative| relative.to_str())
                 .and_then(|relative| self.root.join(relative).ok())
             else {
-                // Outside the workspace (a `sandbox.protect` entry): not
-                // the round's to put back.
+                by_hand.push(changed.path.clone());
                 continue;
             };
-            let _ = match &changed.before {
-                Was::Absent => self.before(&file, None),
-                Was::File(content) => self.before(&file, Some(content)),
+            let recorded = match &changed.before {
+                Was::Absent => self.before(&file, None).is_ok(),
+                Was::File(content) => self.before(&file, Some(content)).is_ok(),
                 Was::Unknown => {
                     self.lock().seen_changed(&file, Before::Unknown);
-                    Ok(())
+                    false
                 }
-                Was::Directory => Ok(()),
+                Was::Directory => false,
             };
+            if !recorded {
+                by_hand.push(changed.path.clone());
+            }
         }
+        by_hand
     }
 
     /// The content of `path` at `commit`, stored. `None` when git cannot
@@ -308,16 +316,21 @@ impl Tool for RecordingShell {
         out: &'a mut dyn ToolOutput,
     ) -> BoxFuture<'a, ToolResult> {
         Box::pin(async move {
-            // A confined command that may write has its protected paths
-            // looked at before and after it. One the engine vouched only
-            // reads is not, nor one the user let leave the sandbox.
+            // A turn a command of it stopped runs no more commands, even
+            // one decided or approved before the stop.
+            if let Some(reason) = self.policy.stopped_turn(cx.turn) {
+                return ToolResult::denied(format!(
+                    "The command was not run: the turn was stopped. {reason}"
+                ));
+            }
+            // Every confined command has its protected paths looked at
+            // before and after it, one the engine marked as only reading
+            // too: the program it runs may do otherwise. One the user let
+            // leave the sandbox is not looked at.
             let watch = self
                 .sandbox
                 .watch()
-                .filter(|_| {
-                    plan.concurrency != Concurrency::ReadOnly
-                        && !plan.effects.contains(&Effect::Unconfined)
-                })
+                .filter(|_| !plan.effects.contains(&Effect::Unconfined))
                 .cloned();
             let before = match &watch {
                 Some(watch) => {
@@ -343,28 +356,32 @@ impl Tool for RecordingShell {
                 .and_then(|payload| payload.get("changes"))
                 .filter(|changes| !changes.is_null())
                 .cloned();
+            let mut by_hand = found
+                .as_ref()
+                .map(|(changed, _)| changed.iter().map(|one| one.path.clone()).collect())
+                .unwrap_or_default();
             if let Some(rounds) = &self.rounds {
                 let rounds = Arc::clone(rounds);
                 let protected = found.as_ref().map(|(changed, _)| changed.clone());
                 // Not cancelled: the command ran, and what it changed is
                 // recorded whether or not the turn goes on.
                 let recorded = tokio::task::spawn_blocking(move || {
-                    if let Some(protected) = protected {
-                        rounds.record_protected(&protected);
-                    }
+                    let by_hand = protected.map(|protected| rounds.record_protected(&protected));
                     if let Some(changes) = changes {
                         rounds.record_changes(&changes);
                     }
+                    by_hand
                 })
                 .await;
-                if recorded.is_err() {
-                    tracing::warn!("what a shell command changed could not be recorded");
+                match recorded {
+                    Ok(Some(not_kept)) => by_hand = not_kept,
+                    Ok(None) => {}
+                    Err(_) => tracing::warn!("what a shell command changed could not be recorded"),
                 }
             }
             if let Some((changed, complete)) = found {
                 let root = cx.paths.root().to_fs_path();
-                if let Some(note) = protected_note(&changed, complete, &root, self.rounds.is_some())
-                {
+                if let Some(note) = protected_note(&changed, complete, &root, &by_hand) {
                     result = result.with_part(Part::text(note.clone()));
                     if !changed.is_empty() {
                         self.policy.stop_turn(cx.turn, note);

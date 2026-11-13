@@ -160,12 +160,16 @@ fn sys_the_workspace_and_the_temporary_directory_are_writable_and_nothing_else()
     let Some(landlock) = enforcing() else { return };
     let place = Place::new("writes");
     let outside = place.outside();
+    // A link in the workspace to a directory outside it: Landlock judges
+    // the file written, wherever the name it was reached by is.
+    std::os::unix::fs::symlink(&outside, place.ws().join("out-link")).expect("a link");
     let script = format!(
         "echo a > in.txt && mkdir -p sub && mv in.txt sub/ && echo b > \"$TMPDIR/t\" && \
          mv \"$TMPDIR/t\" ./from-tmp && echo quiet > /dev/null && echo err >&2 && \
          echo late > /dev/stderr && printf '%s' \"$TMPDIR\" > tmpdir.txt; \
          echo c > {o}/new; truncate -s 0 {o}/keep; rm -f {o}/keep; mkdir {o}/d; \
-         ln -s /etc/passwd {o}/link; mv sub/in.txt {o}/moved; echo done",
+         ln -s /etc/passwd {o}/link; mv sub/in.txt {o}/moved; echo through > out-link/through; \
+         echo done",
         o = outside.display()
     );
     let ran = sh(&place, place.policy(Network::Off, landlock), &script);
@@ -296,14 +300,104 @@ fn sys_with_the_network_off_no_socket_reaches_anything() {
         assert_eq!(verdict(&ran), "ok", "{kind}: {ran:?}");
     }
 
-    // With the network on, the same connections are made.
-    for (kind, at) in [("tcp", tcp_at.as_str()), ("unix", unix_at.as_str())] {
+    // Netlink reaches the kernel's interface list, and nothing else: its
+    // user protocol, which reaches other processes, is refused.
+    let ran = net(&place, Network::Off, landlock, &["netlink-user", "-"]);
+    assert_eq!(verdict(&ran), "refused PermissionDenied", "{ran:?}");
+
+    // With the network on, the network is reached, and a Unix socket of
+    // anyone else's still is not: the session bus, an agent or the Docker
+    // socket would let a command out of the sandbox.
+    let ran = net(&place, Network::Full, landlock, &["tcp", &tcp_at]);
+    assert_eq!(verdict(&ran), "ok", "tcp with the network on: {ran:?}");
+    for (kind, at) in [
+        ("unix", unix_at.as_str()),
+        ("abstract", abstract_name.as_str()),
+    ] {
         let ran = net(&place, Network::Full, landlock, &[kind, at]);
         assert_eq!(
             verdict(&ran),
-            "ok",
+            "refused PermissionDenied",
             "{kind} {at} with the network on: {ran:?}"
         );
+    }
+    let ran = net(&place, Network::Full, landlock, &["pair", "-"]);
+    assert_eq!(verdict(&ran), "ok", "a pair with the network on: {ran:?}");
+}
+
+/// Runs this binary's system-call helper, inside the sandbox or outside it,
+/// and returns what it printed after `call: `.
+fn call(place: &Place, landlock: u8, name: &str, inside: bool) -> String {
+    let exe = std::env::current_exe().expect("the test binary has a path");
+    let arguments = ["--exact", ENTRY, "--nocapture", crate::CALL, name];
+    let ran = if inside {
+        let launcher = launcher(place.policy(Network::Off, landlock));
+        let stdin = launcher.policy().encode();
+        run_with(
+            &launcher,
+            &stdin,
+            &[],
+            &place.ws(),
+            exe.to_str().expect("text"),
+            &arguments,
+        )
+    } else {
+        let output = Command::new(&exe)
+            .args(arguments)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run the helper");
+        Ran {
+            code: output.status.code(),
+            output: String::from_utf8_lossy(&output.stdout).into_owned(),
+        }
+    };
+    ran.output
+        .lines()
+        .find_map(|line| line.strip_prefix("call: "))
+        .map(str::to_owned)
+        .unwrap_or_else(|| panic!("the helper said nothing: {ran:?}"))
+}
+
+#[test]
+fn sys_the_calls_that_would_undo_or_get_round_the_sandbox_are_refused() {
+    let Some(landlock) = enforcing() else { return };
+    let place = Place::new("calls");
+    // Each is refused inside the sandbox, and is not refused that way
+    // outside it, so the refusal is the filter's.
+    for (name, inside) in [
+        ("io_uring", "EPERM"),
+        ("keyctl", "EPERM"),
+        ("userfaultfd", "EPERM"),
+        ("perf", "EPERM"),
+        ("tiocsti", "EPERM"),
+        // The C library falls back to `clone`, whose flags the filter reads.
+        ("clone3", "ENOSYS"),
+    ] {
+        assert_eq!(call(&place, landlock, name, true), inside, "{name} inside");
+        assert_ne!(
+            call(&place, landlock, name, false),
+            inside,
+            "{name} outside"
+        );
+    }
+    // A new user namespace: refused inside; outside, where the kernel
+    // allows it, made.
+    for name in ["unshare-user", "clone-user"] {
+        assert_eq!(call(&place, landlock, name, true), "EPERM", "{name}");
+        let outside = call(&place, landlock, name, false);
+        assert!(
+            outside == "ok" || std::env::var_os("CI").is_none(),
+            "CI's runners allow user namespaces, so the refusal is the filter's: {name} {outside}"
+        );
+    }
+    // `bpf` is refused to unprivileged processes by most kernels anyway.
+    assert_eq!(call(&place, landlock, "bpf", true), "EPERM");
+    // Leaving the command's group or session is answered as done, and
+    // nothing moves: the process stays in the tree and dies with it.
+    for name in ["setsid", "setpgid"] {
+        assert_eq!(call(&place, landlock, name, true), "same", "{name} inside");
+        assert_eq!(call(&place, landlock, name, false), "new", "{name} outside");
     }
 }
 
@@ -339,6 +433,19 @@ fn sys_a_new_user_namespace_is_refused() {
     let Some(landlock) = enforcing() else { return };
     if Command::new("unshare").arg("--version").output().is_err() {
         assert!(std::env::var_os("CI").is_none(), "CI has util-linux");
+        return;
+    }
+    // Outside the sandbox it works, or the refusal inside proves nothing.
+    let outside = Command::new("unshare")
+        .args(["--user", "true"])
+        .status()
+        .is_ok_and(|status| status.success());
+    if !outside {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "CI's runners allow user namespaces"
+        );
+        println!("this machine refuses user namespaces itself: nothing to test");
         return;
     }
     let place = Place::new("user_namespace");
