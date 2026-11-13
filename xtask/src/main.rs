@@ -19,6 +19,7 @@ use std::process::ExitCode;
 
 mod alias;
 mod checks;
+mod compare;
 mod junit;
 mod mutate;
 mod nonblocking;
@@ -26,6 +27,7 @@ mod outside;
 mod owner_guard;
 mod perf;
 mod rules;
+mod runs;
 mod schema;
 mod startup;
 mod steps;
@@ -54,6 +56,15 @@ Checks and tests
                     and its slowest tests. With --from JUNIT.XML [--os
                     linux|windows], report on a run that was already made:
                     the report a CI job uploads, for example.
+  ci --tiers --compare NEW [--against OLD] [--os linux|windows] [--top N]
+                    Two runs' tiers side by side, each above its own start
+                    cost: by tier, by crate, and the tests that moved most.
+                    NEW and OLD are JUnit reports, run ids of the `ci`
+                    workflow (read through gh), or `main`, the main branch's
+                    latest successful run (OLD when it is not given).
+  ci-times RUN [--against RUN|main]
+                    A run's job times and tier times, as tables for a step's
+                    ci.md, read through gh.
   rules             The repo-rule checks alone: no home-directory paths, the
                     crate dependency rules, docs/dependencies.md, workflows,
                     links and the layout of the step records.
@@ -130,6 +141,7 @@ fn main() -> ExitCode {
         Some("check") => checks::check(&rest),
         Some("test") => checks::test(&rest),
         Some("ci") => checks::ci(&rest),
+        Some("ci-times") => runs::ci_times(&rest),
         Some("rules") => checks::rules(),
         Some("links") => checks::links(),
         Some("fmt") => checks::fmt(),

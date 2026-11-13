@@ -54,6 +54,7 @@ These docs are the specification that every build step works from. They were wri
 | [testing-and-ci.md](testing-and-ci.md) | Test tiers and their time limits, the scripted provider, TUI testing, Windows coverage, the CI layout with its measured times, lints and repo rules, dependency hygiene. |
 | [security.md](security.md) | Threats and mitigations. |
 | [dependencies.md](dependencies.md) | Every direct third-party dependency: which crate uses it, why, what else was considered and what it costs. Checked against the manifests. |
+| [shell-guard.md](shell-guard.md) | Which shell commands Claude Code's worktree guard accepts and refuses, the forms to use for the common git jobs, and the hazard of a batch of calls. |
 
 ### Generated
 
