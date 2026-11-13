@@ -520,21 +520,24 @@ fn holds_harness_files(
     loaded: &Loaded,
     state: Option<&StateDir>,
 ) -> bool {
-    let own: Vec<PathBuf> = [
+    // Resolved paths against the lease's roots, which are resolved too, in
+    // one spelling; names compared as the system compares them, folding
+    // case on Windows, since a match here only takes the sandbox away.
+    let own: Vec<AbsPath> = [
         loaded.dirs.config.clone(),
         state.map(|state| state.root().to_path_buf()),
         loaded.data_dir(),
     ]
     .into_iter()
     .flatten()
-    .map(|dir| resolve_dir(&dir).map_or(dir, |resolved| resolved.to_fs_path()))
+    .filter_map(|dir| resolve_dir(&dir))
     .collect();
     policy.write.all
         || policy
             .write
             .roots
             .iter()
-            .map(PathBuf::from)
+            .filter_map(|root| AbsPath::parse(root, cortex_base::PathStyle::NATIVE).ok())
             .any(|root| own.iter().any(|dir| dir.starts_with(&root)))
 }
 

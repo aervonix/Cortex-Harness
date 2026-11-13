@@ -363,8 +363,11 @@ fn call(place: &Place, landlock: u8, name: &str, inside: bool) -> String {
 fn sys_the_calls_that_would_undo_or_get_round_the_sandbox_are_refused() {
     let Some(landlock) = enforcing() else { return };
     let place = Place::new("calls");
-    // Each is refused inside the sandbox, and is not refused that way
-    // outside it, so the refusal is the filter's.
+    // Each is refused inside the sandbox. Outside it the same call is not
+    // refused that way, so the refusal is the filter's; a host that refuses
+    // one by itself (`io_uring` turned off, `perf` for every unprivileged
+    // process) makes that control prove nothing, and it is said, not failed.
+    let mut controls = 0;
     for (name, inside) in [
         ("io_uring", "EPERM"),
         ("keyctl", "EPERM"),
@@ -375,12 +378,14 @@ fn sys_the_calls_that_would_undo_or_get_round_the_sandbox_are_refused() {
         ("clone3", "ENOSYS"),
     ] {
         assert_eq!(call(&place, landlock, name, true), inside, "{name} inside");
-        assert_ne!(
-            call(&place, landlock, name, false),
-            inside,
-            "{name} outside"
-        );
+        if call(&place, landlock, name, false) == inside {
+            println!("this machine refuses {name} by itself: its control proves nothing");
+        } else {
+            controls += 1;
+        }
     }
+    // The calls no host refuses by itself are controls everywhere.
+    assert!(controls >= 3, "too few controls held: {controls}");
     // A new user namespace: refused inside; outside, where the kernel
     // allows it, made.
     for name in ["unshare-user", "clone-user"] {
