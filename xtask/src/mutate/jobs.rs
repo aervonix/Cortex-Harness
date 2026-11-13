@@ -124,3 +124,105 @@ pub(crate) fn numbered(name: &str, job: usize) -> String {
         format!("{name}-{}", job + 1)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use cortex_testkit::Gate;
+
+    use super::for_each;
+    use crate::Result;
+    use crate::mutate::drive::{Runner, Tested};
+
+    /// A runner the work below never asks anything of.
+    struct Idle;
+
+    impl Runner for Idle {
+        fn compiles(&mut self, _: &Path, _: &[String]) -> Result<std::result::Result<(), String>> {
+            Ok(Ok(()))
+        }
+
+        fn test(&mut self, _: &Path, _: &[String]) -> Result<Tested> {
+            Ok(Tested::Ran(Vec::new()))
+        }
+    }
+
+    #[test]
+    fn no_job_starts_a_piece_once_the_time_is_up() {
+        // Two jobs, four pieces. Each piece waits for the gate, which the
+        // run's own thread opens when it says the time is up, the second
+        // time it asks: so by the time either job is free again, the time
+        // is up, and neither starts another piece.
+        let (mut first, mut second) = (Idle, Idle);
+        let mut runners: Vec<&mut dyn Runner> = vec![&mut first, &mut second];
+        let copies = [PathBuf::from("tree"), PathBuf::from("tree-2")];
+        let gate = Gate::new();
+        let started = Mutex::new(Vec::new());
+        let mut asked = 0;
+        let mut done = Vec::new();
+        let finished = for_each(
+            &mut runners,
+            &copies,
+            &[1, 2, 3, 4],
+            &|_, _, item: &i32| {
+                started.lock().unwrap().push(*item);
+                // A bound on a mistake: with nothing to stop them, the
+                // jobs go on after it.
+                let _ = gate.wait(Duration::from_secs(2));
+                *item
+            },
+            &mut || {
+                asked += 1;
+                if asked >= 2 {
+                    gate.open();
+                }
+                asked >= 2
+            },
+            &mut |_, item| {
+                done.push(item);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(!finished, "the time ran out");
+        let started = started.into_inner().unwrap();
+        assert!(
+            started.len() <= 2,
+            "a piece was started after the time was up: {started:?}"
+        );
+        // What was started was finished and kept.
+        done.sort_unstable();
+        let mut expected = started.clone();
+        expected.sort_unstable();
+        assert_eq!(done, expected);
+    }
+
+    #[test]
+    fn one_job_does_the_pieces_in_order_and_asks_the_time_before_each() {
+        let mut only = Idle;
+        let mut runners: Vec<&mut dyn Runner> = vec![&mut only];
+        let mut asked = 0;
+        let mut done = Vec::new();
+        let finished = for_each(
+            &mut runners,
+            &[PathBuf::from("tree")],
+            &["a", "b", "c"],
+            &|_, _, item: &&str| (*item).to_owned(),
+            &mut || {
+                asked += 1;
+                asked > 2
+            },
+            &mut |_, item| {
+                done.push(item);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(!finished);
+        assert_eq!(done, ["a", "b"]);
+        assert_eq!(asked, 3);
+    }
+}

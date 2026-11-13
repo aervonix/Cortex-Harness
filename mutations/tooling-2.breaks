@@ -45,9 +45,10 @@ file: xtask/src/runs.rs
 in: seconds_of
 find: let of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
 replace: let of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day;
+# A job's time is the difference of two times, so a day off in both
+# cancels: only the reading of the time itself shows it.
 caught-by:
     runs::tests::github_times_are_read
-    runs::tests::a_run_is_read_from_what_gh_prints
 
 [break] ci-times-mixes-the-runs-starts
 rule: Each column of the tier table is held against its own run's start cost.
@@ -125,8 +126,8 @@ caught-by:
 rule: Nothing reaches cargo as a profile that is not a profile's name.
 file: xtask/src/startup.rs
 in: build
-find: if profile.is_empty()
-replace: if false
+find: !profile.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+replace: false
 caught-by:
     startup::tests::startup_needs_one_binary_or_one_profile
 
@@ -146,7 +147,7 @@ in: for_each
 find: if failure.is_none() && !halt.load(Ordering::SeqCst) && out_of_time() {
 replace: if failure.is_none() && !halt.load(Ordering::SeqCst) && out_of_time() && false {
 caught-by:
-    mutate::drive::tests::jobs_start_nothing_once_the_time_is_up_and_the_next_run_carries_on
+    mutate::jobs::tests::no_job_starts_a_piece_once_the_time_is_up
 
 [break] jobs-share-one-copy
 rule: Each job works in a copy of the tree of its own.
