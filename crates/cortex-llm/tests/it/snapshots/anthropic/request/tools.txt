@@ -1,0 +1,61 @@
+POST https://api.anthropic.com/v1/messages
+content-type: application/json
+accept: text/event-stream
+anthropic-version: 2026-10-21
+
+{
+  "model": "claude-haiku-5-5",
+  "max_tokens": 512,
+  "stream": true,
+  "thinking": {
+    "type": "adaptive",
+    "display": "summarized"
+  },
+  "output_config": {
+    "effort": "low"
+  },
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get the current weather in a city.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "city": {
+            "description": "The city's name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "type": "object"
+      },
+      "strict": true,
+      "eager_input_streaming": true
+    },
+    {
+      "name": "list_cities",
+      "description": "List the cities the desk knows.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "strict": true,
+      "eager_input_streaming": true
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "What is the weather in Paris? Use the tool."
+        }
+      ]
+    }
+  ]
+}

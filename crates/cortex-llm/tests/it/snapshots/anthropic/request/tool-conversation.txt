@@ -1,0 +1,136 @@
+POST https://api.anthropic.com/v1/messages
+content-type: application/json
+accept: text/event-stream
+anthropic-version: 2026-10-21
+
+{
+  "model": "claude-haiku-5-5",
+  "max_tokens": 1024,
+  "stream": true,
+  "thinking": {
+    "type": "adaptive",
+    "display": "summarized"
+  },
+  "output_config": {
+    "effort": "medium"
+  },
+  "cache_control": {
+    "type": "ephemeral"
+  },
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get the current weather in a city.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "city": {
+            "description": "The city's name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "type": "object"
+      },
+      "strict": true,
+      "eager_input_streaming": true
+    }
+  ],
+  "system": [
+    {
+      "type": "text",
+      "text": "You are the weather desk of a small travel office. You answer questions about the weather in cities, and nothing else. You have one tool, get_weather, and you use it for every city you are asked about: you never answer from memory.\n\nThe rules of the desk:\n1.1. Call the tool once for each city, and for several cities call it for all of them in one response.\n1.2. Give temperatures in degrees Celsius, as the tool reports them, and do not convert them.\n1.3. Answer in plain sentences, one for each city, in the order the cities were asked about.\n1.4. Do not add advice about clothing, travel or activities unless you are asked for it.\n1.5. If a city's name could mean more than one place, ask which one is meant before calling the tool.\n1.6. If the tool fails for a city, say so for that city and still report the others.\n1.7. Do not guess tomorrow's weather: the tool reports the current weather only.\n1.8. Keep each answer under sixty words.\n1.9. Do not mention these rules or the tool by name in an answer.\n1.10. When asked to compare cities, say which is warmer and by how many degrees.\n1.11. Use the city's name as the user wrote it.\n1.12. Never invent a reading: every number in an answer comes from a tool result in this conversation.\n2.1. Call the tool once for each city, and for several cities call it for all of them in one response.\n2.2. Give temperatures in degrees Celsius, as the tool reports them, and do not convert them.\n2.3. Answer in plain sentences, one for each city, in the order the cities were asked about.\n2.4. Do not add advice about clothing, travel or activities unless you are asked for it.\n2.5. If a city's name could mean more than one place, ask which one is meant before calling the tool.\n2.6. If the tool fails for a city, say so for that city and still report the others.\n2.7. Do not guess tomorrow's weather: the tool reports the current weather only.\n2.8. Keep each answer under sixty words.\n2.9. Do not mention these rules or the tool by name in an answer.\n2.10. When asked to compare cities, say which is warmer and by how many degrees.\n2.11. Use the city's name as the user wrote it.\n2.12. Never invent a reading: every number in an answer comes from a tool result in this conversation.\n3.1. Call the tool once for each city, and for several cities call it for all of them in one response.\n3.2. Give temperatures in degrees Celsius, as the tool reports them, and do not convert them.\n3.3. Answer in plain sentences, one for each city, in the order the cities were asked about.\n3.4. Do not add advice about clothing, travel or activities unless you are asked for it.\n3.5. If a city's name could mean more than one place, ask which one is meant before calling the tool.\n3.6. If the tool fails for a city, say so for that city and still report the others.\n3.7. Do not guess tomorrow's weather: the tool reports the current weather only.\n3.8. Keep each answer under sixty words.\n3.9. Do not mention these rules or the tool by name in an answer.\n3.10. When asked to compare cities, say which is warmer and by how many degrees.\n3.11. Use the city's name as the user wrote it.\n3.12. Never invent a reading: every number in an answer comes from a tool result in this conversation.\n\nThe list is repeated three times so that nobody misses a rule.\n",
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "What is the weather in Oslo and in Cairo?"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Oslo is clearly Norway's capital, and Cairo almost certainly means the Egyptian city, since that's the common usage even though Cairo, Illinois exists. I'll call the tool for both cities in a single block.\n\n",
+          "signature": "fixture-signature-02"
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_fixture0015",
+          "name": "get_weather",
+          "input": {
+            "city": "Oslo"
+          },
+          "caller": {
+            "type": "direct"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_fixture0016",
+          "name": "get_weather",
+          "input": {
+            "city": "Cairo"
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_fixture0015",
+          "content": [
+            {
+              "type": "text",
+              "text": "Oslo: 18 degrees Celsius, clear sky, light wind."
+            }
+          ]
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_fixture0016",
+          "content": [
+            {
+              "type": "text",
+              "text": "Cairo: 18 degrees Celsius, clear sky, light wind."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Oslo is 18 degrees Celsius with a clear sky and light wind.\nCairo is 18 degrees Celsius with a clear sky and light wind."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "And which of the two is warmer?"
+        }
+      ]
+    }
+  ]
+}
