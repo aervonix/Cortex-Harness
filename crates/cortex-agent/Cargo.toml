@@ -12,12 +12,17 @@ doctest = false
 [dependencies]
 cortex-protocol.workspace = true
 cortex-base.workspace = true
+# The types and traits only: the loop never names a transport.
 cortex-llm.workspace = true
 cortex-tools.workspace = true
-cortex-policy.workspace = true
-cortex-session.workspace = true
-cortex-knowledge.workspace = true
-cortex-stats.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# `rt` for tasks (a tool call, a plan, a question each run as one), `sync`
+# for the channel they report on and for waking an idle session.
+tokio = { workspace = true, features = ["rt", "sync"] }
+
+[dev-dependencies]
+cortex-testkit.workspace = true
 
 [lints]
 workspace = true
