@@ -16,10 +16,15 @@ use std::io::{self, PipeReader, PipeWriter, Read};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::guard::{Guard, Watch};
 use super::{Exit, ReadOutcome, ended};
+
+/// What the child finds in place of the guard's pipe when there is no
+/// guard: no file descriptor is negative.
+const NO_PIPE: i32 = -1;
 
 /// One tree: the command, and how far along it is.
 #[derive(Debug)]
@@ -58,17 +63,62 @@ impl Inner {
         keep_exited_children();
         let harness = libc::pid_t::try_from(std::process::id())
             .map_err(|_| io::Error::other("the process id does not fit"))?;
+        // The guard's pipe, for the child to announce itself on. It is
+        // known only once the guard is ready, and is another if the guard
+        // has to be started again, so the child reads it from here.
+        let guard_pipe = Arc::new(AtomicI32::new(NO_PIPE));
+        let for_child = Arc::clone(&guard_pipe);
         // SAFETY: the closure runs in the child between `fork` and `exec`,
         // where the process has one thread and may call only what POSIX
         // lists as async-signal-safe. `become_session_leader` calls
-        // `setsid`, `signal`, `prctl` and `getppid`, which are on that list
-        // (`prctl` is a bare system call), and builds its error from `errno`
-        // without allocating. It touches no lock and no memory of the
-        // parent's.
+        // `setsid`, `signal`, `prctl`, `getppid`, `getpid` and `write`,
+        // which are on that list (`prctl` is a bare system call), and
+        // builds its error from `errno` without allocating. The closure
+        // itself loads one atomic integer. It touches no lock and no other
+        // memory of the parent's. The guard's pipe is open in the child,
+        // which is a copy of this process, until `exec` closes it.
         unsafe {
-            command.pre_exec(move || become_session_leader(harness));
+            command.pre_exec(move || {
+                let pipe = for_child.load(Ordering::Relaxed);
+                become_session_leader(harness, (pipe != NO_PIPE).then_some(pipe))
+            });
         }
-        let child = command.spawn()?;
+        let mut second_try = false;
+        let (child, pending) = loop {
+            // The guard first: it is running, and waiting for this one
+            // tree, before the command exists.
+            let pending = match guard {
+                Some(guard) => Some(guard.prepare().map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("the process guard could not be started: {error}"),
+                    )
+                })?),
+                None => None,
+            };
+            guard_pipe.store(
+                pending.as_ref().map_or(NO_PIPE, |pending| pending.pipe()),
+                Ordering::Relaxed,
+            );
+            match command.spawn() {
+                Ok(child) => break (child, pending),
+                Err(error) => {
+                    // A broken pipe is the child's announcement finding
+                    // the guard gone: it died after it was made ready.
+                    // The next round starts another. Once.
+                    let guard_died = pending.is_some()
+                        && error.kind() == io::ErrorKind::BrokenPipe
+                        && !second_try;
+                    if let Some(pending) = pending {
+                        pending.failed(guard_died);
+                    }
+                    if !guard_died {
+                        return Err(error);
+                    }
+                    second_try = true;
+                }
+            }
+        };
         // The command holds the caller's ends of its pipes. Let go of them
         // now, so that the pipes close when the tree's last writer does.
         drop(command);
@@ -84,8 +134,8 @@ impl Inner {
             started: std::time::Instant::now(),
             watch: None,
         };
-        if let Some(guard) = guard {
-            match guard.watch(child_group(pid)) {
+        if let Some(pending) = pending {
+            match pending.started(child_group(pid)) {
                 Ok(watch) => inner.watch = Some(watch),
                 // Dropping `inner` kills the command again.
                 Err(error) => {
@@ -187,7 +237,10 @@ fn child_group(pid: libc::pid_t) -> u32 {
 }
 
 /// What the child does before it becomes the command.
-fn become_session_leader(harness: libc::pid_t) -> io::Result<()> {
+fn become_session_leader(
+    harness: libc::pid_t,
+    guard_pipe: Option<std::os::fd::RawFd>,
+) -> io::Result<()> {
     // SAFETY: `setsid` takes no argument and changes only this process:
     // it becomes the leader of a new session and a new process group, with
     // no controlling terminal. It cannot fail here for the documented
@@ -223,7 +276,54 @@ fn become_session_leader(harness: libc::pid_t) -> io::Result<()> {
     }
     #[cfg(not(target_os = "linux"))]
     let _ = harness;
-    Ok(())
+    // Last, when nothing of the above can fail any more: the guard is told
+    // that this group is about to be a command.
+    match guard_pipe {
+        Some(pipe) => announce_to_guard(pipe),
+        None => Ok(()),
+    }
+}
+
+/// Writes `?<process id>` and a line break to the guard's pipe, from the
+/// child, without allocating.
+fn announce_to_guard(pipe: std::os::fd::RawFd) -> io::Result<()> {
+    // SAFETY: `getpid` takes no argument and cannot fail.
+    let mut id = unsafe { libc::getpid() }.unsigned_abs();
+    // The line, built from its end: a line break, the digits, the mark.
+    let mut line = [0u8; 16];
+    let mut at = line.len() - 1;
+    line[at] = b'\n';
+    loop {
+        at -= 1;
+        line[at] = b'0' + (id % 10) as u8;
+        id /= 10;
+        if id == 0 {
+            break;
+        }
+    }
+    at -= 1;
+    line[at] = b'?';
+    let line = &line[at..];
+    // A guard that has died would make the write raise `SIGPIPE`, which
+    // kills this process without a word. Ignored for the length of the
+    // write, the failure comes back as an error instead, and the command
+    // is not started.
+    // SAFETY: `signal` with `SIG_IGN` or `SIG_DFL` installs no handler.
+    // `write` is given a pointer to `line` and its length, which is valid
+    // for the length of the call, and a descriptor the harness holds open
+    // until the start is settled.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        let written = libc::write(pipe, line.as_ptr().cast(), line.len());
+        // Read before anything else can change it.
+        let result = match usize::try_from(written) {
+            Ok(count) if count == line.len() => Ok(()),
+            Ok(_) => Err(io::ErrorKind::WriteZero.into()),
+            Err(_) => Err(io::Error::last_os_error()),
+        };
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        result
+    }
 }
 
 /// Sends `signal` to every process of the group `group` leads. A group
@@ -530,11 +630,12 @@ mod tests {
     /// and all of it for an old one. Both must find the same members.
     #[test]
     fn sys_a_group_is_counted_the_same_whichever_way_the_table_is_read() {
-        // Two processes that stay for as long as their input is open: the
-        // command itself, and one it started in the background.
+        // A shell and the two ends of a pipeline, which stay for as long as
+        // the first one's input is open: the command itself, and two
+        // processes it started.
         let mut command = Command::new("sh");
         command
-            .args(["-c", "cat <&0 & exec cat"])
+            .args(["-c", "cat | cat"])
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let (reader, input) = io::pipe().expect("make a pipe");
@@ -544,15 +645,15 @@ mod tests {
         let young = Duration::ZERO;
         let old = Duration::from_secs(60);
         let begun = Instant::now();
-        while count_group(tree.pid, old).expect("read the table") != 1 {
+        while count_group(tree.pid, old).expect("read the table") != 2 {
             assert!(
                 begun.elapsed() < Duration::from_secs(30),
-                "the background process never appeared"
+                "the two processes never appeared"
             );
             std::thread::yield_now();
         }
-        assert_eq!(count_group(tree.pid, young).expect("read the table"), 1);
-        assert_eq!(count_group(tree.pid, old).expect("read the table"), 1);
+        assert_eq!(count_group(tree.pid, young).expect("read the table"), 2);
+        assert_eq!(count_group(tree.pid, old).expect("read the table"), 2);
         // A group that is not there has nobody in it, either way.
         assert_eq!(count_group(libc::pid_t::MAX - 1, young).expect("read"), 0);
         assert_eq!(count_group(libc::pid_t::MAX - 1, old).expect("read"), 0);
