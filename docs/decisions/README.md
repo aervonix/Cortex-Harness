@@ -36,6 +36,7 @@ One record per significant choice. Each says what the options were, what was cho
 | [0028](0028-enforced-values-fail-closed.md) | Enforced values fail closed: a lease or grant with a field or value a build does not know is refused whole | Accepted, in the review of step 3 |
 | [0029](0029-owner-only-files-on-windows.md) | Owner-only files on Windows are made in `cortex-base`, in its one module that may use `unsafe` | Accepted by the owner |
 | [0030](0030-process-tree-control-in-cortex-sandbox.md) | Process trees are controlled from `cortex-sandbox`, and a guard process kills what a dead harness left | Accepted by the owner on 2026-11-13 |
+| [0031](0031-command-analysis-by-allow-list.md) | Shell commands are analysed by hand-written allow-list tokenizers, and `cmd.exe` and unknown shells are not analysed | Accepted by the owner on 2026-11-13 |
 
 The owner's answers are dated 2026-11-12 unless a row says otherwise, and are recorded together in the [build plan](../build-plan.md).
 

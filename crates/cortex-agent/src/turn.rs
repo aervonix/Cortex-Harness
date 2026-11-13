@@ -1173,9 +1173,8 @@ impl Session {
         if let Some(reason) = stopped {
             // The policy refused a call and said to stop: the results are
             // recorded, so the history is whole, and the turn ends here.
-            let message = format!(
-                "A tool call was not allowed, and the turn was stopped: {reason}"
-            );
+            let message =
+                format!("A tool call was not allowed, and the turn was stopped: {reason}");
             self.notify(
                 turn,
                 Notice::Info(InfoNotice {

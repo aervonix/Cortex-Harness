@@ -31,7 +31,11 @@ fn allow_once_adds_nothing() {
     assert!(recorded.allowed);
     assert!(recorded.added.is_empty());
     assert!(engine.approvals().is_empty());
-    assert_eq!(said(&shell(&engine, "cargo build")), Ask, "asked again next time");
+    assert_eq!(
+        said(&shell(&engine, "cargo build")),
+        Ask,
+        "asked again next time"
+    );
 }
 
 #[test]
@@ -54,11 +58,16 @@ fn deny_and_an_answer_nobody_knows_refuse_and_add_nothing() {
 fn an_approval_for_the_session_covers_the_program_and_its_subcommand() {
     let engine = engine();
     let asked = question(shell(&engine, "cargo build --release"));
-    let recorded = engine.record(&asked, &ApprovalChoice::AllowSession).unwrap();
+    let recorded = engine
+        .record(&asked, &ApprovalChoice::AllowSession)
+        .unwrap();
     assert!(recorded.allowed);
     assert_eq!(recorded.added.len(), 1);
     assert_eq!(recorded.added[0].scope, ApprovalScope::Session);
-    assert_eq!(recorded.added[0].rule, rule(Effect::Exec, "cargo build *", RuleAction::Allow));
+    assert_eq!(
+        recorded.added[0].rule,
+        rule(Effect::Exec, "cargo build *", RuleAction::Allow)
+    );
 
     // The same program and subcommand, with other arguments: allowed.
     assert_eq!(said(&shell(&engine, "cargo build")), Allow);
@@ -90,7 +99,9 @@ fn an_approval_never_lifts_a_rule_that_holds_back() {
     // Approve `cargo *`-shaped things for the session.
     for command in ["cargo build", "cargo test"] {
         let asked = question(shell(&engine, command));
-        engine.record(&asked, &ApprovalChoice::AllowSession).unwrap();
+        engine
+            .record(&asked, &ApprovalChoice::AllowSession)
+            .unwrap();
     }
     assert_eq!(said(&shell(&engine, "cargo build")), Allow);
     assert_eq!(said(&shell(&engine, "cargo publish")), Deny);
@@ -100,7 +111,9 @@ fn an_approval_never_lifts_a_rule_that_holds_back() {
     assert!(asked.lifts.is_empty());
     assert!(!asked.choices().contains(&ApprovalChoice::AllowSession));
     let before = engine.approvals().len();
-    let recorded = engine.record(&asked, &ApprovalChoice::AllowSession).unwrap();
+    let recorded = engine
+        .record(&asked, &ApprovalChoice::AllowSession)
+        .unwrap();
     assert!(recorded.allowed && recorded.added.is_empty());
     assert_eq!(engine.approvals().len(), before);
     assert_eq!(said(&shell(&engine, "cargo yank x")), Ask);
@@ -111,7 +124,9 @@ fn an_approval_for_the_project_is_stored_owner_only_and_read_back() {
     let scratch = Scratch::new("approvals_project");
     let engine = with_store(&scratch);
     let asked = question(shell(&engine, "npm run build && npm test"));
-    let recorded = engine.record(&asked, &ApprovalChoice::AllowProject).unwrap();
+    let recorded = engine
+        .record(&asked, &ApprovalChoice::AllowProject)
+        .unwrap();
     assert!(recorded.allowed);
     let patterns: Vec<&str> = recorded
         .added
@@ -121,13 +136,19 @@ fn an_approval_for_the_project_is_stored_owner_only_and_read_back() {
     assert_eq!(patterns, ["npm run *", "npm test *"]);
     assert_eq!(recorded.added[0].id, ApprovalId::new("ap_1"));
     assert_eq!(recorded.added[0].scope, ApprovalScope::Project);
-    assert_eq!(recorded.added[0].created_at.as_str(), "2026-11-13T10:00:00Z");
+    assert_eq!(
+        recorded.added[0].created_at.as_str(),
+        "2026-11-13T10:00:00Z"
+    );
     // In force at once.
     assert_eq!(said(&shell(&engine, "npm run lint")), Allow);
 
     // The file: private, and in the documented form.
     let file = store(&scratch);
-    assert!(private::is_private(file.path()).unwrap(), "the file is owner-only");
+    assert!(
+        private::is_private(file.path()).unwrap(),
+        "the file is owner-only"
+    );
     let text = std::fs::read_to_string(file.path()).unwrap();
     assert!(text.contains("version = 1"), "{text}");
     assert!(text.contains("[[approval]]"), "{text}");
@@ -162,9 +183,13 @@ fn approvals_are_listed_and_taken_back_by_id() {
     let scratch = Scratch::new("approvals_revoke");
     let engine = with_store(&scratch);
     let project = question(shell(&engine, "make -j4"));
-    engine.record(&project, &ApprovalChoice::AllowProject).unwrap();
+    engine
+        .record(&project, &ApprovalChoice::AllowProject)
+        .unwrap();
     let session = question(shell(&engine, "cargo build"));
-    engine.record(&session, &ApprovalChoice::AllowSession).unwrap();
+    engine
+        .record(&session, &ApprovalChoice::AllowSession)
+        .unwrap();
 
     let listed = engine.approvals();
     let ids: Vec<&str> = listed.iter().map(|approval| approval.id.as_str()).collect();
@@ -176,10 +201,18 @@ fn approvals_are_listed_and_taken_back_by_id() {
     assert_eq!(said(&shell(&engine, "cargo build")), Ask);
     assert_eq!(said(&shell(&engine, "make")), Allow);
 
-    assert_eq!(engine.revoke(&[ApprovalId::new("ap_1"), ApprovalId::new("ap_9")]).unwrap(), 1);
+    assert_eq!(
+        engine
+            .revoke(&[ApprovalId::new("ap_1"), ApprovalId::new("ap_9")])
+            .unwrap(),
+        1
+    );
     assert_eq!(said(&shell(&engine, "make")), Ask);
     assert!(engine.approvals().is_empty());
-    assert!(store(&scratch).load().unwrap().is_empty(), "gone from the file too");
+    assert!(
+        store(&scratch).load().unwrap().is_empty(),
+        "gone from the file too"
+    );
     // With none left, the numbering starts again.
     let next = store(&scratch)
         .add(&[rule(Effect::Exec, "make *", RuleAction::Allow)])
@@ -191,7 +224,9 @@ fn approvals_are_listed_and_taken_back_by_id() {
 fn without_a_store_always_allow_allows_this_call_only() {
     let engine = engine();
     let asked = question(shell(&engine, "make"));
-    let recorded = engine.record(&asked, &ApprovalChoice::AllowProject).unwrap();
+    let recorded = engine
+        .record(&asked, &ApprovalChoice::AllowProject)
+        .unwrap();
     assert!(recorded.allowed && recorded.added.is_empty());
     assert_eq!(said(&shell(&engine, "make")), Ask);
 }
@@ -237,7 +272,11 @@ fn a_stored_file_that_is_not_understood_grants_nothing() {
              rule = { effect = \"exec\", match = \"make *\", action = \"allow\" }\n",
             "version is 2",
         ),
-        ("unknown top-level key", "version = 1\nscope = \"everything\"\n", "scope"),
+        (
+            "unknown top-level key",
+            "version = 1\nscope = \"everything\"\n",
+            "scope",
+        ),
         (
             "no version",
             "[[approval]]\nid = \"ap_1\"\ncreated_at = \"2026-11-13T10:00:00Z\"\n\
@@ -251,9 +290,15 @@ fn a_stored_file_that_is_not_understood_grants_nothing() {
         let file = scratch.file("approvals/aaaa1111.toml", contents);
         let store = store(&scratch);
         let error = store.load().unwrap_err();
-        assert!(matches!(error, ApprovalError::NotUnderstood { .. }), "{name}: {error}");
+        assert!(
+            matches!(error, ApprovalError::NotUnderstood { .. }),
+            "{name}: {error}"
+        );
         assert!(error.to_string().contains(mentions), "{name}: {error}");
-        assert!(error.to_string().contains("none of them applies"), "{name}: {error}");
+        assert!(
+            error.to_string().contains("none of them applies"),
+            "{name}: {error}"
+        );
         // Adding to it fails too, and leaves it as it was.
         let added = store.add(&[rule(Effect::Exec, "make *", RuleAction::Allow)]);
         assert!(added.is_err(), "{name}");
@@ -270,7 +315,12 @@ fn a_stored_file_that_is_not_understood_grants_nothing() {
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].id, ApprovalId::new("ap_7"));
     // A missing file holds none.
-    assert!(store(&Scratch::new("approvals_missing")).load().unwrap().is_empty());
+    assert!(
+        store(&Scratch::new("approvals_missing"))
+            .load()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -303,7 +353,11 @@ fn an_engine_takes_only_allows_from_the_approvals_it_is_given() {
     let engine = engine_with(|parts| {
         parts.approved = vec![approval("ap_1", RuleAction::Deny)];
     });
-    assert_eq!(said(&shell(&engine, "make")), Ask, "neither allowed nor denied by it");
+    assert_eq!(
+        said(&shell(&engine, "make")),
+        Ask,
+        "neither allowed nor denied by it"
+    );
     let engine = engine_with(|parts| {
         parts.approved = vec![approval("ap_1", RuleAction::Allow)];
     });
@@ -314,17 +368,25 @@ fn an_engine_takes_only_allows_from_the_approvals_it_is_given() {
 fn approving_a_path_covers_that_path() {
     let engine = engine();
     let asked = question(crate::read(&engine, "/etc/hosts"));
-    engine.record(&asked, &ApprovalChoice::AllowSession).unwrap();
+    engine
+        .record(&asked, &ApprovalChoice::AllowSession)
+        .unwrap();
     assert_eq!(said(&crate::read(&engine, "/etc/hosts")), Allow);
     assert_eq!(said(&crate::read(&engine, "/etc/passwd")), Ask);
     assert_eq!(said(&crate::write(&engine, "/etc/hosts")), Ask);
     // The command that reads it is now on the safe list.
-    assert_eq!(said(&shell(&engine, "cat /etc/hosts")), crate::Said::ReadOnly);
+    assert_eq!(
+        said(&shell(&engine, "cat /etc/hosts")),
+        crate::Said::ReadOnly
+    );
     assert_eq!(said(&shell(&engine, "cat /etc/passwd")), Ask);
     // The harness's own files are not opened by approving one: there is no
     // question to approve, only a denial.
     assert_eq!(
-        said(&crate::read(&engine, "/home/dev/.config/cortex-harness/credentials.toml")),
+        said(&crate::read(
+            &engine,
+            "/users/dev/.config/cortex-harness/credentials.toml"
+        )),
         Deny
     );
 }

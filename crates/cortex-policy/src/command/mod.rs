@@ -230,7 +230,10 @@ mod tests {
             ("ksh", ShellSyntax::Posix),
             (r"C:\Program Files\Git\bin\bash.exe", ShellSyntax::Posix),
             ("pwsh", ShellSyntax::PowerShell),
-            (r"C:\Program Files\PowerShell\7\pwsh.exe", ShellSyntax::PowerShell),
+            (
+                r"C:\Program Files\PowerShell\7\pwsh.exe",
+                ShellSyntax::PowerShell,
+            ),
             ("PowerShell.EXE", ShellSyntax::PowerShell),
             ("cmd", ShellSyntax::Cmd),
             (r"C:\Windows\System32\cmd.exe", ShellSyntax::Cmd),

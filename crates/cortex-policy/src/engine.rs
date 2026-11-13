@@ -710,9 +710,10 @@ impl Engine {
             Some(hit) if hit.action == RuleAction::Deny => Finding::Deny {
                 reason: format!("Reaching {shown} is refused by {}.", hit.describe()),
             },
-            Some(hit) if hit.action == RuleAction::Ask => {
-                Finding::ask(format!("Reaching {shown} is asked about by {}.", hit.describe()))
-            }
+            Some(hit) if hit.action == RuleAction::Ask => Finding::ask(format!(
+                "Reaching {shown} is asked about by {}.",
+                hit.describe()
+            )),
             Some(_) => Finding::Allow,
             None if level::decider(self.level(), Matter::Network) == Decider::Holder => {
                 Finding::Allow
@@ -831,10 +832,9 @@ impl Engine {
                     .then(|| approval_rule(part))
                     .flatten();
                 let reason = match standing {
-                    Standing::Other => format!(
-                        "`{}` is not on a safe list.",
-                        words_of(part).join(" ")
-                    ),
+                    Standing::Other => {
+                        format!("`{}` is not on a safe list.", words_of(part).join(" "))
+                    }
                     _ => format!(
                         "`{}` may change files, and the level `{}` asks about every command that \
                          is not known to only read.",
@@ -913,7 +913,12 @@ impl Engine {
             // A command that only reads: everything it names, and the
             // directory it runs in, is a read like any other.
             Some(named) => {
-                findings.push(mentioned(self.judge_path(rules, &Effect::Read, here, Some(&shown))));
+                findings.push(mentioned(self.judge_path(
+                    rules,
+                    &Effect::Read,
+                    here,
+                    Some(&shown),
+                )));
                 for name in named {
                     match self.locate.locate(here, &name.text) {
                         Some(path) => findings.push(mentioned(self.judge_path(
@@ -935,7 +940,10 @@ impl Engine {
             // allows the command.
             None => {
                 for word in part.arguments().iter().filter(|word| word.is_fixed()) {
-                    let value = word.text.rsplit_once('=').map_or(word.text.as_str(), |(_, value)| value);
+                    let value = word
+                        .text
+                        .rsplit_once('=')
+                        .map_or(word.text.as_str(), |(_, value)| value);
                     for text in [word.text.as_str(), value] {
                         if text.is_empty() || text.starts_with('-') {
                             continue;
@@ -1030,12 +1038,18 @@ impl Engine {
         let mut rules = self.rules.write().unwrap_or_else(PoisonError::into_inner);
         let mut removed = rules.session.remove(ids);
         self.recompile(&mut rules);
-        if rules.approved.iter().any(|approval| ids.contains(&approval.id)) {
+        if rules
+            .approved
+            .iter()
+            .any(|approval| ids.contains(&approval.id))
+        {
             if let Some(store) = &self.store {
                 store.remove(ids)?;
             }
             let before = rules.approved.len();
-            rules.approved.retain(|approval| !ids.contains(&approval.id));
+            rules
+                .approved
+                .retain(|approval| !ids.contains(&approval.id));
             removed += before - rules.approved.len();
             self.recompile(&mut rules);
         }
@@ -1170,10 +1184,48 @@ fn is_change_of_directory(part: &Part, shell: ShellSyntax) -> bool {
 /// "always allow `sudo *`" is not what a person meant by approving `sudo
 /// apt list`.
 const WRAPPERS: [&str; 43] = [
-    "sudo", "doas", "su", "env", "xargs", "nohup", "nice", "ionice", "timeout", "watch", "time",
-    "stdbuf", "setsid", "chroot", "unshare", "flock", "strace", "ltrace", "script", "busybox",
-    "sh", "bash", "dash", "zsh", "ksh", "fish", "pwsh", "powershell", "cmd", "python", "python3",
-    "node", "deno", "bun", "ruby", "perl", "php", "lua", "awk", "ssh", "docker", "podman",
+    "sudo",
+    "doas",
+    "su",
+    "env",
+    "xargs",
+    "nohup",
+    "nice",
+    "ionice",
+    "timeout",
+    "watch",
+    "time",
+    "stdbuf",
+    "setsid",
+    "chroot",
+    "unshare",
+    "flock",
+    "strace",
+    "ltrace",
+    "script",
+    "busybox",
+    "sh",
+    "bash",
+    "dash",
+    "zsh",
+    "ksh",
+    "fish",
+    "pwsh",
+    "powershell",
+    "cmd",
+    "python",
+    "python3",
+    "node",
+    "deno",
+    "bun",
+    "ruby",
+    "perl",
+    "php",
+    "lua",
+    "awk",
+    "ssh",
+    "docker",
+    "podman",
     "kubectl",
 ];
 
@@ -1191,10 +1243,18 @@ fn approval_rule(part: &Part) -> Option<Rule> {
     if !program.is_fixed() || program.home || !plain(&program.text) {
         return None;
     }
-    let name = program.text.rsplit(['/', '\\']).next().unwrap_or(&program.text);
+    let name = program
+        .text
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&program.text);
     let pattern = if WRAPPERS.contains(&name.to_ascii_lowercase().as_str()) {
         // The whole line, word for word, and no more.
-        if !part.words.iter().all(|word| word.is_fixed() && !word.home && plain(&word.text)) {
+        if !part
+            .words
+            .iter()
+            .all(|word| word.is_fixed() && !word.home && plain(&word.text))
+        {
             return None;
         }
         words_of(part).join(" ")
@@ -1204,11 +1264,14 @@ fn approval_rule(part: &Part) -> Option<Rule> {
         let subcommand = part.words.get(1).filter(|word| {
             word.is_fixed()
                 && !word.home
-                && word.text.chars().next().is_some_and(|first| first.is_ascii_lowercase())
                 && word
                     .text
                     .chars()
-                    .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-')
+                    .next()
+                    .is_some_and(|first| first.is_ascii_lowercase())
+                && word.text.chars().all(|character| {
+                    character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+                })
         });
         match subcommand {
             Some(subcommand) => format!("{} {} *", program.text, subcommand.text),
@@ -1296,7 +1359,10 @@ mod tests {
                 assert_eq!(rule.action, RuleAction::Allow);
                 // The rule allows the command it was made from.
                 let pattern = crate::command::pattern::ExecPattern::parse(&rule.pattern).unwrap();
-                assert!(pattern.allows(&part(command), ShellSyntax::Posix), "{command:?}");
+                assert!(
+                    pattern.allows(&part(command), ShellSyntax::Posix),
+                    "{command:?}"
+                );
             }
         }
     }
@@ -1309,7 +1375,15 @@ mod tests {
             assert!(pattern.matches(text), "{text:?}");
             assert!(pattern.is_literal() || text.contains(['*', '?', '[', ']', '{', '}']));
         }
-        assert!(!NamePattern::parse(&literal_name("a*b")).unwrap().matches("axb"));
-        assert!(!NamePattern::parse(&literal_name("what?")).unwrap().matches("whatx"));
+        assert!(
+            !NamePattern::parse(&literal_name("a*b"))
+                .unwrap()
+                .matches("axb")
+        );
+        assert!(
+            !NamePattern::parse(&literal_name("what?"))
+                .unwrap()
+                .matches("whatx")
+        );
     }
 }

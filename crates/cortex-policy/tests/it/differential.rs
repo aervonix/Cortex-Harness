@@ -18,7 +18,9 @@
 use std::process::{Command, Stdio};
 
 use cortex_base::{Rng, SeededRng};
-use cortex_policy::command::{Analysis, Joiner, ShellSyntax, analyse};
+#[cfg(unix)]
+use cortex_policy::command::Joiner;
+use cortex_policy::command::{Analysis, ShellSyntax, analyse};
 use cortex_testkit::cases;
 
 use crate::{Scratch, in_ci};
@@ -128,6 +130,7 @@ fn posix_line(rng: &mut SeededRng) -> String {
 
 /// What a shell passed to each `show` of each line: lines, then parts, then
 /// arguments.
+#[cfg(unix)]
 fn run_posix(shell: &str, lines: &[String], scratch: &Scratch) -> Option<Vec<Vec<Vec<String>>>> {
     // `show` writes to descriptor 3, so that a line's own redirections do
     // not swallow what it reports.
@@ -168,6 +171,7 @@ fn run_posix(shell: &str, lines: &[String], scratch: &Scratch) -> Option<Vec<Vec
 
 /// The arguments the analysis says each `show` gets. `None` for a line the
 /// analysis does not model, or whose parts are not all `show`.
+#[cfg(unix)]
 fn modelled_posix(line: &str) -> Option<Vec<Vec<String>>> {
     let Analysis::Parts(parts) = analyse(line, ShellSyntax::Posix) else {
         return None;
@@ -177,11 +181,16 @@ fn modelled_posix(line: &str) -> Option<Vec<Vec<String>>> {
         if part.program() != "show" || matches!(part.joiner, Joiner::Pipe | Joiner::Or) {
             return None;
         }
-        // A pattern that begins with a dot matches `.` and `..` even in an
-        // empty directory. The analysis flags every glob as something it
-        // cannot know the expansion of, which is right; this test can only
-        // compare the ones that match nothing.
-        if part.words.iter().any(|word| word.glob && word.text.starts_with('.')) {
+        // The analysis flags every glob as something it cannot know the
+        // expansion of, which is right. This test can only compare the
+        // ones that match nothing: in the empty directory the lines run
+        // in, that is every pattern but one that begins with a dot (which
+        // matches `.` and `..`) or names another directory (`/*`).
+        if part
+            .words
+            .iter()
+            .any(|word| word.glob && (word.text.starts_with('.') || word.text.contains('/')))
+        {
             return None;
         }
         expected.push(
@@ -253,7 +262,10 @@ fn sys_the_posix_shells_pass_the_words_the_analysis_gives() {
         );
     }
     assert!(shells_run > 0 || !in_ci());
-    println!("{} lines compared, {refused} refused by the analysis", lines.len());
+    println!(
+        "{} lines compared, {refused} refused by the analysis",
+        lines.len()
+    );
 }
 
 /// The lines the generator makes cover what the tokenizer accepts: a
@@ -441,10 +453,20 @@ fn sys_powershell_reads_a_modelled_line_as_the_analysis_does() {
             continue;
         };
         assert_eq!(parts.len(), 1);
-        expected.push(parts[0].words.iter().map(|word| word.text.clone()).collect());
+        expected.push(
+            parts[0]
+                .words
+                .iter()
+                .map(|word| word.text.clone())
+                .collect(),
+        );
         lines.push(line);
     }
-    assert!(lines.len() > 200, "too few lines are modelled: {}", lines.len());
+    assert!(
+        lines.len() > 200,
+        "too few lines are modelled: {}",
+        lines.len()
+    );
 
     let scratch = Scratch::new("differential_powershell");
     let Some(got) = run_powershell(&lines, &scratch) else {
@@ -452,7 +474,11 @@ fn sys_powershell_reads_a_modelled_line_as_the_analysis_does() {
         println!("skipped: no `pwsh` here");
         return;
     };
-    assert_eq!(got.len(), lines.len(), "PowerShell did not answer for every line");
+    assert_eq!(
+        got.len(),
+        lines.len(),
+        "PowerShell did not answer for every line"
+    );
     let differences: Vec<String> = lines
         .iter()
         .zip(&expected)
@@ -487,6 +513,12 @@ fn the_generated_powershell_lines_exercise_the_subset() {
             Analysis::NotModelled { .. } => refused += 1,
         }
     }
-    assert!(modelled > 200 && refused > 50, "{modelled} modelled, {refused} refused");
-    assert!(quoted > 50 && patterns > 20, "{quoted} quoted, {patterns} patterns");
+    assert!(
+        modelled > 200 && refused > 50,
+        "{modelled} modelled, {refused} refused"
+    );
+    assert!(
+        quoted > 50 && patterns > 20,
+        "{quoted} quoted, {patterns} patterns"
+    );
 }

@@ -404,10 +404,16 @@ mod tests {
             assert!(data.message.contains("`supervised`"), "{}", data.message);
             // The levels that do not depend on the sandbox still start.
             for level in [Level::ReadOnly, Level::Supervised, Level::Unrestricted] {
-                assert_eq!(check_standing(&level, SandboxState::NotEnforcing(why)), Ok(()));
+                assert_eq!(
+                    check_standing(&level, SandboxState::NotEnforcing(why)),
+                    Ok(())
+                );
             }
         }
-        assert_eq!(check_standing(&Level::Autonomous, SandboxState::Enforcing), Ok(()));
+        assert_eq!(
+            check_standing(&Level::Autonomous, SandboxState::Enforcing),
+            Ok(())
+        );
     }
 
     #[test]
@@ -430,15 +436,24 @@ mod tests {
 
     #[test]
     fn what_the_user_is_told_about_a_missing_sandbox_is_plain() {
-        assert_eq!(sandbox_notice(&Level::Supervised, SandboxState::Enforcing), None);
+        assert_eq!(
+            sandbox_notice(&Level::Supervised, SandboxState::Enforcing),
+            None
+        );
         let off = SandboxState::NotEnforcing(NoSandbox::NotBuilt);
         let supervised = sandbox_notice(&Level::Supervised, off).unwrap();
         assert!(supervised.starts_with("sandbox: off."), "{supervised}");
         assert!(supervised.contains("no sandbox yet"), "{supervised}");
-        assert!(supervised.contains("`autonomous` is not available"), "{supervised}");
+        assert!(
+            supervised.contains("`autonomous` is not available"),
+            "{supervised}"
+        );
         assert!(supervised.contains("your full rights"), "{supervised}");
         let unrestricted = sandbox_notice(&Level::Unrestricted, off).unwrap();
-        assert!(unrestricted.contains("nothing is asked either"), "{unrestricted}");
+        assert!(
+            unrestricted.contains("nothing is asked either"),
+            "{unrestricted}"
+        );
         let read_only = sandbox_notice(&Level::ReadOnly, off).unwrap();
         assert!(read_only.contains("only reads"), "{read_only}");
     }

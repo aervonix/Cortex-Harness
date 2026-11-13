@@ -94,18 +94,22 @@ impl ExecPattern {
         if !self.rest && part.words.len() != self.words.len() {
             return false;
         }
-        self.words.iter().zip(&part.words).enumerate().all(|(index, (pattern, word))| {
-            if index == 0 && syntax == ShellSyntax::PowerShell {
-                return self.written.first().is_some_and(|program| {
-                    program.eq_ignore_ascii_case(&word.text)
+        self.words
+            .iter()
+            .zip(&part.words)
+            .enumerate()
+            .all(|(index, (pattern, word))| {
+                if index == 0 && syntax == ShellSyntax::PowerShell {
+                    return self.written.first().is_some_and(|program| {
+                        program.eq_ignore_ascii_case(&word.text)
                         // `cargo.exe` is the program `cargo` finds. A path
                         // is some other file, and is compared whole.
                         || (!word.text.contains(['/', '\\'])
                             && command_name(&word.text) == program.to_ascii_lowercase())
-                });
-            }
-            pattern.matches(&word.text)
-        })
+                    });
+                }
+                pattern.matches(&word.text)
+            })
     }
 
     /// Whether the pattern's words appear in the raw line, in order, one
@@ -129,15 +133,19 @@ impl ExecPattern {
             let Some(window) = stream.get(start..start + self.words.len()) else {
                 return false;
             };
-            self.words.iter().zip(window).enumerate().all(|(index, (pattern, word))| {
-                if pattern.matches(word) {
-                    return true;
-                }
-                index == 0
-                    && self.written.first().is_some_and(|program| {
-                        program_name(word).eq_ignore_ascii_case(&program_name(program))
-                    })
-            })
+            self.words
+                .iter()
+                .zip(window)
+                .enumerate()
+                .all(|(index, (pattern, word))| {
+                    if pattern.matches(word) {
+                        return true;
+                    }
+                    index == 0
+                        && self.written.first().is_some_and(|program| {
+                            program_name(word).eq_ignore_ascii_case(&program_name(program))
+                        })
+                })
         })
     }
 }
@@ -177,7 +185,10 @@ fn loose_words(line: &str) -> Vec<String> {
 /// an approval.
 #[must_use]
 pub fn words_of(part: &Part) -> Vec<&str> {
-    part.words.iter().map(|word: &Word| word.text.as_str()).collect()
+    part.words
+        .iter()
+        .map(|word: &Word| word.text.as_str())
+        .collect()
 }
 
 #[cfg(test)]
@@ -200,7 +211,11 @@ mod tests {
     fn an_allow_matches_one_whole_command_from_its_first_word() {
         for (rule, command, expected) in [
             ("cargo test *", "cargo test", true),
-            ("cargo test *", "cargo test --workspace -- --nocapture", true),
+            (
+                "cargo test *",
+                "cargo test --workspace -- --nocapture",
+                true,
+            ),
             ("cargo test *", "cargo testx", false),
             ("cargo test *", "cargo build", false),
             ("cargo test *", "cargo", false),
@@ -253,7 +268,12 @@ mod tests {
         };
         assert!(pattern("cargo test *").allows(&named("CARGO.EXE test"), ShellSyntax::PowerShell));
         assert!(pattern("cargo test *").allows(&named("Cargo test"), ShellSyntax::PowerShell));
-        for other in [r".\cargo.exe test", r"C:\evil\cargo.exe test", "./cargo test", "cargox test"] {
+        for other in [
+            r".\cargo.exe test",
+            r"C:\evil\cargo.exe test",
+            "./cargo test",
+            "cargox test",
+        ] {
             assert!(
                 !pattern("cargo test *").allows(&named(other), ShellSyntax::PowerShell),
                 "{other}"
@@ -312,7 +332,11 @@ mod tests {
             ("*", "", false),
             ("*", "  ;  ", false),
         ] {
-            assert_eq!(pattern(rule).restricts(line), expected, "{rule:?} on {line:?}");
+            assert_eq!(
+                pattern(rule).restricts(line),
+                expected,
+                "{rule:?} on {line:?}"
+            );
         }
     }
 

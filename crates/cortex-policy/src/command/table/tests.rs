@@ -16,8 +16,7 @@ fn part(command: &str, syntax: ShellSyntax) -> Option<Part> {
 /// command.
 fn named(command: &str, syntax: ShellSyntax) -> Option<Vec<String>> {
     let part = part(command, syntax)?;
-    read_only(&part, syntax, true)
-        .map(|named| named.into_iter().map(|named| named.text).collect())
+    read_only(&part, syntax, true).map(|named| named.into_iter().map(|named| named.text).collect())
 }
 
 fn posix(command: &str) -> Option<Vec<String>> {
@@ -34,7 +33,10 @@ fn commands_that_only_read_are_on_the_table_with_what_they_name() {
         ("ls -I target src", &["src"]),
         ("ls -- -odd-name", &["-odd-name"]),
         ("cat README.md", &["README.md"]),
-        ("cat -n src/main.rs Cargo.toml", &["src/main.rs", "Cargo.toml"]),
+        (
+            "cat -n src/main.rs Cargo.toml",
+            &["src/main.rs", "Cargo.toml"],
+        ),
         ("cat -", &[]),
         ("cat ~/notes.txt", &["~/notes.txt"]),
         ("head -n 20 a.txt", &["a.txt"]),
@@ -56,7 +58,10 @@ fn commands_that_only_read_are_on_the_table_with_what_they_name() {
         ("rg -t rust -C3 'fn main' crates", &["fn main", "crates"]),
         ("fd -e rs main src", &["main", "src"]),
         ("find . -name '*.rs' -type f", &["."]),
-        ("find src tests -maxdepth 2 -newer Cargo.toml -print", &["src", "tests", "Cargo.toml"]),
+        (
+            "find src tests -maxdepth 2 -newer Cargo.toml -print",
+            &["src", "tests", "Cargo.toml"],
+        ),
         ("find -name x", &[]),
         ("find . -type f -not -name '*.md' -o -empty", &["."]),
         ("sort -u -k2,3 -t, data.csv", &["data.csv"]),
@@ -69,7 +74,10 @@ fn commands_that_only_read_are_on_the_table_with_what_they_name() {
         ("df -h", &[]),
         ("tree -L 2 src", &["src"]),
         ("readlink -f link", &["link"]),
-        ("realpath --relative-to=src src/main.rs", &["src", "src/main.rs"]),
+        (
+            "realpath --relative-to=src src/main.rs",
+            &["src", "src/main.rs"],
+        ),
         ("basename src/main.rs .rs", &[]),
         ("dirname src/main.rs", &[]),
         ("pwd", &[]),
@@ -109,7 +117,10 @@ fn commands_that_only_read_are_on_the_table_with_what_they_name() {
         ("git log -n 5 --format=%H --since=2.weeks -- src", &["src"]),
         ("git log -p --follow src/lib.rs", &["src/lib.rs"]),
         ("git show HEAD", &["HEAD"]),
-        ("git show HEAD:src/main.rs", &["HEAD:src/main.rs", "src/main.rs"]),
+        (
+            "git show HEAD:src/main.rs",
+            &["HEAD:src/main.rs", "src/main.rs"],
+        ),
         ("git show --stat abc123", &["abc123"]),
         ("git branch", &[]),
         ("git branch -a -vv", &[]),
@@ -370,9 +381,17 @@ fn some_forms_never_reach_the_table() {
 
 #[test]
 fn git_is_on_the_table_only_in_a_trusted_project() {
-    for command in ["git status", "git diff", "git log --oneline", "git --version"] {
+    for command in [
+        "git status",
+        "git diff",
+        "git log --oneline",
+        "git --version",
+    ] {
         let part = part(command, ShellSyntax::Posix).unwrap();
-        assert!(read_only(&part, ShellSyntax::Posix, true).is_some(), "{command:?}");
+        assert!(
+            read_only(&part, ShellSyntax::Posix, true).is_some(),
+            "{command:?}"
+        );
         assert_eq!(
             read_only(&part, ShellSyntax::Posix, false),
             None,
@@ -392,9 +411,21 @@ fn a_named_revision_need_not_be_a_path_and_a_named_file_must() {
         read_only(&part, ShellSyntax::Posix, true).unwrap()
     };
     assert!(named_of("cat a.txt").iter().all(|named| named.must_resolve));
-    assert!(named_of("find src -newer x").iter().all(|named| named.must_resolve));
-    assert!(named_of("git show HEAD:a.txt").iter().all(|named| !named.must_resolve));
-    assert!(named_of("git status src").iter().all(|named| named.must_resolve));
+    assert!(
+        named_of("find src -newer x")
+            .iter()
+            .all(|named| named.must_resolve)
+    );
+    assert!(
+        named_of("git show HEAD:a.txt")
+            .iter()
+            .all(|named| !named.must_resolve)
+    );
+    assert!(
+        named_of("git status src")
+            .iter()
+            .all(|named| named.must_resolve)
+    );
 }
 
 #[test]
@@ -441,7 +472,10 @@ fn powershell_commands_that_only_read_are_on_the_table() {
         ("cat README.md", &["README.md"]),
         ("type README.md", &["README.md"]),
         ("Get-Content -Path:README.md -Raw", &["README.md"]),
-        ("Select-String -Pattern TODO -Path src\\main.rs", &["src\\main.rs"]),
+        (
+            "Select-String -Pattern TODO -Path src\\main.rs",
+            &["src\\main.rs"],
+        ),
         ("sls TODO README.md", &["TODO", "README.md"]),
         ("Test-Path Cargo.toml", &["Cargo.toml"]),
         ("Test-Path -Path Cargo.toml -PathType Leaf", &["Cargo.toml"]),

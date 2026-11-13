@@ -31,7 +31,7 @@ fn reads_and_edits_inside_the_workspace_run_and_outside_it_ask() {
         ("/work/app2/src/main.rs", Ask, Ask),
         ("/work", Ask, Ask),
         ("/etc/hosts", Ask, Ask),
-        ("/home/dev/notes.txt", Ask, Ask),
+        ("/users/dev/notes.txt", Ask, Ask),
         ("/tmp/other", Ask, Ask),
         // Protected paths inside the workspace: read freely, written only
         // with an answer.
@@ -52,13 +52,33 @@ fn reads_and_edits_inside_the_workspace_run_and_outside_it_ask() {
         ("/work/app/deploy/id_ed25519.pub", Allow, Allow),
         ("/work/app/src/env.rs", Allow, Allow),
         // The harness's own files: never.
-        ("/home/dev/.config/cortex-harness/credentials.toml", Deny, Deny),
-        ("/home/dev/.local/state/cortex-harness/trust.toml", Deny, Deny),
-        ("/home/dev/.local/state/cortex-harness/approvals/aaaa1111.toml", Deny, Deny),
-        ("/home/dev/.local/share/cortex-harness/sessions/bbbb2222/s_1/log.jsonl", Deny, Deny),
+        (
+            "/users/dev/.config/cortex-harness/credentials.toml",
+            Deny,
+            Deny,
+        ),
+        (
+            "/users/dev/.local/state/cortex-harness/trust.toml",
+            Deny,
+            Deny,
+        ),
+        (
+            "/users/dev/.local/state/cortex-harness/approvals/aaaa1111.toml",
+            Deny,
+            Deny,
+        ),
+        (
+            "/users/dev/.local/share/cortex-harness/sessions/bbbb2222/s_1/log.jsonl",
+            Deny,
+            Deny,
+        ),
         // This project's own sessions: outside the workspace, so asked
         // about to read, and never written.
-        ("/home/dev/.local/share/cortex-harness/sessions/aaaa1111/s_1/log.jsonl", Ask, Deny),
+        (
+            "/users/dev/.local/share/cortex-harness/sessions/aaaa1111/s_1/log.jsonl",
+            Ask,
+            Deny,
+        ),
     ];
     for (file, reading, writing) in table {
         assert_eq!(said(&read(&engine, file)), *reading, "read {file}");
@@ -78,7 +98,11 @@ fn a_secret_looking_file_asks_by_default_and_a_rule_settles_it() {
 
     let allowed = with_rules(vec![user(Effect::Read, "**/.env", RuleAction::Allow)]);
     assert_eq!(said(&read(&allowed, env)), Allow);
-    assert_eq!(said(&write(&allowed, env)), Ask, "a read rule is not a write rule");
+    assert_eq!(
+        said(&write(&allowed, env)),
+        Ask,
+        "a read rule is not a write rule"
+    );
     assert_eq!(said(&read(&allowed, "/work/app/.env.local")), Ask);
 
     let denied = with_rules(vec![
@@ -94,7 +118,11 @@ fn a_secret_looking_file_asks_by_default_and_a_rule_settles_it() {
         parts.trusted = false;
         parts.rules = rules();
     });
-    assert_eq!(said(&read(&untrusted, env)), Ask, "the project's allow waits for trust");
+    assert_eq!(
+        said(&read(&untrusted, env)),
+        Ask,
+        "the project's allow waits for trust"
+    );
     let trusted = with_rules(rules());
     assert_eq!(said(&read(&trusted, env)), Allow);
 
@@ -123,22 +151,31 @@ fn a_projects_path_rules_tighten_at_once_and_loosen_only_with_trust() {
         parts.trusted = false;
         parts.rules = rules();
     });
-    assert_eq!(said(&write(&untrusted, "/home/dev/.bashrc")), Ask);
+    assert_eq!(said(&write(&untrusted, "/users/dev/.bashrc")), Ask);
     assert_eq!(said(&read(&untrusted, "/etc/passwd")), Ask);
-    assert_eq!(said(&write(&untrusted, "/work/app/.git/hooks/pre-commit")), Ask);
+    assert_eq!(
+        said(&write(&untrusted, "/work/app/.git/hooks/pre-commit")),
+        Ask
+    );
     assert_eq!(said(&write(&untrusted, "/work/app/generated/a.rs")), Deny);
     assert_eq!(said(&read(&untrusted, "/work/app/fixtures/private/a")), Ask);
     assert_eq!(untrusted.withheld().len(), 3);
 
     let trusted = with_rules(rules());
-    assert_eq!(said(&write(&trusted, "/home/dev/.bashrc")), Allow);
+    assert_eq!(said(&write(&trusted, "/users/dev/.bashrc")), Allow);
     assert_eq!(said(&read(&trusted, "/etc/passwd")), Allow);
-    assert_eq!(said(&write(&trusted, "/work/app/.git/hooks/pre-commit")), Allow);
+    assert_eq!(
+        said(&write(&trusted, "/work/app/.git/hooks/pre-commit")),
+        Allow
+    );
     assert_eq!(said(&write(&trusted, "/work/app/generated/a.rs")), Deny);
     assert_eq!(said(&read(&trusted, "/work/app/fixtures/private/a")), Ask);
     // Not even a trusted project's rule opens the harness's own files.
     assert_eq!(
-        said(&write(&trusted, "/home/dev/.config/cortex-harness/config.toml")),
+        said(&write(
+            &trusted,
+            "/users/dev/.config/cortex-harness/config.toml"
+        )),
         Deny
     );
 }
@@ -207,7 +244,7 @@ fn a_walk_is_decided_as_a_whole_and_then_entry_by_entry() {
         ("/work/app/.env", false),
         ("/work/app/sub/.env.local", false),
         ("/work/app/certs/tls.key", false),
-        ("/home/dev/.config/cortex-harness/credentials.toml", false),
+        ("/users/dev/.config/cortex-harness/credentials.toml", false),
     ] {
         assert_eq!(engine.may_read(&path(entry)), allowed, "{entry}");
     }
@@ -255,7 +292,7 @@ fn a_base_state_keeps_only_what_could_be_read_unasked() {
             ("/work/app/private/notes.txt", false),
             // Outside the workspace: nothing a base state should hold.
             ("/etc/hosts", false),
-            ("/home/dev/.config/cortex-harness/credentials.toml", false),
+            ("/users/dev/.config/cortex-harness/credentials.toml", false),
         ] {
             assert_eq!(engine.may_store(&path(file)), kept, "{file} at {level:?}");
         }
@@ -272,7 +309,7 @@ fn windows(text: &str) -> AbsPath {
 /// rules about case are tested on every OS.
 fn windows_engine(rules: Vec<cortex_policy::SourcedRule>) -> Engine {
     let workspace = windows(r"C:\Work\App");
-    let home = windows(r"C:\Users\Dev");
+    let home = windows(r"C:\People\Dev");
     Engine::start(Parts {
         lease_id: LeaseId::new("l_1"),
         level: Level::Supervised,
@@ -287,7 +324,7 @@ fn windows_engine(rules: Vec<cortex_policy::SourcedRule>) -> Engine {
         home: Some(home.clone()),
         trusted: true,
         protected: Protected::none()
-            .closed(windows(r"C:\Users\Dev\AppData\Roaming\cortex-harness")),
+            .closed(windows(r"C:\People\Dev\AppData\Roaming\cortex-harness")),
         shell: ShellSyntax::PowerShell,
         locate: Arc::new(Lexical { home: Some(home) }),
         store: None,
@@ -300,7 +337,9 @@ fn windows_read(engine: &Engine, file: &str) -> Said {
     said(&engine.decide(&Request {
         tool: "read",
         default: RuleAction::Allow,
-        accesses: &[Access::Read { path: windows(file) }],
+        accesses: &[Access::Read {
+            path: windows(file),
+        }],
     }))
 }
 
@@ -308,7 +347,9 @@ fn windows_write(engine: &Engine, file: &str) -> Said {
     said(&engine.decide(&Request {
         tool: "write",
         default: RuleAction::Allow,
-        accesses: &[Access::Write { path: windows(file) }],
+        accesses: &[Access::Write {
+            path: windows(file),
+        }],
     }))
 }
 
@@ -318,7 +359,7 @@ fn windows_write(engine: &Engine, file: &str) -> Said {
 fn on_windows_the_scope_and_an_allow_are_exact_and_a_deny_folds() {
     let engine = windows_engine(vec![
         user(Effect::Write, r"**\generated\**", RuleAction::Deny),
-        user(Effect::Read, r"C:\Users\Dev\Notes\**", RuleAction::Allow),
+        user(Effect::Read, r"C:\People\Dev\Notes\**", RuleAction::Allow),
     ]);
     // The scope: `C:\Work\App` as it is stored, and under any drive-letter
     // case.
@@ -330,18 +371,21 @@ fn on_windows_the_scope_and_an_allow_are_exact_and_a_deny_folds() {
     assert_eq!(windows_write(&engine, r"C:\work\App\src\main.rs"), Ask);
     assert_eq!(windows_read(&engine, r"C:\Work\APP\src\main.rs"), Ask);
     // An allow: only the spelling it names.
-    assert_eq!(windows_read(&engine, r"C:\Users\Dev\Notes\todo.md"), Allow);
-    assert_eq!(windows_read(&engine, r"C:\Users\Dev\notes\todo.md"), Ask);
+    assert_eq!(windows_read(&engine, r"C:\People\Dev\Notes\todo.md"), Allow);
+    assert_eq!(windows_read(&engine, r"C:\People\Dev\notes\todo.md"), Ask);
     // A deny, a protected path and the built-in protection: every casing.
     for spelling in [r"C:\Work\App\generated\a.rs", r"C:\Work\App\GENERATED\a.rs"] {
         assert_eq!(windows_write(&engine, spelling), Deny, "{spelling}");
     }
-    for spelling in [r"C:\Work\App\.git\hooks\pre-commit", r"C:\Work\App\.GIT\Hooks\pre-commit"] {
+    for spelling in [
+        r"C:\Work\App\.git\hooks\pre-commit",
+        r"C:\Work\App\.GIT\Hooks\pre-commit",
+    ] {
         assert_eq!(windows_write(&engine, spelling), Ask, "{spelling}");
     }
     for spelling in [
-        r"C:\Users\Dev\AppData\Roaming\cortex-harness\credentials.toml",
-        r"c:\users\dev\appdata\roaming\CORTEX-HARNESS\credentials.toml",
+        r"C:\People\Dev\AppData\Roaming\cortex-harness\credentials.toml",
+        r"c:\people\dev\appdata\roaming\CORTEX-HARNESS\credentials.toml",
     ] {
         assert_eq!(windows_read(&engine, spelling), Deny, "{spelling}");
     }

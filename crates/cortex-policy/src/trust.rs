@@ -233,9 +233,10 @@ impl ProjectTrust {
         let Some(project) = &self.project else {
             return Standing::Untrusted;
         };
-        let pinned = project.pinned.iter().find(|pin| {
-            pin.kind == definition.kind.as_str() && pin.name == definition.name
-        });
+        let pinned = project
+            .pinned
+            .iter()
+            .find(|pin| pin.kind == definition.kind.as_str() && pin.name == definition.name);
         match pinned {
             Some(pin) if pin.hash == definition.hash => Standing::Approved,
             Some(_) => Standing::Changed,
@@ -288,7 +289,10 @@ impl TrustStore {
     pub fn project(&self, key: &ProjectKey) -> Result<ProjectTrust, TrustError> {
         let file = self.read()?;
         Ok(ProjectTrust {
-            project: file.projects.into_iter().find(|project| project.key == *key),
+            project: file
+                .projects
+                .into_iter()
+                .find(|project| project.key == *key),
         })
     }
 
@@ -417,8 +421,8 @@ impl TrustStore {
         }
         let text = std::fs::read_to_string(&self.file).map_err(read_error)?;
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-        let file: File =
-            toml::from_str(text).map_err(|error| self.not_understood(error.message().to_owned()))?;
+        let file: File = toml::from_str(text)
+            .map_err(|error| self.not_understood(error.message().to_owned()))?;
         if file.version != VERSION {
             return Err(self.not_understood(format!(
                 "its version is {}, and this version of Cortex-Harness reads version {VERSION}",
@@ -429,8 +433,9 @@ impl TrustStore {
     }
 
     fn write(&self, file: &File) -> Result<(), TrustError> {
-        let text = toml::to_string(file)
-            .map_err(|error| self.not_understood(format!("it could not be written out: {error}")))?;
+        let text = toml::to_string(file).map_err(|error| {
+            self.not_understood(format!("it could not be written out: {error}"))
+        })?;
         if let Some(directory) = self
             .file
             .parent()
@@ -512,7 +517,10 @@ mod tests {
         assert_eq!(trust.standing(&changed), Standing::Changed);
         assert!(!trust.standing(&changed).is_approved());
         // Not among what the user saw.
-        assert_eq!(trust.standing(&hook("deploy", &["./deploy"])), Standing::New);
+        assert_eq!(
+            trust.standing(&hook("deploy", &["./deploy"])),
+            Standing::New
+        );
         // The same name of another kind is another thing.
         let server = Definition::of(TrustResourceKind::McpServer, "format", ["cargo", "fmt"]);
         assert_eq!(trust.standing(&server), Standing::New);
@@ -544,7 +552,11 @@ mod tests {
             test.clone()
         ]));
         // An added allow, a dropped one or a changed one is a change.
-        let more = [test.clone(), build.clone(), rule(Effect::Exec, "rm *", RuleAction::Allow)];
+        let more = [
+            test.clone(),
+            build.clone(),
+            rule(Effect::Exec, "rm *", RuleAction::Allow),
+        ];
         assert!(!trust.allows_rules(&more));
         assert!(!trust.allows_rules(std::slice::from_ref(&test)));
         assert!(!trust.allows_rules(&[

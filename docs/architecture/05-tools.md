@@ -53,7 +53,7 @@ The two phases exist so the permission engine, the sandbox and the scheduler can
 - A path in an effect is the resolver's result: the real location, with every link followed, and whether it is inside the workspace. A rule is matched against that, never against what the model wrote.
 - A plan with no effect but reads has no side effects, and is what the loop may start early ([15-efficiency.md](15-efficiency.md)). A call of an extension or MCP tool is never one.
 - **A call that changes the session says so on its plan** (`Plan::changes_session`, added in step 10 as an agreed addition to the contract). `plan` and `remember` touch nothing outside the session, so they have no effect to declare and are scheduled as read-only. Without the marker the loop would start them while the model is still writing, and a response that was then thrown away would leave a replaced plan or a proposed memory behind. The loop reads the marker beside `has_side_effects`: such a call never starts before its response has ended. It is not an effect: there is nothing for the permission engine to decide. The plan of a `tool_call` carries the marker of the tool it wraps.
-- **A walk is checked twice.** `ReadTree` is decided once, before the walk. But a rule can protect one file inside an allowed tree, and the tree cannot be listed in advance. So a walk asks a gate (`ReadGate`, which the permission engine supplies) about each entry it meets, steps past what it may not read, and says in its result how many entries that was. Walks do not follow links, so they stay under the path they declared.
+- **A walk is checked twice.** `ReadTree` is decided once, before the walk. But a rule can protect one file inside an allowed tree, and the tree cannot be listed in advance. So a walk asks a gate (`ReadGate`, which the permission engine supplies) about each entry it meets, steps past what it may not read, and says in its result how many entries that was. Walks do not follow links, so they stay under the path they declared. The engine's gate (`Engine::may_read`, step 12) lets an entry through unless a rule denies or asks about it, or it looks like a secret and no rule allows it: an entry that would have to be asked about is stepped past, because a walk asks nobody. It does not ask about the scope again, which the tree's own decision settled.
 
 **Concurrency.** A tool's spec has a class, and each plan says how that call is scheduled, with the paths of a keyed call. `Plan::conflicts_with` is the rule the scheduler applies:
 
@@ -61,6 +61,7 @@ The two phases exist so the permission engine, the sandbox and the scheduler can
 - two keyed calls conflict when they share a path, or when a path of one is inside a path of the other;
 - a keyed call conflicts with a read-only call that reads one of its paths, a directory that holds one, or something inside one, so that `edit a.rs` followed by `read a.rs` sees the edit, and `write src/new.rs` followed by `list src` sees the file;
 - two calls that both change the session conflict, so that of two `plan` calls in one response the second is the one that stands. Beside any other call they run as read-only calls do;
+- a read-only call with an `exec` effect conflicts with every keyed call. That is a shell command the permission engine has marked read-only: its plan cannot say which files it reads, so it is taken to read all of them, and `edit a.rs` followed by `cat a.rs` sees the edit (step 12);
 - two read-only calls never conflict otherwise.
 
 Calls that conflict run in the model's order.
@@ -338,7 +339,7 @@ Three things on Windows are left as they are, and stated:
 
 **Effects.** An `exec` effect with the command as the model wrote it and its working directory, and a `write` effect on the workspace root, because a command may change anything there. A working directory outside the workspace is a second `write` effect.
 
-Concurrency: exclusive, unless the policy engine has classified the command as read-only.
+Concurrency: exclusive, unless the policy engine has classified the command as read-only. It does that when every part of the command is on its table of commands that only read and nothing the command names needs an answer ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md), "Command analysis as built"); the loop then sets the plan's concurrency to read-only.
 
 After the first release, when the command is exactly one of the project's known checks and speculative verification has already run it against the current state of the files, that result is returned with a note saying so ([15-efficiency.md](15-efficiency.md)).
 
