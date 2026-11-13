@@ -66,6 +66,10 @@ use crate::store::{Hooks, SharedLog};
 const UNCACHED: &str = "The next request sends the whole conversation again without the \
                         provider's cached prefix: it costs more and takes longer, once.";
 
+/// How long the end of a session waits for the capture of the workspace's
+/// starting state, when that has not finished.
+const BASE_WAIT: Duration = Duration::from_secs(2);
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     // Each change behind these locks is whole before the lock is let go.
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -479,16 +483,18 @@ impl Core {
         let closed = tokio::task::spawn_blocking(move || {
             let mut kept = lock(&log);
             if let Some(disk) = kept.disk() {
-                // The base state, if it is ready by now. A capture that is
-                // still running is let go: the session is over.
+                // The base state, if its capture ends in time. It nearly
+                // always has by now: it takes far less than one request to
+                // a model. A capture that is slower than this is let go
+                // with the session, which is then not replayable.
                 if let Some(state) = disk
                     .base
-                    .as_mut()
-                    .and_then(cortex_session::BaseCapture::try_take)
+                    .take()
+                    .and_then(|capture| capture.wait_for(BASE_WAIT))
+                    && disk.session.is_born()
                 {
                     let _ = disk.session.append(None, Body::Base(state));
                 }
-                disk.base = None;
                 let _ = disk.session.end_turn();
             }
         })
