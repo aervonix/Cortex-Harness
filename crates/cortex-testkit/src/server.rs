@@ -15,6 +15,14 @@
 //! every gate one of its threads is still waiting on, so that a test that
 //! ends early does not wait for them.
 //!
+//! One thing is looked at on an interval, and only while a server thread
+//! has nothing to read: whether the server is being dropped. Closing a
+//! socket's reading side from another thread wakes a read that is waiting
+//! on it on Linux, and Windows does not promise that it does, so a waiting
+//! read also wakes every few milliseconds to ask. A test never waits on
+//! that interval: at most, dropping a server that still holds a connection
+//! takes that much longer.
+//!
 //! The server speaks just enough HTTP/1.1 for one request per connection,
 //! answers with a chunked body and closes. It listens on `127.0.0.1` only,
 //! on a port the system picks, and uses plain threads, so it needs no async
@@ -32,6 +40,39 @@ use crate::gate::Gate;
 
 /// The longest a server thread waits for the test to open a gate.
 const PATIENCE: Duration = Duration::from_secs(30);
+
+/// How often a read that has nothing to read asks whether the server is
+/// being dropped.
+const STOP_CHECK: Duration = Duration::from_millis(20);
+
+/// A connection's reading side, as a server thread reads it: a read that
+/// waits gives up, as at the end of the stream, when the server is dropped.
+struct UntilStopped<'a> {
+    connection: &'a TcpStream,
+    shared: &'a Shared,
+}
+
+impl Read for UntilStopped<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            match self.connection.read(buffer) {
+                // The read timed out: nothing arrived. The two kinds are
+                // what Unix and Windows call it.
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    if self.shared.stopping.load(Ordering::SeqCst) {
+                        return Ok(0);
+                    }
+                }
+                other => return other,
+            }
+        }
+    }
+}
 
 /// One scripted answer of the server.
 #[derive(Debug, Clone)]
@@ -123,7 +164,8 @@ impl ServerReply {
 
     /// Sends nothing more and keeps the connection open until the client
     /// closes it, then opens `closed`. This is a stalled response, and it
-    /// is how a test sees that a cancelled request really hung up.
+    /// is how a test sees that a cancelled request really hung up. Dropping
+    /// the server ends the hold too, and opens the gate.
     #[must_use]
     pub fn hang_until_closed(mut self, closed: &Gate) -> Self {
         self.steps.push(Step::Hang(closed.clone()));
@@ -308,7 +350,8 @@ fn accept(listener: &TcpListener, shared: &Arc<Shared>) {
 
 /// Reads one request, plays the next reply, and closes.
 fn serve(connection: &TcpStream, shared: &Shared) -> std::io::Result<()> {
-    let mut reader = BufReader::new(connection);
+    connection.set_read_timeout(Some(STOP_CHECK))?;
+    let mut reader = BufReader::new(UntilStopped { connection, shared });
     let mut writer = connection;
 
     let mut line = String::new();
