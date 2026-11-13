@@ -264,6 +264,69 @@ fn the_gate_alone_decides_what_is_kept() {
 }
 
 #[test]
+fn changes_outside_a_workspace_below_the_top_make_the_record_incomplete() {
+    let world = World::new("base_below_top");
+    let session = world.create("s_1");
+    let top = world.root.parent().unwrap().to_native_string();
+    let root = world.root.clone();
+    // As the permission engine's gate does: nothing outside the workspace,
+    // and nothing that looks like a secret.
+    let in_scope = move |path: &AbsPath| path.starts_with(&root) && no_secrets(path);
+    let capture_with = |changed: &[u8]| {
+        let mut git = ScriptedGit::repository("abc123");
+        git.answers[0].1 = format!("{top}\n").into_bytes();
+        git.answers[3].1 = changed.to_vec();
+        git.answers[5].1 = b"other/notes.txt\0".to_vec();
+        capture(
+            &world.root,
+            true,
+            &session.store(),
+            &git,
+            &world.clock,
+            &BaseLimits::default(),
+            &in_scope,
+        )
+    };
+    // A change elsewhere in the repository, an untracked file there, or
+    // every change left out by the gate (found by the review of step 12):
+    // incomplete, and it says why.
+    for changed in [
+        &b"workspace/src/lib.rs\0other/x.rs\0"[..],
+        &b"other/x.rs\0other/y.rs\0"[..],
+        &b"workspace/src/lib.rs\0"[..],
+    ] {
+        let base = capture_with(changed);
+        assert_eq!(base.git.as_ref().unwrap().root, "workspace");
+        assert!(!base.complete, "{base:?}");
+        let note = base.note.clone().unwrap_or_default();
+        assert!(note.contains("outside the workspace"), "{note}");
+    }
+    // Nothing elsewhere: complete.
+    let mut git = ScriptedGit::repository("abc123");
+    git.answers[0].1 = format!("{top}\n").into_bytes();
+    git.answers[3].1 = b"workspace/src/lib.rs\0workspace/.env\0".to_vec();
+    git.answers[5].1 = b"workspace/notes.txt\0".to_vec();
+    world.write("notes.txt", b"untracked notes");
+    let base = capture(
+        &world.root,
+        true,
+        &session.store(),
+        &git,
+        &world.clock,
+        &BaseLimits::default(),
+        &in_scope,
+    );
+    assert!(base.complete, "{base:?}");
+    assert_eq!(
+        base.omitted
+            .iter()
+            .map(|omitted| omitted.path.as_str())
+            .collect::<Vec<_>>(),
+        ["workspace/.env"]
+    );
+}
+
+#[test]
 fn what_the_gate_refuses_is_never_kept() {
     let world = World::new("base_secrets");
     let session = world.create("s_1");

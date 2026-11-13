@@ -586,6 +586,24 @@ fn from_git(
         Err(error) => problems.push(format!("git could not list the untracked files: {error}")),
     }
 
+    // In a workspace below the repository's top, git names the whole
+    // repository's changes, and the gate refuses what lies outside the
+    // workspace, as a read of it would be asked about. Those are not left
+    // out by choice, as a protected file is: the record then does not hold
+    // the repository's state, though its patch may be empty, and it says
+    // so (found by the review of step 12).
+    let elsewhere = omitted
+        .iter()
+        .filter(|omitted| {
+            omitted.reason == OmitReason::Protected && !in_workspace(&base.root, &omitted.path)
+        })
+        .count();
+    if elsewhere > 0 {
+        problems.push(format!(
+            "{elsewhere} changed or untracked file(s) elsewhere in the repository, outside the \
+             workspace, were left out"
+        ));
+    }
     let complete = problems.is_empty()
         && omitted
             .iter()
@@ -597,6 +615,17 @@ fn from_git(
         note: (!problems.is_empty()).then(|| problems.join("; ")),
         ..BaseState::default()
     }
+}
+
+/// Whether a name git gives, relative to the repository's top, is in the
+/// workspace at `root`, the workspace's place in the repository (empty at
+/// the top). A name `*` stands for files past a limit, wherever they are.
+fn in_workspace(root: &str, path: &str) -> bool {
+    root.is_empty()
+        || path == "*"
+        || path
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
 /// Why there is no patch when the names of the changed files are not all

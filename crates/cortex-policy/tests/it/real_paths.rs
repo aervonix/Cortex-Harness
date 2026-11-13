@@ -115,6 +115,9 @@ mod unix {
             ("grep -r x dirlink", Ask),
             ("cd dirlink && ls", Ask),
             ("cd dirlink && cat secret.txt", Ask),
+            ("cd ./dirlink && ls", Ask),
+            ("cd ./dirlink && cat secret.txt", Ask),
+            ("cd ./dirlink && echo x > new.txt", Ask),
             ("cat root/etc/passwd", Ask),
             ("wc -c src/main.rs link.txt", Ask),
             ("cat < link.txt", Ask),
@@ -183,6 +186,47 @@ mod unix {
             assert!(
                 reason(&outcome).contains("deny read"),
                 "{}",
+                reason(&outcome)
+            );
+        }
+    }
+
+    /// Every POSIX shell's `cd` takes `..` logically: `a/../..` is two up
+    /// from where the shell believes it is, whatever `a` links to. The file
+    /// system takes it the other way, through the link. A workspace with a
+    /// link `a` to `b/c` in it (a cloned repository can carry one) let
+    /// `cd a/../.. && …` reach the workspace's parent while the engine
+    /// judged the workspace (found by the review of step 12, with bash,
+    /// dash and sh). A path a command names after the `cd` is opened from
+    /// the real directory, so it is found from there.
+    #[test]
+    fn a_cd_through_a_link_takes_dot_dot_as_the_shell_does() {
+        let scratch = cortex_testkit::scratch!("real_cd_logical");
+        scratch.dir("home/ws/b/c");
+        scratch.file("home/notes.txt", "outside");
+        scratch.file("home/ws/notes.txt", "inside");
+        let ws = scratch.path().join("home/ws");
+        symlink("b/c", ws.join("a")).unwrap();
+        let (engine, resolver) = real_engine(&ws, ShellSyntax::Posix, Vec::new());
+        for (command, expected) in [
+            ("cat ../notes.txt", Ask),
+            ("cd .. && cat notes.txt", Ask),
+            ("cd ./a/../.. && cat notes.txt", Ask),
+            ("cd ./a/../.. && echo planted >> .bash_aliases", Ask),
+            ("cd ./a/../.. && echo key >> .ssh/authorized_keys", Ask),
+            ("cd a/../.. && cat notes.txt", Ask),
+            ("cd ./a && cd .. && cd .. && cat notes.txt", Ask),
+            // Logically back in the workspace.
+            ("cd ./a/.. && cat notes.txt", ReadOnly),
+            ("cd ./a && cd .. && cat notes.txt", ReadOnly),
+            // From the real directory, `b/c`, two up is the workspace.
+            ("cd ./a && cat ../../notes.txt", ReadOnly),
+        ] {
+            let outcome = run(&engine, &resolver, command);
+            assert_eq!(
+                said(&outcome),
+                expected,
+                "{command:?}: {}",
                 reason(&outcome)
             );
         }

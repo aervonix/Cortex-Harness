@@ -133,10 +133,10 @@ fn a_changed_definition_is_disabled_until_it_is_approved_again() {
     assert_eq!(trust.standing(&server), Standing::New);
 }
 
-/// A project's allow rules are a definition like any other: trusted once,
-/// and disabled when they change.
+/// A project's rules are a definition like any other: trusted once, and its
+/// allow rules disabled when any of its rules change.
 #[test]
-fn a_projects_allow_rules_are_disabled_when_they_change_after_trust() {
+fn a_projects_allow_rules_are_disabled_when_its_rules_change_after_trust() {
     let scratch = cortex_testkit::scratch!("trust_rules");
     let store = store(&scratch);
     let key = ProjectKey::new("aaaa1111");
@@ -152,7 +152,7 @@ fn a_projects_allow_rules_are_disabled_when_they_change_after_trust() {
     // while they are the ones the user saw.
     let engine_for = |rules: &[cortex_protocol::lease::Rule]| {
         let trust = store.project(&key).unwrap();
-        let trusted = trust.allows_rules(rules);
+        let trusted = trust.rules_approved(rules);
         engine_with(|parts| {
             parts.trusted = trusted;
             parts.rules = rules
@@ -180,10 +180,13 @@ fn a_projects_allow_rules_are_disabled_when_they_change_after_trust() {
         crate::Said::Deny
     );
 
-    // A change to a rule that only tightens needs no new approval.
+    // A rule that holds back is pinned too. One added is a change like any
+    // other: it holds at once, and the allow rules wait for approval.
     let mut tighter = seen.clone();
     tighter.push(rule(Effect::Exec, "make deploy", RuleAction::Deny));
-    assert_eq!(said(&shell(&engine_for(&tighter), "make test")), Allow);
+    let engine = engine_for(&tighter);
+    assert_eq!(said(&shell(&engine, "make deploy")), crate::Said::Deny);
+    assert_eq!(said(&shell(&engine, "make test")), Ask);
 
     // The user approves the new rules.
     store
@@ -193,6 +196,50 @@ fn a_projects_allow_rules_are_disabled_when_they_change_after_trust() {
         said(&shell(&engine_for(&changed), "curl evil.example")),
         Allow
     );
+}
+
+/// The case the review of step 12 found: the user trusts `allow make *`
+/// with `deny make deploy`, and a later commit drops the deny. That loosens
+/// the project, so its allow rules wait for the user again, and `make
+/// deploy` is asked about.
+#[test]
+fn a_project_that_drops_one_of_its_denials_is_not_trusted_until_approved_again() {
+    let scratch = cortex_testkit::scratch!("trust_dropped_deny");
+    let store = store(&scratch);
+    let key = ProjectKey::new("aaaa1111");
+    let allow = rule(Effect::Exec, "make *", RuleAction::Allow);
+    let deny = rule(Effect::Exec, "make deploy", RuleAction::Deny);
+    let ask = rule(Effect::Write, "migrations/**", RuleAction::Ask);
+    let seen = [allow.clone(), deny.clone(), ask.clone()];
+    store
+        .trust(&key, "~/work/app", &[Definition::of_rules(&seen)])
+        .unwrap();
+    let engine_for = |rules: &[cortex_protocol::lease::Rule]| {
+        let trusted = store.project(&key).unwrap().rules_approved(rules);
+        engine_with(|parts| {
+            parts.trusted = trusted;
+            parts.rules = rules
+                .iter()
+                .map(|rule| project(rule.effect.clone(), &rule.pattern, rule.action))
+                .collect();
+        })
+    };
+    let engine = engine_for(&seen);
+    assert_eq!(said(&shell(&engine, "make test")), Allow);
+    assert_eq!(said(&shell(&engine, "make deploy")), crate::Said::Deny);
+
+    // The deny dropped: `make deploy` is no longer refused, and is asked
+    // about, not run.
+    let engine = engine_for(&[allow.clone(), ask.clone()]);
+    assert_eq!(said(&shell(&engine, "make deploy")), Ask);
+    assert_eq!(said(&shell(&engine, "make test")), Ask);
+    // The ask dropped: the allow rules wait all the same.
+    let engine = engine_for(&[allow.clone(), deny.clone()]);
+    assert_eq!(said(&shell(&engine, "make test")), Ask);
+    assert_eq!(said(&shell(&engine, "make deploy")), crate::Said::Deny);
+    // The project as trusted, rules in another order, is still trusted.
+    let reordered = [ask.clone(), deny.clone(), allow.clone()];
+    assert!(store.project(&key).unwrap().rules_approved(&reordered));
 }
 
 /// A trust store that is not understood in full trusts nothing, and is

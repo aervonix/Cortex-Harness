@@ -3,7 +3,7 @@
 //!
 //! A repository is not trusted until the user says so, and then only for
 //! the definitions they saw. What needs trust is whatever in a project can
-//! run code or grant permissions: its allow rules, hooks, extensions, MCP
+//! run code or grant permissions: its rules, hooks, extensions, MCP
 //! servers, and the learned or shared commands used for the safe list.
 //!
 //! **Trust is pinned.** When the user trusts a project, the hash of each
@@ -42,7 +42,10 @@
 //!   made from the resolved root in its stored case, so a folder that
 //!   differs from a trusted one only in case is another project. `root` is
 //!   for showing a person which project an entry is, and is never compared.
-//! - **Written owner-only, atomically, on every write.**
+//! - **Written owner-only, atomically, on every write,** under a lock held
+//!   from the read to the write, so that two sessions that change it at
+//!   once both keep their change: a `revoke` is never undone by a `trust`
+//!   that read the file before it (`crate::store_lock`).
 //! - **Read strictly.** A key this build does not know, or a newer
 //!   `version`, refuses the whole file, and then **nothing is trusted**: a
 //!   file that cannot be read in full must not be read in part.
@@ -56,13 +59,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use cortex_base::{
-    AtomicWriteError, AtomicWriteOptions, ContentHash, ContentHasher, SharedClock, private,
-    write_atomic,
+    AtomicWriteError, AtomicWriteOptions, ContentHash, ContentHasher, SharedClock, write_atomic,
 };
 use cortex_protocol::ids::{ProjectKey, Timestamp};
-use cortex_protocol::lease::{Rule, RuleAction};
+use cortex_protocol::lease::Rule;
 use cortex_protocol::methods::TrustResourceKind;
 use serde::{Deserialize, Serialize};
+
+use crate::store_lock;
 
 /// The version of the file's format this build writes and reads.
 const VERSION: u32 = 1;
@@ -109,16 +113,28 @@ impl Definition {
         }
     }
 
-    /// The definition of a project's allow rules, taken together: the
-    /// rules that take effect only with trust. The order of the rules does
-    /// not matter to what they mean, so it does not matter to the hash.
-    /// Rules that deny or ask need no trust and are left out.
+    /// The definition of a project's rules, taken together: all of them,
+    /// the ones that deny and ask as well as the ones that allow. The order
+    /// of the rules does not matter to what they mean, so it does not
+    /// matter to the hash, and neither does a rule written twice.
+    ///
+    /// The rules that deny and ask take effect without trust, and are
+    /// pinned all the same: what the user trusted was the allow rules *with*
+    /// what held them back. A project that drops `deny exec make deploy`
+    /// beside `allow exec make *` has loosened, and must be approved again
+    /// (found by the review of step 12).
     #[must_use]
     pub fn of_rules(rules: &[Rule]) -> Self {
         let mut lines: Vec<String> = rules
             .iter()
-            .filter(|rule| rule.action == RuleAction::Allow)
-            .map(|rule| format!("{}\u{0}{}", rule.effect.as_str(), rule.pattern))
+            .map(|rule| {
+                format!(
+                    "{}\u{0}{}\u{0}{}",
+                    rule.action.as_str(),
+                    rule.effect.as_str(),
+                    rule.pattern
+                )
+            })
             .collect();
         lines.sort();
         lines.dedup();
@@ -244,15 +260,20 @@ impl ProjectTrust {
         }
     }
 
-    /// Whether the project's allow rules, as they are now, are the ones
-    /// the user approved. A project with no allow rules needs no approval
-    /// for them.
+    /// Whether the project's rules, as its files hold them now, are the
+    /// ones the user approved: `rules` is **every** rule of the project,
+    /// whatever it does ([`Definition::of_rules`]). Any change, a rule that
+    /// denies or asks added or dropped included, is a change to approve.
+    ///
+    /// A trusted project that has no rules, and had none pinned, needs no
+    /// approval for them. One whose pinned rules are all gone has changed.
     #[must_use]
-    pub fn allows_rules(&self, rules: &[Rule]) -> bool {
-        if rules.iter().all(|rule| rule.action != RuleAction::Allow) {
-            return self.is_trusted();
+    pub fn rules_approved(&self, rules: &[Rule]) -> bool {
+        match self.standing(&Definition::of_rules(rules)) {
+            Standing::Approved => true,
+            Standing::New => rules.is_empty(),
+            Standing::Changed | Standing::Untrusted => false,
         }
-        self.standing(&Definition::of_rules(rules)).is_approved()
     }
 }
 
@@ -310,18 +331,21 @@ impl TrustStore {
         root: &str,
         definitions: &[Definition],
     ) -> Result<ProjectTrust, TrustError> {
-        let mut file = self.read()?;
-        file.projects.retain(|project| project.key != *key);
-        let project = Project {
-            key: key.clone(),
-            root: root.to_owned(),
-            trusted_at: self.clock.now().to_timestamp(),
-            pinned: pins_of(definitions),
-        };
-        file.projects.push(project.clone());
-        self.write(&file)?;
-        Ok(ProjectTrust {
-            project: Some(project),
+        self.update(|file| {
+            file.projects.retain(|project| project.key != *key);
+            let project = Project {
+                key: key.clone(),
+                root: root.to_owned(),
+                trusted_at: self.clock.now().to_timestamp(),
+                pinned: pins_of(definitions),
+            };
+            file.projects.push(project.clone());
+            Ok((
+                ProjectTrust {
+                    project: Some(project),
+                },
+                true,
+            ))
         })
     }
 
@@ -339,24 +363,24 @@ impl TrustStore {
         key: &ProjectKey,
         definitions: &[Definition],
     ) -> Result<ProjectTrust, TrustError> {
-        let mut file = self.read()?;
-        let Some(project) = file.projects.iter_mut().find(|project| project.key == *key) else {
-            return Err(TrustError::NotUnderstood {
-                path: self.file.display().to_string(),
-                problem: "the project is not trusted, so no definition of it can be approved"
-                    .to_owned(),
-            });
-        };
-        for pin in pins_of(definitions) {
-            project
-                .pinned
-                .retain(|old| !(old.kind == pin.kind && old.name == pin.name));
-            project.pinned.push(pin);
-        }
-        let project = project.clone();
-        self.write(&file)?;
-        Ok(ProjectTrust {
-            project: Some(project),
+        self.update(|file| {
+            let Some(project) = file.projects.iter_mut().find(|project| project.key == *key) else {
+                return Err(self.not_understood(
+                    "the project is not trusted, so no definition of it can be approved".to_owned(),
+                ));
+            };
+            for pin in pins_of(definitions) {
+                project
+                    .pinned
+                    .retain(|old| !(old.kind == pin.kind && old.name == pin.name));
+                project.pinned.push(pin);
+            }
+            Ok((
+                ProjectTrust {
+                    project: Some(project.clone()),
+                },
+                true,
+            ))
         })
     }
 
@@ -367,14 +391,12 @@ impl TrustStore {
     /// When the file cannot be read, is not understood, or cannot be
     /// written.
     pub fn revoke(&self, key: &ProjectKey) -> Result<bool, TrustError> {
-        let mut file = self.read()?;
-        let before = file.projects.len();
-        file.projects.retain(|project| project.key != *key);
-        let was_trusted = file.projects.len() != before;
-        if was_trusted {
-            self.write(&file)?;
-        }
-        Ok(was_trusted)
+        self.update(|file| {
+            let before = file.projects.len();
+            file.projects.retain(|project| project.key != *key);
+            let was_trusted = file.projects.len() != before;
+            Ok((was_trusted, was_trusted))
+        })
     }
 
     /// The projects the user has trusted, as their key and the root they
@@ -390,6 +412,26 @@ impl TrustStore {
             .into_iter()
             .map(|project| (project.key, project.root))
             .collect())
+    }
+
+    /// Reads the file, changes it and writes it if `change` says it changed
+    /// (the second of what it returns), with the lock held throughout. Every
+    /// change to the file goes through here.
+    fn update<T>(
+        &self,
+        change: impl FnOnce(&mut File) -> Result<(T, bool), TrustError>,
+    ) -> Result<T, TrustError> {
+        let _lock = store_lock::hold(&self.file).map_err(|source| AtomicWriteError::Io {
+            path: self.file.display().to_string(),
+            step: "lock",
+            source,
+        })?;
+        let mut file = self.read()?;
+        let (answer, changed) = change(&mut file)?;
+        if changed {
+            self.write(&file)?;
+        }
+        Ok(answer)
     }
 
     fn not_understood(&self, problem: String) -> TrustError {
@@ -433,20 +475,10 @@ impl TrustStore {
     }
 
     fn write(&self, file: &File) -> Result<(), TrustError> {
+        // The directory was made when the lock was taken.
         let text = toml::to_string(file).map_err(|error| {
             self.not_understood(format!("it could not be written out: {error}"))
         })?;
-        if let Some(directory) = self
-            .file
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            private::create_dir_all(directory).map_err(|source| AtomicWriteError::Io {
-                path: self.file.display().to_string(),
-                step: "create the directory",
-                source,
-            })?;
-        }
         let options = AtomicWriteOptions {
             owner_only: true,
             ..AtomicWriteOptions::default()
@@ -531,7 +563,8 @@ mod tests {
     }
 
     #[test]
-    fn a_projects_allow_rules_are_pinned_together_whatever_their_order() {
+    fn a_projects_rules_are_pinned_together_whatever_their_order() {
+        use cortex_protocol::lease::RuleAction;
         let rule = |effect: Effect, pattern: &str, action| Rule {
             effect,
             pattern: pattern.to_owned(),
@@ -543,34 +576,99 @@ mod tests {
         let seen = [test.clone(), build.clone(), deny.clone()];
         let trust = trusted_with(&[Definition::of_rules(&seen)]);
 
-        assert!(trust.allows_rules(&seen));
-        // Order, repeats and the rules that need no trust do not matter.
-        assert!(trust.allows_rules(&[build.clone(), test.clone(), test.clone()]));
-        assert!(trust.allows_rules(&[
-            build.clone(),
-            rule(Effect::Exec, "rm *", RuleAction::Ask),
-            test.clone()
-        ]));
+        assert!(trust.rules_approved(&seen));
+        // Order and repeats do not matter.
+        assert!(trust.rules_approved(&[deny.clone(), build.clone(), test.clone(), test.clone()]));
         // An added allow, a dropped one or a changed one is a change.
         let more = [
             test.clone(),
             build.clone(),
+            deny.clone(),
             rule(Effect::Exec, "rm *", RuleAction::Allow),
         ];
-        assert!(!trust.allows_rules(&more));
-        assert!(!trust.allows_rules(std::slice::from_ref(&test)));
-        assert!(!trust.allows_rules(&[
+        assert!(!trust.rules_approved(&more));
+        assert!(!trust.rules_approved(&[test.clone(), deny.clone()]));
+        assert!(!trust.rules_approved(&[
             test.clone(),
-            rule(Effect::Exec, "cargo build", RuleAction::Allow)
+            rule(Effect::Exec, "cargo build", RuleAction::Allow),
+            deny.clone()
         ]));
         // The same pattern for another effect is another rule.
-        assert!(!trust.allows_rules(&[
+        assert!(!trust.rules_approved(&[
             test.clone(),
-            rule(Effect::Write, "cargo build *", RuleAction::Allow)
+            rule(Effect::Write, "cargo build *", RuleAction::Allow),
+            deny.clone()
         ]));
-        // With no allow rules there is nothing to approve.
-        assert!(trust.allows_rules(std::slice::from_ref(&deny)));
-        assert!(!ProjectTrust::untrusted().allows_rules(&seen));
-        assert!(!ProjectTrust::untrusted().allows_rules(std::slice::from_ref(&deny)));
+        // So is the same pattern with another action.
+        assert!(!trust.rules_approved(&[
+            test.clone(),
+            build.clone(),
+            rule(Effect::Write, "**/.env*", RuleAction::Ask)
+        ]));
+        // A rule that holds back, dropped or added, is a change too: the
+        // user trusted the allow rules with what held them back. Found by
+        // the review of step 12.
+        assert!(!trust.rules_approved(&[test.clone(), build.clone()]));
+        assert!(!trust.rules_approved(&[
+            test.clone(),
+            build.clone(),
+            deny.clone(),
+            rule(Effect::Exec, "make deploy", RuleAction::Deny)
+        ]));
+        // All of them gone is a change.
+        assert!(!trust.rules_approved(&[]));
+        // A trusted project that had no rules pinned, and has none, needs
+        // no approval; any rule it gains, of any action, does.
+        let plain = trusted_with(&[]);
+        assert!(plain.rules_approved(&[]));
+        assert!(!plain.rules_approved(std::slice::from_ref(&deny)));
+        assert!(!plain.rules_approved(std::slice::from_ref(&test)));
+        assert!(!ProjectTrust::untrusted().rules_approved(&seen));
+        assert!(!ProjectTrust::untrusted().rules_approved(&[]));
+    }
+
+    #[test]
+    fn every_change_to_the_store_is_made_under_its_lock() {
+        use cortex_base::FakeClock;
+
+        use crate::store_lock::tests::{Scratch, is_held};
+
+        let scratch = Scratch::new();
+        let file = scratch.0.join("trust.toml");
+        let clock: SharedClock =
+            std::sync::Arc::new(FakeClock::starting_at("2026-11-13T10:00:00Z").unwrap());
+        let store = TrustStore::new(&file, clock);
+        let key = ProjectKey::new("k");
+        // Every public change goes through `update`, and `update` holds the
+        // lock from the read to the write.
+        let held = store.update(|_| Ok((is_held(&file), false))).unwrap();
+        assert!(held, "the lock is held while the file is changed");
+        assert!(!is_held(&file), "and let go after");
+        store.trust(&key, "~/x", &[]).unwrap();
+        store.approve(&key, &[]).unwrap();
+        assert!(store.revoke(&key).unwrap());
+        assert!(!store.project(&key).unwrap().is_trusted());
+        assert!(!is_held(&file));
+
+        // A lock that cannot be taken stops every change, and no read: so
+        // each change takes it. (A directory stands where the lock goes.)
+        store.trust(&key, "~/x", &[]).unwrap();
+        let lock = crate::store_lock::lock_path(&file);
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::create_dir(&lock).unwrap();
+        let refused = |result: Result<(), TrustError>| {
+            assert!(
+                matches!(
+                    &result,
+                    Err(TrustError::Write(AtomicWriteError::Io { step: "lock", .. }))
+                ),
+                "{result:?}"
+            );
+        };
+        refused(store.trust(&ProjectKey::new("other"), "~/y", &[]).map(drop));
+        refused(store.approve(&key, &[]).map(drop));
+        refused(store.revoke(&key).map(drop));
+        assert!(store.project(&key).unwrap().is_trusted());
+        assert_eq!(store.list().unwrap().len(), 1);
     }
 }

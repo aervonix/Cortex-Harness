@@ -34,6 +34,9 @@
 //! - **It is written owner-only, on every write**, and atomically
 //!   (`cortex_base::write_atomic` with `owner_only`). Its directory is
 //!   created private if it is missing.
+//! - **A change holds a lock from the read to the write**
+//!   (`crate::store_lock`), so two sessions of one project that store an
+//!   approval at the same moment both keep theirs.
 //! - **It is read strictly.** A rule goes through the protocol's own strict
 //!   reader; a key this build does not know, a newer `version`, or a rule
 //!   that does anything but allow, refuses the whole file
@@ -54,11 +57,13 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use cortex_base::{AtomicWriteError, AtomicWriteOptions, SharedClock, private, write_atomic};
+use cortex_base::{AtomicWriteError, AtomicWriteOptions, SharedClock, write_atomic};
 use cortex_protocol::ids::{ApprovalId, Timestamp};
 use cortex_protocol::lease::{Rule, RuleAction};
 use cortex_protocol::methods::{ApprovalScope, StoredApproval};
 use serde::{Deserialize, Serialize};
+
+use crate::store_lock;
 
 /// The version of the file's format this build writes and reads.
 const VERSION: u32 = 1;
@@ -174,31 +179,31 @@ impl ApprovalStore {
                 rule.pattern
             )));
         }
-        let mut file = self.read()?;
         let now = self.clock.now().to_timestamp();
-        let mut stored = Vec::with_capacity(rules.len());
-        for rule in rules {
-            let entry = match file.approvals.iter().find(|entry| entry.rule == *rule) {
-                Some(entry) => entry.clone(),
-                None => {
-                    let entry = Entry {
-                        id: next_id(&file.approvals),
-                        created_at: now.clone(),
-                        rule: rule.clone(),
-                    };
-                    file.approvals.push(entry.clone());
-                    entry
-                }
-            };
-            stored.push(StoredApproval {
-                id: entry.id,
-                rule: entry.rule,
-                scope: ApprovalScope::Project,
-                created_at: entry.created_at,
-            });
-        }
-        self.write(&file)?;
-        Ok(stored)
+        self.update(|file| {
+            let mut stored = Vec::with_capacity(rules.len());
+            for rule in rules {
+                let entry = match file.approvals.iter().find(|entry| entry.rule == *rule) {
+                    Some(entry) => entry.clone(),
+                    None => {
+                        let entry = Entry {
+                            id: next_id(&file.approvals),
+                            created_at: now.clone(),
+                            rule: rule.clone(),
+                        };
+                        file.approvals.push(entry.clone());
+                        entry
+                    }
+                };
+                stored.push(StoredApproval {
+                    id: entry.id,
+                    rule: entry.rule,
+                    scope: ApprovalScope::Project,
+                    created_at: entry.created_at,
+                });
+            }
+            (stored, true)
+        })
     }
 
     /// Removes approvals by id, and says how many were there.
@@ -208,14 +213,29 @@ impl ApprovalStore {
     /// When the file cannot be read, is not understood, or cannot be
     /// written.
     pub fn remove(&self, ids: &[ApprovalId]) -> Result<usize, ApprovalError> {
+        self.update(|file| {
+            let before = file.approvals.len();
+            file.approvals.retain(|entry| !ids.contains(&entry.id));
+            let removed = before - file.approvals.len();
+            (removed, removed > 0)
+        })
+    }
+
+    /// Reads the file, changes it and writes it if `change` says it changed
+    /// (the second of what it returns), with the lock held throughout. Every
+    /// change to the file goes through here.
+    fn update<T>(&self, change: impl FnOnce(&mut File) -> (T, bool)) -> Result<T, ApprovalError> {
+        let _lock = store_lock::hold(&self.file).map_err(|source| AtomicWriteError::Io {
+            path: self.file.display().to_string(),
+            step: "lock",
+            source,
+        })?;
         let mut file = self.read()?;
-        let before = file.approvals.len();
-        file.approvals.retain(|entry| !ids.contains(&entry.id));
-        let removed = before - file.approvals.len();
-        if removed > 0 {
+        let (answer, changed) = change(&mut file);
+        if changed {
             self.write(&file)?;
         }
-        Ok(removed)
+        Ok(answer)
     }
 
     fn not_understood(&self, problem: String) -> ApprovalError {
@@ -269,20 +289,10 @@ impl ApprovalStore {
     }
 
     fn write(&self, file: &File) -> Result<(), ApprovalError> {
+        // The directory was made when the lock was taken.
         let text = toml::to_string(file).map_err(|error| {
             self.not_understood(format!("it could not be written out: {error}"))
         })?;
-        if let Some(directory) = self
-            .file
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            private::create_dir_all(directory).map_err(|source| AtomicWriteError::Io {
-                path: self.file.display().to_string(),
-                step: "create the directory",
-                source,
-            })?;
-        }
         let options = AtomicWriteOptions {
             owner_only: true,
             ..AtomicWriteOptions::default()
@@ -398,5 +408,45 @@ mod tests {
         // A removed approval's id is not given to the next one.
         let next = session.add(&[allow("make *")], &now);
         assert_eq!(next[0].id, ApprovalId::new("ap_s3"));
+    }
+
+    #[test]
+    fn every_change_to_the_store_is_made_under_its_lock() {
+        use cortex_base::FakeClock;
+
+        use crate::store_lock::tests::{Scratch, is_held};
+
+        let scratch = Scratch::new();
+        let file = scratch.0.join("approvals").join("k.toml");
+        let clock: SharedClock =
+            std::sync::Arc::new(FakeClock::starting_at("2026-11-13T10:00:00Z").unwrap());
+        let store = ApprovalStore::new(&file, clock);
+        let held = store.update(|_| (is_held(&file), false)).unwrap();
+        assert!(held, "the lock is held while the file is changed");
+        assert!(!is_held(&file), "and let go after");
+        let added = store.add(&[allow("make *")]).unwrap();
+        assert_eq!(store.remove(&[added[0].id.clone()]).unwrap(), 1);
+
+        // A lock that cannot be taken stops every change, and no read: so
+        // each change takes it. (A directory stands where the lock goes.)
+        store.add(&[allow("make *")]).unwrap();
+        let lock = crate::store_lock::lock_path(&file);
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::create_dir(&lock).unwrap();
+        let refused = |result: Result<(), ApprovalError>| {
+            assert!(
+                matches!(
+                    &result,
+                    Err(ApprovalError::Write(AtomicWriteError::Io {
+                        step: "lock",
+                        ..
+                    }))
+                ),
+                "{result:?}"
+            );
+        };
+        refused(store.add(&[allow("ls *")]).map(drop));
+        refused(store.remove(&[ApprovalId::new("ap_1")]).map(drop));
+        assert_eq!(store.load().unwrap().len(), 1);
     }
 }

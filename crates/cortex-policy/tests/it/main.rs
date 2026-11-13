@@ -38,6 +38,20 @@ use cortex_protocol::ids::{LeaseId, ProjectKey};
 use cortex_protocol::lease::{Budget, Effect, HardLimits, Level, Rule, RuleAction};
 pub(crate) use cortex_testkit::Scratch;
 
+/// The test this binary is started into by a test that needs a program
+/// that prints its arguments (`cortex_testkit::children`).
+#[cfg(windows)]
+pub(crate) const ENTRY: &str = "child_entry";
+
+/// Run by the test runner, it passes at once. Started by a test with the
+/// arguments `cortex_testkit::children::echo_arguments` gives, it prints
+/// the rest of its arguments and exits.
+#[cfg(windows)]
+#[test]
+fn child_entry() {
+    cortex_testkit::children::run_if_child();
+}
+
 /// The workspace of the tests that read paths as text.
 pub(crate) const WORKSPACE: &str = "/work/app";
 /// Their home directory.

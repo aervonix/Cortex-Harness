@@ -556,12 +556,21 @@ pub struct ScriptedPolicy {
     /// Each question waits at the gate named after its tool, when one is
     /// set.
     wait: Mutex<Option<Gates>>,
+    /// What `answers_may_stop` says. `None`: the trait's own default.
+    may_stop: Mutex<Option<bool>>,
     wake: Notify,
 }
 
 impl ScriptedPolicy {
-    pub fn decide_for(&self, tool: &str, decision: Decision) {
-        lock(&self.decisions).insert(tool.to_owned(), decision);
+    /// Decides the calls of `what`: a tool's name, or one call's plan
+    /// summary (`write a`), which comes first.
+    pub fn decide_for(&self, what: &str, decision: Decision) {
+        lock(&self.decisions).insert(what.to_owned(), decision);
+    }
+
+    /// Says whether an answer may be to stop the turn.
+    pub fn answers_may_stop(&self, may: bool) {
+        *lock(&self.may_stop) = Some(may);
     }
 
     /// Adds the answer to the next question about `tool` that has none yet.
@@ -650,10 +659,16 @@ impl Policy for ScriptedPolicy {
             !lock(&self.panics_deciding).contains(&call.spec.name),
             "the policy was told to panic deciding"
         );
-        lock(&self.decisions)
-            .get(&call.spec.name)
+        let decisions = lock(&self.decisions);
+        decisions
+            .get(&call.plan.summary)
+            .or_else(|| decisions.get(&call.spec.name))
             .cloned()
             .unwrap_or(Decision::Allow)
+    }
+
+    fn answers_may_stop(&self) -> bool {
+        lock(&self.may_stop).unwrap_or_else(|| cortex_agent::AllowAll.answers_may_stop())
     }
 
     fn ask<'a>(&'a self, call: PlannedCall<'a>) -> BoxFuture<'a, Verdict> {

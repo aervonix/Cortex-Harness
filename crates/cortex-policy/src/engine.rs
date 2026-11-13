@@ -39,9 +39,12 @@
 //!   allowed unasked. For every other modelled command, an argument that
 //!   names a path a rule denies or asks about, or the harness's own files,
 //!   makes the command one to ask about.
-//! - **`cd dir && …` is followed.** The parts after it are judged from the
-//!   new directory. A `cd` whose effect cannot be known (in a pipeline,
-//!   before `;` or `||`) takes the line off every safe list.
+//! - **`cd ./dir && …` is followed,** with `..` taken as the shell takes
+//!   it. The parts after it are judged from the new directory, and one that
+//!   may write is judged as a command run there. A `cd` whose effect cannot
+//!   be known (in a pipeline, before `;` or `||`, or to a plain name, which
+//!   `CDPATH` could send anywhere) takes the line off every safe list; what
+//!   comes after it is still checked for what it could reach from anywhere.
 //! - **A redirection is a write** of its file, judged as one. `/dev/null`
 //!   is nothing.
 //! - **A line whose every part only reads is marked read-only**
@@ -71,7 +74,7 @@ use cortex_protocol::methods::{ApprovalChoice, StoredApproval};
 
 use crate::approvals::{ApprovalError, ApprovalStore, SessionApprovals};
 use crate::command::pattern::words_of;
-use crate::command::{Analysis, Joiner, Part, Redirect, ShellSyntax, analyse, table};
+use crate::command::{Analysis, Joiner, Part, Redirect, ShellSyntax, Word, analyse, table};
 use crate::lease::{StandingTerms, standing_lease};
 use crate::level::{self, Decider, LevelError, Matter, SandboxState};
 use crate::rules::{By, Hit, Protected, RuleContext, RuleError, RuleSet, RuleSource, SourcedRule};
@@ -156,16 +159,23 @@ pub struct Question {
     /// Empty when no rule could express the approval: then only "allow
     /// once" and "deny" are on offer.
     pub lifts: Vec<Rule>,
+    /// Whether "always allow in this project" can be kept: the engine was
+    /// given a store ([`Parts::store`]).
+    pub storable: bool,
 }
 
 impl Question {
-    /// The answers on offer.
+    /// The answers on offer. "Always allow in this project" only where it
+    /// would be kept: offered with nowhere to keep it, it would allow the
+    /// call once and save nothing, while the person believed it saved.
     #[must_use]
     pub fn choices(&self) -> Vec<ApprovalChoice> {
         let mut choices = vec![ApprovalChoice::AllowOnce];
         if !self.lifts.is_empty() {
             choices.push(ApprovalChoice::AllowSession);
-            choices.push(ApprovalChoice::AllowProject);
+            if self.storable {
+                choices.push(ApprovalChoice::AllowProject);
+            }
         }
         choices.push(ApprovalChoice::Deny);
         choices
@@ -290,7 +300,7 @@ pub struct Parts {
     /// The home directory.
     pub home: Option<AbsPath>,
     /// Whether the user has trusted the project, and its allow rules are
-    /// the ones they approved ([`crate::trust::ProjectTrust::allows_rules`]).
+    /// the ones they approved ([`crate::trust::ProjectTrust::rules_approved`]).
     pub trusted: bool,
     /// The harness's own files.
     pub protected: Protected,
@@ -392,6 +402,66 @@ impl Finding {
         Self::Deny {
             reason: reason.into(),
             built_in: false,
+        }
+    }
+}
+
+/// Where a part of a command line runs.
+#[derive(Debug, Clone)]
+struct Directory {
+    /// Where the shell believes it is: what `cd ..` moves up from.
+    logical: AbsPath,
+    /// Where that really is, links followed: what a path a command names
+    /// is found from.
+    real: AbsPath,
+}
+
+/// Where the parts after a `cd` the analysis could not follow may be
+/// running: the directory before it, the workspace root (`cd -` and
+/// `cd` back again), and where each `cd` since would lead with no `CDPATH`.
+/// Checking a path from every one of them can only ask once too often.
+#[derive(Debug)]
+struct Lost {
+    places: Vec<AbsPath>,
+    /// Where the shell would believe it is, had every `cd` gone where its
+    /// text says. `None` once one could not be read.
+    guess: Option<AbsPath>,
+}
+
+impl Lost {
+    /// The places after the `cd` of `part`, run from `directory`.
+    fn after(engine: &Engine, directory: &Directory, part: &Part) -> Self {
+        let mut places = vec![directory.real.clone()];
+        if !places.contains(&engine.workspace) {
+            places.push(engine.workspace.clone());
+        }
+        let mut lost = Self {
+            places,
+            guess: Some(directory.logical.clone()),
+        };
+        lost.moved_by(engine, part);
+        lost
+    }
+
+    /// Adds where the `cd` of `part` would lead.
+    fn moved_by(&mut self, engine: &Engine, part: &Part) {
+        let target = match part.arguments() {
+            [target] if target.is_fixed() && !target.text.starts_with('-') => Some(target),
+            _ => None,
+        };
+        self.guess = match (self.guess.take(), target) {
+            (Some(from), Some(target)) => engine.cd_target(&from, target, false),
+            // `cd` alone goes home.
+            (Some(_), None) if part.arguments().is_empty() => engine.home.clone(),
+            _ => None,
+        };
+        if let Some(real) = self
+            .guess
+            .as_ref()
+            .and_then(|guess| engine.locate.locate(guess, guess.as_str()))
+            && !self.places.contains(&real)
+        {
+            self.places.push(real);
         }
     }
 }
@@ -584,7 +654,7 @@ impl Engine {
                 ))),
             }
         }
-        combine(findings, read_only)
+        combine(findings, read_only, self.store.is_some())
     }
 
     /// Whether a directory walk may read the entry at `path`: what
@@ -646,6 +716,7 @@ impl Engine {
         self.lease.grant.sandbox.protect.all
             || self.guarded.iter().any(|guard| path.starts_with(guard))
             || is_repository_data(path)
+            || is_build_configuration(path)
     }
 
     /// Whether writing `path` always goes to the supervisor, short of
@@ -784,9 +855,12 @@ impl Engine {
             }
             None => Finding::Ask {
                 reason: format!("The call reaches the network ({shown})."),
+                // That host and no other: a host is matched as a pattern, so
+                // `*` must not become "every host", and `[::1]` must match
+                // itself (found by the review of step 12).
                 lift: host.map(|host| Rule {
                     effect: Effect::Network,
-                    pattern: host.trim_end_matches('.').to_ascii_lowercase(),
+                    pattern: literal_name(&host.trim_end_matches('.').to_ascii_lowercase()),
                     action: RuleAction::Allow,
                 }),
             },
@@ -857,40 +931,60 @@ impl Engine {
             }
         };
 
-        let mut directory = Some(cwd.clone());
+        // Where each part runs: the directory the shell believes it is in,
+        // which is what a later `cd` moves from, and where that really is,
+        // which is what a path a part names is found from. Once a `cd`
+        // cannot be followed, the places a part may be running in instead.
+        let mut directory = Directory {
+            logical: cwd.clone(),
+            real: cwd.clone(),
+        };
+        let mut lost: Option<Lost> = None;
         let mut only_reads = true;
         for (index, part) in parts.iter().enumerate() {
-            let Some(here) = directory.clone() else {
-                // A directory change the analysis could not follow: from
-                // here on, nothing can be said of what a part reads.
-                findings.push(self.other_command(
-                    "The command changes directory in a way the analysis cannot follow, so what \
-                     comes after it cannot be checked."
-                        .to_owned(),
-                ));
-                return (findings, false);
-            };
             let changes_directory = is_change_of_directory(part, self.shell);
             let later = parts.get(index + 1..).unwrap_or(&[]);
-            if changes_directory && part.redirects.is_empty() {
-                // A last `cd` changes nothing that is checked. Any other is
-                // followed where its effect is certain, and where it is
-                // not, nothing after it can be judged.
-                directory = if later.is_empty() {
-                    Some(here)
+            if let Some(lost) = &mut lost {
+                if changes_directory && part.redirects.is_empty() {
+                    lost.moved_by(self, part);
                 } else {
-                    self.follow_cd(part, later, &here)
-                };
+                    findings.extend(self.judge_lost(rules, part, &lost.places));
+                }
                 continue;
             }
+            if changes_directory && part.redirects.is_empty() {
+                // A last `cd` changes nothing that is checked. Any other is
+                // followed where its effect is certain.
+                if !later.is_empty() {
+                    match self.follow_cd(part, later, &directory.logical) {
+                        Some(next) => directory = next,
+                        None => {
+                            only_reads = false;
+                            findings.push(self.lost_finding());
+                            lost = Some(Lost::after(self, &directory, part));
+                        }
+                    }
+                }
+                continue;
+            }
+            let here = directory.real.clone();
             if changes_directory && !later.is_empty() {
                 // A `cd` with a redirection: judged as any command, for
-                // what it writes, and not followed.
-                directory = None;
+                // what it writes, below, and not followed.
+                only_reads = false;
+                findings.push(self.lost_finding());
+                lost = Some(Lost::after(self, &directory, part));
             }
             let (standing, found) = self.judge_part(rules, part, &here);
             findings.extend(found);
             only_reads &= standing == Standing::ReadOnly;
+            // A command that may write, run after a `cd`, writes where it
+            // runs: judged as the same command would be with the tool's
+            // working directory there. (One that only reads had its
+            // directory judged as a read.)
+            if standing != Standing::ReadOnly && here != *cwd {
+                findings.push(self.judge_command_write(rules, &here));
+            }
             let matter = match standing {
                 Standing::ReadOnly => Matter::ReadOnlyCommand,
                 Standing::Safe => Matter::SafeCommand,
@@ -941,15 +1035,29 @@ impl Engine {
     ///   one directory if the `cd` succeeded and in another if it failed
     ///   (`cd nowhere && ls; cat ../x`), and after `a || cd x && …` it runs
     ///   whether the `cd` ran or not.
+    /// - **Its target says where it starts:** `/`, `~`, `./` or `../`, or it
+    ///   is `.` or `..`. Any other name is looked for in each directory of
+    ///   the shell's `CDPATH` first, which the environment can set, and so
+    ///   can zsh's `cdpath` in a `.zshenv` that `zsh -c` reads. Such a `cd`
+    ///   could lead anywhere.
     ///
-    /// The shell's own search for directories (`CDPATH`) is taken to be
-    /// off, which the shell tool's environment is to ensure
-    /// (`docs/build-plan.md`, step 13).
-    fn follow_cd(&self, part: &Part, later: &[Part], here: &AbsPath) -> Option<AbsPath> {
+    /// **`..` is taken logically, as every POSIX shell's `cd` takes it:** it
+    /// removes the name before it from the directory the shell believes it
+    /// is in, whatever that name links to. Through a link `a` to `b/c`,
+    /// `cd a/../..` goes up two from where the shell is, not one from the
+    /// link's target (found by the review of step 12). Only the directory
+    /// reached is then followed through the file system. A path a later
+    /// command names is found as the kernel finds it, from that real
+    /// directory.
+    ///
+    /// `logical` is the directory the shell believes it is in. The answer is
+    /// where it believes it is after the `cd`, and where that really is.
+    fn follow_cd(&self, part: &Part, later: &[Part], logical: &AbsPath) -> Option<Directory> {
         let [target] = part.arguments() else {
             return None;
         };
-        let certain = !matches!(part.joiner, Joiner::Pipe | Joiner::Or)
+        let certain = self.shell == ShellSyntax::Posix
+            && !matches!(part.joiner, Joiner::Pipe | Joiner::Or)
             && target.is_fixed()
             && !target.text.starts_with('-')
             && later.first().is_none_or(|next| next.joiner == Joiner::And)
@@ -959,7 +1067,168 @@ impl Engine {
         if !certain {
             return None;
         }
-        self.locate.locate(here, &target.text)
+        let moved = self.cd_target(logical, target, true)?;
+        let real = self.locate.locate(&moved, moved.as_str())?;
+        Some(Directory {
+            logical: moved,
+            real,
+        })
+    }
+
+    /// Where `cd target` from `logical` leads, as the shell believes it:
+    /// `..` taken as text. With `says_where`, only a target that says where
+    /// it starts is read (see [`follow_cd`](Self::follow_cd)); without, a
+    /// plain name is read as under `logical`, which is where it leads when
+    /// no `CDPATH` sends it elsewhere.
+    fn cd_target(&self, logical: &AbsPath, target: &Word, says_where: bool) -> Option<AbsPath> {
+        let text = target.text.as_str();
+        let style = logical.style();
+        let under = |base: &AbsPath, rest: &str| {
+            let base = base.as_str();
+            let joined = if base.ends_with('/') {
+                format!("{base}{rest}")
+            } else {
+                format!("{base}/{rest}")
+            };
+            AbsPath::parse(&joined, style).ok()
+        };
+        if target.home {
+            let home = self.home.as_ref()?;
+            return match text.strip_prefix("~/") {
+                Some(rest) => under(home, rest),
+                None if text == "~" => Some(home.clone()),
+                None => None,
+            };
+        }
+        if text.starts_with('/') {
+            return AbsPath::parse(text, style).ok();
+        }
+        let plain = matches!(text, "." | "..") || text.starts_with("./") || text.starts_with("../");
+        if says_where && !plain {
+            return None;
+        }
+        under(logical, text)
+    }
+
+    /// The finding for a line that changes directory where the analysis
+    /// cannot follow: no safe list applies, and the level decides.
+    fn lost_finding(&self) -> Finding {
+        self.other_command(
+            "The command changes directory in a way the analysis cannot follow, so what comes \
+             after it is checked only for what it could reach from anywhere: protected paths, \
+             files that look like secrets, and the harness's own files."
+                .to_owned(),
+        )
+    }
+
+    /// Judges a part that runs after a `cd` the analysis could not follow.
+    /// Where it runs is not known, so it is on no safe list, and the level
+    /// decides it (the caller has said so once). What does not depend on
+    /// where it runs is still judged: a path that starts at a root or at
+    /// `~` as it would be anywhere, `git config`, and every other path
+    /// the part names or redirects to, tried from each place it may be
+    /// running in, for a protected path, a file that looks like a secret,
+    /// or a path a rule holds back.
+    fn judge_lost(&self, rules: &RuleSet, part: &Part, places: &[AbsPath]) -> Vec<Finding> {
+        let shown = words_of(part).join(" ");
+        let mut findings = Vec::new();
+        let mut relative = Vec::new();
+        for redirect in &part.redirects {
+            let (target, effect) = match redirect {
+                Redirect::Duplicate => continue,
+                Redirect::Read(target) => (target, Effect::Read),
+                Redirect::Write { target, .. } => (target, Effect::Write),
+            };
+            if target.text == "/dev/null" && self.shell == ShellSyntax::Posix {
+                continue;
+            }
+            if target.home || starts_elsewhere(&target.text, self.workspace.style()) {
+                match self.locate.locate(&self.workspace, &target.text) {
+                    Some(path) => {
+                        findings.push(self.judge_path(rules, &effect, &path, Some(&shown)));
+                    }
+                    None => findings.push(Finding::ask(format!(
+                        "`{shown}` redirects to or from `{}`, which is not a path that can be \
+                         checked.",
+                        target.text
+                    ))),
+                }
+            } else {
+                relative.push(target.text.as_str());
+            }
+        }
+        for text in relative {
+            if let Some(found) = self.judge_name(rules, text, places, &shown) {
+                findings.push(found);
+            }
+        }
+        findings.extend(self.judge_named(rules, part, places, &shown));
+        findings
+    }
+
+    /// Judges the paths among a command's arguments that a rule holds back,
+    /// that are protected or that look like secrets, and `git config`: the
+    /// checks that hold whatever allows the command. Each path is tried
+    /// from every place in `places`.
+    fn judge_named(
+        &self,
+        rules: &RuleSet,
+        part: &Part,
+        places: &[AbsPath],
+        shown: &str,
+    ) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        for word in part.arguments().iter().filter(|word| word.is_fixed()) {
+            if let Some(found) = may_name(&word.text)
+                .into_iter()
+                .find_map(|text| self.judge_name(rules, text, places, shown))
+            {
+                findings.push(found);
+            }
+        }
+        // `git config` writes the repository's configuration, which can
+        // name programs for git to run.
+        if is_git_config(part)
+            && level::decider(self.level(), Matter::WriteBeyond) != Decider::Holder
+        {
+            findings.push(self.beyond(format!(
+                "`{shown}` changes git's configuration, which can name programs for git to run."
+            )));
+        }
+        findings
+    }
+
+    /// The finding for one text a command gives that may be a path, tried
+    /// from each place: `None` when it names nothing held back.
+    fn judge_name(
+        &self,
+        rules: &RuleSet,
+        text: &str,
+        places: &[AbsPath],
+        shown: &str,
+    ) -> Option<Finding> {
+        places.iter().find_map(|place| {
+            let path = self.locate.locate(place, text)?;
+            if let Some(hit) = held_back(rules, &path) {
+                let reason = format!(
+                    "`{shown}` names `{path}`, which is protected by {}.",
+                    hit.describe()
+                );
+                return Some(match hit.by {
+                    By::Builtin(_) => Finding::Deny {
+                        reason,
+                        built_in: true,
+                    },
+                    By::Rule(_) => Finding::ask(reason),
+                });
+            }
+            self.is_sensitive(rules, &path).then(|| {
+                self.beyond(format!(
+                    "`{shown}` names `{path}`, which is a protected path or looks like a file \
+                     that holds secrets. Whoever can write a protected path can run code later."
+                ))
+            })
+        })
     }
 
     /// Judges one simple command, run in `here`: how it is allowed, and
@@ -1029,12 +1298,6 @@ impl Engine {
                                 &path,
                                 Some(&shown),
                             )));
-                            // A search reads files nobody named.
-                            if name.searched
-                                && let Some(hit) = rules.read_held_back_under(&path)
-                            {
-                                findings.push(self.searched(&shown, &path, &hit));
-                            }
                         }
                         // A word that may be a git revision need not be a
                         // path. One that starts at a root, a drive or a
@@ -1055,52 +1318,7 @@ impl Engine {
             // secret makes the command one to ask about, whatever allows
             // the command. The harness's own files stay refused.
             None => {
-                for word in part.arguments().iter().filter(|word| word.is_fixed()) {
-                    let value = word
-                        .text
-                        .rsplit_once('=')
-                        .map_or(word.text.as_str(), |(_, value)| value);
-                    for text in [word.text.as_str(), value] {
-                        if text.is_empty() || text.starts_with('-') {
-                            continue;
-                        }
-                        let Some(path) = self.locate.locate(here, text) else {
-                            continue;
-                        };
-                        if let Some(hit) = held_back(rules, &path) {
-                            let reason = format!(
-                                "`{shown}` names `{path}`, which is protected by {}.",
-                                hit.describe()
-                            );
-                            findings.push(match hit.by {
-                                By::Builtin(_) => Finding::Deny {
-                                    reason,
-                                    built_in: true,
-                                },
-                                By::Rule(_) => Finding::ask(reason),
-                            });
-                            break;
-                        }
-                        if self.is_sensitive(rules, &path) {
-                            findings.push(self.beyond(format!(
-                                "`{shown}` names `{path}`, which is a protected path or looks \
-                                 like a file that holds secrets. Whoever can write a protected \
-                                 path can run code later."
-                            )));
-                            break;
-                        }
-                    }
-                }
-                // `git config` writes the repository's configuration,
-                // which can name programs for git to run.
-                if is_git_config(part)
-                    && level::decider(self.level(), Matter::WriteBeyond) != Decider::Holder
-                {
-                    findings.push(self.beyond(format!(
-                        "`{shown}` changes git's configuration, which can name programs for git \
-                         to run."
-                    )));
-                }
+                findings.extend(self.judge_named(rules, part, std::slice::from_ref(here), &shown));
             }
         }
         (standing, findings)
@@ -1314,6 +1532,33 @@ fn is_repository_data(path: &AbsPath) -> bool {
             .is_some_and(|name| name.eq_ignore_ascii_case("HEAD"))
 }
 
+/// Whether a path is build or package configuration that its program reads
+/// from the directory it starts in and upward, wherever that is:
+/// `.cargo/config.toml` and `.cargo/config` (cargo), `.npmrc` (npm, for a
+/// package below it), `.yarnrc` and `.yarnrc.yml` (yarn), and `.envrc`
+/// (direnv). A build started below one reads it, so one in a subdirectory
+/// names a program to run, or a registry to send a token to, as surely as
+/// one at the workspace root (found by the review of step 12). Compared
+/// without regard to case: protecting too much is the safe side.
+///
+/// The other protected names are read from one place: a shell's start-up
+/// files from the home directory, CI configuration and the repository's
+/// hooks from its root, `.cortex/` from the workspace's.
+fn is_build_configuration(path: &AbsPath) -> bool {
+    let mut names = path.names().rev();
+    let Some(last) = names.next() else {
+        return false;
+    };
+    let in_cargo = names
+        .next()
+        .is_some_and(|parent| parent.eq_ignore_ascii_case(".cargo"));
+    [".npmrc", ".yarnrc", ".yarnrc.yml", ".envrc"]
+        .iter()
+        .any(|name| last.eq_ignore_ascii_case(name))
+        || (in_cargo
+            && (last.eq_ignore_ascii_case("config.toml") || last.eq_ignore_ascii_case("config")))
+}
+
 /// Whether a simple command is `git config`, however git is named and
 /// whatever stands before the subcommand.
 ///
@@ -1409,7 +1654,7 @@ fn place_all(
 }
 
 /// The strictest of the findings, as the answer for the call.
-fn combine(findings: Vec<Finding>, read_only: bool) -> Outcome {
+fn combine(findings: Vec<Finding>, read_only: bool, storable: bool) -> Outcome {
     let mut reasons = Vec::new();
     let mut lifts: Vec<Rule> = Vec::new();
     let mut every_ask_lifts = true;
@@ -1437,7 +1682,45 @@ fn combine(findings: Vec<Finding>, read_only: bool) -> Outcome {
     if !every_ask_lifts {
         lifts.clear();
     }
-    Outcome::Ask(Question { reasons, lifts })
+    Outcome::Ask(Question {
+        reasons,
+        lifts,
+        storable,
+    })
+}
+
+/// The texts in an argument of a command off the table that may be a path
+/// the program opens, for checking each against what is protected:
+///
+/// - the argument itself, unless it is an option;
+/// - the value after its last `=`: `--target-directory=.git/hooks`;
+/// - for an option of one dash, every text from its third character on.
+///   A short option takes its value attached, after one letter or after a
+///   cluster of them (`cp -t.git/hooks`, `sort -o.git/config`, `tar
+///   -C.git/hooks`, `cp -vt.git/hooks`), and the analysis does not know the
+///   letters of every program, so it tries each place the value could
+///   begin (found by the review of step 12). Too many tries can only ask
+///   once too often;
+/// - the value after the first `:` of an option written with a `/`, as
+///   Windows programs take theirs: `/out:file`.
+fn may_name(text: &str) -> Vec<&str> {
+    let mut texts = Vec::new();
+    if !text.starts_with('-') {
+        texts.push(text);
+    }
+    if let Some((_, value)) = text.rsplit_once('=') {
+        texts.push(value);
+    }
+    if text.starts_with('-') && !text.starts_with("--") {
+        texts.extend(text.char_indices().skip(2).map(|(at, _)| &text[at..]));
+    }
+    if text.starts_with('/')
+        && let Some((_, value)) = text.split_once(':')
+    {
+        texts.push(value);
+    }
+    texts.retain(|text| !text.is_empty());
+    texts
 }
 
 /// The `deny` or `ask` rule, or the built-in protection, that holds back
@@ -1461,15 +1744,25 @@ fn is_change_of_directory(part: &Part, shell: ShellSyntax) -> bool {
     }
 }
 
-/// Programs whose arguments are themselves a command, a program's text, or
-/// a script in a language of their own. An approval of one covers that
-/// exact command line and nothing wider: "always allow `sudo *`" is not
-/// what a person meant by approving `sudo apt list`, nor "always allow
-/// `find *`" by approving one `find`.
-const WRAPPERS: [&str; 56] = [
+/// Programs an approval covers only as the exact line, word for word:
+/// "always allow `sudo *`" is not what a person meant by approving `sudo
+/// apt list`, nor "always allow `curl *`" by approving one download.
+///
+/// - Programs whose arguments are themselves a command, a program's text,
+///   or a script in a language of their own: wrappers, shells,
+///   interpreters, editors with a command language, `find`, `sed`, `tar`.
+/// - Programs that reach the network, or fetch a package and run it: a
+///   download can be written anywhere (`curl -o ~/.bashrc`), and an upload
+///   can send anything.
+/// - Windows programs and PowerShell commands that start or schedule
+///   others, or download.
+const EXACT_LINE: [&str; 119] = [
+    // Wrappers that run what follows them.
     "sudo",
     "doas",
     "su",
+    "runuser",
+    "pkexec",
     "env",
     "xargs",
     "nohup",
@@ -1482,11 +1775,39 @@ const WRAPPERS: [&str; 56] = [
     "setsid",
     "chroot",
     "unshare",
+    "nsenter",
     "flock",
+    "taskset",
+    "numactl",
+    "chrt",
+    "prlimit",
+    "faketime",
+    "sg",
     "strace",
     "ltrace",
+    "gdb",
+    "lldb",
     "script",
     "busybox",
+    "parallel",
+    "watchexec",
+    "entr",
+    "systemd-run",
+    "firejail",
+    "bwrap",
+    "xvfb-run",
+    "dbus-run-session",
+    "tmux",
+    "screen",
+    "at",
+    "batch",
+    "crontab",
+    "docker",
+    "podman",
+    "kubectl",
+    "ssh",
+    "git-shell",
+    // Shells.
     "sh",
     "bash",
     "dash",
@@ -1496,6 +1817,8 @@ const WRAPPERS: [&str; 56] = [
     "pwsh",
     "powershell",
     "cmd",
+    "wsl",
+    // Interpreters, and programs with a language of their own.
     "python",
     "python3",
     "node",
@@ -1505,57 +1828,143 @@ const WRAPPERS: [&str; 56] = [
     "perl",
     "php",
     "lua",
+    "java",
+    "tclsh",
+    "rscript",
+    "julia",
     "awk",
-    "ssh",
-    "docker",
-    "podman",
-    "kubectl",
+    "gawk",
+    "mawk",
+    "nawk",
+    "m4",
+    "sqlite3",
+    "psql",
+    "mysql",
     "find",
     "sed",
     "tar",
     "rsync",
+    // Editors whose arguments can be commands (`vim -c '!…'`).
+    "vi",
+    "vim",
+    "nvim",
+    "ex",
+    "ed",
+    "emacs",
+    // Fetching a package and running it.
     "npx",
     "pnpx",
     "bunx",
     "uvx",
     "pipx",
-    "parallel",
-    "watchexec",
-    "entr",
-    "git-shell",
+    // The network.
+    "curl",
+    "wget",
+    "aria2c",
+    "scp",
+    "sftp",
+    "ftp",
+    "nc",
+    "ncat",
+    "netcat",
+    "socat",
+    "telnet",
+    // Windows, and PowerShell's own.
+    "runas",
+    "cscript",
+    "wscript",
+    "mshta",
+    "rundll32",
+    "msiexec",
+    "certutil",
+    "bitsadmin",
+    "schtasks",
+    "start-process",
+    "invoke-command",
+    "invoke-webrequest",
+    "invoke-restmethod",
 ];
 
-/// Programs that do their work through subcommands. An approval of one
-/// names the subcommand; where there is none in second place (an option
-/// comes first, as in `git -C dir status`), it covers the exact line.
-const HAS_SUBCOMMANDS: [&str; 22] = [
-    "git",
-    "cargo",
-    "npm",
-    "pnpm",
-    "yarn",
-    "go",
-    "pip",
-    "pip3",
-    "gh",
-    "dotnet",
-    "apt",
-    "apt-get",
-    "brew",
-    "rustup",
-    "poetry",
-    "uv",
-    "hg",
-    "svn",
-    "conda",
-    "systemctl",
-    "dnf",
-    "just",
+/// Programs that do their work through subcommands, each with the
+/// subcommands an approval may cover with any further words (`cargo test
+/// *`): those whose further words choose what is built, shown or changed in
+/// the project, and cannot name a program to run, a package to fetch and
+/// run, or a place to send the project to.
+///
+/// Any other subcommand of these programs, and the program with no
+/// subcommand, is approved as the exact line. Some that are not listed, and
+/// why (found by the review of step 12): `npm exec`, `pnpm dlx` and `yarn
+/// dlx` fetch a package and run it; `git rebase --exec`, `git bisect run`,
+/// `git submodule foreach`, `cargo watch -x` and `rustup run` run a command
+/// given in their arguments; `git push`, `git fetch`, `git pull` and `git
+/// clone` reach the network and take a program to run there
+/// (`--receive-pack`, `--upload-pack`); `git grep -O` starts a pager; `git
+/// init --template` copies in hooks; `go run` fetches a module and runs it.
+const SUBCOMMANDS: [(&str, &[&str]); 22] = [
+    (
+        "git",
+        &[
+            "add",
+            "blame",
+            "branch",
+            "checkout",
+            "cherry-pick",
+            "clean",
+            "commit",
+            "describe",
+            "diff",
+            "log",
+            "ls-files",
+            "merge",
+            "mv",
+            "reflog",
+            "reset",
+            "restore",
+            "revert",
+            "rm",
+            "shortlog",
+            "show",
+            "stash",
+            "status",
+            "switch",
+            "tag",
+        ],
+    ),
+    (
+        "cargo",
+        &[
+            "bench", "build", "check", "clean", "clippy", "doc", "fmt", "metadata", "run", "test",
+            "tree",
+        ],
+    ),
+    ("npm", &["ls", "run", "run-script", "start", "test"]),
+    ("pnpm", &["list", "ls", "run", "start", "test"]),
+    ("yarn", &["run", "start", "test"]),
+    (
+        "go",
+        &["build", "doc", "fmt", "list", "test", "version", "vet"],
+    ),
+    ("dotnet", &["build", "format", "run", "test"]),
+    ("pip", &["freeze", "list", "show"]),
+    ("pip3", &["freeze", "list", "show"]),
+    ("poetry", &["build", "check", "show"]),
+    ("uv", &["build", "lock", "sync", "tree"]),
+    ("gh", &[]),
+    ("apt", &[]),
+    ("apt-get", &[]),
+    ("brew", &[]),
+    ("rustup", &["show"]),
+    ("hg", &["diff", "log", "status"]),
+    ("svn", &["diff", "info", "log", "status"]),
+    ("conda", &[]),
+    ("systemctl", &["status"]),
+    ("dnf", &[]),
+    ("just", &[]),
 ];
 
 /// The allow rule an approval of this command adds: the program and its
-/// subcommand, with any further words. `None` when no pattern says that
-/// safely.
+/// subcommand, with any further words, or the exact line ([`EXACT_LINE`],
+/// [`SUBCOMMANDS`]). `None` when no pattern says that safely.
 fn approval_rule(part: &Part) -> Option<Rule> {
     let plain = |text: &str| {
         !text.is_empty()
@@ -1588,8 +1997,13 @@ fn approval_rule(part: &Part) -> Option<Rule> {
                 character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
             })
     });
-    let exact_line = WRAPPERS.contains(&name)
-        || (subcommand.is_none() && HAS_SUBCOMMANDS.contains(&name) && part.words.len() > 1);
+    let exact_line = EXACT_LINE.contains(&name)
+        || SUBCOMMANDS
+            .iter()
+            .find(|(program, _)| *program == name)
+            .is_some_and(|(_, covered)| {
+                !subcommand.is_some_and(|subcommand| covered.contains(&subcommand.text.as_str()))
+            });
     let pattern = if exact_line {
         // The whole line, word for word, and no more.
         if !part
@@ -1652,7 +2066,8 @@ mod tests {
         for (command, expected) in [
             ("cargo build --release", Some("cargo build *")),
             ("cargo test -p cortex-policy", Some("cargo test *")),
-            ("git push origin main", Some("git push *")),
+            ("git commit -m fix", Some("git commit *")),
+            ("git status", Some("git status *")),
             ("npm run build", Some("npm run *")),
             ("make", Some("make *")),
             ("make -j8 all", Some("make *")),
@@ -1663,7 +2078,33 @@ mod tests {
             // where the subcommand would be: the exact line.
             ("git -C sub status", Some("git -C sub status")),
             ("cargo --locked test", Some("cargo --locked test")),
-            ("git", Some("git *")),
+            ("git", Some("git")),
+            // A subcommand that is not listed as safe with any further
+            // words: the exact line. Found by the review of step 12.
+            ("npm exec cowsay", Some("npm exec cowsay")),
+            ("pnpm dlx cowsay", Some("pnpm dlx cowsay")),
+            ("yarn dlx cowsay", Some("yarn dlx cowsay")),
+            ("git rebase main", Some("git rebase main")),
+            ("git bisect start", Some("git bisect start")),
+            ("git submodule update", Some("git submodule update")),
+            ("git push origin main", Some("git push origin main")),
+            ("git fetch origin", Some("git fetch origin")),
+            ("git init", Some("git init")),
+            ("rustup run nightly cargo", Some("rustup run nightly cargo")),
+            ("cargo watch -x build", Some("cargo watch -x build")),
+            ("go run main.go", Some("go run main.go")),
+            ("yarn build", Some("yarn build")),
+            // The network, an editor, an interpreter: the exact line.
+            ("curl http://x.example", Some("curl http://x.example")),
+            ("wget http://x.example", Some("wget http://x.example")),
+            ("scp a host:b", Some("scp a host:b")),
+            ("nc host 80", Some("nc host 80")),
+            ("vim file", Some("vim file")),
+            ("java Main", Some("java Main")),
+            (
+                "CURL.EXE http://x.example",
+                Some("CURL.EXE http://x.example"),
+            ),
             // Programs with a language of their own in their arguments.
             ("find . -name x -delete", Some("find . -name x -delete")),
             ("sed -i s/a/b/ f", Some("sed -i s/a/b/ f")),

@@ -160,9 +160,9 @@ fn a_deny_holds_at_every_level() {
             Deny,
             "{level:?}"
         );
-        // A search of a tree with a protected file in it is asked about at
-        // every level: the rule holds whatever the level lets run.
-        assert_eq!(said(&shell(&engine, "rg KEY")), Ask, "{level:?}");
+        // A search of the repository with a protected file in it is asked
+        // about at every level: the rule holds whatever the level lets run.
+        assert_eq!(said(&shell(&engine, "git grep KEY")), Ask, "{level:?}");
         assert_eq!(
             said(&shell(&engine, &format!("cp {credentials} /tmp/x"))),
             Deny,

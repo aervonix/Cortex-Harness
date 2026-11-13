@@ -346,6 +346,94 @@ fn a_stop_leaves_no_question_open_and_puts_no_other() {
     assert_eq!(rig.policy.withdrawn(), ["write a"]);
 }
 
+/// A stop given as the answer to a question holds for every call the model
+/// wrote after the asked one, as a stop decided at once does. A write after
+/// it that conflicts with nothing does not start while the question is open,
+/// since the answer may be to stop; a read after it runs beside the
+/// question. (Found by the review of step 12: the write started and ended
+/// while the question was open, and the turn still ended `denied`.)
+#[test]
+fn a_later_write_waits_for_an_answer_that_may_stop_the_turn() {
+    let response = calls(&[
+        ("c1", "write", json!({"path": "a"})),
+        ("c2", "write", json!({"path": "b"})),
+        ("c3", "read", json!({"path": "c"})),
+    ]);
+    let world = World::new("stop_answer_holds_later", [response, says("Unused.")]);
+    let rig = Setup::new(&world).start(&world);
+    rig.policy.decide_for("write a", Decision::Ask);
+    rig.policy.answer_for(
+        "write",
+        Verdict::Stop {
+            reason: "no front end is attached to answer".to_owned(),
+        },
+    );
+    rig.policy.wait_at(&world.gates);
+    world.run(async {
+        rig.prompt("go");
+        rig.policy.questions(1).await;
+        rig.policy.decisions(3).await;
+        // The read runs while the question is open; the write does not.
+        world.log.has("end read c").await;
+        assert_eq!(world.log.count("start write b"), 0);
+        world.gates.open("ask write");
+        rig.events.turns(1).await;
+    });
+    assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Denied);
+    let results = results(&rig);
+    let outcomes: Vec<&ToolOutcome> = results.iter().map(|result| &result.outcome).collect();
+    assert_eq!(
+        outcomes,
+        [
+            &ToolOutcome::Denied,
+            &ToolOutcome::Interrupted,
+            &ToolOutcome::Success
+        ]
+    );
+    assert_eq!(
+        world.log.count("start write b"),
+        0,
+        "{:?}",
+        world.log.lines()
+    );
+    assert!(text(&results[1]).contains("did not run"));
+}
+
+/// Where no answer can be to stop the turn (a person answering), a later
+/// write that conflicts with nothing runs while the question is open, as it
+/// did before: the hold above costs nothing where it cannot matter.
+#[test]
+fn a_later_write_runs_beside_a_question_that_cannot_stop_the_turn() {
+    let response = calls(&[
+        ("c1", "write", json!({"path": "a"})),
+        ("c2", "write", json!({"path": "b"})),
+    ]);
+    let world = World::new("no_stop_answer_runs_later", [response, says("Done.")]);
+    let rig = Setup::new(&world).start(&world);
+    rig.policy.answers_may_stop(false);
+    rig.policy.decide_for("write a", Decision::Ask);
+    rig.policy.wait_at(&world.gates);
+    world.run(async {
+        rig.prompt("go");
+        rig.policy.questions(1).await;
+        // The second write runs to its end with the question still open.
+        world.log.has("end write b").await;
+        assert_eq!(world.log.count("start write a"), 0);
+        world.gates.open("ask write");
+        rig.events.turns(1).await;
+    });
+    assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Completed);
+    assert_eq!(
+        world.log.lines(),
+        [
+            "start write b",
+            "end write b",
+            "start write a",
+            "end write a"
+        ]
+    );
+}
+
 /// Two calls the policy stops the turn over: the turn stops at the first of
 /// them in the model's order, whichever was decided first.
 #[test]

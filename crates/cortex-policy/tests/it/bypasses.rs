@@ -18,6 +18,22 @@
 //! | A shell that reads the line another way | 06, "Shell command analysis" | [`a_shell_that_is_not_known_gets_no_safe_list`] |
 //! | Look-alike characters and encoded commands in PowerShell | section 1, "the command that runs is the command that was shown" | [`powershell_look_alikes_and_encoded_commands_are_asked_about`] |
 //!
+//! Found by the review of step 12:
+//!
+//! | Class | Test |
+//! |---|---|
+//! | An option the table reads as taking the next word, which the program does not | [`an_option_that_takes_no_separate_value_hides_nothing_after_it`] |
+//! | A search that brings back hidden and ignored files (`rg -t`, `git grep --no-index`) | [`a_search_that_reaches_hidden_and_ignored_files_is_asked_about`] |
+//! | A protected path attached to a short option (`cp -t.git/hooks`) | [`a_path_attached_to_a_short_option_is_checked_like_any_other`] |
+//! | A quoted text PowerShell passes on as other words | [`powershell_quoting_that_reaches_a_program_as_other_words_is_asked_about`] |
+//! | A program's name split so that a deny does not see it | [`a_deny_is_not_dodged_by_splitting_the_programs_name`] |
+//! | A `cd` that `CDPATH` could send elsewhere, and what comes after it | [`a_cd_is_followed_only_where_its_target_says_where_it_starts`] |
+//! | A command a rule allows, run somewhere else after a `cd` | [`a_command_a_rule_allows_is_judged_where_it_runs`] |
+//! | Build configuration below the workspace root | [`nested_build_configuration_is_protected_at_any_depth`] |
+//!
+//! A `cd` through a link with `..` after it is in `real_paths`, and an
+//! approval that reaches further than the doc allows in `approvals`.
+//!
 //! The classes that need a real file system (a link out of the workspace,
 //! another spelling of a protected file on Windows, a network share) are in
 //! `real_paths`. "Approved once, changed later" is in `trust`. A child
@@ -396,7 +412,6 @@ fn a_command_cannot_read_what_a_read_would_be_asked_about() {
         "cat README.md",
         "ls src",
         "grep -n TODO src/main.rs",
-        "rg TODO src",
         "cp a.txt b.txt",
     ] {
         assert_ne!(said(&shell(&engine, command)), Ask, "{command:?}");
@@ -819,20 +834,23 @@ fn a_cd_that_may_not_have_happened_is_not_followed() {
     // A `cd` whose effect is certain is followed, and a write outside the
     // workspace after it is seen for what it is.
     assert_eq!(
-        said(&shell(&autonomous, "cd src && echo key >> ../../keys")),
+        said(&shell(&autonomous, "cd ./src && echo key >> ../../keys")),
         Ask
     );
     assert_eq!(
-        said(&shell(&autonomous, "cd src && echo x > ../notes.txt")),
+        said(&shell(&autonomous, "cd ./src && echo x > ../notes.txt")),
         Allow
     );
     let supervised = engine();
     assert_eq!(
-        said(&shell(&supervised, "cd src && cat main.rs | head -3 && ls")),
+        said(&shell(
+            &supervised,
+            "cd ./src && cat main.rs | head -3 && ls"
+        )),
         ReadOnly
     );
     assert_eq!(
-        said(&shell(&supervised, "cd src && cat ../../notes.txt")),
+        said(&shell(&supervised, "cd ./src && cat ../../notes.txt")),
         Ask
     );
 }
@@ -926,18 +944,17 @@ fn the_harnesss_own_files_cannot_be_reached() {
         // certain.
         assert_eq!(said(&shell(&engine, &format!("echo x > {file}"))), Deny);
     }
-    // A search of a tree that has them somewhere in it is asked about,
-    // even here, where every rule allows and the level asks nothing.
-    for command in [
-        "rg token /users/dev",
-        "rg token /users/dev/.config",
-        "rg token /users/dev/.local/share",
-        "rg token /",
-    ] {
-        assert_eq!(said(&shell(&engine, command)), Ask, "{command:?}");
-    }
-    assert_eq!(said(&shell(&engine, "rg token /users/dev/code")), ReadOnly);
-    assert_eq!(said(&shell(&engine, "rg token")), ReadOnly);
+    // A search of a repository that has them somewhere in it is asked
+    // about, even here, where every rule allows and the level asks nothing.
+    // (A command off the table that searches a tree without naming them is
+    // the limit `docs/security.md` states: `rg token ~` is such a command.)
+    let at_home = engine_with(|parts| {
+        parts.level = Level::Unrestricted;
+        parts.workspace = crate::path("/users/dev");
+        parts.sandbox_policy = cortex_policy::default_sandbox(&parts.workspace, &[], &[]);
+    });
+    assert_eq!(said(&shell(&at_home, "git grep token")), Ask);
+    assert_eq!(said(&shell(&at_home, "git status")), ReadOnly);
     // Granting itself trust or an approval is writing those files.
     assert_eq!(
         said(&shell(
@@ -1054,4 +1071,307 @@ fn powershell_look_alikes_and_encoded_commands_are_asked_about() {
     ] {
         assert_eq!(said(&shell(&engine, command)), Deny, "{command:?}");
     }
+}
+
+// ------------------------------------------- found by the review of step 12
+
+/// A line the engine marks read-only, or allows unasked, must not write a
+/// file through an option the table never saw. Each line below puts
+/// `--output` after an option the table once read as taking the next word,
+/// which git does not: git then writes the file (checked with git 2.53).
+/// At `read-only` too, where a write is refused whatever else allows it.
+#[test]
+fn an_option_that_takes_no_separate_value_hides_nothing_after_it() {
+    let lines = [
+        "git diff --relative --output=.git/hooks/pre-commit",
+        "git diff -U --output=.git/config",
+        "git diff --unified --output=/users/dev/.bashrc",
+        "git log --pretty --output=.git/hooks/pre-commit",
+        "git show --pretty --output=.git/hooks/pre-commit",
+        "git log -U --output=.git/hooks/pre-commit",
+        "git log --min-parents --output=.git/config",
+        "git log --max-parents --output=.git/config",
+        "git log --format --output=.git/config",
+        "git stash list --pretty --output=.git/hooks/pre-commit",
+    ];
+    for level in [Level::ReadOnly, Level::Supervised] {
+        let engine = at(level.clone());
+        for command in lines {
+            let outcome = shell(&engine, command);
+            assert!(
+                matches!(said(&outcome), Ask | Deny),
+                "{command:?} at {level:?}: {:?}",
+                said(&outcome)
+            );
+        }
+    }
+    // Where any command runs unasked, none of them is marked as only
+    // reading, so none runs beside another call; one that names a
+    // protected path is still asked about.
+    let autonomous = at(Level::Autonomous);
+    for command in lines {
+        let outcome = shell(&autonomous, command);
+        assert_ne!(said(&outcome), ReadOnly, "{command:?}");
+        if command.contains(".git/") {
+            assert_eq!(said(&outcome), Ask, "{command:?}");
+        }
+    }
+}
+
+/// Searches that bring back files a search leaves out, where most files
+/// that look like secrets are: ripgrep's types (`-t sh` names `.env`, and
+/// a type match lifts the hidden-file rule), and git's searches of what it
+/// does not track (`--no-index`, `--untracked`). Each is asked about, not
+/// run unasked as a command that only reads.
+#[test]
+fn a_search_that_reaches_hidden_and_ignored_files_is_asked_about() {
+    let engine = engine();
+    for command in [
+        "rg -t sh API_TOKEN",
+        "rg --type sh API_TOKEN",
+        "rg API_TOKEN",
+        "git grep --no-index API_TOKEN",
+        "git grep --untracked API_TOKEN",
+        "git diff --no-index src .",
+    ] {
+        let outcome = shell(&engine, command);
+        assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
+    }
+}
+
+/// A protected path given as the value of a short option, attached to it
+/// (`-t.git/hooks`), is a path the command names, like any other. At
+/// `autonomous`, where the commands themselves run unasked, and under an
+/// allow rule for the command.
+#[test]
+fn a_path_attached_to_a_short_option_is_checked_like_any_other() {
+    let autonomous = at(Level::Autonomous);
+    for command in [
+        "cp -t.git/hooks pre-commit",
+        "cp -vt.git/hooks pre-commit",
+        "cp --target-directory=.git/hooks pre-commit",
+        "cp pre-commit .git/hooks/pre-commit",
+        "sort -o.git/config notes.txt",
+        "tar -C.git/hooks -xf hooks.tar",
+        "cp -t.github/workflows ci.yml",
+        "cp -t.cortex x",
+        "cp -t.env x",
+    ] {
+        let outcome = shell(&autonomous, command);
+        assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
+    }
+    // Ordinary options still run.
+    for command in ["cp -r src out", "mv -v a.txt b.txt", "tar -cf out.tar src"] {
+        assert_eq!(said(&shell(&autonomous, command)), Allow, "{command:?}");
+    }
+    let allowed = with_rules(vec![user(Effect::Exec, "cp *", RuleAction::Allow)]);
+    for command in [
+        "cp -t.git/hooks pre-commit",
+        "cp -t.github/workflows ci.yml",
+    ] {
+        assert_eq!(said(&shell(&allowed, command)), Ask, "{command:?}");
+    }
+    assert_eq!(said(&shell(&allowed, "cp -t out a.txt")), Allow);
+    // The harness's own files stay refused, however the value is attached.
+    assert_eq!(
+        said(&shell(
+            &autonomous,
+            "cp -t/users/dev/.local/state/cortex-harness x"
+        )),
+        Deny
+    );
+}
+
+/// Windows PowerShell 5.1, and pwsh for a `.cmd` or `.bat` program, pass a
+/// quoted text on so that the program can receive more words than the
+/// parser read: a `"` inside it ends the quoting, an empty one is dropped, a
+/// `\` at its end escapes the closing quote, and `cmd.exe` reads `& | < > ^
+/// %` inside it. Each such line is not modelled: no safe list and no allow
+/// rule applies.
+#[test]
+fn powershell_quoting_that_reaches_a_program_as_other_words_is_asked_about() {
+    let engine = engine_with(|parts| parts.shell = ShellSyntax::PowerShell);
+    for command in [
+        r#"git diff 'HEAD" "--output=.git/hooks/pre-commit'"#,
+        r#"git log 'HEAD" "--output=x'"#,
+        r#"git diff --src-prefix 'a/ " --output=.git/hooks/pre-commit'"#,
+        r#"git log --grep 'x " --output=.git/hooks/pre-commit'"#,
+        "git log '' --output=x",
+        r"git log 'a \' x 'y --output=f'",
+    ] {
+        let outcome = shell(&engine, command);
+        assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
+        assert!(reason(&outcome).contains("does not model"), "{command:?}");
+    }
+    // An allow rule cannot be steered into extra options, or into a second
+    // command through `cmd.exe`.
+    let allowed = engine_with(|parts| {
+        parts.shell = ShellSyntax::PowerShell;
+        parts.rules = vec![user(Effect::Exec, "npm test *", RuleAction::Allow)];
+    });
+    assert_eq!(said(&shell(&allowed, "npm test 'unit'")), Allow);
+    for command in [
+        "npm test 'x&calc'",
+        "npm test 'a|b'",
+        "npm test '%PATH%'",
+        r#"npm test 'a " --global'"#,
+    ] {
+        assert_eq!(said(&shell(&allowed, command)), Ask, "{command:?}");
+    }
+}
+
+/// A `deny` on a command is matched on the raw words of a line, and a name
+/// the shell joins back together is the name: quotes, a backslash, a
+/// PowerShell back-tick or a `cmd.exe` caret inside the program's name do
+/// not dodge it, at the levels that ask least.
+#[test]
+fn a_deny_is_not_dodged_by_splitting_the_programs_name() {
+    for level in [Level::Autonomous, Level::Unrestricted] {
+        let engine = engine_with(|parts| {
+            parts.level = level.clone();
+            parts.rules = vec![user(Effect::Exec, "git push *", RuleAction::Deny)];
+        });
+        for command in [
+            "git push origin main # note",
+            "\"g\"it push origin main # note",
+            "g\\it push origin main",
+            "gi''t push origin $BRANCH",
+            "git 'pu'sh origin",
+        ] {
+            assert_eq!(
+                said(&shell(&engine, command)),
+                Deny,
+                "{command:?} at {level:?}"
+            );
+        }
+    }
+}
+
+/// A `cd` that only a search of the shell's `CDPATH` could place is not
+/// followed: a `.zshenv` can set zsh's `cdpath` whatever the environment
+/// holds. A `cd` whose target says where it starts is.
+#[test]
+fn a_cd_is_followed_only_where_its_target_says_where_it_starts() {
+    let supervised = engine();
+    for command in [
+        "cd ./src && cat main.rs",
+        "cd ./src/.. && ls",
+        "cd . && ls",
+        "cd ../app && ls",
+        "cd /work/app/src && ls",
+        "cd ~/../../work/app && ls",
+    ] {
+        assert_eq!(said(&shell(&supervised, command)), ReadOnly, "{command:?}");
+    }
+    for command in [
+        "cd src && cat main.rs",
+        "cd src && ls",
+        "cd src/.. && ls",
+        "cd .git && ls",
+    ] {
+        let outcome = shell(&supervised, command);
+        assert_eq!(said(&outcome), Ask, "{command:?}");
+        assert!(reason(&outcome).contains("cannot follow"), "{command:?}");
+    }
+    // What a part after it could reach from anywhere is still checked: a
+    // protected path, and git's configuration, from where the `cd` would
+    // lead with no `CDPATH`, from the directory before it, and from the
+    // workspace root.
+    let autonomous = at(Level::Autonomous);
+    for command in [
+        "cd sub && git config core.fsmonitor ./run",
+        "cd .git && cp evil hooks/pre-commit",
+        "cd sub && echo x > .git/config",
+        "cd sub; cp evil .git/hooks/pre-commit",
+        "cd sub || echo x > .bashrc",
+        "cd src && cd .. && echo x >> .envrc",
+        "cd elsewhere && cat .env",
+        "cd nowhere; echo key >> ~/.ssh/authorized_keys",
+    ] {
+        let outcome = shell(&autonomous, command);
+        assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
+    }
+    assert_eq!(
+        said(&shell(
+            &autonomous,
+            "cd sub; cat /users/dev/.config/cortex-harness/credentials.toml"
+        )),
+        Deny
+    );
+    // The level decides the rest, as for any command it cannot place.
+    assert_eq!(said(&shell(&autonomous, "cd sub && make")), Allow);
+}
+
+/// A command an allow rule permits, run after a `cd`, is judged with the
+/// directory it really runs in, as the same command with the tool's working
+/// directory there would be.
+#[test]
+fn a_command_a_rule_allows_is_judged_where_it_runs() {
+    let engine = with_rules(vec![
+        user(Effect::Exec, "make *", RuleAction::Allow),
+        user(Effect::Exec, "cargo test *", RuleAction::Allow),
+    ]);
+    assert_eq!(said(&shell(&engine, "make")), Allow);
+    assert_eq!(said(&shell(&engine, "cd ./src && make")), Allow);
+    for command in [
+        "cd /tmp && make",
+        "cd ~ && make install",
+        "cd .. && cargo test",
+        "cd ./src/../.. && make",
+    ] {
+        let outcome = shell(&engine, command);
+        assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
+        assert!(
+            reason(&outcome).contains("outside the workspace"),
+            "{command:?}: {}",
+            reason(&outcome)
+        );
+    }
+    // The same command, with the tool's working directory there.
+    assert_eq!(said(&shell_in(&engine, "make", "/tmp")), Ask);
+    // And where a level lets any command run.
+    let autonomous = at(Level::Autonomous);
+    assert_eq!(said(&shell(&autonomous, "cd /tmp && make")), Ask);
+    assert_eq!(said(&shell(&autonomous, "cd ./src && make")), Allow);
+}
+
+/// Build configuration that is read from the directory a build starts in
+/// and upward is protected wherever it is in the workspace, not only at its
+/// root: a build started below it reads it.
+#[test]
+fn nested_build_configuration_is_protected_at_any_depth() {
+    let autonomous = at(Level::Autonomous);
+    for path in [
+        "crates/x/.cargo/config.toml",
+        "crates/x/.cargo/config",
+        "web/.npmrc",
+        "web/app/.yarnrc",
+        "web/app/.yarnrc.yml",
+        "deep/er/.envrc",
+        ".cargo/config.toml",
+        "WEB/.Yarnrc.YML",
+    ] {
+        let outcome = crate::write(&autonomous, &format!("/work/app/{path}"));
+        assert_eq!(said(&outcome), Ask, "{path}: {}", reason(&outcome));
+        let outcome = shell(&autonomous, &format!("echo x > {path}"));
+        assert_eq!(said(&outcome), Ask, "{path}");
+        let outcome = shell(&autonomous, &format!("cp evil {path}"));
+        assert_eq!(said(&outcome), Ask, "{path}");
+    }
+    // Their neighbours are ordinary files.
+    for path in [
+        "crates/x/.cargo/registry.txt",
+        "web/npmrc.md",
+        "web/.yarn/cache",
+    ] {
+        let outcome = crate::write(&autonomous, &format!("/work/app/{path}"));
+        assert_eq!(said(&outcome), Allow, "{path}");
+    }
+    // An allow rule that names one lifts the question, as for any
+    // protected path.
+    let allowed = engine_with(|parts| {
+        parts.level = Level::Autonomous;
+        parts.rules = vec![user(Effect::Write, "web/.npmrc", RuleAction::Allow)];
+    });
+    assert_eq!(said(&crate::write(&allowed, "/work/app/web/.npmrc")), Allow);
 }

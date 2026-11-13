@@ -17,13 +17,19 @@
 //! - a call waits for every **earlier** call it conflicts with
 //!   ([`Plan::conflicts_with`]), and for every earlier call whose plan is
 //!   not known yet, or whose block has not ended yet;
+//! - a call **with side effects** waits for every earlier call whose
+//!   question is open or still to be put, when the answer could be to stop
+//!   the turn ([`Policy::answers_may_stop`]): a stop holds for everything
+//!   the model wrote after the refused call;
 //! - while the response is still arriving only calls **without side
 //!   effects** start, and a call that is not scheduled as read-only is taken
 //!   to have some;
 //! - no more than the limit run at once;
 //! - questions are asked one at a time, in call order;
-//! - once the policy has said to stop the turn, nothing more starts and
-//!   nothing more is asked.
+//! - once the policy has said to stop the turn, nothing the model wrote
+//!   after the refused call starts, and nothing more is asked. A call it
+//!   wrote before the refused one, and that was allowed, still starts:
+//!   the turn stops at the refused call, in the model's order.
 //!
 //! # Exactly one result
 //!
@@ -909,6 +915,7 @@ impl Round {
         };
         self.ask_next(open_call);
 
+        let stop_may_answer = self.env.policy.answers_may_stop();
         let mut running = self
             .calls
             .iter()
@@ -932,6 +939,15 @@ impl Round {
             let waits_for_earlier = self.calls[..position].iter().any(|earlier| {
                 if matches!(earlier.state, CallState::Done(_)) {
                     return false;
+                }
+                // An earlier call whose question is open, or still to be
+                // put, may be answered "stop the turn here": then this
+                // call, written after it, must not have changed anything.
+                if footprint.side_effects
+                    && stop_may_answer
+                    && matches!(earlier.state, CallState::NeedsAnswer(_) | CallState::Asking)
+                {
+                    return true;
                 }
                 // An earlier call that is not planned yet could turn out to
                 // conflict.
