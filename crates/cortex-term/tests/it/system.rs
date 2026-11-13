@@ -237,6 +237,23 @@ fn sys_keys_arrive_with_their_modifiers() {
     session.wait_exit(LIMIT);
 }
 
+/// Whether `haystack` holds `needle`.
+#[cfg(unix)]
+fn holds(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+/// Ctrl+Z: the demo puts the terminal back and stops itself; continued, it
+/// turns everything on again and draws.
+///
+/// The demo here leads its own session in the pseudo-terminal, so its
+/// process group has no parent in that session: Linux does not stop such a
+/// group, and the demo goes straight on as if continued at once. What is
+/// checked is what the demo writes on the way in and out of the stop, in
+/// order. The stop itself is not reached by any test
+/// (outstanding/terminal-test-gaps.md).
 #[cfg(unix)]
 #[test]
 fn sys_after_ctrl_z_and_fg_everything_is_on_again() {
@@ -245,26 +262,42 @@ fn sys_after_ctrl_z_and_fg_everything_is_on_again() {
     session.wait_for(LIMIT, "the first frame", |t| {
         t.shows(STATUS_MARK) && t.modes().bracketed_paste && t.modes().win32_input
     });
-    // Ctrl+Z: the demo erases its live region, puts the terminal back and
-    // stops.
+    let mark: usize = session.recording().iter().map(|c| c.bytes.len()).sum();
     session.send(b"\x1a");
-    session.wait_for(LIMIT, "the terminal put back while stopped", |t| {
-        !t.modes().bracketed_paste && !t.modes().win32_input && t.modes().autowrap
-    });
-    assert!(
-        !session.screen().shows(STATUS_MARK),
-        "\n{}",
-        session.screen().dump()
-    );
-    // `fg`: it goes on, turns everything on again and draws.
+    // As a shell's `fg` would, in case the system did stop it.
     cortex_term::pty::continue_process(session.pid()).unwrap();
-    session.wait_for(LIMIT, "everything on again, and a frame", |t| {
-        t.shows(STATUS_MARK)
-            && t.modes().bracketed_paste
-            && t.modes().focus
-            && t.modes().win32_input
-            && !t.modes().autowrap
-    });
+    let since = |session: &Session| -> Vec<u8> {
+        let all: Vec<u8> = session
+            .recording()
+            .iter()
+            .flat_map(|chunk| chunk.bytes.iter().copied())
+            .collect();
+        all[mark..].to_vec()
+    };
+    let deadline = Instant::now() + LIMIT;
+    loop {
+        let bytes = since(&session);
+        // Put back (paste, the win32 input mode off, wrap on), then all of
+        // it on again and a frame.
+        if let Some(back) = bytes
+            .windows(8)
+            .position(|w| w == b"\x1b[?2004l")
+            .filter(|&at| holds(&bytes[..at], b"\x1b[?9001l") && holds(&bytes, b"\x1b[?7h"))
+            && holds(&bytes[back..], b"\x1b[?2004h\x1b[?1004h\x1b[?7l")
+            && holds(&bytes[back..], b"\x1b[?9001h")
+            && session.screen().shows(STATUS_MARK)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the demo did not put the terminal back and turn it on again: {:?}",
+            String::from_utf8_lossy(&bytes)
+        );
+        session.step(Duration::from_millis(50));
+    }
+    let modes = session.screen().modes();
+    assert!(modes.bracketed_paste && modes.focus && modes.win32_input && !modes.autowrap);
     session.send(b"k");
     session.wait_for(LIMIT, "a key after resuming", |t| editor_shows(t, "k"));
     session.send(b"\x03");

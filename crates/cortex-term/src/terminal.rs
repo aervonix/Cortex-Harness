@@ -123,6 +123,13 @@ pub trait Device {
     /// Puts the terminal's modes back. Called once, last.
     fn leave(&mut self);
 
+    /// Whether the terminal is still the program's: `false` once it has
+    /// been put back in an emergency (a panic, a signal), when nothing more
+    /// should be read or written.
+    fn active(&self) -> bool {
+        true
+    }
+
     /// The time now, on a clock that only goes forward. A device for tests
     /// gives a time of its own, so that waits are tested without waiting.
     fn now(&self) -> Instant {
@@ -159,6 +166,10 @@ impl Device for System {
 
     fn leave(&mut self) {
         sys::leave();
+    }
+
+    fn active(&self) -> bool {
+        sys::active()
     }
 }
 
@@ -309,9 +320,11 @@ impl<D: Device> Terminal<D> {
             match self.device.wait(wait, &mut self.bytes)? {
                 Ready::Input => {
                     self.decoder.feed(&self.bytes, &mut found);
+                    // What is kept now waits its own time: from its arrival,
+                    // not from that of something the same read finished.
                     if !self.decoder.pending() {
                         self.pending_since = None;
-                    } else if self.pending_since.is_none() {
+                    } else if self.pending_since.is_none() || !found.is_empty() {
                         self.pending_since = Some(self.device.now());
                     }
                 }
@@ -400,7 +413,11 @@ impl<D: Device> Terminal<D> {
             return Ok(());
         }
         self.active = false;
-        self.drain_replies();
+        // After an emergency the terminal is in its ordinary mode already:
+        // reading it now would take what the user typed for the shell.
+        if self.device.active() {
+            self.drain_replies();
+        }
         let mut end = Vec::new();
         if self.keyboard {
             end.extend_from_slice(KEYBOARD_OFF);

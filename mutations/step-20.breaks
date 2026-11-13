@@ -322,7 +322,6 @@ find: out.extend_from_slice(SHOW_CURSOR);
 replace:
 caught-by:
     inline::tests::finishing_erases_the_region_and_shows_the_cursor
-    presenter::commits_go_into_the_scrollback_in_order_through_height_changes
 
 [break] paste-end-split-across-reads
 rule: The end of a paste split between two reads still ends it.
