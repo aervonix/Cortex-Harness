@@ -159,8 +159,11 @@ fn the_body_is_streamed_as_it_arrives() {
         // second: the body is not collected before it is handed over.
         let first = response.body.next().await.unwrap().unwrap();
         assert_eq!(first, b"data: first\n\n");
-        assert!(first_sent.is_open());
         assert!(!send_the_rest.is_open());
+        // The server marks the point just after it has written the piece,
+        // so the piece can be here before the mark. Wait for it: assuming
+        // it is already there is a race the client sometimes wins.
+        first_sent.opened().await;
 
         send_the_rest.open();
         let mut rest = Vec::new();
