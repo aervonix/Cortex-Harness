@@ -252,6 +252,13 @@ One `Core` runs any number of sessions, each with its own workspace root, state 
 
 As built in step 7, a session is two things. `Session` is the loop: one future, for one task, which owns everything it works on. `SessionHandle` is how everything else reaches it: send a prompt, interrupt, give a notice, change a speed, read the state. The two share one small piece of state under a lock (which turn is running, what is waiting to be delivered, the settings a request reads), and whether a turn is running is decided under that lock, so two prompts can never both find the session idle. Sessions share nothing they were not given to share: the model clients, the table of speed-tier cooldowns, and any account of the ledger.
 
+**What can change while a session runs** (added in step 13a, for the core's `session/set`). Through the handle, and under the same lock as the rest of the session's shared state:
+
+- **A role's model** (`set_role_model`): another model, another provider's client, another reasoning level or output limit. **A request keeps the model it was prepared for.** The loop reads the main role's model once for each request, in `Preparing`, and everything that request does afterwards (the stream, the usage, the cost, the statistics event) is accounted to that model, so a change made while a response is arriving applies from the next request. What a new model is sent of an earlier model's reasoning is the provider layer's rule ([04-providers.md](04-providers.md), "The conversation model"); the loop does not touch the history.
+- **The level and the lease** (`set_level`) and **the title** (`set_title`), which the loop only reports.
+- **The second interrupt** (`interrupt_now`): [02-runtime.md](02-runtime.md), "Cancellation". Each turn has its own second token, so the kill of one turn never reaches the next.
+- **An event from outside the loop** (`emit`): the plan changed, a notice from the core, a request that was settled. It takes the session's next `seq`, so that every client sees one sequence.
+
 ## What is recorded for adaptation
 
 At the end of each request, tool call and turn, the loop emits a statistics event ([14-adaptation.md](14-adaptation.md)): the model and variants in effect, the outcome, durations and usage. Recording is a queue push and never blocks the loop. The events go to a `Stats` trait in `cortex-agent`; `cortex-stats` (step 16) records them, and the core connects the two.

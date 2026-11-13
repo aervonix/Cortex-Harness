@@ -4,7 +4,7 @@
 //! before it is written, and may mask what looks like a secret. This crate
 //! provides the hook and a redactor that does nothing; the filter itself
 //! (the harness's own credentials by value, and well-known key formats) is
-//! built when credentials are wired into the core.
+//! `cortex_base::SecretFilter`, which the core puts behind the hook.
 //!
 //! **An entry it changed says so.** What the log then holds is not what
 //! the model was sent or wrote, and on the providers that tie reasoning to
@@ -21,9 +21,9 @@
 //!
 //! - **The provider's own blocks** (`raw` fields: reasoning signatures,
 //!   encrypted content, the provider's usage object). Changing a byte of one
-//!   makes the provider refuse it on replay. Whether a block that holds a
-//!   secret is dropped or kept is an open question for the step that builds
-//!   the filter.
+//!   makes the provider refuse it on replay. A block that holds a secret is
+//!   the caller's to deal with before the entry is handed over: the core
+//!   stores such a message without its raw blocks, and marks it.
 //! - **File contents kept for undo** (`checkpoints/`). A restore must put
 //!   back exactly what was there.
 //! - **Artifacts that are not text**, such as images.

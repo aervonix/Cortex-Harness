@@ -35,6 +35,15 @@ Desktop pinned to 4 cores ([measurements/dependency-costs.md](../measurements/de
 
 Specified in [architecture/02-runtime.md](../architecture/02-runtime.md).
 
+## As built in step 13a
+
+The subscriber is `cortex_base::log`: about 500 lines with its filter and its file writer, and their tests. It implements `tracing`'s `Subscriber` directly, so `tracing` (and `tracing-core`, for one type `tracing` does not re-export) are the only dependencies, and both were in every build already through the HTTP stack.
+
+- Built: the level filter with target-prefix overrides, replaceable while the process runs; JSON lines to a file rotated at 5 MB, five kept, owner-only, through a writer thread and a bounded queue that drops and counts when full; the stderr sink, off until given a level; open, close and busy times for every span, the last 1,024 kept; the secret filter on every message and field.
+- `trace` is compiled out of release builds by `tracing`'s own feature.
+- **Not built: the bridge for dependencies that log through the `log` crate.** It needs `log` as a second direct dependency and a logger of our own behind it, and nothing in the build today logs through `log` in a way a user would miss. Left open ([../outstanding/log-crate-bridge.md](../outstanding/log-crate-bridge.md)).
+- The spans this record names for the latency budgets (`turn`, `request`, `tool`) are the agent loop's to open, and it does not yet link `tracing`. The core opens `session`. Left open ([../outstanding/spans-in-the-agent-loop.md](../outstanding/spans-in-the-agent-loop.md)).
+
 ## Why
 
 - Span timings are needed for the budgets, and spans are what `tracing` is for.

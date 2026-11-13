@@ -23,6 +23,15 @@
 - If the channel is still full, the core drops deltas for that item and sends one `item.resync` event when room appears. The consumer then asks for the item's current content. Completed-item events are never dropped.
 - The in-process TUI drains the channel every frame and in practice never falls behind. The rule exists for RPC clients.
 
+**As built in step 13a** (`cortex-core`, `events`). The "channel" is one queue for each connected client, which the session's sink gives a copy of every event.
+
+- **Merging.** A delta is added to the delta at the end of the queue when both are of the same kind for the same item; anything queued between two deltas keeps them apart, so order is never changed. The merged delta carries the later `seq`.
+- **Dropping.** A delta that finds the queue full is dropped, and so is every later delta of that item until the item completes. The item is owed one `item.resync`, which is queued when there is room, with the `seq` of the delta that was first dropped. An item that completes while its resync is still owed gets none: `item.completed` has all of it.
+- **Whole events are queued even when the queue is full.** They are few and each is bounded (a tool result is bounded when it is made), so the queue's size is a limit on deltas, not a hard cap. Closing a connection that cannot take them in time is the RPC server's rule (step 27).
+- **A client that did not declare `deltas` is sent none.**
+- **What an item in progress holds** is kept by the same sink, from the same deltas, and is what `session/read` returns for an item that has not completed.
+- **The ops channel** is not in the core: `Core::handle` is called directly, by whatever front end owns the core thread. The bounded channel of 64 is the front end's, between its own thread and the core's (step 13b for headless, step 23 for the TUI).
+
 **Timers and idleness.** When a session is idle the process has no periodic timers. Spinners and clocks tick only while a turn is running. The idle CPU budget in [../performance-budgets.md](../performance-budgets.md) depends on this.
 
 ## Error handling
@@ -87,6 +96,8 @@ Cancelling a node cancels everything below it. Every await in the loop that can 
 - The shell tool interrupts the whole process tree in stages: a polite interrupt, then termination after a grace period (default 2 s), then a hard kill. Details per OS are in [05-tools.md](05-tools.md).
 - A cancelled call records a result (`interrupted`, with output so far). Providers require every tool call to have a result, so the history stays valid and the conversation can continue.
 
+**The second interrupt, "kill now"** (built in step 13a). A tool call is given two tokens: the one that says stop, and a second, `RunCx::kill`, that says stop now. The process runner takes the second as "skip the graces": a command that is being stopped in stages is killed at once, and one that had not been asked yet is killed without being asked. The loop's handle has `interrupt_now`, which fires both, and the protocol carries it as `turn/interrupt` with `now: true` ([11-rpc-protocol.md](11-rpc-protocol.md)). The ordinary interrupt stays safe to send twice: a client that retries one never kills. Counting "a second Ctrl-C within two seconds" is the front end's, which then sends the second kind.
+
 **Signals.** In headless and RPC modes, SIGINT and SIGTERM (Ctrl-C and Ctrl-Break events on Windows) cancel the session token, let the final event and the session log flush, and exit with 130 or 143. A second signal exits immediately.
 
 **Cancellation safety.** Code that must not be interrupted halfway (appending a log entry, renaming a file into place, recording a tool result) runs to completion before the token is observed. These sections are short and never wait on the network.
@@ -106,6 +117,15 @@ Cancelling a node cancels everything below it. Every await in the loop that can 
 | Debug bundle | on request (`cortex debug bundle`) | Recent log files plus a redacted configuration dump. |
 
 **Levels.** `error`, `warn`, `info`, `debug`, `trace`. Set with `--log-level`, the `CORTEX_LOG` environment variable, or configuration, optionally per target prefix (`CORTEX_LOG=info,cortex_llm=debug`). The filter is a small prefix match, not a regex engine. `trace` is compiled out of release builds.
+
+**As built in step 13a** (`cortex_base::log`). The subscriber is `cortex-base`'s, because it has no other owner and every crate can reach it.
+
+- **The filter** is a level and levels for target prefixes, the longest prefix winning, read from the text `--log-level`, `CORTEX_LOG` and `log.level` take (`info,cortex_llm=debug`). It can be replaced while the process runs.
+- **The file** is `cortex.log` in the state directory's `logs/`, one JSON object a line (`ts`, `level`, `target`, `msg`, `fields`, and `spans`, outermost first, each with its fields). A thread of its own writes it, from a bounded queue: a line that finds the queue full is dropped and counted, and the count is written when there is room. It rotates at 5 MB to `cortex.log.1` … `cortex.log.4`. Every file is created owner-only.
+- **The stderr sink** is off unless it is given a level, which headless and RPC modes do (step 13b turns it on at `warn`). It takes its own level, whatever the file's filter says, and writes one readable line an event.
+- **Span timings.** For every span that closes: when it opened and closed on the monotonic clock, how long it was entered, its parent and its fields. The last 1,024 are kept for the performance probes, and each close is also a log line at the span's level. A session's loop runs in a `session` span since step 13a; the `turn`, `request` and `tool` spans are the loop's to open, and are not opened yet ([../outstanding/spans-in-the-agent-loop.md](../outstanding/spans-in-the-agent-loop.md)).
+- **Everything passes the secret filter** ([../security.md](../security.md), section 4) before it reaches a sink, and a value longer than 8 KiB is cut. A provider key the core finds after logging has started is added to the filter (`LogHandle::add_secret`, which the core's `key_found` option calls).
+- **Not built:** the bridge for dependencies that log through the `log` crate ([../outstanding/log-crate-bridge.md](../outstanding/log-crate-bridge.md)).
 
 **What is never logged.**
 
