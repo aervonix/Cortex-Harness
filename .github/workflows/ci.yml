@@ -4,7 +4,8 @@
 # What a job runs is defined in the xtask crate, so `cargo xtask ci` runs the
 # same thing at a desk. The layout, the reasons and the measured times are in
 # docs/testing-and-ci.md. `cargo xtask rules` checks this file: actions pinned
-# by commit hash, no secrets, a read-only token.
+# by commit hash, a read-only token, and no secret but the owner's protected
+# terms, which the owner guard reads.
 name: ci
 
 on:
@@ -88,6 +89,23 @@ jobs:
       - name: Repo rules (documentation-only change)
         if: steps.changes.outputs.code != 'true' && matrix.name == 'linux'
         run: cargo run --locked --quiet --package xtask -- check rules
+      # The owner's personal details (rule 3), looked for in what the pull
+      # request, or the push to the main branch, adds: its lines, its paths
+      # and its commits. The terms are a secret only the owner holds. Without
+      # it (a fork, or a secret not set) the step passes with a warning.
+      # docs/testing-and-ci.md, "The owner guard".
+      - name: Owner guard
+        if: matrix.name == 'linux' && (github.event_name == 'pull_request' || github.event_name == 'push')
+        env:
+          OWNER_TERMS: ${{ secrets.OWNER_TERMS }}
+          GUARD_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          GUARD_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # The checkout is two commits deep; the range needs its history.
+          if [ -n "$OWNER_TERMS" ] && [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch --no-tags --quiet --unshallow origin
+          fi
+          cargo run --locked --quiet --package xtask -- owner-guard --base "$GUARD_BASE" --head "$GUARD_HEAD"
 
   # Tiers 1 to 3.
   test:

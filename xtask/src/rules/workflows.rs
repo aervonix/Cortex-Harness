@@ -1,7 +1,8 @@
 //! Rules for the GitHub Actions workflows (`docs/testing-and-ci.md`, "CI
 //! layout"): actions are pinned by commit hash, every workflow's token is
 //! read-only by default, a workflow that runs on pull requests has no secrets
-//! and can write nothing, and the one thing any workflow may write is an
+//! but the owner's protected terms (for the owner guard) and can write
+//! nothing, and the one thing any workflow may write is an
 //! issue, from the job that reports a failure.
 
 use super::Violation;
@@ -53,7 +54,7 @@ pub(crate) fn check(file: &str, text: &str) -> Vec<Violation> {
             ));
         }
 
-        if on_pull_requests && line.contains("secrets.") {
+        if on_pull_requests && uses_a_secret_other_than_the_owners_terms(line) {
             violations.push(Violation::new(
                 file,
                 line_number,
@@ -98,6 +99,17 @@ pub(crate) fn check(file: &str, text: &str) -> Vec<Violation> {
         ));
     }
     violations
+}
+
+/// The one secret a workflow that runs on pull requests may read: the
+/// owner's protected terms, which the owner guard looks for and which pay
+/// for nothing (`docs/testing-and-ci.md`, "The owner guard"). It is given
+/// to the environment variable of the same name and nothing else.
+const OWNER_TERMS_LINE: &str = "OWNER_TERMS: ${{ secrets.OWNER_TERMS }}";
+
+/// Whether a line reads a secret, other than in [`OWNER_TERMS_LINE`].
+fn uses_a_secret_other_than_the_owners_terms(line: &str) -> bool {
+    line.contains("secrets.") && line.trim() != OWNER_TERMS_LINE
 }
 
 /// Whether the workflow has a pull-request trigger. Such a workflow runs
@@ -206,6 +218,27 @@ mod tests {
 
         // The by-hand workflow for live tests is where a key belongs.
         assert!(messages(".github/workflows/live.yml", &workflow(step)).is_empty());
+    }
+
+    #[test]
+    fn the_owners_terms_are_the_one_secret_a_pull_request_may_read() {
+        let guard = "      - run: cargo xtask owner-guard\n        env:\n          OWNER_TERMS: ${{ secrets.OWNER_TERMS }}\n";
+        assert!(messages(".github/workflows/ci.yml", &blocking(guard)).is_empty());
+        // Under another name, beside another secret, or in a command line,
+        // it is a secret like any other.
+        for line in [
+            "          TERMS: ${{ secrets.OWNER_TERMS }}\n",
+            "          OWNER_TERMS: ${{ secrets.OWNER_TERMS }}${{ secrets.KEY }}\n",
+            "      - run: echo ${{ secrets.OWNER_TERMS }}\n",
+            "          OWNER_TERMS: ${{ secrets.OWNER_TERMS_AND_MORE }}\n",
+        ] {
+            let step = format!("      - run: cargo xtask owner-guard\n        env:\n{line}");
+            assert_eq!(
+                messages(".github/workflows/ci.yml", &blocking(&step)).len(),
+                1,
+                "{line}"
+            );
+        }
     }
 
     #[test]

@@ -23,6 +23,7 @@ mod junit;
 mod mutate;
 mod nonblocking;
 mod outside;
+mod owner_guard;
 mod rules;
 mod schema;
 mod steps;
@@ -58,6 +59,10 @@ Checks and tests
                     inside the repository leads to a file and a heading that
                     are there, and docs/steps/ and docs/outstanding/ hold
                     what they should. It asks cargo nothing.
+  owner-guard --base REV --head REV
+                    Fail when the change adds one of the owner's personal
+                    details: the terms of OWNER_TERMS, which CI fills from a
+                    secret. Without terms it passes with a warning.
 
 Showing that the tests bite
   stress -p CRATE... [--count N] [--first-seed S] [ARGS...]
@@ -126,6 +131,7 @@ fn main() -> ExitCode {
         Some("alias") => alias::run(&rest),
         Some("mutate") => return mutate::main(&rest),
         Some("stress") => stress::run(&rest),
+        Some("owner-guard") => owner_guard::run(&rest),
         Some("fuzz") => outside::fuzz(&rest),
         Some("live") => outside::live(&rest),
         Some("record") => outside::record(&rest),
