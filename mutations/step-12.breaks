@@ -119,12 +119,12 @@ caught-by:
 [break] trust-ignores-the-pin
 rule: A project's allow rules are trusted only while they are the ones the user saw: a changed set is disabled until approved again.
 file: crates/cortex-policy/src/trust.rs
-in: ProjectTrust::allows_rules
-find: self.standing(&Definition::of_rules(rules)).is_approved()
-replace: self.is_trusted()
+in: ProjectTrust::rules_approved
+find: Standing::Changed | Standing::Untrusted => false
+replace: Standing::Changed => true, Standing::Untrusted => false
 caught-by:
-    trust::a_projects_allow_rules_are_disabled_when_they_change_after_trust
-    trust::tests::a_projects_allow_rules_are_pinned_together_whatever_their_order
+    trust::a_projects_allow_rules_are_disabled_when_its_rules_change_after_trust
+    trust::tests::a_projects_rules_are_pinned_together_whatever_their_order
 
 [break] unlisted-short-option-allowed
 rule: An option that is not listed takes a command off the table of read-only commands (`sort -o out`).
