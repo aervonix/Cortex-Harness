@@ -204,7 +204,7 @@ The schema, in outline. The full list, generated from the declarations, is the [
 | `[managed]` | `locked`: the keys no higher layer may change. | Declared. |
 | `[model]` | Models by role (`main`, `fast`, `judge`), reasoning level (`effort`) and visibility (`reasoning`), maximum output, and the speed tier: `speed` for the session, which the `main` role runs at; `roles.<role>.speed` for a role of its own (the utility roles are at `standard` unless set); `speed_fallback`, `speed_wait` and `speed_cooldown` for what happens when a tier is refused ([04-providers.md](04-providers.md), "Speed tiers"; [decision 0027](../decisions/0027-speed-tiers.md)). `roles.<role>` also holds a role's own `effort` and `provider`. See [14-adaptation.md](14-adaptation.md). | Declared. |
 | `[providers.<name>]` | Protocol, base URL, the key's environment variable (`key_env`), extra headers, the two stream timeouts, capability flags. Built-in providers need no entry. | Declared, except the flags. |
-| `[models.<name>]` | Catalog overrides and additions: limits, prices, reasoning control, capability flags. | Reserved. |
+| `[models.<name>]` | Catalog overrides and additions. Each table is one catalog entry, with exactly the keys of a `[[model]]` table in `catalog/models.toml`, whose header documents them: `provider`, `id`, `name`, `protocol`, the limits, `prices` in US dollars per million tokens, `reasoning`, `capabilities`, `variants`, `flags`, and a `speed` list with each tier's own rate card ([04-providers.md](04-providers.md), "Model catalog"). The table's name is the user's own label for it. An entry **replaces** the built-in entry for the same provider and model id whole, and nothing is merged field by field, so an entry says everything about its model. An unknown key is an error, as it is in the built-in file: a misspelt price must not become "no price". The catalog file's own form, a `version` and a list of `[[model]]` tables, cannot be used here, because `[model]` is already a section of this file; the loader gives the user's entries a version of their own, so that a usage record shows that a price came from them. | Reserved. |
 | `[http]` | The HTTP client: connect timeout, proxy, extra certificate authorities. | Reserved. |
 | `[retry]` | `attempts`, `backoff_base`, `backoff_factor`, `backoff_cap`, `max_wait`, and the stream timeouts `idle_timeout` and `first_event_timeout`, which a provider's entry can override for that provider. | Declared. |
 | `[permissions]` | `mode` and `rules`. Enforced. | Declared. |
@@ -272,7 +272,7 @@ Separate from configuration, in the state directory (`$XDG_STATE_HOME/cortex-har
 | `projects/<project key>/index/` | The repository-map cache ([15-efficiency.md](15-efficiency.md)). |
 | `stats/` | Local statistics ([14-adaptation.md](14-adaptation.md)). |
 | `approvals/<project key>.toml` | "Always allow in this project" rules. |
-| `catalog-overlay.toml` | Results of `cortex models refresh`. |
+| `catalog-overlay.toml` | Results of `cortex models refresh`, in the catalog file's own form: a `version` and `[[model]]` tables. |
 | `history` | Prompt history for the editor, per project. |
 | `logs/` | Log files and crash reports. |
 

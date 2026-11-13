@@ -172,7 +172,7 @@ Some providers will run the same model faster, or slower and cheaper, at a diffe
 | Falling back is turned off | The refusal is an ordinary rate limit: backoff, then the error. |
 | The provider served another tier by itself | Nothing to do. The usage says what ran, and the user is told. |
 
-The numbers, settled in step 5 ([decision 0027](../decisions/0027-speed-tiers.md)). All three are settings; the configuration step names their keys.
+The numbers, settled in step 5 ([decision 0027](../decisions/0027-speed-tiers.md)). All three are settings: `model.speed_fallback`, `model.speed_wait` and `model.speed_cooldown` ([08-configuration.md](08-configuration.md)).
 
 | Parameter | Default | Meaning |
 |---|---|---|
