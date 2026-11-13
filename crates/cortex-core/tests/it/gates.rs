@@ -99,6 +99,39 @@ fn sys_a_command_that_only_reads_is_told_to_the_loop_as_changing_nothing() {
     });
 }
 
+/// A walk is shown to the engine as a read of the tree it starts in: one
+/// that starts outside the workspace is asked about, like a read of a file
+/// there, and is not left to the gate on the files it finds.
+#[test]
+fn a_walk_outside_the_workspace_is_asked_about() {
+    let world = World::new("walk_outside", []);
+    let beside = world.dir.join("beside");
+    std::fs::create_dir_all(&beside).unwrap();
+    std::fs::write(beside.join("notes.txt"), "FINDME beside\n").unwrap();
+    let beside = beside.to_str().unwrap().to_owned();
+    world.provider.push(calls(&[(
+        "c1",
+        "list",
+        json!({"path": beside, "depth": 2}),
+    )]));
+    world.provider.push(calls(&[(
+        "c2",
+        "search",
+        json!({"pattern": "FINDME", "path": beside}),
+    )]));
+    world.provider.push(says("Looked."));
+    let core = world.core();
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        let asked = front.turn_allowing("look beside").await;
+        assert_eq!(asked, ["list", "search"]);
+        let results = front.results();
+        assert!(results[0].2.contains("notes.txt"), "{}", results[0].2);
+        assert!(results[1].2.contains("notes.txt"), "{}", results[1].2);
+        front.close().await;
+    });
+}
+
 #[test]
 fn a_walk_does_not_return_what_the_read_rules_keep_from_the_agent() {
     let world = World::new(

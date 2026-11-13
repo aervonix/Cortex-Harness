@@ -22,6 +22,7 @@ use cortex_core::CoreOptions;
 use cortex_policy::{Definition, TrustStore};
 use cortex_protocol::Item;
 use cortex_protocol::lease::{Effect, Rule, RuleAction};
+use cortex_protocol::methods::ApprovalDetail;
 use cortex_protocol::model::ModelRole;
 use serde_json::{Value, json};
 
@@ -78,6 +79,10 @@ struct Seen {
     model: String,
     /// Whether the write the project's rule allows was asked about.
     write_asked: bool,
+    /// Whether `git status` was asked about. The engine takes git for a
+    /// command that only reads in a trusted project alone: the project's
+    /// own configuration of git can make any git command run a program.
+    git_asked: bool,
     /// How the shell tool looked for what the command changed.
     method: String,
     /// Whether the checkpoint has the earlier content of the file the
@@ -93,6 +98,7 @@ impl Seen {
         Self {
             model: OTHER_MODEL.to_owned(),
             write_asked: false,
+            git_asked: false,
             method: "git".to_owned(),
             restorable: true,
             base_trusted: true,
@@ -104,6 +110,7 @@ impl Seen {
         Self {
             model: MODEL.to_owned(),
             write_asked: true,
+            git_asked: true,
             method: "mtime".to_owned(),
             restorable: false,
             base_trusted: false,
@@ -124,6 +131,11 @@ fn observe(world: &World, change: impl FnOnce(&mut CoreOptions)) -> (Seen, Vec<S
         "c2",
         "shell",
         json!({"command": "echo more >> tracked.txt"}),
+    )]));
+    world.provider.push(calls(&[(
+        "c3",
+        "shell",
+        json!({"command": "git status --short"}),
     )]));
     world.provider.push(says("Done."));
     let core = world.core_with(|options| {
@@ -149,6 +161,14 @@ fn observe(world: &World, change: impl FnOnce(&mut CoreOptions)) -> (Seen, Vec<S
                 _ => None,
             })
             .expect("a shell result with what it changed");
+        // Which command was asked about is read from the question itself:
+        // what else a shell asks about differs from one shell to another.
+        let git_asked = front.approvals().iter().any(|request| {
+            matches!(
+                &request.detail,
+                ApprovalDetail::Command(command) if command.command.starts_with("git status")
+            )
+        });
         let notices = front.notices();
         front.close().await;
 
@@ -183,6 +203,7 @@ fn observe(world: &World, change: impl FnOnce(&mut CoreOptions)) -> (Seen, Vec<S
             Seen {
                 model,
                 write_asked: asked.contains(&"write".to_owned()),
+                git_asked,
                 method,
                 restorable,
                 base_trusted: base["trusted"] == true,
