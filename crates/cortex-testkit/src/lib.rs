@@ -17,6 +17,7 @@
 //! | [`protocol`] | [`TestProtocol`]: a wire dialect made for tests. |
 //! | [`server`] | [`SseServer`]: a provider's HTTP endpoint on the loopback interface. For tests of the real HTTP client, and of the real binary. |
 //! | [`fixtures`] | Made-up models with every shape of speed tier, and requests to them. |
+//! | [`watch`] | What a test was doing when it ran out of time: its waits and its process tree, written to its standard error before nextest stops it. And `CORTEX_TESTKIT_PAUSE_MS`, which widens the scripted server's races on purpose. |
 //! | [`fixture`] | Recorded provider responses: [`Fixture`](fixture::Fixture), the files one is made of, and [`Scrubber`](fixture::Scrubber), which takes credentials and identifiers out of a recording and refuses one that holds the key. |
 //! | [`vterm`] | [`VTerm`]: a virtual terminal, and a [`Report`](vterm::Report) of what each frame did to it. For tests of the presenter, and to parse a program's output. |
 //! | [`pty`] | [`pty::Session`]: a program run in a pseudo-terminal (ConPTY on Windows), its output recorded and parsed, keys typed into it. |
@@ -51,6 +52,7 @@ pub mod server;
 pub mod timer;
 pub mod transport;
 pub mod vterm;
+pub mod watch;
 
 pub use canary::{Printed, assert_never_printed};
 pub use cortex_base::{Clock, FakeClock, Rng, SeededRng};

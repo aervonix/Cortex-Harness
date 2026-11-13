@@ -149,6 +149,15 @@ impl ServerReply {
 
     /// Opens `gate` when the script gets here, so that the test knows
     /// everything before this point has been written.
+    ///
+    /// A gate opened at the end of a script is opened only if every step
+    /// before it worked. If an earlier write fails (the client hung up), or
+    /// a [`wait`](Self::wait) is never let go, the script stops there and
+    /// the gate stays closed, and a test that waits for it waits out its
+    /// limit. That was the shape of step 13b's SIGINT flake. Mark the point
+    /// the test needs, as early as it is true, or wait for something that
+    /// fails as well as succeeds (a [`hang_until_closed`](Self::hang_until_closed)
+    /// gate opens either way).
     #[must_use]
     pub fn mark(mut self, gate: &Gate) -> Self {
         self.steps.push(Step::Mark(gate.clone()));
@@ -222,6 +231,8 @@ pub struct SseServer {
 struct Shared {
     stopping: AtomicBool,
     state: Mutex<State>,
+    /// The number of the last connection accepted, counted from 1.
+    accepted: std::sync::atomic::AtomicUsize,
 }
 
 #[derive(Debug, Default)]
@@ -262,6 +273,7 @@ impl SseServer {
     /// Starts a server on a free port of the loopback interface.
     #[must_use]
     pub fn start() -> Self {
+        crate::watch::arm();
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind a loopback port");
         let address = listener.local_addr().expect("the listener has an address");
         let kept = listener
@@ -269,7 +281,10 @@ impl SseServer {
             .expect("a second handle on the listener");
         let shared = Arc::new(Shared::default());
         let for_thread = Arc::clone(&shared);
-        let acceptor = std::thread::spawn(move || accept(&listener, &for_thread));
+        let acceptor = std::thread::Builder::new()
+            .name("scripted-server".to_owned())
+            .spawn(move || accept(&listener, &for_thread))
+            .expect("start the server's thread");
         Self {
             address,
             shared,
@@ -351,14 +366,20 @@ fn accept(listener: &TcpListener, shared: &Arc<Shared>) {
             continue;
         };
         let for_worker = Arc::clone(shared);
-        let worker = std::thread::spawn(move || {
-            // A connection that breaks is the client's business: the test
-            // on the other end sees it as a failed request.
-            let _ = serve(&connection, &for_worker);
-            // The server keeps a second handle on the socket, so dropping
-            // this one would not close it. Say so to the client.
-            let _ = connection.shutdown(Shutdown::Both);
-        });
+        let number = shared.accepted.fetch_add(1, Ordering::SeqCst) + 1;
+        let Ok(worker) = std::thread::Builder::new()
+            .name(format!("scripted-server-{number}"))
+            .spawn(move || {
+                // A connection that breaks is the client's business: the test
+                // on the other end sees it as a failed request.
+                let _ = serve(&connection, number, &for_worker);
+                // The server keeps a second handle on the socket, so dropping
+                // this one would not close it. Say so to the client.
+                let _ = connection.shutdown(Shutdown::Both);
+            })
+        else {
+            continue;
+        };
         let mut state = shared.lock();
         state.connections.push(handle);
         state.workers.push(worker);
@@ -366,7 +387,10 @@ fn accept(listener: &TcpListener, shared: &Arc<Shared>) {
 }
 
 /// Reads one request, plays the next reply, and closes.
-fn serve(connection: &TcpStream, shared: &Shared) -> std::io::Result<()> {
+fn serve(connection: &TcpStream, number: usize, shared: &Shared) -> std::io::Result<()> {
+    let doing = crate::watch::doing(format!(
+        "the scripted server's connection {number}: reading the request"
+    ));
     connection.set_read_timeout(Some(STOP_CHECK))?;
     let mut reader = BufReader::new(UntilStopped { connection, shared });
 
@@ -403,6 +427,10 @@ fn serve(connection: &TcpStream, shared: &Shared) -> std::io::Result<()> {
     request.body = vec![0; length];
     reader.read_exact(&mut request.body)?;
 
+    let label = format!(
+        "the scripted server's connection {number}, {} {}",
+        request.method, request.path
+    );
     let reply = {
         let mut state = shared.lock();
         state.requests.push(request);
@@ -421,7 +449,16 @@ fn serve(connection: &TcpStream, shared: &Shared) -> std::io::Result<()> {
         Step::Hang(closed) => Some(closed.clone()),
         _ => None,
     });
-    let played = play(reply, &mut reader, connection, shared);
+    let played = play(
+        reply,
+        &mut reader,
+        connection,
+        shared,
+        &Progress {
+            doing: &doing,
+            label: &label,
+        },
+    );
     if played.is_err()
         && let Some(closed) = hang
     {
@@ -430,17 +467,31 @@ fn serve(connection: &TcpStream, shared: &Shared) -> std::io::Result<()> {
     played
 }
 
+/// Where a connection's script is, for a test that runs out of time.
+struct Progress<'a> {
+    doing: &'a crate::watch::Doing,
+    label: &'a str,
+}
+
+impl Progress<'_> {
+    fn now(&self, what: &str) {
+        self.doing.now(format!("{}: {what}", self.label));
+    }
+}
+
 /// Plays `reply` on a connection whose request has been read.
 fn play(
     reply: ServerReply,
     reader: &mut impl Read,
     mut writer: &TcpStream,
     shared: &Shared,
+    progress: &Progress<'_>,
 ) -> std::io::Result<()> {
-    if let Some(hold) = &reply.hold
-        && !shared.wait_for(hold)
-    {
-        return Ok(());
+    if let Some(hold) = &reply.hold {
+        progress.now(&format!("holding the response until {} opens", hold.name()));
+        if !shared.wait_for(hold) {
+            return Ok(());
+        }
     }
     if reply.hang_up {
         return Ok(());
@@ -451,12 +502,18 @@ fn play(
         head.push_str(&format!("{name}: {value}\r\n"));
     }
     head.push_str("transfer-encoding: chunked\r\nconnection: close\r\n\r\n");
+    progress.now("writing the status and the headers");
+    crate::watch::race_pause();
     writer.write_all(head.as_bytes())?;
     writer.flush()?;
 
-    for step in reply.steps {
+    let steps = reply.steps.len();
+    for (index, step) in reply.steps.into_iter().enumerate() {
+        let at = format!("step {} of {steps}", index + 1);
         match step {
             Step::Send(bytes) => {
+                progress.now(&format!("{at}: writing {} bytes", bytes.len()));
+                crate::watch::race_pause();
                 if !bytes.is_empty() {
                     write!(writer, "{:x}\r\n", bytes.len())?;
                     writer.write_all(&bytes)?;
@@ -464,13 +521,21 @@ fn play(
                     writer.flush()?;
                 }
             }
-            Step::Mark(gate) => gate.open(),
+            Step::Mark(gate) => {
+                crate::watch::race_pause();
+                gate.open();
+            }
             Step::Wait(gate) => {
+                progress.now(&format!("{at}: waiting for {} to open", gate.name()));
                 if !shared.wait_for(&gate) {
                     return Ok(());
                 }
             }
             Step::Hang(closed) => {
+                progress.now(&format!(
+                    "{at}: holding the connection until the client hangs up, then opening {}",
+                    closed.name()
+                ));
                 // The client sends nothing more, so a read returns only
                 // when it closes the connection, or the server is dropped.
                 let mut rest = [0u8; 64];
@@ -481,6 +546,8 @@ fn play(
             Step::Drop => return Ok(()),
         }
     }
+    progress.now("writing the end of the body");
+    crate::watch::race_pause();
     writer.write_all(b"0\r\n\r\n")?;
     writer.flush()
 }

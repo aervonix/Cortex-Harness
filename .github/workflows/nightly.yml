@@ -104,6 +104,12 @@ jobs:
           sudo apt-get install --yes --no-install-recommends musl-tools
       - name: Release build, binary size and crate count
         run: cargo run --locked --quiet --package xtask -- size --check --target ${{ matrix.target }}
+      # The timeout report on Windows, where it asks PowerShell for the
+      # process tree. Plain `cargo test`: this job has no nextest, and the
+      # test gives its child the variables nextest would.
+      - name: The timeout report and the race pause (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p cortex-testkit --lib -- --ignored watch::tests::sys_
       - name: Keep the record
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -142,6 +148,13 @@ jobs:
       # why it is here and not in the blocking checks.
       - name: The mutation driver, against the real cargo
         run: cargo run --locked --quiet --package xtask -- test --locked -p xtask --run-ignored only sys_the_real
+      # The report a test writes when it runs out of time, against a test
+      # that hangs on purpose, and the pause that widens the scripted
+      # server's races (docs/testing-and-ci.md, "When a test runs out of
+      # time"). Ignored in the blocking checks, because they wait on
+      # purpose; the Windows release job runs them too.
+      - name: The timeout report and the race pause
+        run: cargo run --locked --quiet --package xtask -- test --locked -p cortex-testkit --run-ignored only watch::tests::sys_
 
   # Coverage-guided fuzzing of the stream decoders (docs/testing-and-ci.md,
   # "Not blocking"): the parser of server-sent events and the decoder of
