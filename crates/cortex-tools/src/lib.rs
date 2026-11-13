@@ -38,11 +38,12 @@ pub mod store;
 pub mod toolbox;
 
 mod args;
-#[cfg(test)]
-mod cases;
 mod detect;
 mod diff;
 mod walk;
+
+#[cfg(test)]
+use cortex_testkit::cases;
 
 pub use blocking::{BlockingError, run_blocking};
 pub use context::{ImageSupport, OpenGate, Outliner, PlanCx, ReadGate, RunCx};

@@ -754,6 +754,19 @@ impl World {
     }
 }
 
+/// A panic in a session's task would leave the test waiting for an event
+/// that never comes, until the runner's time limit. This ends the test at
+/// once, with the panic's message already printed.
+struct AbortIfTheLoopPanics;
+
+impl Drop for AbortIfTheLoopPanics {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            std::process::abort();
+        }
+    }
+}
+
 /// How one session of a test is put together.
 pub struct Setup {
     pub id: String,
@@ -842,7 +855,10 @@ impl Setup {
             .runtime
             .block_on(Session::open(parts))
             .expect("the session opens");
-        world.runtime.spawn(session.run());
+        world.runtime.spawn(async move {
+            let _loud = AbortIfTheLoopPanics;
+            session.run().await;
+        });
         Rig {
             handle,
             events,

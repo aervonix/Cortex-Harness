@@ -315,6 +315,7 @@ version = "0.0.0"
 dependencies = [
  "cortex-base",
  "cortex-protocol",
+ "cortex-testkit",
  "globset",
  "grep-matcher",
  "grep-regex",

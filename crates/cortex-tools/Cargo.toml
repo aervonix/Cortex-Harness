@@ -23,5 +23,9 @@ similar.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 
+[dev-dependencies]
+# For the property-test helper (`cortex_testkit::cases`).
+cortex-testkit.workspace = true
+
 [lints]
 workspace = true
