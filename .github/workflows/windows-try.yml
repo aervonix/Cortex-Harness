@@ -6,6 +6,7 @@
 # any branch that has been pushed:
 #
 #   gh workflow run windows-try --ref <branch> -f crate=cortex-tools -f filter=shell::
+#   gh workflow run windows-try --ref <branch> -f crate=cortex-tools -f filter=shell::cmd -f count=100
 #   ci-wait --workflow windows-try          (from the branch, for its head commit)
 #
 # It builds and runs as the blocking `test-windows` job does (cargo's `ci`
@@ -25,6 +26,10 @@ on:
         default: ""
       filter:
         description: "Part of a test's name, as nextest takes it (shell::, sys_). Empty: every test."
+        required: false
+        default: ""
+      count:
+        description: "Run each test this many times over (cargo xtask stress), to see how often one fails. Needs a crate. Empty: once, with the tier report."
         required: false
         default: ""
 
@@ -75,8 +80,19 @@ jobs:
         env:
           TRY_CRATE: ${{ inputs.crate }}
           TRY_FILTER: ${{ inputs.filter }}
+          TRY_COUNT: ${{ inputs.count }}
         run: |
-          $arguments = @("ci", "--tiers", "--top", "20")
+          $count = "$env:TRY_COUNT".Trim()
+          if ($count) {
+            if ($count -cnotmatch '^[1-9][0-9]{0,3}$') {
+              throw "the count is a number from 1 to 9999"
+            }
+            # Many times over, in the blocking job's build, so that the
+            # cache serves it. It reports each test that failed some repeat.
+            $arguments = @("stress", "--count", $count, "--cargo-profile", "ci")
+          } else {
+            $arguments = @("ci", "--tiers", "--top", "20")
+          }
           # Split at spaces and commas, and drop the empty pieces.
           foreach ($crate in ("$env:TRY_CRATE" -split '[ ,]+' | Where-Object { $_ })) {
             if ($crate -cnotmatch '^[a-z0-9][a-z0-9-]*$') {
@@ -89,7 +105,12 @@ jobs:
             if ($filter -cnotmatch '^[A-Za-z0-9_:]+$') {
               throw "the filter is part of a test's name: letters, digits, _ and ::"
             }
-            $arguments += @("--", $filter)
+            # `ci --tiers` takes nextest's arguments after `--`; `stress`
+            # takes them as they are.
+            if (-not $count) {
+              $arguments += "--"
+            }
+            $arguments += $filter
           }
           Write-Host "cargo xtask $($arguments -join ' ')"
           cargo run --locked --quiet --package xtask -- @arguments
@@ -99,6 +120,8 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: junit-windows-try
-          path: target/nextest/ci/junit.xml
+          path: |
+            target/nextest/ci/junit.xml
+            target/nextest/stress/junit.xml
           if-no-files-found: ignore
           retention-days: 14
