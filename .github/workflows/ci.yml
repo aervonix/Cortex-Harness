@@ -113,6 +113,14 @@ jobs:
         run: |
           "CARGO_HOME=$env:RUNNER_TEMP\cargo" >> $env:GITHUB_ENV
           "RUSTUP_HOME=$env:RUNNER_TEMP\rustup" >> $env:GITHUB_ENV
+          # Temporary files too. Tests that need a directory with no
+          # repository above it make it in the system's temporary
+          # directory, which is on the system disk by default: with it on
+          # the workspace's disk the tests of `cortex-core` took half the
+          # time (docs/steps/11/ci.md, "Windows CI health").
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\tmp" | Out-Null
+          "TEMP=$env:RUNNER_TEMP\tmp" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP\tmp" >> $env:GITHUB_ENV
       - name: Install the toolchain from rust-toolchain.toml
         if: steps.changes.outputs.code == 'true'
         run: rustup toolchain install
