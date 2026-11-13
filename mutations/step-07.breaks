@@ -74,9 +74,11 @@ in: Round::ask_next
 find: self.asking.is_some()
 replace: false
 # `rounds::questions_are_asked_one_at_a_time_in_call_order_while_allowed_calls_run`
-# is named for this rule and passes with it broken: its two questions are
-# answered at once, so two open together look the same as one after the other.
+# is named for this rule, and until 2026-11-13 passed with it broken: nothing
+# happened while its first question was open, so the loop had no occasion to
+# put the second. An allowed call now ends meanwhile, and it fails.
 caught-by:
+    rounds::questions_are_asked_one_at_a_time_in_call_order_while_allowed_calls_run
     denials::a_stop_leaves_no_question_open_and_puts_no_other
 
 [break] call-after-the-stop-is-planned-and-runs
