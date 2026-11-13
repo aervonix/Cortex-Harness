@@ -107,7 +107,11 @@ A round has four phases. The split exists so that policy and scheduling work fro
 
 Conflicting calls always run in the model's order. Calls that do not conflict run together. The class is part of each tool's contract ([05-tools.md](05-tools.md)), and a tool may refine it per call (for example a shell command that the policy has proven read-only).
 
-As built, one rule decides what may start: a call waits for every earlier call it conflicts with, and for every earlier call whose plan is not known yet, which could turn out to conflict. Planning, a question and a tool run are each a task that reports to the loop, so the decision is made in one place. A task that panics reports an error result in its place.
+As built, one rule decides what may start: a call waits for every earlier call it conflicts with, and for every earlier call whose plan is not known yet, which could turn out to conflict. Planning, a question and a tool run are each a task that reports to the loop, so the decision is made in one place. A task that panics reports an error result in its place, and that holds for a question too: the call gets the error and the next question is put.
+
+- **"The model's order" is the order of the blocks' indexes,** not the order the blocks happened to end in. While the response is arriving, nothing after a tool call that is still being written starts or is asked about.
+- **A call that is not scheduled as read-only is taken to have side effects,** whatever effects its plan declares, and so waits for the response to end. A tool from outside whose author declared nothing is exclusive ([05-tools.md](05-tools.md)), and must not start early because its list of effects is empty.
+- **A call that repeats the id of another call of the response is dropped,** from the message and from the round. A result names its call by id, so two calls with one id cannot both be answered, and every provider rejects them.
 
 **4. Record.** Results are appended to the log, and sent to the model, in the model's call order whatever order they finished in. Front ends see each result as it completes.
 
@@ -133,12 +137,14 @@ A safe boundary is the only place a user message can be appended without breakin
 | The turn ended | What happens to the prompts that were waiting |
 |---|---|
 | `completed` | The next one starts as a new turn: a steering message that found no boundary first, then the queue, one at a time. When none is left the session is idle. |
-| `interrupted` | Steering messages that were never delivered are handed back to the front end, for its editor. Queued prompts are **held**. |
+| `interrupted` | Steering messages that were never delivered are handed back to the front end, for its editor, in the answer to the interrupt. Queued prompts are **held**, and so is a steering message that arrives after the interrupt, while the turn is still ending. |
 | `failed` or `limit` | Steering messages that were never delivered, and the queue, are **held**, in that order. |
 
 - **Held prompts are kept, and nothing runs by itself.** An interrupt means stop. And queued prompts are usually steps that assume the one before them worked ("then commit"): after an authentication error or a spent budget each would fail in turn.
 - **The front end is told.** `session.updated` carries the number of prompts waiting, and `session.idle` is not sent: by its definition the session has a queued prompt.
 - **The next prompt the user sends runs first,** at once, and the held prompts follow it in order.
+- **An interrupt that arrives as a turn is finishing** does not change how that turn ended: it had completed. It still means stop, so what was waiting is held all the same. Closing a session does the same.
+- **A steering message is answered with the id of the running turn.** If it finds no boundary and becomes a turn of its own, that turn has a new id, which `turn.started` carries.
 
 ## Retries
 
@@ -150,6 +156,7 @@ Retries are a separate layer between the loop and the provider's protocol and tr
 - **Mid-stream failure.** Only side-effect-free calls start before a response completes, so a failed stream has had no side effects. The partial response is discarded from the context, kept in the log as an `attempt` entry for debugging, and the same request is sent again. Results of read-only calls that already ran are kept in a short-lived cache and reused if the new response asks for the same call. Front ends receive `item.reset` so they can clear the partial text.
 - **The cache of early results, as built in step 7.**
   - It lives for one request: from its first attempt until its response ends or the turn does. A call is the same call when the tool and the arguments are the same; the new response gives it a new id, and the result is recorded under that one.
+  - **A kept result is used when the call's turn to start comes, not when its block ends.** It is held back by the same rules as a new run. If the new response puts a write to the file before the read, the kept read is discarded and the read runs again after the write.
   - A run that is still going when its response fails is kept too, and the new response joins it.
   - Front ends get `item.reset` for the tool result of a call that is thrown away, and see it begin again if it is reused.
   - **A result that is not asked for again is discarded, and forgotten.** The model never saw it. But `read` has already noted in the table of seen files which lines it showed, and a later read would be answered "unchanged since you read it". So the loop makes the table forget every file a discarded call read, before anything else that touches the same file may run. The price is small and on the safe side: the next read of such a file is in full.
@@ -208,6 +215,19 @@ As built in step 7 (`crates/cortex-agent/src/ledger.rs`, `guard.rs`):
 ## Interruption
 
 See [02-runtime.md](02-runtime.md) for the mechanism. From the loop's point of view, cancellation is an input like any other: the state machine moves to `Interrupted`, records what exists, and returns to `Idle`. After an interruption the history is always valid for the next request, which tests check by sending one.
+
+What "records what exists" means, as built in step 7:
+
+| Interrupted | What is recorded |
+|---|---|
+| Before the response starts | The prompt. No assistant item. |
+| While the response is arriving | The assistant item with what arrived, marked `interrupted`. A tool call whose arguments were complete stays in it and gets a result: its own, if it had started and finished; what it returns when it is cancelled, if it was running; "interrupted", if it never ran. A call that was still being written is left out. An item that had begun and has nothing in it is recorded empty, and is not sent to a model. |
+| During a tool round | One result for every call, as above. The call whose question was open is denied. |
+| Anywhere else | Nothing more: the log already holds whole items. |
+
+**When the log cannot be written.** A failed append ends the turn ([07-sessions-and-context.md](07-sessions-and-context.md)). The loop then reads the session again from its store at the start of the next turn, so that memory holds what the log holds and a store that repairs on open closes a round that was half recorded. If that read fails, the turn fails and the next one tries again: no request goes out on a history that may have a hole.
+
+**When the loop itself has a bug.** A panic in a tool call, a plan or a question is an error result for that call ([02-runtime.md](02-runtime.md)). A panic anywhere else in a turn (in the context, the verifier, the store, the loop's own code) ends the turn: front ends get `turn.completed` with the outcome `failed` and the code `loop_panicked`, what was waiting is held, and the session is read again from its store before the next turn.
 
 ## Several sessions at once
 
