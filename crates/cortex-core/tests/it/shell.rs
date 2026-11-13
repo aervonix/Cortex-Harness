@@ -65,6 +65,7 @@ fn sys_a_command_is_given_the_environment_the_command_analysis_relies_on() {
     let core = world.core_with(|options| {
         let mut env = world.shell_env(&[
             ("CDPATH", "/somewhere/else"),
+            ("OLDPWD", "/somewhere/before"),
             ("RIPGREP_CONFIG_PATH", "/etc/ripgreprc"),
             // The user already gives git a setting through its environment.
             ("GIT_CONFIG_COUNT", "1"),
@@ -95,6 +96,7 @@ fn sys_a_command_is_given_the_environment_the_command_analysis_relies_on() {
 
         // What the analysis takes to be unset is unset.
         assert_eq!(env.get("CDPATH"), None, "{text}");
+        assert_eq!(env.get("OLDPWD"), None, "{text}");
         assert_eq!(env.get("RIPGREP_CONFIG_PATH"), None, "{text}");
 
         // Git's monitor is off, after the setting the user already gives.

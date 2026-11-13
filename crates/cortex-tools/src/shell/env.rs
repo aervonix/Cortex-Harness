@@ -53,7 +53,7 @@ pub const DEFAULT_REMOVED: &[&str] = &[
 /// The variables that are removed because the command analysis takes them
 /// to be unset. Not a matter of configuration: a user who could bring one
 /// back would be widening what a command the engine allowed can do.
-pub const ANALYSIS_REMOVED: &[&str] = &["CDPATH", "RIPGREP_CONFIG_PATH"];
+pub const ANALYSIS_REMOVED: &[&str] = &["CDPATH", "OLDPWD", "RIPGREP_CONFIG_PATH"];
 
 /// How git counts the settings given in its environment.
 const GIT_CONFIG_COUNT: &str = "GIT_CONFIG_COUNT";
@@ -333,6 +333,9 @@ mod tests {
         let built = build(
             env(&[
                 ("CDPATH", "/somewhere/else"),
+                // Where the first `cd -` of a command would go: a directory
+                // the command analysis has never seen.
+                ("OLDPWD", "/somewhere/before"),
                 ("RIPGREP_CONFIG_PATH", "/etc/ripgreprc"),
                 ("CDPATHS", "kept: another name"),
                 ("PATH", "/usr/bin"),
@@ -341,16 +344,22 @@ mod tests {
             false,
         );
         assert!(get(&built, "CDPATH").is_empty());
+        assert!(get(&built, "OLDPWD").is_empty());
         assert!(get(&built, "RIPGREP_CONFIG_PATH").is_empty());
         assert_eq!(get(&built, "CDPATHS"), ["kept: another name"]);
         assert_eq!(get(&built, "PATH"), ["/usr/bin"]);
         // In any case on Windows, where a name has none.
         let on_windows = build(
-            env(&[("CdPath", "C:\\else"), ("Ripgrep_Config_Path", "C:\\rc")]),
+            env(&[
+                ("CdPath", "C:\\else"),
+                ("OldPwd", "C:\\before"),
+                ("Ripgrep_Config_Path", "C:\\rc"),
+            ]),
             &defaults(),
             true,
         );
         assert!(get(&on_windows, "CdPath").is_empty());
+        assert!(get(&on_windows, "OldPwd").is_empty());
         assert!(get(&on_windows, "Ripgrep_Config_Path").is_empty());
     }
 
