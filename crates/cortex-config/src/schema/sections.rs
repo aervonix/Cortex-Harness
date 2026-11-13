@@ -246,7 +246,12 @@ settings! {
         [UserOnly, NextEpoch]
         pub base_url: Option<String>,
         /// The environment variable that holds the provider's API key. It
-        /// is looked at before the credential store.
+        /// is looked at before the credential store. A built-in provider
+        /// that takes a key has one already (`ANTHROPIC_API_KEY`,
+        /// `OPENAI_API_KEY` and so on). A provider with a key variable
+        /// and no key anywhere is refused before anything is sent. One
+        /// with none, as the built-in local servers have none, is asked
+        /// without a key unless one is stored for it.
         [UserOnly, Now]
         pub key_env: Option<String>,
         /// Extra headers for every request. A value is text, or

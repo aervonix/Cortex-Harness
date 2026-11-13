@@ -328,3 +328,51 @@ fn a_local_server_is_asked_without_a_key() {
     assert_eq!(request.url, "http://localhost:11434/v1/chat/completions");
     assert_eq!(request.headers.get("authorization"), None);
 }
+
+/// A provider that has a key variable and no key anywhere is refused
+/// before anything is sent, and told where a key is looked for: a missing
+/// key never becomes a request with no key. Its own variable or a
+/// built-in one, it is the same.
+#[test]
+fn a_provider_with_a_key_variable_and_no_key_is_refused_before_anything_is_sent() {
+    let world = World::new("no_key", []);
+    world.user_config(
+        "[providers.gateway]\nprotocol = \"openai-chat\"\nbase_url = \
+         \"https://llm.example.invalid/v1\"\nkey_env = \"GATEWAY_KEY\"\n\n[models.gate]\nprovider \
+         = \"gateway\"\nid = \"gate-model\"\nname = \"Gate\"\nprotocol = \
+         \"openai-chat\"\ncontext_window = 32000\nmax_output = 4000\ninput = [\"text\"]\n",
+    );
+    for (model, variable) in [
+        ("z-ai/glm-5.3-flash", "OPENROUTER_API_KEY"),
+        ("gate-model", "GATEWAY_KEY"),
+    ] {
+        let transport = ScriptedTransport::new([sse(OPENAI_STREAM.to_owned())]);
+        let core = world.core_with(|options| {
+            options.connector = None;
+            options.transport = Some(Arc::new(transport.clone()));
+            options.overrides.push(cortex_config::Override {
+                key: "model.main".to_owned(),
+                value: model.to_owned(),
+                flag: Some("--model".to_owned()),
+            });
+        });
+        world.run(async {
+            let refused = Front::start_as(
+                &world,
+                &core,
+                ClientInfo::headless(),
+                SessionSettings::default(),
+            )
+            .await
+            .err()
+            .expect("a session started with no key");
+            assert_eq!(refused.kind, cortex_protocol::ErrorKind::Auth, "{model}");
+            assert_eq!(refused.code, "no_credentials", "{model}");
+            assert!(refused.message.contains(variable), "{}", refused.message);
+        });
+        assert!(
+            transport.requests().is_empty(),
+            "{model}: a request was sent"
+        );
+    }
+}
