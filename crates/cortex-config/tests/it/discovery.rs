@@ -237,3 +237,58 @@ fn nothing_that_is_found_is_opened() {
     assert_eq!(before, after, "no file's access time moved");
     assert!(!format!("{found:?}").contains("sk-test-never-read"));
 }
+
+/// In the workspace, a candidate is found through the path resolver, which
+/// looks at a link's target before it follows it: a link to a network share
+/// is refused before the network is asked (`docs/security.md`, section 7),
+/// and so is a target the rules refuse, such as one without a drive. Before,
+/// discovery asked the file system, which follows any link.
+#[cfg(windows)]
+#[test]
+fn in_the_workspace_a_link_is_looked_at_before_it_is_followed() {
+    use std::path::PathBuf;
+
+    let scratch = Scratch::new("discover_links");
+    let home = scratch.join("home");
+    let workspace = home.join("work");
+    fs::create_dir_all(&workspace).unwrap();
+    // A share that does not exist: following the link would wait for its
+    // name to fail.
+    if !crate::make_link(
+        &Path::new(crate::NO_SUCH_SHARE).join("cursor"),
+        &workspace.join(".cursor"),
+        true,
+    ) {
+        return;
+    }
+    // A real folder with a file in it, linked to by a target that names no
+    // drive: the file system follows it on the current drive, and the
+    // resolver refuses it.
+    let real = scratch.join("real-vscode");
+    write(&real.join("mcp.json"), MARKER);
+    let without_drive: PathBuf = real.components().skip(1).collect();
+    assert!(crate::make_link(
+        &without_drive,
+        &workspace.join(".vscode"),
+        true
+    ));
+    assert!(
+        fs::metadata(workspace.join(".vscode").join("mcp.json")).is_ok(),
+        "the file system follows the link"
+    );
+    // A link to a real folder in full is followed.
+    let skills = scratch.join("real-skills");
+    fs::create_dir_all(&skills).unwrap();
+    fs::create_dir_all(workspace.join(".agents")).unwrap();
+    assert!(crate::make_link(
+        &skills,
+        &workspace.join(".agents").join("skills"),
+        true
+    ));
+
+    let found = discover(&env(&home), Some(&workspace), &all());
+    assert_eq!(
+        summary(&found, &workspace),
+        ["Project Skills Agent Skills: .agents/skills"]
+    );
+}

@@ -104,8 +104,32 @@ impl FileStore {
         }
     }
 
+    /// Refuses a link at one of the store's two paths: the file and its
+    /// lock are files of their own, or nothing.
+    ///
+    /// The check is made just before each use, and the use opens the path
+    /// again: a link put there in between, by a process of the same user,
+    /// is followed. Closing that needs an open that does not follow links,
+    /// which `cortex-base` gains in step 10.
+    fn refuse_link(path: &Path) -> Result<(), CredentialError> {
+        match std::fs::symlink_metadata(path) {
+            Ok(found) if found.file_type().is_symlink() => Err(CredentialError::Link {
+                path: path.to_path_buf(),
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// The lock file: the credentials file's name with `.lock` added.
+    fn lock_path(&self) -> PathBuf {
+        let mut name = self.path.clone().into_os_string();
+        name.push(".lock");
+        PathBuf::from(name)
+    }
+
     /// Reads the whole file. `None` when there is none.
     fn read(&self) -> Result<Option<toml::Table>, CredentialError> {
+        Self::refuse_link(&self.path)?;
         let text = match std::fs::read_to_string(&self.path) {
             Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -148,6 +172,8 @@ impl FileStore {
         &self,
         change: impl FnOnce(&mut toml::Table) -> bool,
     ) -> Result<bool, CredentialError> {
+        // Before anything is created: a refused store leaves no lock behind.
+        Self::refuse_link(&self.path)?;
         let directory = match self.path.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => parent,
             _ => Path::new("."),
@@ -167,6 +193,9 @@ impl FileStore {
             owner_only: true,
             ..AtomicWriteOptions::default()
         };
+        // An atomic write follows a link to the file it points to, which is
+        // what an editor wants and this store must not do.
+        Self::refuse_link(&self.path)?;
         write_atomic(&self.path, text.as_bytes(), &options, &*self.clock).map_err(|error| {
             CredentialError::Io {
                 action: "write the credentials file",
@@ -181,9 +210,8 @@ impl FileStore {
     /// returned file is dropped, and by the operating system if this
     /// process dies first.
     fn lock(&self) -> Result<File, CredentialError> {
-        let mut name = self.path.clone().into_os_string();
-        name.push(".lock");
-        let path = PathBuf::from(name);
+        let path = self.lock_path();
+        Self::refuse_link(&path)?;
         let open = || {
             std::fs::OpenOptions::new()
                 .read(true)
@@ -220,6 +248,11 @@ impl CredentialStore for FileStore {
     }
 
     fn warning(&self, env: &Env) -> Option<String> {
+        if let Err(error) = Self::refuse_link(&self.path).and_then(|()| {
+            Self::refuse_link(&self.lock_path())
+        }) {
+            return Some(format!("the credential store cannot be used: {error}"));
+        }
         match self.is_private() {
             Ok(Some(false)) => Some(format!(
                 "the credentials file {} can be opened by other users of this machine. It is \

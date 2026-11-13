@@ -14,7 +14,7 @@ use cortex_base::{Classified, ErrorKind, FakeClock, Secret, SharedClock, private
 use cortex_config::credentials::{self, CredentialSource, Lookup};
 use cortex_config::{CredentialStore, Env, FileStore, Platform, StoreKind};
 
-use crate::{Scratch, write};
+use crate::{Scratch, make_link, write};
 
 const KEY_ONE: &str = "sk-test-0001-alpha";
 const KEY_TWO: &str = "sk-test-0002-bravo";
@@ -378,6 +378,64 @@ fn a_store_and_its_errors_never_print_a_key() {
     assert_eq!(credential.source, CredentialSource::Store(StoreKind::File));
     assert_eq!(credential.secret.expose(), KEY_ONE);
     assert!(!format!("{credential:?}").contains(KEY_ONE));
+}
+
+/// A link at the credentials file's path, or at its lock's, is refused
+/// with an error that says so, and nothing is written where it points.
+/// Before, the key was written into whatever file the link named: one in a
+/// repository of dotfiles, say.
+#[test]
+fn a_link_at_the_credentials_path_or_its_lock_is_refused() {
+    let scratch = Scratch::new("cred_link");
+    let elsewhere = scratch.join("dotfiles/notes.toml");
+    write(&elsewhere, "# notes\n");
+    let store = store(&scratch);
+    fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+    if !make_link(&elsewhere, store.path(), false) {
+        return;
+    }
+    let refused = |result: Result<(), cortex_config::CredentialError>, what: &str| {
+        let error = result.expect_err(what);
+        assert!(
+            matches!(&error, cortex_config::CredentialError::Link { path } if path == store.path()),
+            "{what}: {error:?}"
+        );
+        assert_eq!(error.kind(), ErrorKind::Config);
+        assert!(error.to_string().contains("is a link"), "{error}");
+    };
+    refused(store.set("example", &Secret::new(KEY_ONE)), "set");
+    refused(store.get("example").map(drop), "get");
+    refused(store.remove("example").map(drop), "remove");
+    assert_eq!(fs::read_to_string(&elsewhere).unwrap(), "# notes\n");
+    assert!(
+        fs::symlink_metadata(store.path())
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the link is left as it is"
+    );
+    let env = Env::empty(Platform::CURRENT);
+    assert!(
+        store.warning(&env).unwrap().contains("is a link"),
+        "auth status says why"
+    );
+
+    // Refused before anything was made: there is no lock file.
+    let mut lock = store.path().as_os_str().to_owned();
+    lock.push(".lock");
+    let lock = std::path::PathBuf::from(lock);
+    assert!(fs::symlink_metadata(&lock).is_err());
+
+    // The lock file's name, linked to the same file.
+    fs::remove_file(store.path()).unwrap();
+    assert!(make_link(&elsewhere, &lock, false));
+    let error = store.set("example", &Secret::new(KEY_ONE)).unwrap_err();
+    assert!(
+        matches!(&error, cortex_config::CredentialError::Link { path } if *path == lock),
+        "{error:?}"
+    );
+    assert!(!store.path().exists(), "nothing was written");
+    assert_eq!(fs::read_to_string(&elsewhere).unwrap(), "# notes\n");
 }
 
 /// The real Windows Credential Manager, with entries under a name of the

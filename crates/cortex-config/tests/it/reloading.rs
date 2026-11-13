@@ -476,3 +476,99 @@ fn starting_with_an_invalid_file_is_an_error_with_nothing_to_fall_back_to() {
         "error: ~/cortex/config.toml:2: retry.attempts: 0 is out of range: expected 1 to 20"
     );
 }
+
+/// A link that appears in the project after the load is not followed by
+/// the next check: the project's files are found again through the path
+/// resolver first, and the configuration is reloaded through it. The check
+/// asks the file system about each file, and that follows links, which on
+/// Windows sends the account's credentials to a share a link names.
+///
+/// Here the link leads to nothing, which every OS can show: followed, it
+/// looks like the missing file it stands for, and the check says nothing.
+/// Found again, it is refused and reported.
+#[test]
+fn a_link_that_appears_in_the_project_is_found_before_it_is_followed() {
+    let machine = Machine::new("reload_link_appears");
+    write_at(&machine, LayerKind::User, "[model]\nmain = \"first\"\n", 60);
+    let (mut live, clock) = start(&machine);
+    let folder = machine
+        .file(LayerKind::Project)
+        .parent()
+        .unwrap()
+        .to_owned();
+    assert!(!folder.exists(), "no `.cortex` at the load");
+
+    if !crate::make_link(&machine.home().join("nowhere"), &folder, true) {
+        return;
+    }
+    let Some(Reload::Rejected(failure)) = live.check() else {
+        panic!("expected the link to be found and refused");
+    };
+    let said = failure.render(machine.env());
+    assert!(
+        said.contains("is not opened:") && said.contains("does not exist"),
+        "{said}"
+    );
+    // Reported once, and the configuration stays.
+    assert!(live.check().is_none());
+    assert_eq!(value(&live.current(), "model.main"), "\"first\"");
+
+    // The link goes and a real folder comes: noticed, and loaded.
+    remove_link(&folder);
+    write_at(
+        &machine,
+        LayerKind::Project,
+        "[model]\nreasoning = \"none\"\n",
+        30,
+    );
+    assert!(matches!(live.check(), Some(Reload::Applied { .. })));
+    assert_eq!(value(&live.current(), "model.reasoning"), "\"none\"");
+
+    // The same on the check on a key press.
+    fs::remove_dir_all(&folder).unwrap();
+    assert!(crate::make_link(&machine.home().join("nowhere"), &folder, true));
+    clock.advance(Duration::from_secs(2));
+    assert!(matches!(
+        live.check_at_most_every(Duration::from_secs(1)),
+        Some(Reload::Rejected(_))
+    ));
+}
+
+/// Removes a link to a folder: a file on Unix, a folder on Windows.
+fn remove_link(link: &Path) {
+    fs::remove_file(link)
+        .or_else(|_| fs::remove_dir(link))
+        .unwrap();
+}
+
+/// The same with a link to a network share, on Windows, where it matters.
+/// The share does not exist: a check that followed the link would wait for
+/// its name to fail, and then see nothing new.
+#[cfg(windows)]
+#[test]
+fn a_link_to_a_share_that_appears_after_the_load_is_never_followed() {
+    let machine = Machine::new("reload_share_appears");
+    write_at(&machine, LayerKind::User, "[model]\nmain = \"first\"\n", 60);
+    let (mut live, _clock) = start(&machine);
+    let folder = machine
+        .file(LayerKind::Project)
+        .parent()
+        .unwrap()
+        .to_owned();
+    if !crate::make_link(
+        &Path::new(crate::NO_SUCH_SHARE).join("cortex"),
+        &folder,
+        true,
+    ) {
+        return;
+    }
+    let Some(Reload::Rejected(failure)) = live.check() else {
+        panic!("expected the link to be found and refused");
+    };
+    let said = failure.render(machine.env());
+    assert!(
+        said.contains(r"network share `\\cortex-no-such-host.invalid\share`"),
+        "{said}"
+    );
+    assert!(live.check().is_none(), "reported once");
+}
