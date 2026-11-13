@@ -14,6 +14,7 @@ model.reasoning = "none"                    # profile review (project: ~/work/ap
 model.roles.fast.speed = "standard"         # user: ~/cortex/config.toml:10
 model.speed = "standard"                    # default
 model.speed_cooldown = "10m"                # default
+model.speed_cooldown_min = "1m"             # default
 model.speed_fallback = true                 # default
 model.speed_wait = "5s"                     # command-line: -c model.speed_wait
 permissions.mode = "read-only"              # profile review (user: ~/cortex/config.toml:33)

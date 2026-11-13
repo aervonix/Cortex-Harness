@@ -406,12 +406,36 @@ impl Runner {
         store: Arc<dyn ContentStore>,
         out: &mut dyn ToolOutput,
     ) -> Result<Finished, StartError> {
+        // A token nobody fires: the stages keep their graces.
+        self.run_until(start, cancel, &CancelToken::new(), store, out)
+            .await
+    }
+
+    /// As [`run`](Self::run), with a second token for "kill now": what a
+    /// second interrupt means (`docs/architecture/02-runtime.md`,
+    /// "Cancellation").
+    ///
+    /// When `kill_now` fires the tree is killed at once, wherever the run
+    /// is: a command that was not yet asked to stop gets no polite
+    /// interrupt, and one that is being stopped in stages loses the rest
+    /// of its graces. The result says the call was interrupted and that
+    /// it was stopped with a kill. Firing `kill_now` alone is enough: it
+    /// need not be preceded by `cancel`.
+    pub async fn run_until(
+        &self,
+        start: Start,
+        cancel: &CancelToken,
+        kill_now: &CancelToken,
+        store: Arc<dyn ContentStore>,
+        out: &mut dyn ToolOutput,
+    ) -> Result<Finished, StartError> {
         let started = self.clock.monotonic();
         let shared = Arc::new(Shared::default());
         let running = self.start(&start, store, &shared)?;
         let mut waits = Waits {
             shared: &shared,
             cancelled: Box::pin(cancel.cancelled()),
+            kill_now: Box::pin(kill_now.cancelled()),
             timeout: Some(self.timer.sleep(start.timeout)),
             deadline: None,
             frame: None,
@@ -699,6 +723,8 @@ impl State {
 struct Waits<'a> {
     shared: &'a Shared,
     cancelled: Pin<Box<dyn Future<Output = ()> + Send + 'a>>,
+    /// The second token: stop without the graces.
+    kill_now: Pin<Box<dyn Future<Output = ()> + Send + 'a>>,
     /// The command's time limit. `None` once it has passed.
     timeout: Option<Sleep>,
     /// The end of the current grace. `None` when no grace is running.
@@ -714,6 +740,7 @@ struct Ready {
     exit: Option<Result<Exit, String>>,
     reader_done: bool,
     cancelled: bool,
+    kill_now: bool,
     timed_out: bool,
     deadline: bool,
 }
@@ -753,6 +780,11 @@ impl Waits<'_> {
             // The token stays cancelled: ask once.
             self.cancelled = Box::pin(std::future::pending());
             ready.cancelled = true;
+            any = true;
+        }
+        if self.kill_now.as_mut().poll(cx).is_ready() {
+            self.kill_now = Box::pin(std::future::pending());
+            ready.kill_now = true;
             any = true;
         }
         if let Some(timeout) = &mut self.timeout
@@ -814,7 +846,12 @@ struct Run<'a> {
 impl Run<'_> {
     /// Acts on what has happened. `true` when the run is over.
     fn step(&mut self, ready: &Ready, waits: &mut Waits<'_>) -> bool {
-        let mut events = (ready.cancelled, ready.timed_out, ready.deadline);
+        let mut events = (
+            ready.cancelled,
+            ready.timed_out,
+            ready.deadline,
+            ready.kill_now,
+        );
         loop {
             let phase = self.phase;
             if self.act(events, waits) {
@@ -826,16 +863,16 @@ impl Run<'_> {
             // The run has moved on. Its new phase looks at what is already
             // known: the exit and the end of the output may both have come
             // before it, and then nothing more will arrive to wake it.
-            events = (false, false, false);
+            events = (false, false, false, false);
         }
     }
 
     /// One phase's part of [`step`](Self::step). The events are whether
-    /// the call was cancelled, its time limit passed, or the phase's own
-    /// wait ended.
+    /// the call was cancelled, its time limit passed, the phase's own wait
+    /// ended, or the call was told to stop without the graces.
     fn act(
         &mut self,
-        (cancelled, timed_out, deadline): (bool, bool, bool),
+        (cancelled, timed_out, deadline, kill_now): (bool, bool, bool, bool),
         waits: &mut Waits<'_>,
     ) -> bool {
         let exited = self.exit.is_some();
@@ -844,7 +881,11 @@ impl Run<'_> {
                 if exited {
                     return self.command_exited(waits);
                 }
-                if cancelled {
+                if kill_now {
+                    // No polite interrupt and no grace: the tree dies now.
+                    self.ending = Ending::Interrupted;
+                    self.kill(waits);
+                } else if cancelled {
                     self.ending = Ending::Interrupted;
                     self.next_stage(waits);
                 } else if timed_out {
@@ -856,7 +897,7 @@ impl Run<'_> {
                 if self.reader_done && self.nothing_is_left() {
                     return true;
                 }
-                if deadline || cancelled || timed_out {
+                if deadline || cancelled || timed_out || kill_now {
                     // Its time is up, or the call's is.
                     if self.nothing_is_left() {
                         // Nothing of the tree is running, and its pipe is
@@ -874,7 +915,10 @@ impl Run<'_> {
                 if exited && self.reader_done {
                     return true;
                 }
-                if deadline {
+                if kill_now {
+                    // What is left of the graces is skipped.
+                    self.kill(waits);
+                } else if deadline {
                     self.next_stage(waits);
                 }
             }
@@ -994,6 +1038,7 @@ mod tests {
         Waits {
             shared,
             cancelled: Box::pin(std::future::pending()),
+            kill_now: Box::pin(std::future::pending()),
             timeout: None,
             deadline: None,
             frame: None,

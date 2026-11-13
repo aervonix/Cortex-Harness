@@ -38,6 +38,7 @@ Every key a Cortex-Harness configuration file may hold. The design is in [archit
 | `model.speed_fallback` | `true` or `false` | `true` | preference | at once | Whether a request that a speed tier refuses is sent again at `standard`. When off, such a refusal is an ordinary rate limit. |
 | `model.speed_wait` | length of time | `"20s"` | preference | at once | The longest one request waits in place for a speed tier before it falls back to `standard`. `"0s"` never waits. |
 | `model.speed_cooldown` | length of time | `"10m"` | preference | at once | How long requests stay at `standard` after a fallback, when the provider does not say when the tier is available again. |
+| `model.speed_cooldown_min` | length of time | `"1m"` | preference | at once | The least time requests stay at `standard` after a fallback when the provider does say when the tier is available again: its time, or this long, whichever is later. `"0s"` takes the provider's time as given. |
 | `model.roles.*.provider` | text | not set | raises cost | next epoch | The provider that serves the role's model. Needed only when two providers have a model with the same name. From a project, after trust: it chooses the model as much as the name does. |
 | `model.roles.*.effort` | text | not set | raises cost | next epoch | The role's reasoning level. For `main` it overrides `model.effort`. From a project, after trust. |
 | `model.roles.*.speed` | text | not set | by value: `standard` is a preference, any other tier raises cost | at once | The role's speed tier. For `main` it overrides `model.speed`. From a project's file, a tier other than `standard` waits for trust. |
@@ -142,8 +143,8 @@ These sections belong to parts of the harness that are not built yet. A file may
 
 | Section | From a project | What it will hold |
 |---|---|---|
-| `[providers.*.capabilities]` | user only | Capability flags of the endpoint. |
-| `[models]` | user only | Catalog overrides and additions by model name: limits, prices, reasoning control, capability flags. |
+| `[providers.*.capabilities]` | user only | Capability flags of the endpoint, as the provider's protocol names them. For `anthropic-messages`: `replay_reasoning` (`"all"` for a server that leaves out the reasoning a model cannot read, as Anthropic's own does), `eager_tool_streaming`, `api_version` and `beta`. Each value is text, a whole number or `true`/`false`. |
+| `[models]` | user only | Catalog overrides and additions: limits, prices, reasoning control, capability flags. The section has the shape of the built-in catalog file: `[[models.model]]` tables, each a whole entry that replaces the built-in one for the same provider and model, and an optional `version` text. It is read by the model catalog itself when a session starts, which refuses an entry it does not understand: the session then does not start, and the error names this file, the entry and what is wrong. |
 | `[http]` | user only | The HTTP client: the connect timeout, a proxy, and extra certificate authorities. |
 | `[tools]` | user only | Enabled tools, output limits and per-tool settings. |
 | `[context]` | user only | The compaction trigger and settings, and instruction file names. |

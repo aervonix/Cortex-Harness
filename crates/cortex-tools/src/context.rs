@@ -98,6 +98,13 @@ impl ImageSupport {
 pub struct RunCx {
     /// Fires when the call must stop. A child of the turn's token.
     pub cancel: CancelToken,
+    /// Fires when the call must stop **now**: a second interrupt. A tool
+    /// that stops in stages (the shell tool, which asks a command politely
+    /// and waits before it kills) skips what is left of them. A tool that
+    /// stops at once on `cancel` need not look at it. It is fired together
+    /// with `cancel` or after it, never in its place, so watching `cancel`
+    /// alone still stops a call.
+    pub kill: CancelToken,
     /// The session's path resolver.
     pub paths: Arc<PathResolver>,
     /// Where artifacts and file versions are kept.
@@ -131,7 +138,7 @@ pub struct RunCx {
 
 impl RunCx {
     /// A context with the default limits, an open gate, no outline source,
-    /// no image support, an unknown turn and round, and a token of its own.
+    /// no image support, an unknown turn and round, and tokens of its own.
     #[must_use]
     pub fn new(
         paths: Arc<PathResolver>,
@@ -140,6 +147,7 @@ impl RunCx {
     ) -> Self {
         Self {
             cancel: CancelToken::new(),
+            kill: CancelToken::new(),
             paths,
             store,
             files,
@@ -156,6 +164,13 @@ impl RunCx {
     #[must_use]
     pub fn with_cancel(mut self, cancel: CancelToken) -> Self {
         self.cancel = cancel;
+        self
+    }
+
+    /// Sets the token of a second interrupt, "kill now".
+    #[must_use]
+    pub fn with_kill(mut self, kill: CancelToken) -> Self {
+        self.kill = kill;
         self
     }
 

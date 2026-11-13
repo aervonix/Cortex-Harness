@@ -6,3 +6,4 @@
 {"type":"ApprovalDetail","value":{"kind":"diff","path":"src/lib.rs","diff":"@@ -1 +1 @@\n-old\n+new\n"}}
 {"type":"ApprovalDetail","value":{"kind":"target","effect":"network","target":"crates.io"}}
 {"type":"ApprovalDetail","value":{"kind":"tool","arguments":{"query":"release notes"}}}
+{"type":"TurnInterruptParams","value":{"session_id":"s_01JCX4T9Q2","now":true}}

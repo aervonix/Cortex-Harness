@@ -58,8 +58,8 @@ export interface ClientMethods {
   "session/set": { params: SessionSetParams; result: SessionResult };
   /** Stops the server cleanly. */
   shutdown: { params: Empty; result: Empty };
-  /** Cancels the running turn. It is not an error when none is running. */
-  "turn/interrupt": { params: SessionRef; result: TurnInterruptResult };
+  /** Cancels the running turn. It is not an error when none is running. With `now`, running commands are killed at once. */
+  "turn/interrupt": { params: TurnInterruptParams; result: TurnInterruptResult };
   /** Sends a prompt. If a turn is running, `delivery` says whether to steer it or to queue behind it. */
   "turn/start": { params: TurnStartParams; result: TurnStartResult };
   /** Token, cost and cache figures for the session, live. */
@@ -1746,6 +1746,14 @@ export interface TurnCompleted {
 
 /** One turn of a session: from a prompt until the session is settled again. */
 export type TurnId = string;
+
+/** `turn/interrupt` */
+export interface TurnInterruptParams {
+  /** Whether to stop running commands at once, without the polite interrupt and the grace that normally come first: what a second interrupt means. Absent or `false` is the ordinary interrupt, which stays safe to send twice. */
+  now?: boolean;
+  /** The session. */
+  session_id: SessionId;
+}
 
 /** The result of `turn/interrupt`. */
 export interface TurnInterruptResult {

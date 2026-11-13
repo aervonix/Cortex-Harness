@@ -268,6 +268,9 @@ pub(crate) struct Round {
     number: u64,
     /// The turn's token. Every call's token is a child of it.
     cancel: CancelToken,
+    /// The turn's second token, "kill now", which every call is given as
+    /// it is.
+    kill: CancelToken,
     tx: UnboundedSender<Report>,
     rx: UnboundedReceiver<Report>,
     /// The calls of the response that counts, in the model's order: by the
@@ -312,6 +315,7 @@ impl Round {
         turn_number: u32,
         number: u64,
         cancel: CancelToken,
+        kill: CancelToken,
     ) -> Self {
         let (tx, rx) = unbounded_channel();
         Self {
@@ -320,6 +324,7 @@ impl Round {
             turn_number,
             number,
             cancel,
+            kill,
             tx,
             rx,
             calls: Vec::new(),
@@ -384,6 +389,7 @@ impl Round {
             Arc::clone(&workspace.files),
         )
         .with_cancel(cancel)
+        .with_kill(self.kill.clone())
         .with_limits(workspace.limits)
         .with_gate(self.env.policy.read_gate())
         .with_turn(self.turn_number)

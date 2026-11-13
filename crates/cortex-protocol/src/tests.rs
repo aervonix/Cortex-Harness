@@ -21,7 +21,7 @@ use crate::lease::{Grant, Lease, Level, Rule, StopCondition};
 use crate::message::Part;
 use crate::methods::{
     ApprovalDetail, InitializeParams, MethodError, Op, OpResult, ServerNotification, ServerRequest,
-    ServerResponse, negotiate_version,
+    ServerResponse, TurnInterruptParams, negotiate_version,
 };
 use crate::model::ModelInfo;
 use crate::project::PlanEdit;
@@ -134,6 +134,10 @@ fn the_golden_values_round_trip_exactly() {
             Some("Lease") => drop(round_trip::<Lease>(value)),
             Some("Message") => drop(round_trip::<crate::Message>(value)),
             Some("ApprovalDetail") => drop(round_trip::<ApprovalDetail>(value)),
+            Some("TurnInterruptParams") => {
+                let params = round_trip::<TurnInterruptParams>(value);
+                assert!(params.now, "the transcript has the ordinary interrupt");
+            }
             other => panic!("the values file names a type this test does not read: {other:?}"),
         }
     }

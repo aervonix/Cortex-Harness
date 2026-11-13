@@ -44,6 +44,7 @@ mod plan;
 mod retries;
 mod rounds;
 pub mod sessions;
+mod settings;
 mod speed;
 mod steering;
 mod streaming;
@@ -338,6 +339,16 @@ impl Log {
         }
     }
 
+    /// Waits until the log has this line `times` times.
+    pub async fn has_times(&self, wanted: &str, times: usize) {
+        loop {
+            if self.count(wanted) >= times {
+                return;
+            }
+            self.wake.notified().await;
+        }
+    }
+
     pub fn count(&self, wanted: &str) -> usize {
         lock(&self.lines)
             .iter()
@@ -391,6 +402,8 @@ pub enum Kind {
 /// - `gate`: the name of a gate to wait at before it finishes;
 /// - `output`: text to send to front ends while it runs;
 /// - `stubborn`: wait at the gate even after the call is cancelled;
+/// - `graceful`: when the call is cancelled, go on until its second token
+///   ("kill now") fires;
 /// - `record`: note in the table of seen files, as `read` does, that the
 ///   path was shown;
 /// - `fail`: end with an error result;
@@ -409,6 +422,7 @@ struct ProbeArgs {
     gate: Option<String>,
     output: Option<String>,
     stubborn: bool,
+    graceful: bool,
     record: bool,
     fail: bool,
 }
@@ -456,6 +470,7 @@ impl Tool for Probe {
                 gate: text("gate"),
                 output: text("output"),
                 stubborn: args.get("stubborn").is_some(),
+                graceful: args.get("graceful").is_some(),
                 record: args.get("record").is_some(),
                 fail: args.get("fail").is_some(),
             },
@@ -505,6 +520,15 @@ impl Tool for Probe {
                 let opened = self.gates.get(gate).opened();
                 if args.stubborn {
                     opened.await;
+                } else if args.graceful {
+                    // Asked to stop, it goes on until it is told to stop
+                    // now: a command sitting out its grace.
+                    if cx.cancel.race(opened).await.is_none() {
+                        self.log.push(format!("asked {name} {label}"));
+                        cx.kill.cancelled().await;
+                        self.log.push(format!("killed {name} {label}"));
+                        return ToolResult::interrupted(format!("{name} {label} was killed"));
+                    }
                 } else if cx.cancel.race(opened).await.is_none() {
                     self.log.push(format!("cancelled {name} {label}"));
                     return ToolResult::interrupted(format!("{name} {label} stopped part-way"));
@@ -811,6 +835,13 @@ impl Stats for StatLog {
 impl StatLog {
     pub fn all(&self) -> Vec<StatEvent> {
         lock(&self.events).clone()
+    }
+}
+
+/// Lets every task that can run without the test's help run.
+pub async fn settle() {
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
     }
 }
 

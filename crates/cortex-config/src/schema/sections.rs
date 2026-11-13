@@ -46,8 +46,14 @@ settings! {
         /// changes it or adds a new one. `enabled = false` removes one.
         [nested]
         pub providers: BTreeMap<String, ProviderSettings>,
-        /// Catalog overrides and additions by model name: limits, prices,
-        /// reasoning control, capability flags.
+        /// Catalog overrides and additions: limits, prices, reasoning
+        /// control, capability flags. The section has the shape of the
+        /// built-in catalog file: `[[models.model]]` tables, each a whole
+        /// entry that replaces the built-in one for the same provider and
+        /// model, and an optional `version` text. It is read by the model
+        /// catalog itself when a session starts, which refuses an entry it
+        /// does not understand: the session then does not start, and the
+        /// error names this file, the entry and what is wrong.
         [reserved UserOnly]
         pub models: Reserved,
         /// The HTTP client: the connect timeout, a proxy, and extra
@@ -194,6 +200,12 @@ settings! {
         /// provider does not say when the tier is available again.
         [Preference, Now]
         pub speed_cooldown: Duration = Duration::from_secs(600),
+        /// The least time requests stay at `standard` after a fallback when
+        /// the provider does say when the tier is available again: its time,
+        /// or this long, whichever is later. `"0s"` takes the provider's
+        /// time as given.
+        [Preference, Now]
+        pub speed_cooldown_min: Duration = Duration::from_secs(60),
         /// Settings of one role: `main`, `fast` or `judge`.
         [nested]
         pub roles: BTreeMap<String, RoleSettings>,
@@ -252,7 +264,12 @@ settings! {
         /// `retry.first_event_timeout` for this provider.
         [UserOnly, Now]
         pub first_event_timeout: Option<Duration>,
-        /// Capability flags of the endpoint.
+        /// Capability flags of the endpoint, as the provider's protocol
+        /// names them. For `anthropic-messages`: `replay_reasoning`
+        /// (`"all"` for a server that leaves out the reasoning a model
+        /// cannot read, as Anthropic's own does), `eager_tool_streaming`,
+        /// `api_version` and `beta`. Each value is text, a whole number or
+        /// `true`/`false`.
         [reserved UserOnly]
         pub capabilities: Reserved,
     }
@@ -571,6 +588,7 @@ mod tests {
         assert!(settings.model.speed_fallback);
         assert_eq!(settings.model.speed_wait, Duration::from_secs(20));
         assert_eq!(settings.model.speed_cooldown, Duration::from_secs(600));
+        assert_eq!(settings.model.speed_cooldown_min, Duration::from_secs(60));
         assert_eq!(settings.retry.attempts, 5);
         assert_eq!(settings.retry.backoff_base, Duration::from_secs(1));
         assert_eq!(settings.retry.backoff_factor, 2.0);
