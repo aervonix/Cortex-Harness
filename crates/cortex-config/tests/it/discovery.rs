@@ -292,3 +292,44 @@ fn in_the_workspace_a_link_is_looked_at_before_it_is_followed() {
         ["Project Skills Agent Skills: .agents/skills"]
     );
 }
+
+/// The same on Linux, with a target the resolver refuses and the file
+/// system follows: a name that is not Unicode, which no rule could be
+/// checked against. Before, discovery asked the file system, which follows
+/// any link.
+#[cfg(unix)]
+#[test]
+fn in_the_workspace_a_link_is_looked_at_before_it_is_followed_on_unix() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let scratch = Scratch::new("discover_links_unix");
+    let home = scratch.join("home");
+    let workspace = home.join("work");
+    fs::create_dir_all(&workspace).unwrap();
+    let real = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("cortex-config-it")
+        .join("discover_links_unix")
+        .join(OsStr::from_bytes(b"real-\xff-cursor"));
+    write(&real.join("mcp.json"), MARKER);
+    assert!(crate::make_link(&real, &workspace.join(".cursor"), true));
+    assert!(
+        fs::metadata(workspace.join(".cursor").join("mcp.json")).is_ok(),
+        "the file system follows the link"
+    );
+    // A link to a folder with an ordinary name is followed.
+    let skills = scratch.join("real-skills");
+    fs::create_dir_all(&skills).unwrap();
+    fs::create_dir_all(workspace.join(".agents")).unwrap();
+    assert!(crate::make_link(
+        &skills,
+        &workspace.join(".agents").join("skills"),
+        true
+    ));
+
+    let found = discover(&env(&home), Some(&workspace), &all());
+    assert_eq!(
+        summary(&found, &workspace),
+        ["Project Skills Agent Skills: .agents/skills"]
+    );
+}

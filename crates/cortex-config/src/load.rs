@@ -81,7 +81,9 @@ impl Override {
     ///
     /// # Errors
     ///
-    /// When there is no `=` or nothing before it.
+    /// When there is no `=` or nothing before it. The message does not
+    /// repeat the argument: one with no `=` may be a key pasted in the
+    /// wrong place.
     pub fn parse(argument: &str) -> Result<Self, String> {
         match argument.split_once('=') {
             Some((key, value)) if !key.trim().is_empty() => Ok(Self {
@@ -89,10 +91,11 @@ impl Override {
                 value: value.trim().to_owned(),
                 flag: None,
             }),
-            _ => Err(format!(
-                "`{argument}` is not a setting: write it as `key=value`, for example \
-                 `model.main=some-model`"
-            )),
+            _ => Err(
+                "a `-c` setting is not `key=value`: write it so, for example \
+                      `model.main=some-model`"
+                    .to_owned(),
+            ),
         }
     }
 }
@@ -336,6 +339,10 @@ pub(crate) struct FileLayer {
     pub(crate) kind: LayerKind,
     file: PathBuf,
     document: Document,
+    /// What checking the file noticed: warnings, never errors, since a
+    /// file with an error is not a layer. Kept so that a merge of the
+    /// layers again, without reading them, says the same.
+    pub(crate) notes: Vec<Diagnostic>,
 }
 
 impl fmt::Debug for FileLayer {
@@ -347,17 +354,6 @@ impl fmt::Debug for FileLayer {
             .field("file", &self.file)
             .finish_non_exhaustive()
     }
-}
-
-/// What to do when the selected profile is not defined.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MissingProfile {
-    /// It is an error, as it is for every ordinary load.
-    Error,
-    /// It is a warning, and no profile is applied. For the one merge that
-    /// must not fail: dropping a project whose trust was lowered, when the
-    /// selected profile was defined by that project alone.
-    Warning,
 }
 
 /// Loads configuration.
@@ -381,6 +377,7 @@ pub(crate) fn load_layers(options: &LoadOptions) -> Result<(Loaded, Vec<FileLaye
 
     let locator = options.project_locator();
     for (kind, file, location) in options.locations(locator.as_ref()) {
+        let before = diagnostics.len();
         let document = read_layer(kind, &file, &location, options.strict, &mut diagnostics);
         files.push((kind, file.clone(), document.is_some()));
         if let Some(Some(document)) = document {
@@ -388,10 +385,11 @@ pub(crate) fn load_layers(options: &LoadOptions) -> Result<(Loaded, Vec<FileLaye
                 kind,
                 file,
                 document,
+                notes: diagnostics[before..].to_vec(),
             });
         }
     }
-    let loaded = merge_layers(options, &layers, files, diagnostics, MissingProfile::Error)?;
+    let loaded = merge_layers(options, &layers, files, diagnostics)?;
     Ok((loaded, layers))
 }
 
@@ -404,7 +402,6 @@ pub(crate) fn merge_layers(
     layers: &[FileLayer],
     files: Vec<(LayerKind, PathBuf, bool)>,
     mut diagnostics: Vec<Diagnostic>,
-    missing_profile: MissingProfile,
 ) -> Result<Loaded, LoadFailure> {
     let failed = |diagnostics: &[Diagnostic]| {
         diagnostics
@@ -427,13 +424,7 @@ pub(crate) fn merge_layers(
         );
     }
 
-    let profile = apply_profile(
-        options,
-        layers,
-        &mut merger,
-        &mut diagnostics,
-        missing_profile,
-    );
+    let profile = apply_profile(options, layers, &mut merger, &mut diagnostics);
     apply_environment(options, &mut merger, &mut diagnostics);
     for given in &options.overrides {
         apply_override(given, &mut merger, &mut diagnostics);
@@ -609,7 +600,6 @@ fn apply_profile(
     layers: &[FileLayer],
     merger: &mut Merger,
     diagnostics: &mut Vec<Diagnostic>,
-    missing: MissingProfile,
 ) -> Option<String> {
     let profile_key = KeyPath::new(["profile"]);
     let flag = match &options.profile {
@@ -669,20 +659,6 @@ fn apply_profile(
             },
             table,
         );
-    }
-    if !defined && missing == MissingProfile::Warning {
-        diagnostics.push(Diagnostic {
-            severity: Severity::Warning,
-            layer: None,
-            file: None,
-            line: None,
-            key: Some(profile_key),
-            message: format!(
-                "the profile `{name}` was defined by the project alone, whose configuration is \
-                 no longer applied; no profile is applied"
-            ),
-        });
-        return None;
     }
     if !defined {
         let mut known: Vec<&str> = layers
@@ -1179,6 +1155,11 @@ mod tests {
                 Override::parse(wrong).unwrap_err().contains("key=value"),
                 "{wrong}"
             );
+        }
+        // A key pasted where a setting goes is not repeated.
+        for pasted in ["sk-test-pasted-0001", "=sk-test-pasted-0001"] {
+            let error = Override::parse(pasted).unwrap_err();
+            assert!(!error.contains("sk-test-pasted"), "{error}");
         }
     }
 

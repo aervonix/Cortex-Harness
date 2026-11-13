@@ -253,19 +253,47 @@ impl ProjectLocator {
 /// Windows a read of the owner of each candidate found) and blocks.
 #[must_use]
 pub fn workspace_root(start: &Path) -> PathBuf {
+    find_workspace_root(start).root
+}
+
+/// The workspace root, and what was passed over on the way to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceRoot {
+    /// The workspace root, as [`workspace_root`] gives it.
+    pub root: PathBuf,
+    /// Each `.cortex` or `.git` nearer than the root that was not counted,
+    /// because the user does not own it or it is a link on Windows. Worth
+    /// telling the user, who may expect one of them to be the project.
+    pub passed_over: Vec<PathBuf>,
+}
+
+/// [`workspace_root`], with the candidates it passed over.
+#[must_use]
+pub fn find_workspace_root(start: &Path) -> WorkspaceRoot {
     find_root(start, &CurrentUser::of_this_process())
 }
 
-fn find_root(start: &Path, user: &CurrentUser) -> PathBuf {
+fn find_root(start: &Path, user: &CurrentUser) -> WorkspaceRoot {
     #![allow(
         clippy::disallowed_methods,
         reason = "a stat call per level, at start-up, before any session exists"
     )]
-    let ours = |candidate: PathBuf, folder_only: bool| {
-        std::fs::symlink_metadata(&candidate)
-            .is_ok_and(|found| (!folder_only || found.is_dir()) && user.owns(&candidate, &found))
+    let mut passed_over = Vec::new();
+    let mut ours = |candidate: PathBuf, folder_only: bool| {
+        let Ok(found) = std::fs::symlink_metadata(&candidate) else {
+            return false;
+        };
+        // A `.cortex` that is not a folder is not a project's folder at all.
+        if folder_only && !found.is_dir() && !found.file_type().is_symlink() {
+            return false;
+        }
+        let counts = (!folder_only || found.is_dir()) && user.owns(&candidate, &found);
+        if !counts {
+            passed_over.push(candidate);
+        }
+        counts
     };
-    start
+    let root = start
         .ancestors()
         .find(|directory| {
             ours(directory.join(PROJECT_DIR), true)
@@ -274,7 +302,8 @@ fn find_root(start: &Path, user: &CurrentUser) -> PathBuf {
                 || ours(directory.join(".git"), false)
         })
         .unwrap_or(start)
-        .to_path_buf()
+        .to_path_buf();
+    WorkspaceRoot { root, passed_over }
 }
 
 /// The user this process runs as, as the file system records owners.
@@ -533,14 +562,33 @@ mod tests {
         }
 
         let user = |uid| CurrentUser { uid };
-        assert_eq!(find_root(&start, &user(Some(mine))), base.join("ws"));
-        // The same `.git`, as another user would see it.
-        assert_ne!(
-            find_root(&start, &user(Some(mine.wrapping_add(1)))),
-            base.join("ws")
-        );
+        let mine = user(Some(mine));
+        let other = user(mine.uid.map(|uid| uid.wrapping_add(1)));
+        assert_eq!(find_root(&start, &mine).root, base.join("ws"));
+        assert!(find_root(&start, &mine).passed_over.is_empty());
+        // The same `.git`, as another user would see it: passed over, and
+        // said so.
+        let theirs = find_root(&start, &other);
+        assert_ne!(theirs.root, base.join("ws"));
+        assert_eq!(theirs.passed_over[0], base.join("ws").join(".git"));
         // Without a user to compare with, nothing counts.
-        assert_eq!(find_root(&start, &user(None)), start);
+        assert_eq!(find_root(&start, &user(None)).root, start);
+
+        // The same for a `.cortex` folder.
+        std::fs::create_dir_all(base.join("project").join(".cortex")).unwrap();
+        std::fs::create_dir_all(base.join("project").join("sub")).unwrap();
+        let start = base.join("project").join("sub");
+        assert_eq!(find_root(&start, &mine).root, base.join("project"));
+        assert_ne!(find_root(&start, &other).root, base.join("project"));
+
+        // A link counts by its own owner, not its target's: one that leads
+        // nowhere is still the user's entry, and an owner read through it
+        // would find nothing.
+        std::fs::create_dir_all(base.join("linked").join("sub")).unwrap();
+        std::os::unix::fs::symlink(base.join("nowhere"), base.join("linked").join(".git")).unwrap();
+        let start = base.join("linked").join("sub");
+        assert_eq!(find_root(&start, &mine).root, base.join("linked"));
+        assert_ne!(find_root(&start, &other).root, base.join("linked"));
         let _ = std::fs::remove_dir_all(&base);
     }
 

@@ -28,6 +28,21 @@ fn header(name: &str) -> String {
     )
 }
 
+/// Where else a user's file can hold a key: in a web address, and in a
+/// reserved section, whose keys a later step declares (an MCP server's
+/// environment, a hook's key, a proxy's password). It goes on from the
+/// provider's table that [`header`] opens.
+fn elsewhere() -> String {
+    format!(
+        "base_url = \"https://me:{KEY}@gateway.example.test/v1\"\n\
+         [mcp.servers.helper]\ncommand = \"helper-server\"\n\
+         [mcp.servers.helper.env]\nHELPER_TOKEN = \"{KEY}\"\n\
+         [hooks.audit]\ncommand = \"audit\"\napi_key = \"{KEY}\"\n\
+         [http]\nproxy = \"http://me:{KEY}@proxy.example.test:8080\"\n\
+         [tui]\ntheme = \"dusk\"\n"
+    )
+}
+
 #[test]
 fn no_debug_or_display_form_holds_a_key() {
     let mut machine = Machine::new("printing_canary");
@@ -36,8 +51,17 @@ fn no_debug_or_display_form_holds_a_key() {
         Override::parse(&format!("providers.cli.headers={{ api-key = \"{KEY}\" }}")).unwrap(),
     );
     machine
-        .layer(LayerKind::User, &header("azure"))
-        .layer(LayerKind::Project, &header("gateway"));
+        .layer(
+            LayerKind::User,
+            &format!("{}{}", header("azure"), elsewhere()),
+        )
+        .layer(
+            LayerKind::Project,
+            &format!(
+                "{}[mcp.servers.theirs.env]\nTHEIR_TOKEN = \"{KEY}\"\n",
+                header("gateway")
+            ),
+        );
     let env = machine.env().clone();
     let loaded = machine.load();
 
@@ -53,15 +77,26 @@ fn no_debug_or_display_form_holds_a_key() {
         !loaded.settings.providers.contains_key("gateway"),
         "a project may not set a provider's headers"
     );
-    // And it is redacted where the configuration is shown, with the name of
-    // a variable left in view.
-    let shown = loaded.show(&env, true);
-    assert!(
-        shown.contains(
-            "providers.azure.headers = { X-Team = { env = \"TEAM\" }, api-key = \"[redacted]\" }"
-        ),
-        "{shown}"
+    assert_eq!(
+        loaded.section("mcp").unwrap()["servers"]["helper"]["env"]["HELPER_TOKEN"].as_str(),
+        Some(KEY),
+        "the step that reads a reserved section gets what was written"
     );
+    assert_eq!(loaded.withheld.len(), 1, "the project's MCP server waits");
+    // And it is redacted where the configuration is shown, with the name of
+    // a variable, and what is not a secret, left in view.
+    let shown = loaded.show(&env, true);
+    for line in [
+        "providers.azure.headers = { X-Team = { env = \"TEAM\" }, api-key = \"[redacted]\" }",
+        "providers.azure.base_url = \"https://[redacted]@gateway.example.test/v1\"",
+        "mcp.servers.helper.command = \"helper-server\"",
+        "mcp.servers.helper.env.HELPER_TOKEN = \"[redacted]\"",
+        "hooks.audit.api_key = \"[redacted]\"",
+        "http.proxy = \"http://[redacted]@proxy.example.test:8080\"",
+        "tui.theme = \"dusk\"",
+    ] {
+        assert!(shown.contains(line), "{line:?} not in:\n{shown}");
+    }
 
     // A live configuration, and a reload whose previous configuration held
     // the key.
