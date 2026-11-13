@@ -82,7 +82,7 @@ These docs are the specification that every build step works from. They were wri
 
 - **The docs are the specification.** When code must differ from a page, the page changes in the same pull request.
 - **Decisions are recorded.** A choice that changes gets a new or amended record, with the reason.
-- **Provisional means the owner has not confirmed it yet.** Work proceeds on the recommendation. The build plan lists every such item, and records each decision the owner has made with its date.
+- **Provisional means the owner has not confirmed it yet.** Work proceeds on the recommendation. Each such item is a file in [outstanding/](outstanding/README.md), and each decision the owner has made is recorded with its date, in the build plan or in the [records](steps/README.md) of the step that asked.
 - **Provider and protocol facts go stale.** Pages that depend on them say when they were read. The steps that implement them begin by reading the current documentation.
 - **Generated files are checked.** Protocol schemas and the configuration reference are generated from code and verified in CI. The protocol's are in [protocol/](protocol/README.md) and the configuration's in [configuration/](configuration/reference.md); a pull request that touches either is never treated as documentation-only.
 
