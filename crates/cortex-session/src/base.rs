@@ -48,31 +48,13 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::snapshot::hash_file;
 use crate::store::DiskStore;
 
-/// The flags every git command of the base state runs with:
-///
-/// - `--no-optional-locks`: git writes nothing it does not have to (a
-///   status or a diff otherwise refreshes the index);
-/// - `core.fsmonitor=false`: no file-system monitor is started, which a
-///   repository's configuration could name as any program;
-/// - `core.quotepath=off`: names come out as they are, not quoted;
-/// - `diff.noprefix=false` and `diff.mnemonicPrefix=false`: the patch has
-///   its usual `a/` and `b/` prefixes whatever the user's configuration
-///   says, so that it applies.
-///
-/// A diff also runs with `--no-ext-diff`, `--no-textconv`, `--no-color`,
-/// `--no-renames`, `--binary` and `--full-index` ([`DIFF_FLAGS`]). Later
-/// steps that run git reuse both lists.
-pub const GIT_HARDENING: [&str; 9] = [
-    "--no-optional-locks",
-    "-c",
-    "core.fsmonitor=false",
-    "-c",
-    "core.quotepath=off",
-    "-c",
-    "diff.noprefix=false",
-    "-c",
-    "diff.mnemonicPrefix=false",
-];
+// The flags every git command here starts with: one list for the whole
+// harness, in `cortex-base` since step 13 (`cortex_base::git`), where the
+// shell tool's copy of it went too. It keeps its name here.
+//
+// A diff also runs with `--no-ext-diff`, `--no-textconv`, `--no-color`,
+// `--no-renames`, `--binary` and `--full-index` ([`DIFF_FLAGS`]).
+pub use cortex_base::GIT_HARDENING;
 
 /// The flags of a diff that must apply, whatever the user's configuration.
 pub const DIFF_FLAGS: [&str; 6] = [
@@ -346,8 +328,7 @@ impl Git for SystemGit {
             .args(GIT_HARDENING)
             .args(args)
             .current_dir(dir)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_OPTIONAL_LOCKS", "0")
+            .envs(cortex_base::GIT_ENV)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

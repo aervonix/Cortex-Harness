@@ -61,34 +61,12 @@ const MOST_FILES: usize = 20_000;
 /// with a clock that runs a tick or two behind the one the harness reads.
 const CLOCK_SLACK: Duration = Duration::from_millis(20);
 
-/// What every git command here starts with, so that asking changes
-/// nothing and starts nothing more than git itself:
-///
-/// - `--no-optional-locks`: git writes nothing it does not have to. A
-///   status otherwise refreshes the index, behind the user's own git.
-/// - `core.fsmonitor=false`: no file-system monitor is started, which a
-///   repository's configuration could name as any program.
-/// - `core.hooksPath`: nowhere, so that no hook of the repository runs.
-/// - `core.quotepath=off`: names come out as they are.
-///
-/// The first, second and fourth are the session store's list for the same
-/// purpose (`cortex_session::base::GIT_HARDENING`), which this crate
-/// cannot see. What no flag turns off is a filter that the repository's
-/// configuration names, which is why git is only asked about a trusted
-/// project ([`ChangeDetector::trusting_the_repository`]).
-pub const GIT_HARDENING: [&str; 7] = [
-    "--no-optional-locks",
-    "-c",
-    "core.fsmonitor=false",
-    "-c",
-    if cfg!(windows) {
-        "core.hooksPath=NUL"
-    } else {
-        "core.hooksPath=/dev/null"
-    },
-    "-c",
-    "core.quotepath=off",
-];
+// What every git command here starts with, so that asking changes and
+// starts nothing: one list for the whole harness, in `cortex-base` since
+// step 13. It keeps its name here. What no flag turns off is a filter that
+// the repository's configuration names, which is why git is only asked
+// about a trusted project ([`ChangeDetector::trusting_the_repository`]).
+pub use cortex_base::GIT_HARDENING;
 
 /// How the changes were found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -351,8 +329,9 @@ impl ChangeDetector {
             arguments,
             Some(&self.root),
             // Asking must not change anything: no refreshed index written
-            // behind the user's own git, and no lock taken.
-            &[("GIT_OPTIONAL_LOCKS", "0")],
+            // behind the user's own git, no lock taken, and no question
+            // put to a terminal.
+            &cortex_base::GIT_ENV,
             self.cap,
         );
         if answer == Err(brief::Unanswered::NotStarted) {
