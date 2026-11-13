@@ -8,7 +8,7 @@ What each build step recorded about itself: one folder per step, so that two ste
 | `ci.md` | The step's CI times, and what its first runs showed ("After step N") | [testing-and-ci.md](../testing-and-ci.md), "Where the five minutes go" |
 
 - **A folder is named for its step,** with the number in two digits and the step's letter if it has one: `04`, `12`, `13a`. The folders then sort in step order, and reading them in turn reads the records in step order.
-- **A step writes only in its own folder,** and only the files it has something for. The heading of each file is the heading its section had on the shared page: `# Answered in step N, on <date>` and `# After step N: <what it built>`.
+- **A step writes only in its own folder,** and only the files it has something for. The heading of each file is the heading its section had on the shared page, as a top-level heading: `# Answered in step N, on <date>` and `# After step N: <what it built>`.
 - **Links are relative to the file:** `../../architecture/…` for an architecture page, `../12/answered.md` for another step's record.
 - **What stays on the shared pages:** the general text, the owner's decisions made before step 4, and step 2's measurements, which the later records compare against.
 

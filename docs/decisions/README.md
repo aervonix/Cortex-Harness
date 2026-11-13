@@ -2,7 +2,7 @@
 
 One record per significant choice. Each says what the options were, what was chosen, why, and what would reopen it. Where a measurement settled the question, the numbers are in the record and the method is in [../measurements/](../measurements/README.md).
 
-**Status.** *Accepted* means the choice follows from the brief and the measurements, and work proceeds on it. *Accepted by the owner* means the owner answered that question, on the date given. *Provisional* means something is still to be confirmed; work proceeds on the recommendation, and the [build plan](../build-plan.md) lists what is outstanding.
+**Status.** *Accepted* means the choice follows from the brief and the measurements, and work proceeds on it. *Accepted by the owner* means the owner answered that question, on the date given. *Provisional* means something is still to be confirmed; work proceeds on the recommendation, and [outstanding/](../outstanding/README.md) lists what is outstanding.
 
 | # | Decision | Status |
 |---|---|---|
