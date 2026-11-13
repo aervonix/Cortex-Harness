@@ -409,24 +409,43 @@ impl AbsPath {
 
     /// The key that names the project whose workspace root is this path:
     /// the first 32 lowercase hexadecimal digits (128 bits) of the
-    /// [`ContentHash`](crate::ContentHash) of [`key`](Self::key).
+    /// [`ContentHash`](crate::ContentHash) of the path **as the file system
+    /// spells it**.
     ///
     /// Sessions, stored approvals, project trust, statistics and the
     /// project's knowledge are all filed under it
     /// (`docs/architecture/07-sessions-and-context.md`, "On-disk layout"), so
     /// two projects must never share one: the hash is one nobody can make
     /// collide, and 128 bits of it leave a collision between two real
-    /// workspaces out of reach. Two spellings of one Windows path have one
-    /// key, because the comparison form is hashed. The key says nothing
-    /// readable about the path, so a directory listing does not show the
-    /// names of a user's projects.
+    /// workspaces out of reach. The key says nothing readable about the
+    /// path, so a directory listing does not show the names of a user's
+    /// projects.
     ///
-    /// Call it on the **resolved** root of a workspace
-    /// ([`PathResolver::root`]), so that a link to a workspace and the
-    /// workspace itself are one project.
+    /// **Call it on the resolved root of a workspace**
+    /// ([`PathResolver::root`]). A resolved path has every link followed and
+    /// every name in the case stored on disk, so:
+    ///
+    /// - a link to a workspace and the workspace itself are one project;
+    /// - on Windows, one folder reached under any casing has one key,
+    ///   because the resolver has already put each name in its stored case;
+    /// - and two folders whose names differ only in case, which NTFS allows
+    ///   inside a directory marked case-sensitive, have two keys. That is
+    ///   why the names are hashed as they are and not folded: folded, `App`
+    ///   and `app` would share their sessions, their approvals and their
+    ///   trust.
+    ///
+    /// Only the root is folded (a drive letter, or a share's server and
+    /// name): it has no spelling on disk, and Windows never tells two roots
+    /// apart by case.
+    ///
+    /// A path made with [`parse`](Self::parse) has not been near the file
+    /// system, so on Windows two casings of it give two keys.
     #[must_use]
     pub fn project_key(&self) -> cortex_protocol::ProjectKey {
-        let mut hex = crate::ContentHash::of(self.key().as_bytes()).to_hex();
+        let (root, names) = self.text.split_at(self.root_len);
+        let mut spelled = self.style.fold(root).into_owned();
+        spelled.push_str(names);
+        let mut hex = crate::ContentHash::of(spelled.as_bytes()).to_hex();
         hex.truncate(PROJECT_KEY_DIGITS);
         cortex_protocol::ProjectKey::new(hex)
     }

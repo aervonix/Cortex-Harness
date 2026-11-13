@@ -509,3 +509,115 @@ fn a_short_name_resolves_to_the_same_path_as_the_long_one() {
     );
     println!("skipped: no volume here makes short names");
 }
+
+/// One folder has one project key, however the path to it is written: the
+/// resolver spells the root as the file system stores it, and the key is
+/// made from that (`AbsPath::project_key`).
+#[test]
+fn one_folder_reached_under_any_casing_has_one_project_key() {
+    let scratch = Scratch::new("win_key_one");
+    scratch.dir("Work/MyProject");
+    let stored = scratch.resolver("Work/MyProject");
+    assert!(stored.root().as_str().ends_with("/Work/MyProject"));
+    let key = stored.root().project_key();
+
+    let written = scratch.join("Work").join("MyProject");
+    let written = written.to_str().unwrap();
+    for spelling in [
+        written.to_lowercase(),
+        written.to_uppercase(),
+        written.replace('\\', "/"),
+        format!(r"{written}\."),
+        format!(r"{written}\..\MYPROJECT"),
+    ] {
+        let resolver = PathResolver::new(Path::new(&spelling), PathOptions::new()).unwrap();
+        assert_eq!(
+            resolver.root().as_str(),
+            stored.root().as_str(),
+            "{spelling:?} is spelled as stored"
+        );
+        assert_eq!(resolver.root().project_key(), key, "{spelling:?}");
+    }
+
+    // The key is of the stored spelling, not of a folded one.
+    let folded = cortex_base::AbsPath::parse(
+        &stored.root().as_str().to_uppercase(),
+        cortex_base::PathStyle::Windows,
+    )
+    .unwrap();
+    assert_ne!(folded.project_key(), key);
+}
+
+/// Turns on case-sensitive names for one directory, which NTFS has had
+/// since Windows 10 1803. It starts the `fsutil` program, hence the `sys_`
+/// in the name of the test that calls it.
+fn make_case_sensitive(directory: &Path) -> Result<(), String> {
+    let output = std::process::Command::new("fsutil.exe")
+        .args(["file", "setCaseSensitiveInfo"])
+        .arg(directory)
+        .arg("enable")
+        .output()
+        .map_err(|error| format!("fsutil could not be started: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "fsutil refused ({}): {} {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+/// In a directory marked case-sensitive, `App` and `app` are two folders.
+/// They must be two projects: one key for both would give each the other's
+/// sessions, stored approvals and trust.
+#[test]
+fn sys_two_folders_that_differ_only_in_case_are_two_projects() {
+    let scratch = Scratch::new("win_key_two");
+    let parent = scratch.dir("sensitive");
+    if let Err(problem) = make_case_sensitive(&parent) {
+        assert!(
+            !in_ci(),
+            "the CI runner cannot make a case-sensitive directory, so this case did not run: \
+             {problem}"
+        );
+        println!("skipped: cannot make a case-sensitive directory here ({problem})");
+        return;
+    }
+    fs::create_dir(parent.join("App")).unwrap();
+    fs::create_dir(parent.join("app")).expect("a case-sensitive directory holds both names");
+    fs::write(parent.join("App").join("which.txt"), "upper").unwrap();
+    fs::write(parent.join("app").join("which.txt"), "lower").unwrap();
+
+    let upper = PathResolver::new(&parent.join("App"), PathOptions::new()).unwrap();
+    let lower = PathResolver::new(&parent.join("app"), PathOptions::new()).unwrap();
+    assert!(upper.root().as_str().ends_with("/sensitive/App"));
+    assert!(lower.root().as_str().ends_with("/sensitive/app"));
+    assert_ne!(
+        upper.root().project_key(),
+        lower.root().project_key(),
+        "two folders, two projects"
+    );
+
+    // Each workspace reads its own file, and neither is inside the other.
+    for (resolver, content) in [(&upper, "upper"), (&lower, "lower")] {
+        let file = resolver.resolve("which.txt").unwrap();
+        assert!(file.is_inside_workspace());
+        assert_eq!(fs::read_to_string(file.to_fs_path()).unwrap(), content);
+    }
+    let across = upper
+        .resolve(parent.join("app").join("which.txt").to_str().unwrap())
+        .unwrap();
+    assert!(
+        !across.is_inside_workspace(),
+        "`app` is not inside the workspace `App`"
+    );
+    assert_eq!(fs::read_to_string(across.to_fs_path()).unwrap(), "lower");
+
+    // What stays folded: two such paths compare equal as `AbsPath`s, which
+    // is why nothing that must tell them apart compares that way.
+    assert_eq!(upper.root(), lower.root());
+    assert_ne!(upper.root().as_str(), lower.root().as_str());
+}
