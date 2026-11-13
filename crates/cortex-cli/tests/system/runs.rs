@@ -51,6 +51,13 @@ fn sys_exit_0_in_each_format_with_only_the_result_on_standard_output() {
     }
     assert_eq!(lines.last().unwrap()["outcome"], "completed");
 
+    // --quiet leaves standard error empty; the result is still written.
+    machine.reply_fixture("text");
+    let quiet = machine.run(&["-p", "say hello", "--quiet"]);
+    quiet.expect_code(0);
+    assert_eq!(quiet.stdout, "Hello, test suite!\n");
+    assert_eq!(quiet.stderr, "", "--quiet writes nothing on standard error");
+
     // Without --include-deltas there are none.
     machine.reply_fixture("text");
     let whole = machine.run(&["-p", "say hello", "--output", "jsonl"]);
@@ -96,6 +103,25 @@ fn sys_piped_input_comes_before_the_prompt_and_a_tool_call_is_not_on_standard_ou
         "{first}"
     );
     assert!(first.contains("Answer in haiku."), "{first}");
+
+    // Input that is not UTF-8 (a diff of a file in another encoding) is
+    // read with U+FFFD in place of what cannot be read, not refused.
+    machine.reply_text("Read it.");
+    let mut child = machine
+        .command(&["-p", "review this"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"caf\xe9 au lait\n")
+        .unwrap();
+    let run = crate::Run::of(child.wait_with_output().unwrap());
+    run.expect_code(0);
+    let body = String::from_utf8(machine.server.requests()[2].body.clone()).unwrap();
+    assert!(body.contains("caf\u{fffd} au lait"), "{body}");
 }
 
 #[test]
@@ -212,6 +238,25 @@ fn sys_exit_6_with_fail_on_denial_and_a_denial_listed_without_it() {
     allowed.expect_code(0);
     assert_eq!(allowed.stdout, "Written.\n");
     assert!(machine.workspace.join(target).exists());
+
+    // A deny rule on the command line holds even where nothing is asked.
+    std::fs::remove_file(machine.workspace.join(target)).unwrap();
+    machine.reply_tool("toolu_4", "write", &write);
+    machine.reply_text("Refused.");
+    let denied = machine.run(&[
+        "-p",
+        "write a note",
+        "--permission-mode",
+        "unrestricted",
+        "--deny",
+        "write .cortex/notes.md",
+    ]);
+    denied.expect_code(0);
+    assert_eq!(denied.stdout, "Refused.\n");
+    assert!(
+        !machine.workspace.join(target).exists(),
+        "the deny rule held"
+    );
 }
 
 #[test]
@@ -268,16 +313,50 @@ fn sys_continue_resumes_the_latest_session_and_no_session_keeps_none() {
     let body = String::from_utf8(machine.server.requests()[1].body.clone()).unwrap();
     assert!(body.contains("First.") && body.contains("two"), "{body}");
 
+    machine.reply_text("Resumed.");
+    let resumed = machine.run(&[
+        "-p",
+        "again",
+        "--resume",
+        session.as_str().unwrap(),
+        "--output",
+        "json",
+    ]);
+    assert_eq!(resumed.expect_code(0).json()["session_id"], session);
+    machine.reply_text("Forked.");
+    let forked = machine.run(&[
+        "-p",
+        "aside",
+        "--fork",
+        session.as_str().unwrap(),
+        "--output",
+        "json",
+    ]);
+    let fork = forked.expect_code(0).json()["session_id"].clone();
+    assert_ne!(fork, session);
+    let body = String::from_utf8(machine.server.requests()[3].body.clone()).unwrap();
+    assert!(
+        body.contains("Resumed.") && body.contains("aside"),
+        "the fork has the history: {body}"
+    );
+    machine
+        .run(&["-p", "x", "--resume", "s_no_such_session"])
+        .expect_code(2);
+
     machine.reply_text("Third.");
     let fresh = machine.run(&["-p", "three", "--no-session", "--output", "json"]);
-    assert_ne!(fresh.expect_code(0).json()["session_id"], session);
+    let fresh = fresh.expect_code(0).json()["session_id"].clone();
+    assert_ne!(fresh, session);
+    // The session and its fork are stored; the run with no session is not.
     let listed = machine.run(&["sessions", "list", "--json"]);
     assert_eq!(
         listed.expect_code(0).stdout.lines().count(),
-        1,
+        2,
         "{}",
         shown(&listed)
     );
+    assert!(listed.stdout.contains(fork.as_str().unwrap()));
+    assert!(!listed.stdout.contains(fresh.as_str().unwrap()));
     assert!(listed.stdout.contains(session.as_str().unwrap()));
 
     // The flags that choose a model and a speed are the user's own.
@@ -294,7 +373,7 @@ fn sys_continue_resumes_the_latest_session_and_no_session_keeps_none() {
     ]);
     let lines = jsonl(&chosen.expect_code(0).stdout);
     assert_eq!(lines[0]["model"], OTHER_MODEL);
-    let body = String::from_utf8(machine.server.requests()[3].body.clone()).unwrap();
+    let body = String::from_utf8(machine.server.requests().last().unwrap().body.clone()).unwrap();
     assert!(body.contains("\"speed\":\"fast\""), "{body}");
 }
 

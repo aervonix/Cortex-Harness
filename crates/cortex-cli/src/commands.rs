@@ -18,6 +18,15 @@ use cortex_protocol::methods::{Op, OpResult, SessionListParams};
 use crate::args::{AuthCommand, Common, ConfigCommand, PermissionsCommand, SessionsCommand};
 use crate::exit;
 
+/// Writes to standard output what a subcommand found, its control
+/// characters made visible (a project's rules and settings are the
+/// repository's text). A reader that has gone ends the output quietly.
+macro_rules! out {
+    ($($argument:tt)*) => {
+        crate::print_out(&crate::visible(&format!($($argument)*)))
+    };
+}
+
 /// The longest key `auth login` reads.
 const KEY_LIMIT: u64 = 64 * 1024;
 
@@ -61,7 +70,7 @@ impl Context {
     }
 
     fn say(&self, text: &str) {
-        eprintln!("{}: {text}", self.name);
+        eprintln!("{}: {}", self.name, crate::visible(text));
     }
 
     /// Says what went wrong and gives the exit code of its kind.
@@ -75,7 +84,7 @@ impl Context {
 
     fn warn(&self, diagnostics: &[Diagnostic]) {
         for diagnostic in diagnostics {
-            eprintln!("{}", diagnostic.render(&self.env));
+            eprintln!("{}", crate::visible(&diagnostic.render(&self.env)));
         }
     }
 }
@@ -144,7 +153,7 @@ pub(crate) fn sessions(command: SessionsCommand, name: &'static str) -> Done {
                 "there are no stored sessions in this workspace; --all lists every workspace's"
             });
         }
-        print!("{out}");
+        out!("{out}");
         Ok(exit::COMPLETED)
     })())
 }
@@ -181,7 +190,7 @@ pub(crate) fn models(name: &'static str) -> Done {
                 model.id, model.provider, model.context_window
             ));
         }
-        print!("{out}");
+        out!("{out}");
         Ok(exit::COMPLETED)
     })())
 }
@@ -198,7 +207,7 @@ pub(crate) fn config(command: ConfigCommand, name: &'static str) -> Done {
                 context.say(&failure.render(&context.env));
                 exit::INTERNAL
             })?;
-            print!("{}", loaded.show_layer(LayerKind::Default, &context.env));
+            out!("{}", loaded.show_layer(LayerKind::Default, &context.env));
             Ok(exit::COMPLETED)
         }
         ConfigCommand::Show {
@@ -227,8 +236,8 @@ pub(crate) fn config(command: ConfigCommand, name: &'static str) -> Done {
                 .map_err(|error| context.fail(&error))?;
             context.warn(&loaded.diagnostics);
             match layer {
-                Some(layer) => print!("{}", loaded.show_layer(layer, &context.env)),
-                None => print!("{}", loaded.show(&context.env, origin)),
+                Some(layer) => out!("{}", loaded.show_layer(layer, &context.env)),
+                None => out!("{}", loaded.show(&context.env, origin)),
             }
             Ok(exit::COMPLETED)
         }
@@ -239,7 +248,7 @@ pub(crate) fn config(command: ConfigCommand, name: &'static str) -> Done {
                 .configuration(&project, true)
                 .map_err(|error| context.fail(&error))?;
             context.warn(&loaded.diagnostics);
-            println!("The configuration is valid.");
+            out!("The configuration is valid.\n");
             Ok(exit::COMPLETED)
         }
     })())
@@ -282,7 +291,7 @@ pub(crate) fn permissions(command: PermissionsCommand, name: &'static str) -> Do
                         ));
                     }
                 }
-                print!("{out}");
+                out!("{out}");
                 Ok(exit::COMPLETED)
             }
             PermissionsCommand::Revoke { ids } => {
@@ -292,7 +301,7 @@ pub(crate) fn permissions(command: PermissionsCommand, name: &'static str) -> Do
                     context.say("no stored approval of this project has those ids");
                     return Err(exit::USAGE);
                 }
-                println!("Removed {removed} of {}.", ids.len());
+                out!("Removed {removed} of {}.\n", ids.len());
                 Ok(exit::COMPLETED)
             }
             PermissionsCommand::Trust => {
@@ -323,14 +332,14 @@ pub(crate) fn permissions(command: PermissionsCommand, name: &'static str) -> Do
                         out.push_str(&format!("  {} = {}\n", setting.key, setting.value));
                     }
                 }
-                print!("{out}");
+                out!("{out}");
                 Ok(exit::COMPLETED)
             }
             PermissionsCommand::Untrust => {
                 if core.untrust_project(&project).map_err(fail)? {
-                    println!("{} is not trusted any more.", project.shown);
+                    out!("{} is not trusted any more.\n", project.shown);
                 } else {
-                    println!("{} was not trusted.", project.shown);
+                    out!("{} was not trusted.\n", project.shown);
                 }
                 Ok(exit::COMPLETED)
             }
@@ -365,10 +374,11 @@ pub(crate) fn auth(command: AuthCommand, name: &'static str) -> Done {
                     };
                     out.push_str(&format!("{}: {line}\n", provider.provider));
                 }
-                print!("{out}");
+                out!("{out}");
                 Ok(exit::COMPLETED)
             }
             AuthCommand::Login { provider } => {
+                known_provider(&context, &core, &provider)?;
                 let stdin = io::stdin();
                 if stdin.is_terminal() {
                     context.say(&format!(
@@ -381,12 +391,16 @@ pub(crate) fn auth(command: AuthCommand, name: &'static str) -> Done {
                 let mut key = String::new();
                 stdin
                     .lock()
-                    .take(KEY_LIMIT)
+                    .take(KEY_LIMIT + 1)
                     .read_to_string(&mut key)
                     .map_err(|error| {
                         context.say(&format!("standard input could not be read: {error}"));
                         exit::USAGE
                     })?;
+                if key.len() as u64 > KEY_LIMIT {
+                    context.say("standard input holds more than a key: 64 KiB at most");
+                    return Err(exit::USAGE);
+                }
                 let key = key.trim();
                 if key.is_empty() {
                     context.say("standard input held no key");
@@ -397,21 +411,40 @@ pub(crate) fn auth(command: AuthCommand, name: &'static str) -> Done {
                         context.say(&error.message);
                         exit::AUTH
                     })?;
-                println!("Stored the key of {provider}.");
+                out!("Stored the key of {provider}.\n");
                 Ok(exit::COMPLETED)
             }
             AuthCommand::Logout { provider } => {
+                known_provider(&context, &core, &provider)?;
                 let removed = core.remove_credential(&provider).map_err(|error| {
                     context.say(&error.message);
                     exit::AUTH
                 })?;
                 if removed {
-                    println!("Removed the stored key of {provider}.");
+                    out!("Removed the stored key of {provider}.\n");
                 } else {
-                    println!("No key of {provider} was stored.");
+                    out!("No key of {provider} was stored.\n");
                 }
                 Ok(exit::COMPLETED)
             }
         }
     })())
+}
+
+/// Refuses a provider the core does not know: a key stored under a typo
+/// would be kept and never used.
+fn known_provider(context: &Context, core: &Core, provider: &str) -> Result<(), Done> {
+    let known: Vec<String> = core
+        .credentials()
+        .into_iter()
+        .map(|credential| credential.provider)
+        .collect();
+    if known.iter().any(|name| name == provider) {
+        return Ok(());
+    }
+    context.say(&format!(
+        "there is no provider `{provider}`. The providers are: {}",
+        known.join(", ")
+    ));
+    Err(exit::USAGE)
 }

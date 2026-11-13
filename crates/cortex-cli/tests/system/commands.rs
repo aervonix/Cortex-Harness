@@ -44,6 +44,12 @@ fn sys_a_project_trusted_with_permissions_trust_is_trusted_on_the_next_start() {
         "what waits is said: {stderr}"
     );
 
+    // --trust-project trusts it for one run, and pins nothing.
+    machine.reply_text("Done.");
+    let once = machine.run(&["-p", "go", "--trust-project", "--output", "jsonl"]);
+    assert_eq!(jsonl(&once.expect_code(0).stdout)[0]["model"], OTHER_MODEL);
+    assert!(trust_line(&machine).ends_with(": not trusted"));
+
     let trusted = machine.run(&["permissions", "trust"]);
     trusted.expect_code(0);
     for expected in [
@@ -141,6 +147,13 @@ fn sys_a_key_stored_with_auth_login_is_used_and_never_shown() {
     );
     // Nothing on standard input is no key.
     machine.run(&["auth", "login", "anthropic"]).expect_code(2);
+    // A provider nobody knows is refused, not stored under a typo.
+    let typo = machine.run(&["auth", "logout", "anthropc"]);
+    assert!(
+        typo.expect_code(2).stderr.contains("anthropic"),
+        "{}",
+        shown(&typo)
+    );
 
     let stored = "sk-ant-stored-1111";
     let mut login = machine

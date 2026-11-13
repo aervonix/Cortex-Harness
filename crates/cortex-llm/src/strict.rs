@@ -12,6 +12,10 @@
 //! A schema that cannot be put in the subset without changing what it
 //! means (an object whose properties are not all required, under rules
 //! that require them all) is sent whole, and the tool without `strict`.
+//! So is one with a keyword the rules are not known to take: what may be
+//! sent as strict is an allow-list ([`STRUCTURE`] and the rules' own), not
+//! a list of what to take out, so a schema an MCP server or an extension
+//! wrote with a keyword nobody listed here is never sent as strict.
 //!
 //! **Anthropic also limits a request as a whole:** at most 20 strict tools,
 //! 24 optional parameters and 16 parameters of more than one type, over
@@ -62,7 +66,40 @@ const KEYWORDS: &[(&str, &str, &str, &str)] = &[
     ("maxProperties", "At most", " entry", " entries"),
 ];
 
+/// The keywords every strict mode takes: the shape of the value, and what
+/// only describes it.
+const STRUCTURE: &[&str] = &[
+    "type",
+    "properties",
+    "required",
+    "additionalProperties",
+    "items",
+    "enum",
+    "const",
+    "description",
+    "title",
+    "default",
+    "examples",
+    "format",
+    "pattern",
+    "anyOf",
+    "$ref",
+    "$defs",
+    "definitions",
+    "$schema",
+    "$id",
+    "$comment",
+];
+
 impl Rules {
+    /// Whether a schema under these rules may hold `keyword` and be sent as
+    /// strict: the shape, what the reduction takes out, and the rules' own.
+    fn takes(self, keyword: &str) -> bool {
+        STRUCTURE.contains(&keyword)
+            || KEYWORDS.iter().any(|(known, ..)| *known == keyword)
+            || (self == Self::Anthropic && keyword == "allOf")
+    }
+
     /// Whether these rules refuse `keyword` with this value.
     fn refuses(self, keyword: &str, value: &Value) -> bool {
         match self {
@@ -188,7 +225,9 @@ fn count(schema: &Value) -> (usize, usize) {
 /// The schema to send for a tool under `rules`, and whether it can be sent
 /// as strict, the request's limits aside.
 fn reduce(schema: &Value, rules: Rules) -> (Cow<'_, Value>, bool) {
-    if !fits(schema, rules) {
+    // OpenAI takes no union at the root of a function's parameters.
+    let root_union = rules == Rules::OpenAi && schema.get("anyOf").is_some();
+    if root_union || !fits(schema, rules) {
         return (Cow::Borrowed(schema), false);
     }
     let mut reduced = schema.clone();
@@ -205,6 +244,15 @@ fn fits(schema: &Value, rules: Rules) -> bool {
     let Value::Object(object) = schema else {
         return true;
     };
+    // A keyword the rules are not known to take, a list of schemas for
+    // `items`, and a reference to the whole schema (recursion) all stay
+    // out of strict mode.
+    if object.keys().any(|keyword| !rules.takes(keyword))
+        || object.get("items").is_some_and(|items| !items.is_object())
+        || object.get("$ref").and_then(Value::as_str) == Some("#")
+    {
+        return false;
+    }
     let typed_object = match object.get("type") {
         Some(Value::String(name)) => name == "object",
         Some(Value::Array(names)) => names.iter().any(|name| name == "object"),
@@ -395,6 +443,45 @@ mod tests {
             "required": ["a"], "additionalProperties": false});
         assert!(!reduce(&any, Rules::Anthropic).1);
         assert!(!reduce(&any, Rules::OpenAi).1);
+    }
+
+    #[test]
+    fn a_keyword_the_rules_do_not_know_keeps_a_tool_out_of_strict_mode() {
+        let with = |keyword: &str, value: Value| {
+            let mut property = json!({"type": "string"});
+            property[keyword] = value;
+            json!({"type": "object", "properties": {"a": property}, "required": ["a"],
+                "additionalProperties": false})
+        };
+        for (keyword, value) in [
+            ("oneOf", json!([{"type": "string"}])),
+            ("not", json!({"const": "x"})),
+            ("if", json!({"const": "x"})),
+            ("patternProperties", json!({"^x": {"type": "string"}})),
+            ("x-made-up", json!(true)),
+        ] {
+            for rules in [Rules::Anthropic, Rules::OpenAi] {
+                assert!(
+                    !reduce(&with(keyword, value.clone()), rules).1,
+                    "{keyword} {rules:?}"
+                );
+            }
+        }
+        // `allOf` is Anthropic's and not OpenAI's.
+        let all_of = with("allOf", json!([{"type": "string"}]));
+        assert!(reduce(&all_of, Rules::Anthropic).1);
+        assert!(!reduce(&all_of, Rules::OpenAi).1);
+        // A list of schemas for `items`, and recursion, stay out.
+        let tuple = json!({"type": "object", "properties": {"a": {"type": "array",
+            "items": [{"type": "string"}]}}, "required": ["a"], "additionalProperties": false});
+        assert!(!reduce(&tuple, Rules::Anthropic).1);
+        let recursive = json!({"type": "object", "properties": {"a": {"$ref": "#"}},
+            "required": ["a"], "additionalProperties": false});
+        assert!(!reduce(&recursive, Rules::Anthropic).1);
+        // A union at the root is not OpenAI's.
+        let union = json!({"anyOf": [{"type": "object", "properties": {},
+            "additionalProperties": false}]});
+        assert!(!reduce(&union, Rules::OpenAi).1);
     }
 
     #[test]
