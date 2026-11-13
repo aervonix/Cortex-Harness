@@ -69,3 +69,37 @@ None of the core's tests is among the twelve slowest of a tier. One run of the s
 - **The second interrupt through the core** kills a command that ignores the first: the test is Unix-only, because it needs a command that ignores an interrupt. The runner's own tests of the second token run on both.
 - **A workspace behind a link** (`PWD`), **a configuration directory behind a link**, and **a credential store that cannot be opened** are tested on Unix only: the first two make a symbolic link, and Windows has a keychain.
 - **The core could not be linted for Windows at a desk** (its TLS library needs a Windows C compiler): CI is the first build of it there.
+
+## After the review: the fixes, 2026-11-13
+
+Measured on pull request 39, at `3d23664`, against `main`'s own run at `f24c001`, the commit it was made from.
+
+| Job | Main, `f24c001` | Pull request 39 |
+|---|---|---|
+| `lint-linux` | 37 s | 47 s |
+| `test-linux` | 80 s | 78 s |
+| `lint-windows` | 59 s | 68 s |
+| `test-windows` | 161 s | 131 s |
+
+| | Main, `f24c001` | Pull request 39 |
+|---|---|---|
+| `test-linux`: building the tests, running them | 37.6 s, 10.8 s | 37.3 s, 10.6 s |
+| `test-linux`: each tier above the start of its tests' processes (5 ms a test both times) | unit 4.9 s of 20 s, integration 13.5 s of 40 s, system 9.7 s of 60 s | unit 4.4 s, integration 12.3 s, system 10.3 s |
+| `test-windows`: building the tests, running them | 66.1 s, 39.1 s | 52.3 s, 32.0 s |
+| `test-windows`: each tier above the start (10 ms and 9 ms a test) | unit 8.4 s of 20 s, integration 27.0 s of 40 s, system 70.0 s of 90 s | unit 6.3 s, integration 22.7 s, system 55.8 s |
+
+- **The fixes add 25 tests (2,153 to 2,178 on Linux) and cost nothing a run can see.** The pull request's Windows run was faster than `main`'s in every tier: the runners differ by more than the change does (two runs on runners of the same start cost, 10 ms and 9 ms a test, still differ by a fifth in build time alone). Every tier is within its budget on both systems, with no warning.
+- **Why the new tests are cheap.** R6's tests and the rewind's race test step the core's blocking work by hand (`InlineBlocking::after(1)`) instead of holding a blocking thread, and most refusals of R3's test are made before a session is put together.
+- **At a desk** (`cargo xtask ci`, cargo's `ci` profile, the whole workspace): unit 1,143 tests in 7.3 s, integration 924 in 18.9 s, system 110 in 3.8 s; 2,178 tests in all, passed.
+
+### That the tests bite
+
+- **Every test the review wrote failed on `main`, and passes here,** moved to the file where it belongs under a name that says what it checks.
+- **`cargo xtask mutate step-13a-fixes`:** 33 breaks. 31 are caught by the tests they name, and 2 survive as their list says, each with its reason in its `rule`: git started by its bare name (a test cannot change its own `PATH`; the search itself is tested, and its break caught) and a drive-relative shell name (its test is Windows-only, and a run of the breaks is at a Linux desk). Three breaks of earlier lists (`step-13a/observer-rewinds`, `step-13a/turn-starts-under-a-rewind`, `step-10/size-limit-is-exclusive`) were moved to the code as it now is, and are caught.
+- **Three breaks first showed tests that could not fail,** and each was put right: the test that a relative program has no stamp in the shell cache used a path that did not exist from the test's directory; and two rules are checked twice in the code (the program search checks the directory and the path it makes; the configuration file is closed as named and where it leads), so their breaks take both checks out.
+- **`cargo xtask stress -p cortex-core -p cortex-agent --count 50`:** 296 tests, seeds 0 to 49, every test passed every time, before and after the review's fixes.
+
+### On Windows
+
+- **A `windows-try` run of `cortex-base`, `cortex-tools`, `cortex-core` and `cortex-session`** (2 min 6 s, 879 tests) ran R4's search and R7's layout there before the pull request: the relative-entry, `PATHEXT`, `%ComSpec%`, drive-relative and resolved-stamp tests of the shell and git search, and the stored keys and the configuration file closed in each system's layout.
+- **Not tested on Windows:** a configuration file that is a link (it makes a symbolic link, which needs a privilege on Windows), and anything that orders two threads (the order of `disconnect` and the table, which holds by the order of two locks, has no test on one thread on either system).
