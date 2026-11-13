@@ -30,10 +30,10 @@ Bundled SQLite through rusqlite, on the desktop pinned to 4 cores ([measurements
 ## Decision
 
 - One JSONL file per session under the data directory, grouped by project, plus an artifacts directory and a snapshot store beside it.
-- Every entry has an id, a parent id and a kind. The active branch is a pointer to a leaf.
+- Every entry has an id, a parent id and a kind. The active branch ends at the last entry of the tree in the file; a rewind or a switch appends an entry that moves it (amended in step 8, which made this exact).
 - A per-project index file caches what listings need (title, times, counts). It is rebuilt from the session files if missing or stale, and is never the source of truth.
 - Reads stream line by line. A session is never parsed whole into one value.
-- Durability is a setting: flush at the end of each turn by default, per entry on request.
+- Durability is a setting: flush after every item by default, at the end of each turn or never on request. *Amended in step 8 (2026-11-13): this record first said "at the end of each turn by default", which disagreed with [architecture/07-sessions-and-context.md](../architecture/07-sessions-and-context.md) and [architecture/02-runtime.md](../architecture/02-runtime.md), both of which promise that a crash loses at most the item in progress. The owner chose the pages' default. The setting is `session.durability`, and only the user may set it.*
 
 Specified in [architecture/07-sessions-and-context.md](../architecture/07-sessions-and-context.md).
 

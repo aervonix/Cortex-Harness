@@ -211,7 +211,7 @@ The schema, in outline. The full list, generated from the declarations, is the [
 | `[sandbox]` | `enabled`, the extra writable paths (`write`), the protected paths (`protect`), `network`. Enforced. | Declared. |
 | `[limits]` | `requests`, `tokens`, `cost` (US dollars) and `time`, under `turn`, `session` and `day`. Enforced. | Declared. |
 | `[credentials]` | `store`: where stored keys are kept. Never a key. | Declared. |
-| `[session]` | Durability, data directory (`data_dir`), retention. | `data_dir` declared. |
+| `[session]` | Data directory (`data_dir`), `durability` (`item`, `turn` or `never`: when the session log is flushed; user only, because `never` could cost the user their sessions), retention. | `data_dir` and `durability` declared. |
 | `[compat]` | Which of the other tools' files to read: `instructions`, `mcp`, `skills`. | Declared. |
 | `[log]` | Level, targets, rotation. | `level` declared. |
 | `[tools]` | Enabled tools, output limits, per-tool settings. | Reserved. |

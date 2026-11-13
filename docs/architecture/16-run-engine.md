@@ -99,7 +99,7 @@ If the real workspace changed while attempts ran, the pick is applied as a patch
 
 **Recording, which every session does from the first release:**
 
-- the base state at session start (the commit and a patch of uncommitted changes, taken in the background);
+- the base state at session start (the commit and a patch of uncommitted changes, with the untracked files kept, or a listing of the files with their hashes outside git; taken in the background, and completed once the project is trusted; [07-sessions-and-context.md](07-sessions-and-context.md), "The base state");
 - the session log, including every prompt and the per-turn file checkpoints;
 - how each turn ended: completed, undone, rewound, verified or not.
 
