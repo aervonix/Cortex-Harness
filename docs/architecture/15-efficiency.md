@@ -99,6 +99,12 @@ The mechanics were built in step 6, in the output policy of `cortex-tools`. Thre
 
 **Why side effects wait.** If a response fails halfway and is retried, a side-effecting call that already ran would belong to a message that no longer exists. Read-only calls have no such problem: their results are kept in a short-lived cache and reused if the retried response asks for the same thing, or dropped. Starting side-effecting calls early is possible later, with recovery that keeps the completed part of a failed response. It is listed in the open questions.
 
+Built in step 7, in the loop ([03-agent-loop.md](03-agent-loop.md), "Streaming" and "Retries"). Three things were settled there:
+
+- **"No side effects" is read from the plan:** a call may start early when its plan has no effect but reads (`Plan::has_side_effects`). **A tool that changes the session itself must therefore not look like one.** `plan` and `remember` touch nothing outside the session and are scheduled as read-only, and with an empty list of effects they would start early, and a response that was then thrown away would leave a replaced plan or a proposed memory behind it. Step 10, which builds them, settles how such a call says so; until it does, the loop's rule is exactly the plan's effects.
+- **A dropped result is also forgotten.** `read` notes what it showed the model in the table of seen files. When an early result is dropped, the loop makes the table forget the files that call read, so that a later read is not answered "unchanged" about lines the model never saw.
+- **An approval is not a reason to start early.** A call with side effects that is approved while the model is still writing waits for the response to end like any other.
+
 **Parallelism** follows the scheduler in [03-agent-loop.md](03-agent-loop.md): independent calls run together.
 
 ## Prefetch
@@ -112,6 +118,14 @@ The mechanics were built in step 6, in the output policy of `cortex-tools`. Thre
 | 3 | Predict context from history: which files are read together, which test file goes with which source file. Attach outlines or excerpts before the model asks, inside a token budget. | Later. It needs statistics from real sessions, and a wrong prediction costs tokens. |
 
 Local reads are fast, so steps 1 and 2 save milliseconds. Step 3 is the one that saves whole round trips, which is why it must be driven by evidence.
+
+**What step 7 built of steps 1 and 2, and what it left, each for a reason the owner should see** (the step's report raises both):
+
+| The table says | Built | Why it differs |
+|---|---|---|
+| A `read` starts when its `path` argument is complete, before the block ends. | A call starts when its block ends. | Arguments are untrusted partial JSON until the block ends, and are parsed once ([03-agent-loop.md](03-agent-loop.md)). Starting on a half-read object means a second, tolerant parser, and a run that has not seen `offset`, `limit` or `fresh` yet and may have to be thrown away. A `read` call's arguments are a few dozen bytes, so the gap between "path complete" and "block ended" is a few milliseconds of stream. |
+| A result cache keyed by tool, arguments and file state, for repeated or predicted calls. | A cache for one request: what ran early for a response that failed is reused when the retried response asks for the same call. | A repeated `read` is already cheap, and cheaper in tokens than a cached copy: the tool answers "unchanged" or sends a diff (above, "Changed-only re-reads"). A loop-level cache that returned the earlier full result would undo that. A cache for predicted calls belongs with step 3, which predicts them. |
+| Warm the file cache for files the user names with `@`. | Not built. | `@` is a front-end notion. The step that builds the editor's attachments (24) is where a named file is known before the prompt is sent. |
 
 ## Background compaction
 
