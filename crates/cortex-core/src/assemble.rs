@@ -72,7 +72,9 @@ use crate::events::SessionSink;
 use crate::policy::{EnginePolicy, PolicyParts};
 use crate::provider;
 use crate::redact::LogRedactor;
+use crate::shell_cache;
 use crate::store::{Disk, Hooks, Kept, LogStore, SharedLog};
+use cortex_tools::shell::ShellKind;
 
 /// The system prompt until context management writes the real one
 /// (step 15): enough for a model to know where it is.
@@ -571,9 +573,40 @@ fn find_shell(
     }
     let mut shell = ShellSearch::from_env().find(key.0.as_deref(), key.1.as_deref())?;
     // The description the model is given names the shell and its version.
-    // Asking for it starts a process: this function runs off the core
-    // thread, and the answer is kept for every later session of the core.
-    shell.probe_version(std::time::Duration::from_secs(2));
+    // Asking for it starts the shell, which for PowerShell is most of a
+    // headless run's start-up on Windows (step 13b). So the answer is kept
+    // in the state directory, under the shell's path, size and time; on a
+    // miss the session goes on without the version, and the shell is asked
+    // on a thread of its own for the sessions after this one.
+    let asks = matches!(shell.kind(), ShellKind::Bash | ShellKind::Pwsh);
+    let cache = StateDir::from_dirs(&inner.user.dirs)
+        .map(|state| (state.root().join(shell_cache::FILE), state));
+    let stamp = shell_cache::Stamp::of(shell.program());
+    match (asks, cache, stamp) {
+        (true, Some((file, state)), Some(stamp)) => match shell_cache::lookup(&file, &stamp) {
+            Some(version) => shell = shell.with_version(version),
+            None => {
+                let mut asked = shell.clone();
+                let clock = Arc::clone(&inner.options.clock);
+                let probe = std::thread::Builder::new()
+                    .name("cortex-shell-version".to_owned())
+                    .spawn(move || {
+                        asked.probe_version(std::time::Duration::from_secs(2));
+                        if let Some(version) = asked.version()
+                            && state.ensure().is_ok()
+                        {
+                            shell_cache::store(&file, &stamp, version, clock.as_ref());
+                        }
+                    });
+                if let Err(failure) = probe {
+                    tracing::debug!(%failure, "the shell's version is not asked for");
+                }
+            }
+        },
+        // Nowhere to keep it, a shell that cannot be looked at, or one that
+        // is not asked (asking it starts nothing).
+        _ => shell.probe_version(std::time::Duration::from_secs(2)),
+    }
     inner
         .shells
         .lock()

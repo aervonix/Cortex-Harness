@@ -311,3 +311,34 @@ replace: if false
 packages: cortex-llm
 caught-by:
     strict::tests::a_keyword_the_rules_do_not_know_keeps_a_tool_out_of_strict_mode
+
+# The shell's version, kept in the state directory so that a session does
+# not start the shell on its way to its first request.
+
+[break] shell-cache-ignores-its-key
+rule: A kept version is used only while the shell's path, size and modification time are the ones it was kept under.
+file: crates/cortex-core/src/shell_cache.rs
+in: lookup
+find: .find(|entry| stamp.matches(entry))
+replace: .find(|entry| entry["program"].as_str().is_some())
+caught-by:
+    cortex-core shell_cache::tests::a_changed_size_or_time_or_program_asks_again
+
+[break] shell-cache-takes-any-text
+rule: What the model is told of a shell's version is never whatever a file says: text that does not look like a version is a miss.
+file: crates/cortex-core/src/shell_cache.rs
+in: lookup
+find: plausible(version).then(|| version.to_owned())
+replace: Some(version.to_owned())
+caught-by:
+    cortex-core shell_cache::tests::a_file_that_is_not_understood_is_a_miss
+
+[break] shell-version-not-kept
+rule: A shell asked on the side has its answer kept for the runs after.
+file: crates/cortex-core/src/assemble.rs
+in: find_shell
+find: shell_cache::store(&file, &stamp, version, clock.as_ref());
+replace: let _ = (&file, &stamp, version, &clock);
+packages: cortex-core, cortex-cli
+caught-by:
+    cortex-cli::system tools::sys_the_shells_version_is_kept_for_the_runs_after_the_first

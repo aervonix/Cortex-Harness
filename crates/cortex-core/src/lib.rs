@@ -17,6 +17,7 @@
 //! | `policy` | The loop's policy, the tools' read gate and the base state's keep gate to the permission engine. |
 //! | `provider` | Configuration and credentials to model clients. |
 //! | `redact` | The secret filter to the session log, and the rules for provider blocks. |
+//! | `shell_cache` | The shell's version, kept in the state directory so that a session does not start the shell to ask it. |
 //! | `manage` | The command line's subcommands to the credential store, the stored approvals and the trust store, judged as a session judges them. |
 //!
 //! A front end needs [`Core`], [`CoreOptions`], [`ClientInfo`], and the
@@ -34,6 +35,7 @@ mod policy;
 mod provider;
 mod redact;
 mod rules;
+mod shell_cache;
 mod store;
 
 pub use crate::clients::{ClientId, ClientInfo};
