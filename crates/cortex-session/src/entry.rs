@@ -253,6 +253,11 @@ pub struct Entry {
     pub ts: Timestamp,
     /// The turn it was made in, when it was made in one.
     pub turn: Option<TurnId>,
+    /// Whether what was written differs from what the entry held: the
+    /// redactor masked something in it, or the caller altered it for
+    /// storage and said so. Written as `"redacted": true`, and absent
+    /// otherwise.
+    pub redacted: bool,
     /// What it holds.
     pub body: Body,
 }
@@ -930,7 +935,7 @@ struct SummaryPayload {
 }
 
 /// The envelope's keys, which no kind's own fields may use.
-const ENVELOPE: [&str; 6] = ["v", "id", "parent", "ts", "turn", "kind"];
+const ENVELOPE: [&str; 7] = ["v", "id", "parent", "ts", "turn", "kind", "redacted"];
 
 /// The kind's own fields of a body, as a JSON object.
 fn payload(body: &Body) -> Result<Map<String, Value>, serde_json::Error> {
@@ -978,9 +983,10 @@ fn payload(body: &Body) -> Result<Map<String, Value>, serde_json::Error> {
 /// to its text. The provider's own blocks (`raw`) are left as they are.
 pub(crate) fn encode(entry: &Entry, redactor: &dyn Redactor) -> Result<Vec<u8>, serde_json::Error> {
     let mut fields = payload(&entry.body)?;
+    let mut redacted = entry.redacted;
     if !redactor.is_noop() {
         for value in fields.values_mut() {
-            redact::value(value, redactor);
+            redacted |= redact::value(value, redactor);
         }
     }
     let mut line = Map::with_capacity(fields.len() + ENVELOPE.len());
@@ -998,6 +1004,10 @@ pub(crate) fn encode(entry: &Entry, redactor: &dyn Redactor) -> Result<Vec<u8>, 
         line.insert("turn".to_owned(), Value::from(turn.as_str()));
     }
     line.insert("kind".to_owned(), Value::from(entry.body.kind().as_str()));
+    if redacted {
+        // What is on disk is not what the entry held: a resume must know.
+        line.insert("redacted".to_owned(), Value::Bool(true));
+    }
     for (key, value) in fields {
         if ENVELOPE.contains(&key.as_str()) {
             return Err(serde::ser::Error::custom(format_args!(
@@ -1036,6 +1046,12 @@ pub(crate) fn decode(line: &[u8]) -> Result<Entry, NotAnEntry> {
     let ts = text(&mut fields, "ts")?.ok_or_else(|| NotAnEntry("no time".to_owned()))?;
     let turn = text(&mut fields, "turn")?;
     let kind = text(&mut fields, "kind")?.ok_or_else(|| NotAnEntry("no kind".to_owned()))?;
+    // Anything but `false` or nothing is taken as marked: the mark only
+    // ever makes a resume more careful.
+    let redacted = !matches!(
+        fields.remove("redacted"),
+        None | Some(Value::Null | Value::Bool(false))
+    );
 
     let body = if version <= FORMAT_VERSION {
         decode_body(kind, fields)
@@ -1054,6 +1070,7 @@ pub(crate) fn decode(line: &[u8]) -> Result<Entry, NotAnEntry> {
         parent: parent.map(EntryId),
         ts: Timestamp::new(ts),
         turn: turn.map(TurnId::new),
+        redacted,
         body,
     })
 }
@@ -1153,6 +1170,7 @@ mod tests {
             parent: Some(EntryId::new("e_0002")),
             ts: Timestamp::new("2026-11-12T10:15:02Z"),
             turn: Some(TurnId::new("t_1")),
+            redacted: false,
             body,
         }
     }

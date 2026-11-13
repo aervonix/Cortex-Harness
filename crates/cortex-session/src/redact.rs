@@ -6,6 +6,17 @@
 //! (the harness's own credentials by value, and well-known key formats) is
 //! built when credentials are wired into the core.
 //!
+//! **An entry it changed says so.** What the log then holds is not what
+//! the model was sent or wrote, and on the providers that tie reasoning to
+//! the history before it, the reasoning that came after can no longer be
+//! replayed against it. So the entry is written with `"redacted": true` in
+//! its envelope ([`Entry::redacted`](crate::Entry)), and whoever resumes
+//! the session reads the mark and sends what follows without its reasoning
+//! (`docs/architecture/07-sessions-and-context.md`, "Secrets in sessions").
+//! A caller that altered an entry itself before handing it over, as the
+//! core does when a provider's own block holds a secret, sets the mark
+//! with `Session::append_altered`.
+//!
 //! **What it does not see:**
 //!
 //! - **The provider's own blocks** (`raw` fields: reasoning signatures,
@@ -49,27 +60,33 @@ impl Redactor for NoRedaction {
 }
 
 /// Applies `redactor` to every string in `value`, except in fields named
-/// `raw`, which hold a provider's blocks.
-pub(crate) fn value(value: &mut Value, redactor: &dyn Redactor) {
+/// `raw`, which hold a provider's blocks. Says whether it changed anything.
+pub(crate) fn value(value: &mut Value, redactor: &dyn Redactor) -> bool {
     match value {
         Value::String(text) => {
             if let Cow::Owned(masked) = redactor.redact(text) {
                 *text = masked;
+                return true;
             }
+            false
         }
         Value::Array(items) => {
+            let mut changed = false;
             for item in items {
-                self::value(item, redactor);
+                changed |= self::value(item, redactor);
             }
+            changed
         }
         Value::Object(fields) => {
+            let mut changed = false;
             for (key, item) in fields.iter_mut() {
                 if key != "raw" {
-                    self::value(item, redactor);
+                    changed |= self::value(item, redactor);
                 }
             }
+            changed
         }
-        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
     }
 }
 
@@ -102,7 +119,8 @@ pub(crate) mod tests {
             ]},
             "n": 3
         });
-        value(&mut entry, &MaskHunter);
+        assert!(value(&mut entry, &MaskHunter), "it says that it masked");
+        assert!(!value(&mut entry, &MaskHunter), "and that there is no more");
         assert_eq!(
             entry,
             json!({

@@ -169,6 +169,7 @@ impl Session {
             parent: None,
             ts: now.clone(),
             turn: None,
+            redacted: false,
             body: Body::Session(header.clone()),
         };
         let store = Arc::new(DiskStore::unborn(
@@ -339,6 +340,28 @@ impl Session {
     /// When the entry is one a caller may not append (the first line, a
     /// `rewind`, something read and not understood), or the write fails.
     pub fn append(&mut self, turn: Option<&TurnId>, body: Body) -> Result<EntryId> {
+        self.append_marked(turn, body, false)
+    }
+
+    /// As [`append`](Self::append), for an entry the caller altered before
+    /// storing it: it is written with the mark that the redactor's own
+    /// changes get (`"redacted": true`), so that a resume knows the log
+    /// does not hold what the model was sent or wrote
+    /// ([`Entry::redacted`]).
+    ///
+    /// # Errors
+    ///
+    /// As for [`append`](Self::append).
+    pub fn append_altered(&mut self, turn: Option<&TurnId>, body: Body) -> Result<EntryId> {
+        self.append_marked(turn, body, true)
+    }
+
+    fn append_marked(
+        &mut self,
+        turn: Option<&TurnId>,
+        body: Body,
+        altered: bool,
+    ) -> Result<EntryId> {
         match &body {
             Body::Session(_)
             | Body::Rewind(_)
@@ -357,7 +380,7 @@ impl Session {
         } else {
             self.position()
         };
-        self.push(turn, body, parent)
+        self.push(turn, body, parent, altered)
     }
 
     /// Appends a protocol item.
@@ -414,6 +437,7 @@ impl Session {
         turn: Option<&TurnId>,
         body: Body,
         parent: Option<EntryId>,
+        altered: bool,
     ) -> Result<EntryId> {
         if let State::Live { writer, .. } = &self.state
             && writer.is_broken()
@@ -426,6 +450,7 @@ impl Session {
             parent,
             ts: self.options.clock.now().to_timestamp(),
             turn: turn.cloned(),
+            redacted: altered,
             body,
         };
         let line = entry::encode(&entry, &*self.options.redactor)?;
@@ -831,6 +856,7 @@ impl Session {
             None,
             Body::Rewind(Rewind { reason, from }),
             Some(to.clone()),
+            false,
         )
     }
 }
@@ -891,6 +917,7 @@ impl Log {
             parent: None,
             ts: options.clock.now().to_timestamp(),
             turn: None,
+            redacted: false,
             body: Body::Session(Header {
                 session: id.clone(),
                 workspace: self.header.workspace.clone(),
@@ -1203,6 +1230,7 @@ mod tests {
                         parent: session.active().cloned(),
                         ts: session.options.clock.now().to_timestamp(),
                         turn: None,
+                        redacted: false,
                         body: user("second"),
                     },
                     &NoRedaction,
@@ -1369,6 +1397,7 @@ mod tests {
             parent: None,
             ts: session.options.clock.now().to_timestamp(),
             turn: None,
+            redacted: false,
             body: meta(title),
         };
         let limit = entry::encode(&probe, &NoRedaction).unwrap().len() - 1;

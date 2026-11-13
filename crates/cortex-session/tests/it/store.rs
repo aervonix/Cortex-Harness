@@ -196,6 +196,96 @@ fn redacting_session(world: &World) -> cortex_session::Session {
         .unwrap()
 }
 
+/// What the redactor changed is marked in the log, and nothing else is:
+/// a resume reads the mark to know that the log no longer holds what the
+/// model was sent.
+#[test]
+fn an_entry_the_redactor_changed_is_marked_and_no_other() {
+    let world = World::new("redaction_mark");
+    let mut session = redacting_session(&world);
+    session.append(None, user("nothing to hide")).unwrap();
+    session
+        .append(None, user("my password is hunter2"))
+        .unwrap();
+    // The raw block keeps its secret, and the redactor did not see it: the
+    // entry is not marked by the store. Marking it is the caller's, who
+    // decides what becomes of such a block.
+    let mut reply = assistant("i_3", "", &[]);
+    if let cortex_session::Body::Assistant { item, .. } = &mut reply {
+        item.parts = vec![Part::Text(TextPart {
+            text: "noted".into(),
+            raw: Some(RawJson::new(r#"{"text":"hunter2"}"#)),
+        })];
+    }
+    session.append(None, reply).unwrap();
+    // A caller that altered an entry itself says so.
+    session
+        .append_altered(None, user("altered before it was stored"))
+        .unwrap();
+    session.append(None, user("after")).unwrap();
+
+    let marks = |session: &cortex_session::Session| -> Vec<bool> {
+        session
+            .read_branch()
+            .unwrap()
+            .iter()
+            .map(|entry| entry.redacted)
+            .collect()
+    };
+    // The first line, then the five entries.
+    assert_eq!(marks(&session), [false, false, true, false, true, false]);
+    let log = fs::read_to_string(session.dir().log()).unwrap();
+    assert_eq!(log.matches(r#""redacted":true"#).count(), 2, "{log}");
+
+    // The mark is on the disk: it is there after a resume, and a fork,
+    // which copies lines, keeps it.
+    let dir = session.dir().clone();
+    drop(session);
+    let (resumed, _) = cortex_session::Session::resume(
+        &world.project,
+        dir.id(),
+        SessionOptions {
+            redactor: Arc::new(MaskHunter),
+            ..world.options()
+        },
+    )
+    .unwrap();
+    assert_eq!(marks(&resumed), [false, false, true, false, true, false]);
+    let (fork, _) = resumed
+        .fork(None, SessionId::new("s_2"), world.options())
+        .unwrap();
+    assert_eq!(marks(&fork), [false, false, true, false, true, false]);
+}
+
+/// A mark this build did not write, in a form it does not expect, still
+/// counts: the mark only ever makes a resume more careful.
+#[test]
+fn any_mark_but_false_counts() {
+    let world = World::new("redaction_mark_forms");
+    let mut session = world.create("s_1");
+    session.append(None, user("one")).unwrap();
+    session.append(None, user("two")).unwrap();
+    session.append(None, user("three")).unwrap();
+    let path = session.dir().log();
+    let id = session.dir().id().clone();
+    drop(session);
+    let log = fs::read_to_string(&path).unwrap();
+    let mut lines: Vec<String> = log.lines().map(str::to_owned).collect();
+    lines[1] = lines[1].replacen('{', r#"{"redacted":false,"#, 1);
+    lines[2] = lines[2].replacen('{', r#"{"redacted":"yes","#, 1);
+    lines[3] = lines[3].replacen('{', r#"{"redacted":null,"#, 1);
+    fs::write(&path, lines.join("\n") + "\n").unwrap();
+    let (session, _) =
+        cortex_session::Session::resume(&world.project, &id, world.options()).unwrap();
+    let marks: Vec<bool> = session
+        .read_branch()
+        .unwrap()
+        .iter()
+        .map(|entry| entry.redacted)
+        .collect();
+    assert_eq!(marks, [false, false, true, false]);
+}
+
 fn has_secret(bytes: &[u8]) -> bool {
     bytes.windows(7).any(|window| window == b"hunter2")
 }
