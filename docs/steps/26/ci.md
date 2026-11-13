@@ -65,3 +65,19 @@ Pull request 38, on main at `f24c001`. "Main" is main's own run at that commit; 
   - `windows-try` before the pull request: a Job Object reads its memory limit back in whole pages, so a test that compared it with the limit asked for failed by 1,024 bytes (the limit is now rounded down to 4 KiB); and the check for the harness's own files in a write root compared Windows' extended spelling of a path with the plain one, and never matched (it now compares resolved paths).
   - `lint-windows`: a test module of `cortex-session` imported, on every system, what only its Unix test uses.
   - `test-linux`: outside the sandbox, `unshare` of a user namespace answers `EINVAL` in a process with more than one thread, as the test binary's helper is on the runner; the control now asks only that the kernel does not refuse with `EPERM` by itself.
+
+## Size and start-up
+
+The post-merge size check (`main` workflow), run on the branch at `2b75746` and on main at `f24c001`:
+
+| | Main | This step | Budget |
+|---|---|---|---|
+| Linux binary (musl, release) | 11.22 MB | 11.39 MB (+180 KB) | 16 MB |
+| Windows binary | 13.06 MB | 13.25 MB (+192 KB) | 18 MB |
+| Linux `cortex --version`, median | 0.63 ms | 0.50 ms | 15 ms |
+| Linux headless `cortex -p`, to its request, median | 10.18 ms | 7.77 ms | 40 ms |
+| Windows `cortex --version`, median | 6.69 ms | 9.19 ms | 50 ms |
+| Windows headless `cortex -p`, to its request, median | 24.34 ms | 35.50 ms | 100 ms |
+
+- **The size is the two backends' code** (`landlock`, `seccompiler` and `enumflags2`, Linux only) and this step's own; on Windows, the Job Object limits and the sandbox's state.
+- **Start-up is not this step's to move:** nothing it adds runs before the first request but the detection of Landlock (one system call, on Linux) and the state's computation. Both OSes moved by more than that between the two runs, in opposite directions, and on Windows `--version`, which runs none of it, moved as much as the headless run: the runners' speed.
