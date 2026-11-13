@@ -235,7 +235,9 @@ struct Stream {
 #[derive(Debug, Default)]
 struct Stats {
     /// Each frame: microseconds to build and write it, and its bytes.
-    frames: Vec<(u128, usize)>,
+    /// Each frame: microseconds to build and write it, its bytes, and
+    /// microseconds from the demo's start to its end.
+    frames: Vec<(u128, usize, u128)>,
     /// Each key: microseconds from reading it to the frame that shows it
     /// being written.
     keys: Vec<u128>,
@@ -246,7 +248,7 @@ impl Stats {
         let frames: Vec<String> = self
             .frames
             .iter()
-            .map(|(micros, bytes)| format!("[{micros},{bytes}]"))
+            .map(|(micros, bytes, at)| format!("[{micros},{bytes},{at}]"))
             .collect();
         let keys: Vec<String> = self.keys.iter().map(u128::to_string).collect();
         format!(
@@ -285,9 +287,32 @@ fn start_turn(stream: &Arc<Stream>, options: &Options, waker: cortex_term::Waker
     });
 }
 
+/// A key as the status line names it: `Ctrl+Shift+a`, `Alt+Enter`.
+pub fn key_name(key: Key) -> String {
+    let mut name = String::new();
+    for (modifier, word) in [
+        (Mods::CTRL, "Ctrl+"),
+        (Mods::ALT, "Alt+"),
+        (Mods::SHIFT, "Shift+"),
+        (Mods::SUPER, "Super+"),
+    ] {
+        if key.mods.contains(modifier) {
+            name.push_str(word);
+        }
+    }
+    match key.code {
+        KeyCode::Char(' ') => name.push_str("Space"),
+        KeyCode::Char(c) => name.push(c),
+        KeyCode::F(n) => name.push_str(&format!("F{n}")),
+        other => name.push_str(&format!("{other:?}")),
+    }
+    name
+}
+
 fn live_lines(
     text: &Text,
     editor: &str,
+    last_key: &str,
     streaming: bool,
     caps: &Capabilities,
     cols: usize,
@@ -304,7 +329,10 @@ fn live_lines(
     lines.push(Line::plain(format!("{PLACEHOLDER_PROMPT}{editor}")));
     let state = if streaming { "streaming" } else { "ready" };
     lines.push(Line::styled(
-        format!("{STATUS_MARK} {state}, {} tokens", text.tokens),
+        format!(
+            "{STATUS_MARK} {state}, {} tokens, last key {last_key}",
+            text.tokens
+        ),
         PLACEHOLDER_STATUS_STYLE,
     ));
     let col = cortex_base::text::width(PLACEHOLDER_PROMPT) + cortex_base::text::width(editor);
@@ -336,7 +364,9 @@ pub fn run(options: &Options) -> io::Result<()> {
     let mut editor = String::new();
     let mut streaming = false;
     let mut stats = Stats::default();
+    let began = Instant::now();
     let mut key_read: Option<Instant> = None;
+    let mut last_key = String::from("none");
 
     if options.auto {
         streaming = true;
@@ -370,6 +400,7 @@ pub fn run(options: &Options) -> io::Result<()> {
                 let (live, cursor) = live_lines(
                     &text,
                     &editor,
+                    &last_key,
                     streaming,
                     terminal.caps(),
                     usize::from(cols),
@@ -387,7 +418,11 @@ pub fn run(options: &Options) -> io::Result<()> {
                 )?;
                 let finished = Instant::now();
                 if let cortex_term::Drawn::Written(bytes) = drawn {
-                    stats.frames.push(((finished - started).as_micros(), bytes));
+                    stats.frames.push((
+                        (finished - started).as_micros(),
+                        bytes,
+                        (finished - began).as_micros(),
+                    ));
                 }
                 if let Some(read) = key_read.take() {
                     stats.keys.push((finished - read).as_micros());
@@ -401,6 +436,10 @@ pub fn run(options: &Options) -> io::Result<()> {
         let Some(event) = terminal.next(timeout)? else {
             continue;
         };
+        if let Event::Key(key) = event {
+            last_key = key_name(key);
+            scheduler.input();
+        }
         match event {
             Event::Key(Key { code, mods }) if mods.contains(Mods::CTRL) => match code {
                 KeyCode::Char('c' | 'd') => break,

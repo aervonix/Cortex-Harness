@@ -16,6 +16,20 @@
 //! calls [`Decoder::flush`] when nothing more arrives within a short time:
 //! then it is the Escape key.
 //!
+//! # Windows Terminal's win32 input mode
+//!
+//! Virtual-terminal input cannot tell some keys apart: `Shift+Enter` is the
+//! same byte as `Enter`, `Ctrl+Tab` as `Tab`, `Ctrl+Shift+A` as `Ctrl+A`.
+//! Windows Terminal can instead report every key as a console input record
+//! in a sequence of its own, `CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _` (the virtual
+//! key, the scan code, the character as a UTF-16 unit, down or up, the
+//! modifier state, the repeat count). The terminal layer turns that on where
+//! the terminal says it has it, and this decoder reads those sequences beside
+//! the others: a key with all its modifiers, a release dropped, the two
+//! halves of a character outside the Basic Multilingual Plane joined, and the
+//! modifiers that only produced a character (Shift for `A`, AltGr for `@`)
+//! not reported as modifiers.
+//!
 //! # What is left out
 //!
 //! - **Key releases**, which a terminal reports only under the enhanced
@@ -198,12 +212,37 @@ pub struct Decoder {
     buffer: Vec<u8>,
     /// Inside a bracketed paste: what has been pasted so far.
     paste: Option<Vec<u8>>,
+    /// The first half of a character outside the Basic Multilingual Plane,
+    /// from a win32 input record, waiting for its second half.
+    high_surrogate: Option<u32>,
 }
+
+/// One key as Windows Terminal's win32 input mode reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Record {
+    /// The virtual-key code.
+    vk: u32,
+    /// The character, as one UTF-16 unit; 0 for none.
+    unit: u32,
+    /// Pressed (`true`) or released.
+    down: bool,
+    /// The modifier and lock state.
+    state: u32,
+}
+
+/// The bits of a record's modifier state.
+const RIGHT_ALT: u32 = 0x01;
+const LEFT_ALT: u32 = 0x02;
+const RIGHT_CTRL: u32 = 0x04;
+const LEFT_CTRL: u32 = 0x08;
+const SHIFT: u32 = 0x10;
 
 /// What decoding one item from the front of the buffer gave.
 enum Step {
     /// This many bytes were used, and gave this event, or nothing.
     Done(usize, Option<Event>),
+    /// This many bytes were used, and were a win32 input record.
+    Record(usize, Record),
     /// The bytes are the beginning of something longer.
     Incomplete,
 }
@@ -273,10 +312,84 @@ impl Decoder {
                         None => {}
                     }
                 }
+                Step::Record(used, record) => {
+                    start += used;
+                    if let Some(event) = self.record(record) {
+                        events.push(event);
+                    }
+                }
                 Step::Incomplete => break,
             }
         }
         self.buffer.drain(..start);
+    }
+
+    /// The key a win32 input record stands for: `None` for a release, for a
+    /// key that is only a modifier, and for the first half of a character.
+    fn record(&mut self, record: Record) -> Option<Event> {
+        if !record.down {
+            return None;
+        }
+        let code = match record.vk {
+            0x08 => KeyCode::Backspace,
+            0x09 => KeyCode::Tab,
+            0x0d => KeyCode::Enter,
+            0x1b => KeyCode::Esc,
+            0x21 => KeyCode::PageUp,
+            0x22 => KeyCode::PageDown,
+            0x23 => KeyCode::End,
+            0x24 => KeyCode::Home,
+            0x25 => KeyCode::Left,
+            0x26 => KeyCode::Up,
+            0x27 => KeyCode::Right,
+            0x28 => KeyCode::Down,
+            0x2d => KeyCode::Insert,
+            0x2e => KeyCode::Delete,
+            0x70..=0x87 => KeyCode::F(u8::try_from(record.vk - 0x6f).ok()?),
+            // Shift, Ctrl, Alt, Caps Lock, the Windows keys, Num Lock,
+            // Scroll Lock, and the left and right halves of the first three.
+            0x10..=0x12 | 0x14 | 0x5b | 0x5c | 0x90 | 0x91 | 0xa0..=0xa5 => return None,
+            _ => return self.record_char(record),
+        };
+        Some(Event::Key(Key::with(code, record_mods(record.state))))
+    }
+
+    /// A record of a key that types a character, or of Ctrl with one.
+    fn record_char(&mut self, record: Record) -> Option<Event> {
+        let unit = record.unit;
+        let typed = match unit {
+            0xd800..=0xdbff => {
+                self.high_surrogate = Some(unit);
+                return None;
+            }
+            0xdc00..=0xdfff => {
+                let high = self.high_surrogate.take()?;
+                char::from_u32(0x10000 + ((high - 0xd800) << 10) + (unit - 0xdc00))
+            }
+            _ => char::from_u32(unit),
+        }
+        .filter(|c| !c.is_control() && *c != '\0');
+        let mut state = record.state;
+        let c = if let Some(c) = typed {
+            // AltGr is Right Alt with Left Ctrl: it made the character.
+            if state & RIGHT_ALT != 0 && state & LEFT_CTRL != 0 {
+                state &= !(RIGHT_ALT | LEFT_CTRL);
+            }
+            // Shift alone is in the character itself.
+            if state & (RIGHT_ALT | LEFT_ALT | RIGHT_CTRL | LEFT_CTRL) == 0 {
+                state &= !SHIFT;
+            }
+            c
+        } else {
+            // Ctrl with a letter or a digit types a control character or
+            // none: the key itself says which.
+            match record.vk {
+                0x41..=0x5a => char::from_u32(record.vk + 0x20)?,
+                0x30..=0x39 | 0x20 => char::from_u32(record.vk)?,
+                _ => return None,
+            }
+        };
+        Some(Event::Key(Key::with(KeyCode::Char(c), record_mods(state))))
     }
 }
 
@@ -304,6 +417,50 @@ fn step(bytes: &[u8], flushing: bool) -> Step {
             None => Step::Incomplete,
         },
     }
+}
+
+/// The modifiers of a record's state.
+fn record_mods(state: u32) -> Mods {
+    let mut mods = Mods::NONE;
+    if state & SHIFT != 0 {
+        mods = mods | Mods::SHIFT;
+    }
+    if state & (LEFT_ALT | RIGHT_ALT) != 0 {
+        mods = mods | Mods::ALT;
+    }
+    if state & (LEFT_CTRL | RIGHT_CTRL) != 0 {
+        mods = mods | Mods::CTRL;
+    }
+    mods
+}
+
+/// A win32 input record (`CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _`) at the front of
+/// `bytes`, with the bytes it takes; `None` when `bytes` do not start with a
+/// whole one.
+fn win32_record(bytes: &[u8]) -> Option<(usize, Record)> {
+    let body = bytes.get(2..)?;
+    let end = body.iter().position(|byte| (0x40..=0x7e).contains(byte))?;
+    if body[end] != b'_' || !body[..end].iter().all(|b| b.is_ascii_digit() || *b == b';') {
+        return None;
+    }
+    let groups = params(&body[..end]);
+    let number = |index: usize, default: u32| -> u32 {
+        groups
+            .get(index)
+            .and_then(|group| group.first())
+            .copied()
+            .flatten()
+            .unwrap_or(default)
+    };
+    Some((
+        2 + end + 1,
+        Record {
+            vk: number(0, 0),
+            unit: number(2, 0),
+            down: number(3, 0) == 1,
+            state: number(4, 0),
+        },
+    ))
 }
 
 fn key(code: KeyCode) -> Event {
@@ -363,7 +520,12 @@ fn escape(bytes: &[u8], flushing: bool) -> Step {
         };
     };
     let sequence = match second {
-        b'[' => csi(bytes),
+        b'[' => {
+            if let Some((used, record)) = win32_record(bytes) {
+                return Step::Record(used, record);
+            }
+            csi(bytes)
+        }
         b'O' => ss3(bytes),
         b']' => string(bytes, 2).map(|(used, body)| (used, osc(body))),
         b'P' | b'_' | b'^' | b'X' => string(bytes, 2).map(|(used, _)| (used, None)),
@@ -376,6 +538,7 @@ fn escape(bytes: &[u8], flushing: bool) -> Step {
                     Some(Event::Key(Key::with(key.code, key.mods | Mods::ALT))),
                 ),
                 Step::Done(used, other) => Step::Done(1 + used, other),
+                Step::Record(used, record) => Step::Record(1 + used, record),
                 Step::Incomplete => Step::Incomplete,
             };
         }
@@ -777,6 +940,112 @@ mod tests {
         assert_eq!(events, vec![Event::Paste("abc".to_owned())]);
     }
 
+    /// `CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _`, as Windows Terminal sends it.
+    fn record(vk: u32, unit: u32, down: bool, state: u32) -> String {
+        format!("\x1b[{vk};0;{unit};{};{state};1_", u8::from(down))
+    }
+
+    #[test]
+    fn win32_input_records_carry_every_modifier() {
+        let cases: &[(String, KeyCode, Mods)] = &[
+            (record(0x0d, 13, true, SHIFT), KeyCode::Enter, Mods::SHIFT),
+            (
+                record(0x0d, 13, true, LEFT_CTRL),
+                KeyCode::Enter,
+                Mods::CTRL,
+            ),
+            (record(0x09, 9, true, LEFT_CTRL), KeyCode::Tab, Mods::CTRL),
+            (record(0x09, 9, true, SHIFT), KeyCode::Tab, Mods::SHIFT),
+            (
+                record(0x41, 1, true, LEFT_CTRL | SHIFT),
+                KeyCode::Char('a'),
+                Mods::CTRL | Mods::SHIFT,
+            ),
+            (
+                record(0x41, 1, true, RIGHT_CTRL),
+                KeyCode::Char('a'),
+                Mods::CTRL,
+            ),
+            (
+                record(0x58, u32::from('x'), true, LEFT_ALT),
+                KeyCode::Char('x'),
+                Mods::ALT,
+            ),
+            (
+                record(0x41, u32::from('A'), true, SHIFT),
+                KeyCode::Char('A'),
+                Mods::NONE,
+            ),
+            // AltGr made the character: no modifier is left.
+            (
+                record(0x51, u32::from('@'), true, RIGHT_ALT | LEFT_CTRL),
+                KeyCode::Char('@'),
+                Mods::NONE,
+            ),
+            (
+                record(0x20, 0, true, LEFT_CTRL),
+                KeyCode::Char(' '),
+                Mods::CTRL,
+            ),
+            (
+                record(0x32, 0, true, LEFT_CTRL | SHIFT),
+                KeyCode::Char('2'),
+                Mods::CTRL | Mods::SHIFT,
+            ),
+            (
+                record(0x26, 0, true, LEFT_ALT | 0x100),
+                KeyCode::Up,
+                Mods::ALT,
+            ),
+            (record(0x71, 0, true, 0), KeyCode::F(2), Mods::NONE),
+            (record(0x1b, 27, true, 0), KeyCode::Esc, Mods::NONE),
+            (
+                record(0x08, 8, true, LEFT_CTRL),
+                KeyCode::Backspace,
+                Mods::CTRL,
+            ),
+            // Caps Lock and Num Lock are not modifiers.
+            (
+                record(0x41, u32::from('A'), true, 0x80 | 0x20),
+                KeyCode::Char('A'),
+                Mods::NONE,
+            ),
+        ];
+        for (bytes, code, mods) in cases {
+            assert_eq!(
+                decode(bytes.as_bytes()),
+                keys(&[(*code, *mods)]),
+                "{bytes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn win32_input_releases_and_lone_modifiers_are_dropped() {
+        let mut bytes = String::new();
+        bytes.push_str(&record(0x10, 0, true, SHIFT));
+        bytes.push_str(&record(0x41, u32::from('A'), true, SHIFT));
+        bytes.push_str(&record(0x41, u32::from('A'), false, SHIFT));
+        bytes.push_str(&record(0x10, 0, false, 0));
+        bytes.push_str(&record(0x11, 0, true, LEFT_CTRL));
+        assert_eq!(decode(bytes.as_bytes()), keys(&[(KeyCode::Char('A'), N)]));
+    }
+
+    #[test]
+    fn win32_input_joins_the_halves_of_a_character() {
+        let mut bytes = String::new();
+        for unit in "😀".encode_utf16() {
+            bytes.push_str(&record(0, u32::from(unit), true, 0));
+        }
+        bytes.push('b');
+        assert_eq!(
+            decode(bytes.as_bytes()),
+            keys(&[(KeyCode::Char('😀'), N), (KeyCode::Char('b'), N)])
+        );
+        // A second half alone is nothing.
+        assert_eq!(decode(record(0, 0xdc00, true, 0).as_bytes()), vec![]);
+    }
+
     #[test]
     fn focus_and_replies() {
         assert_eq!(
@@ -815,10 +1084,10 @@ mod tests {
     /// character or escape sequence".
     #[test]
     fn every_split_decodes_the_same() {
-        let input: &[u8] = "a\x1b[1;5Cé\x1b[200~p\r\nq\x1b[201~漢\x1bOP\x1b]11;rgb:01/02/03\x1b\\😀\x1b[13;2u\x1bx\x1b[?2026;1$y"
+        let input: &[u8] = "a\x1b[1;5Cé\x1b[200~p\r\nq\x1b[201~漢\x1bOP\x1b]11;rgb:01/02/03\x1b\\😀\x1b[13;2u\x1bx\x1b[?2026;1$y\x1b[13;28;13;1;16;1_"
             .as_bytes();
         let whole = decode(input);
-        assert_eq!(whole.len(), 11, "{whole:?}");
+        assert_eq!(whole.len(), 12, "{whole:?}");
         for first in 0..=input.len() {
             for second in first..=input.len() {
                 // Every third second cut, which reaches every kind of

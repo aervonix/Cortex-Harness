@@ -53,6 +53,9 @@ const END: &[u8] = b"\x1b[0m\x1b[?1004l\x1b[?2004l\x1b[?25h";
 /// keys that are otherwise the same bytes.
 const KEYBOARD_ON: &[u8] = b"\x1b[>1u";
 const KEYBOARD_OFF: &[u8] = b"\x1b[<u";
+/// Turns Windows Terminal's win32 input mode on, and off.
+const WIN32_ON: &[u8] = b"\x1b[?9001h";
+const WIN32_OFF: &[u8] = b"\x1b[?9001l";
 
 /// Wakes a terminal that is waiting in [`Terminal::next`], from any thread.
 #[derive(Clone)]
@@ -160,6 +163,7 @@ pub struct Terminal<D: Device = System> {
     events: VecDeque<Event>,
     bytes: Vec<u8>,
     keyboard: bool,
+    win32: bool,
     active: bool,
 }
 
@@ -217,6 +221,7 @@ impl<D: Device> Terminal<D> {
             events: VecDeque::new(),
             bytes: Vec::new(),
             keyboard: false,
+            win32: false,
             active: true,
         })
     }
@@ -295,6 +300,11 @@ impl<D: Device> Terminal<D> {
             sys::set_keyboard(true);
             self.device.write(KEYBOARD_ON)?;
         }
+        if self.caps.win32_input && !self.win32 {
+            self.win32 = true;
+            sys::set_win32(true);
+            self.device.write(WIN32_ON)?;
+        }
         Ok(())
     }
 
@@ -328,11 +338,17 @@ impl<D: Device> Terminal<D> {
         if self.keyboard {
             end.extend_from_slice(KEYBOARD_OFF);
         }
+        if self.win32 {
+            end.extend_from_slice(WIN32_OFF);
+        }
         end.extend_from_slice(END);
         let written = self.device.write(&end);
         self.device.leave();
         if self.keyboard {
             sys::set_keyboard(false);
+        }
+        if self.win32 {
+            sys::set_win32(false);
         }
         written
     }
@@ -482,17 +498,45 @@ mod tests {
     }
 
     #[test]
+    fn a_terminal_that_has_the_win32_input_mode_gets_it_until_the_end() {
+        let device = script(&[(Ready::Input, b"\x1b[?9001;2$y\x1b[13;28;13;1;16;1_")]);
+        let written = device.written.clone();
+        let mut terminal = Terminal::with_device(device, caps()).unwrap();
+        assert_eq!(
+            terminal.next(None).unwrap(),
+            Some(Event::Reply(Reply::Mode {
+                mode: 9001,
+                state: 2
+            }))
+        );
+        assert!(written.lock().unwrap().ends_with(WIN32_ON));
+        assert_eq!(
+            terminal.next(None).unwrap(),
+            Some(Event::Key(Key::with(KeyCode::Enter, Mods::SHIFT)))
+        );
+        terminal.leave().unwrap();
+        assert!(
+            written
+                .lock()
+                .unwrap()
+                .ends_with(&[WIN32_OFF, END].concat())
+        );
+    }
+
+    #[test]
     fn a_setting_keeps_the_keyboard_protocol_off() {
         let overrides = Overrides {
             keyboard: Some(false),
             ..Overrides::default()
         };
         let caps = Capabilities::detect(|_| None, Platform::Unix, overrides);
-        let device = script(&[(Ready::Input, b"\x1b[?1u")]);
+        let device = script(&[(Ready::Input, b"\x1b[?1u\x1b[?9001;2$y")]);
         let written = device.written.clone();
         let mut terminal = Terminal::with_device(device, caps).unwrap();
         terminal.next(None).unwrap();
+        terminal.next(None).unwrap();
         assert!(!written.lock().unwrap().windows(5).any(|w| w == KEYBOARD_ON));
+        assert!(!written.lock().unwrap().windows(8).any(|w| w == WIN32_ON));
     }
 
     #[test]

@@ -63,6 +63,10 @@ pub struct Capabilities {
     /// keys that are otherwise the same bytes (Shift+Enter and Enter). Known
     /// only from its reply; until then, `false`.
     pub keyboard: bool,
+    /// The terminal has Windows Terminal's win32 input mode (mode 9001),
+    /// which reports every key with all its modifiers. Known only from its
+    /// reply; until then, `false`. The `keyboard` override covers it too.
+    pub win32_input: bool,
     /// How many colours it shows.
     pub color: ColorDepth,
     /// It shows links in text (OSC 8).
@@ -88,10 +92,11 @@ const NO_SYNC_TERMS: &[&str] = &["dumb", "linux"];
 
 impl Capabilities {
     /// The queries sent with the first frame: whether synchronized updates
-    /// are supported (DECRQM 2026), the enhanced keyboard protocol's flags,
+    /// are supported (DECRQM 2026), whether the win32 input mode is (DECRQM
+    /// 9001), the enhanced keyboard protocol's flags,
     /// the background colour, and last the device attributes, which every
     /// terminal answers.
-    pub const QUERIES: &'static [u8] = b"\x1b[?2026$p\x1b[?u\x1b]11;?\x1b\\\x1b[c";
+    pub const QUERIES: &'static [u8] = b"\x1b[?2026$p\x1b[?9001$p\x1b[?u\x1b]11;?\x1b\\\x1b[c";
 
     /// Decides from the environment, then applies `overrides`. `env` reads
     /// one environment variable.
@@ -152,6 +157,7 @@ impl Capabilities {
         let mut caps = Self {
             sync: !dumb && !legacy_console && !NO_SYNC_TERMS.contains(&term.as_str()),
             keyboard: false,
+            win32_input: false,
             color,
             hyperlinks,
             unicode,
@@ -175,6 +181,7 @@ impl Capabilities {
                 // the brackets stay: they cost nothing.
                 _ => {}
             },
+            Reply::Mode { mode: 9001, state } => self.win32_input = matches!(state, 1..=3),
             Reply::Keyboard(_) => self.keyboard = true,
             Reply::Background(r, g, b) => self.background = Some((r, g, b)),
             Reply::Mode { .. } | Reply::DeviceAttributes => {}
@@ -196,6 +203,7 @@ impl Capabilities {
         }
         if let Some(keyboard) = o.keyboard {
             self.keyboard = keyboard;
+            self.win32_input &= keyboard;
         }
         if let Some(color) = o.color {
             self.color = color;
@@ -305,6 +313,13 @@ mod tests {
         }));
         assert!(!caps.sync);
         assert!(!caps.apply(&Reply::DeviceAttributes));
+        assert!(!caps.win32_input);
+        assert!(caps.apply(&Reply::Mode {
+            mode: 9001,
+            state: 2
+        }));
+        assert!(caps.win32_input);
+        assert!(!detect(&[], Platform::Windows).win32_input);
 
         let overrides = Overrides {
             sync: Some(true),
@@ -321,7 +336,11 @@ mod tests {
             mode: 2026,
             state: 4,
         });
-        assert!(!caps.keyboard && caps.sync);
+        caps.apply(&Reply::Mode {
+            mode: 9001,
+            state: 1,
+        });
+        assert!(!caps.keyboard && !caps.win32_input && caps.sync);
         assert_eq!(caps.overrides(), overrides);
     }
 }

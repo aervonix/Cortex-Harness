@@ -121,7 +121,10 @@ fn idle_keys(count: usize, stats: &std::path::Path) -> (Vec<f64>, Vec<f64>) {
 struct Stream {
     keys: Vec<f64>,
     keys_lost: usize,
-    demo_frames: Vec<(f64, usize)>,
+    /// Each frame as the demo saw it: milliseconds to build and write it,
+    /// its bytes, and when it was written, in milliseconds from the demo's
+    /// start.
+    demo_frames: Vec<(f64, usize, f64)>,
     demo_keys: Vec<f64>,
     frames: Frames,
 }
@@ -190,7 +193,7 @@ fn stream(options: &[&str], seconds: u64, stats: &std::path::Path) -> Stream {
     clippy::disallowed_methods,
     reason = "a measurement reads the demo's file"
 )]
-fn read_stats(path: &std::path::Path) -> (Vec<(f64, usize)>, Vec<f64>) {
+fn read_stats(path: &std::path::Path) -> (Vec<(f64, usize, f64)>, Vec<f64>) {
     let text = std::fs::read_to_string(path).expect("the demo's statistics");
     let numbers = |key: &str| -> Vec<u64> {
         let start = text.find(&format!("\"{key}\":[")).expect("a list") + key.len() + 4;
@@ -202,11 +205,12 @@ fn read_stats(path: &std::path::Path) -> (Vec<(f64, usize)>, Vec<f64>) {
             .collect()
     };
     let frames = numbers("frames")
-        .chunks(2)
-        .map(|pair| {
+        .chunks(3)
+        .map(|frame| {
             (
-                pair[0] as f64 / 1000.0,
-                usize::try_from(pair[1]).unwrap_or(0),
+                frame[0] as f64 / 1000.0,
+                usize::try_from(frame[1]).unwrap_or(0),
+                frame[2] as f64 / 1000.0,
             )
         })
         .collect();
@@ -359,7 +363,12 @@ fn perf_the_demo_against_the_budgets() {
         "desktop 20, runner 50 / 120",
     );
     row(&mut out, "Key to frame, idle", &idle, "99th 2");
-    row(&mut out, "  of which the demo's (read to written)", &idle_demo, "");
+    row(
+        &mut out,
+        "  of which the demo's (read to written)",
+        &idle_demo,
+        "",
+    );
     row(
         &mut out,
         "Key to frame, streaming 2,000 tok/s",
@@ -372,7 +381,12 @@ fn perf_the_demo_against_the_budgets() {
         &light.demo_keys,
         "",
     );
-    let cost = |s: &Stream| s.demo_frames.iter().map(|(ms, _)| *ms).collect::<Vec<_>>();
+    let cost = |s: &Stream| {
+        s.demo_frames
+            .iter()
+            .map(|(ms, _, _)| *ms)
+            .collect::<Vec<_>>()
+    };
     row(
         &mut out,
         "Frame cost, normal live region",
@@ -389,6 +403,18 @@ fn perf_the_demo_against_the_budgets() {
         &mut out,
         "Frame interval while streaming",
         &light.frames.intervals,
+        "99th 18",
+    );
+    let written: Vec<f64> = light.demo_frames.iter().map(|(_, _, at)| *at).collect();
+    let demo_intervals: Vec<f64> = written
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .filter(|gap| *gap < 500.0)
+        .collect();
+    row(
+        &mut out,
+        "  as the demo wrote them",
+        &demo_intervals,
         "99th 18",
     );
     row(
