@@ -1,0 +1,1 @@
+{"model":"claude-opus-5-5","max_tokens":64,"stream":true,"thinking":{"type":"adaptive","display":"summarized"},"output_config":{"effort":"low"},"speed":"standard","messages":[{"role":"user","content":[{"type":"text","text":"Reply with the one word: ready"}]}]}

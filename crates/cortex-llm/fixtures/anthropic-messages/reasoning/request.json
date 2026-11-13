@@ -1,0 +1,1 @@
+{"model":"claude-haiku-5-5","max_tokens":2048,"stream":true,"thinking":{"type":"adaptive","display":"summarized"},"output_config":{"effort":"high"},"messages":[{"role":"user","content":[{"type":"text","text":"A farmer has 17 sheep and buys 23 more, then sells a quarter of the flock. How many sheep are left? Think it through before you answer."}]}]}

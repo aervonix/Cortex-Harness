@@ -1,0 +1,7 @@
+start id=msg_fixture9001 model=claude-haiku-5-5
+usage input=40 cache_read=0 cache_write=0[] output=1 reasoning=- speed=standard asked=-
+block_start 0 Text
+text 0 "The first part of a long answer"
+block_end 0 {"type":"text","text":"The first part of a long answer"}
+usage input=40 cache_read=0 cache_write=0[] output=7 reasoning=0 speed=standard asked=-
+end stop=context_overflow raw=model_context_window_exceeded detail=- input=40 cache_read=0 cache_write=0[] output=7 reasoning=0 speed=standard asked=-

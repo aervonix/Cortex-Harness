@@ -1,0 +1,29 @@
+start id=msg_fixture0008 model=claude-sonnet-5-5
+usage input=4 cache_read=1555 cache_write=892[5m=892] output=3 reasoning=- speed=standard asked=-
+block_start 0 Reasoning
+reasoning 0 "Both read"
+reasoning 0 "ings came"
+reasoning 0 " out to"
+reasoning 0 " 18 "
+reasoning 0 "degrees, so the difference"
+reasoning 0 " is zero and"
+reasoning 0 " neither city"
+reasoning 0 " is warmer. The"
+reasoning 0 " ear"
+reasoning 0 "lier tool results already"
+reasoning 0 " cover this, so there"
+reasoning 0 "'s no need to query"
+reasoning 0 " again."
+reasoning 0 "\n\n"
+block_end 0 {"type":"thinking","thinking":"Both readings came out to 18 degrees, so the difference is zero and neither city is warmer. The earlier tool results already cover this, so there's no need to query again.\n\n","signature":"fixture-signature-03"}
+block_start 1 Text
+text 1 "Neither is warmer"
+text 1 ". O"
+text 1 "slo and Cairo are"
+text 1 " both at"
+text 1 " 18 degrees Cel"
+text 1 "sius, so the difference is"
+text 1 " 0 degrees."
+block_end 1 {"type":"text","text":"Neither is warmer. Oslo and Cairo are both at 18 degrees Celsius, so the difference is 0 degrees."}
+usage input=4 cache_read=1555 cache_write=892[5m=892] output=86 reasoning=41 speed=standard asked=-
+end stop=end raw=end_turn detail=- input=4 cache_read=1555 cache_write=892[5m=892] output=86 reasoning=41 speed=standard asked=-

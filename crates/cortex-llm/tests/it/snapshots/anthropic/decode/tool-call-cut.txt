@@ -1,0 +1,8 @@
+start id=msg_fixture9001 model=claude-haiku-5-5
+usage input=40 cache_read=0 cache_write=0[] output=1 reasoning=- speed=standard asked=-
+block_start 0 ToolCall
+tool_call 0 id=toolu_fixture9005 name=get_weather
+tool_args 0 "{\"city\": \"Par"
+usage input=40 cache_read=0 cache_write=0[] output=24 reasoning=0 speed=standard asked=-
+block_end 0 {"type":"tool_use","id":"toolu_fixture9005","name":"get_weather","input":{"INVALID_JSON":"{\"city\": \"Par"},"caller":{"type":"direct"}}
+end stop=max_output raw=max_tokens detail=- input=40 cache_read=0 cache_write=0[] output=24 reasoning=0 speed=standard asked=-

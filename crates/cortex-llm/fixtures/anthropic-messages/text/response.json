@@ -1,0 +1,19 @@
+{
+  "headers": {
+    "anthropic-ratelimit-input-tokens-limit": "1000000",
+    "anthropic-ratelimit-input-tokens-remaining": "1000000",
+    "anthropic-ratelimit-input-tokens-reset": "2026-11-13T05:39:18Z",
+    "anthropic-ratelimit-output-tokens-limit": "100000",
+    "anthropic-ratelimit-output-tokens-remaining": "100000",
+    "anthropic-ratelimit-output-tokens-reset": "2026-11-13T05:39:18Z",
+    "anthropic-ratelimit-requests-limit": "1000",
+    "anthropic-ratelimit-requests-remaining": "999",
+    "anthropic-ratelimit-requests-reset": "2026-11-13T05:39:18Z",
+    "anthropic-ratelimit-tokens-limit": "1000000",
+    "anthropic-ratelimit-tokens-remaining": "1000000",
+    "anthropic-ratelimit-tokens-reset": "2026-11-13T05:39:18Z",
+    "content-type": "text/event-stream; charset=utf-8",
+    "request-id": "req_fixture0001"
+  },
+  "status": 200
+}

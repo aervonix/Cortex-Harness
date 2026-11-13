@@ -1,0 +1,16 @@
+start id=msg_fixture9001 model=claude-haiku-5-5
+usage input=40 cache_read=0 cache_write=0[] output=1 reasoning=- speed=standard asked=-
+block_start 0 Text
+text 0 "I'll look that "
+text 0 "up."
+block_end 0 {"type":"text","text":"I'll look that up."}
+block_start 1 ProviderBlock
+block_end 1 {"type":"server_tool_use","id":"srvtoolu_fixture9002","name":"web_search","input":{"query": "weather in Oslo today"}}
+block_start 2 ProviderBlock
+block_end 2 {"type":"web_search_tool_result","tool_use_id":"srvtoolu_fixture9002","content":[{"type":"web_search_result","title":"Oslo weather","url":"https://example.com/oslo","encrypted_content":"fixture-encrypted_content-91","page_age":null}]}
+block_start 3 Text
+text 3 "It is clear in Oslo, "
+text 3 "18 degrees."
+block_end 3 {"type":"text","text":"It is clear in Oslo, 18 degrees.","citations":[{"type":"web_search_result_location","cited_text":"Clear, 18 degrees.","url":"https://example.com/oslo","title":"Oslo weather","encrypted_index":"fixture-encrypted_index-90"}]}
+usage input=40 cache_read=0 cache_write=0[] output=61 reasoning=0 speed=standard asked=-
+end stop=end raw=end_turn detail=- input=40 cache_read=0 cache_write=0[] output=61 reasoning=0 speed=standard asked=-

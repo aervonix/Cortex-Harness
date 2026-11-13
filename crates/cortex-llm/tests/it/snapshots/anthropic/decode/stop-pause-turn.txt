@@ -1,0 +1,9 @@
+start id=msg_fixture9001 model=claude-haiku-5-5
+usage input=40 cache_read=0 cache_write=0[] output=1 reasoning=- speed=standard asked=-
+block_start 0 Text
+text 0 "Searching."
+block_end 0 {"type":"text","text":"Searching."}
+block_start 1 ProviderBlock
+block_end 1 {"type":"server_tool_use","id":"srvtoolu_fixture9004","name":"web_search","input":{"query":"oslo weather"}}
+usage input=40 cache_read=0 cache_write=0[] output=22 reasoning=0 speed=standard asked=-
+end stop=paused raw=pause_turn detail=- input=40 cache_read=0 cache_write=0[] output=22 reasoning=0 speed=standard asked=-

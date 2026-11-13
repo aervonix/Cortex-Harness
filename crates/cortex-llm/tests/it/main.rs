@@ -12,6 +12,7 @@
     reason = "an integration test fails by panicking"
 )]
 
+mod anthropic;
 mod client;
 mod retry;
 mod speed;

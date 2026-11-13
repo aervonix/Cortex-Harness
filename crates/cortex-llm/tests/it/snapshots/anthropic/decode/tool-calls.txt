@@ -1,0 +1,19 @@
+start id=msg_fixture0007 model=claude-haiku-5-5
+usage input=425 cache_read=0 cache_write=0[] output=16 reasoning=- speed=standard asked=-
+block_start 0 ToolCall
+tool_call 0 id=toolu_fixture0008 name=get_weather
+tool_args 0 "{\"city\": \"Paris"
+tool_args 0 "\"}"
+block_end 0 {"type":"tool_use","id":"toolu_fixture0008","name":"get_weather","input":{"city": "Paris"},"caller":{"type":"direct"}}
+block_start 1 ToolCall
+tool_call 1 id=toolu_fixture0009 name=get_weather
+tool_args 1 "{\"city\": \"Tokyo"
+tool_args 1 "\"}"
+block_end 1 {"type":"tool_use","id":"toolu_fixture0009","name":"get_weather","input":{"city": "Tokyo"},"caller":{"type":"direct"}}
+block_start 2 ToolCall
+tool_call 2 id=toolu_fixture0010 name=get_weather
+tool_args 2 "{\"city\": \"Lima"
+tool_args 2 "\"}"
+block_end 2 {"type":"tool_use","id":"toolu_fixture0010","name":"get_weather","input":{"city": "Lima"},"caller":{"type":"direct"}}
+usage input=425 cache_read=0 cache_write=0[] output=146 reasoning=0 speed=standard asked=-
+end stop=tool_calls raw=tool_use detail=- input=425 cache_read=0 cache_write=0[] output=146 reasoning=0 speed=standard asked=-

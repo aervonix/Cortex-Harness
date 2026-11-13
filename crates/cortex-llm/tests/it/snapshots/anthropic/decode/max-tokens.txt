@@ -1,0 +1,11 @@
+start id=msg_fixture0012 model=claude-haiku-5-5
+usage input=26 cache_read=0 cache_write=0[] output=1 reasoning=- speed=standard asked=-
+block_start 0 Text
+text 0 "1"
+text 0 "\n2\n3\n4\n5"
+text 0 "\n6\n7\n8\n9"
+text 0 "\n10\n11\n12"
+text 0 "\n"
+block_end 0 {"type":"text","text":"1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n"}
+usage input=26 cache_read=0 cache_write=0[] output=24 reasoning=0 speed=standard asked=-
+end stop=max_output raw=max_tokens detail=- input=26 cache_read=0 cache_write=0[] output=24 reasoning=0 speed=standard asked=-

@@ -1,0 +1,14 @@
+start id=msg_fixture0020 model=claude-haiku-5-5
+usage input=4 cache_read=1780 cache_write=67[5m=67] output=8 reasoning=- speed=standard asked=-
+block_start 0 Text
+text 0 "Neither is warmer:"
+text 0 " Oslo and Cairo"
+text 0 " both"
+text 0 " re"
+text 0 "ported 18 degrees"
+text 0 " Celsius, so the"
+text 0 " difference is "
+text 0 "0 degrees."
+block_end 0 {"type":"text","text":"Neither is warmer: Oslo and Cairo both reported 18 degrees Celsius, so the difference is 0 degrees."}
+usage input=4 cache_read=1780 cache_write=67[5m=67] output=45 reasoning=0 speed=standard asked=-
+end stop=end raw=end_turn detail=- input=4 cache_read=1780 cache_write=67[5m=67] output=45 reasoning=0 speed=standard asked=-

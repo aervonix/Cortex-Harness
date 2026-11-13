@@ -1,0 +1,8 @@
+start id=msg_fixture9001 model=claude-haiku-5-5
+usage input=40 cache_read=0 cache_write=0[] output=1 reasoning=- speed=standard asked=-
+block_start 0 Text
+text 0 "Hello"
+text 0 ", test suite!"
+block_end 0 {"type":"text","text":"Hello, test suite!"}
+usage input=40 cache_read=0 cache_write=0[] output=10 reasoning=0 speed=standard asked=-
+end stop=end raw=end_turn detail=- input=40 cache_read=0 cache_write=0[] output=10 reasoning=0 speed=standard asked=-

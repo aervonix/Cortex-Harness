@@ -1,0 +1,32 @@
+start id=msg_fixture0014 model=claude-haiku-5-5
+usage input=4 cache_read=0 cache_write=1496[5m=1496] output=9 reasoning=- speed=standard asked=-
+block_start 0 Reasoning
+reasoning 0 "Oslo is"
+reasoning 0 " clearly"
+reasoning 0 " Norway's capital, and"
+reasoning 0 " Cairo alm"
+reasoning 0 "ost certainly means the"
+reasoning 0 " Egyptian city"
+reasoning 0 ", since"
+reasoning 0 " that"
+reasoning 0 "'s the common usage even"
+reasoning 0 " though Cairo, Ill"
+reasoning 0 "inois exists. I'll"
+reasoning 0 " call the"
+reasoning 0 " tool for both c"
+reasoning 0 "ities in a"
+reasoning 0 " single block."
+reasoning 0 "\n\n"
+block_end 0 {"type":"thinking","thinking":"Oslo is clearly Norway's capital, and Cairo almost certainly means the Egyptian city, since that's the common usage even though Cairo, Illinois exists. I'll call the tool for both cities in a single block.\n\n","signature":"fixture-signature-02"}
+block_start 1 ToolCall
+tool_call 1 id=toolu_fixture0015 name=get_weather
+tool_args 1 "{\"city\": \"Oslo"
+tool_args 1 "\"}"
+block_end 1 {"type":"tool_use","id":"toolu_fixture0015","name":"get_weather","input":{"city": "Oslo"},"caller":{"type":"direct"}}
+block_start 2 ToolCall
+tool_call 2 id=toolu_fixture0016 name=get_weather
+tool_args 2 "{\"city\": \"Cairo"
+tool_args 2 "\"}"
+block_end 2 {"type":"tool_use","id":"toolu_fixture0016","name":"get_weather","input":{"city": "Cairo"},"caller":{"type":"direct"}}
+usage input=4 cache_read=0 cache_write=1496[5m=1496] output=174 reasoning=74 speed=standard asked=-
+end stop=tool_calls raw=tool_use detail=- input=4 cache_read=0 cache_write=1496[5m=1496] output=174 reasoning=74 speed=standard asked=-

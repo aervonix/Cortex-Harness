@@ -1,0 +1,37 @@
+start id=msg_fixture0002 model=claude-haiku-5-5
+usage input=56 cache_read=0 cache_write=0[] output=8 reasoning=- speed=standard asked=-
+block_start 0 Reasoning
+reasoning 0 "I'm"
+reasoning 0 " adding 17 and 23"
+reasoning 0 " to get 40, then ta"
+reasoning 0 "king a quarter of that"
+reasoning 0 ", which is 10, so"
+reasoning 0 " 30 remain"
+reasoning 0 " after"
+reasoning 0 " the"
+reasoning 0 " sale."
+reasoning 0 "\n\n"
+block_end 0 {"type":"thinking","thinking":"I'm adding 17 and 23 to get 40, then taking a quarter of that, which is 10, so 30 remain after the sale.\n\n","signature":"fixture-signature-01"}
+block_start 1 Text
+text 1 "**"
+text 1 "30"
+text 1 " sheep are left.**"
+text 1 "\n\n1."
+text 1 " Start with 17 sheep"
+text 1 " and buy 23 more:"
+text 1 " 17 + 23 ="
+text 1 " 40 sheep."
+text 1 "\n2. Sell a quar"
+text 1 "ter of the flock: 40"
+text 1 " "
+text 1 "÷ 4 = 10"
+text 1 " sheep sold."
+text 1 "\n3. Sub"
+text 1 "tract the sold sheep"
+text 1 ":"
+text 1 " 40 − 10 ="
+text 1 " 30 sheep rem"
+text 1 "ain."
+block_end 1 {"type":"text","text":"**30 sheep are left.**\n\n1. Start with 17 sheep and buy 23 more: 17 + 23 = 40 sheep.\n2. Sell a quarter of the flock: 40 ÷ 4 = 10 sheep sold.\n3. Subtract the sold sheep: 40 − 10 = 30 sheep remain."}
+usage input=56 cache_read=0 cache_write=0[] output=171 reasoning=58 speed=standard asked=-
+end stop=end raw=end_turn detail=- input=56 cache_read=0 cache_write=0[] output=171 reasoning=58 speed=standard asked=-

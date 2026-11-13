@@ -1,0 +1,1 @@
+{"type":"error","error":{"type":"invalid_request_error","message":"'claude-haiku-5-5' does not support the `speed` parameter. This feature is only available on supported models."},"request_id":"req_fixture0026"}

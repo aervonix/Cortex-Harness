@@ -1,0 +1,4 @@
+start id=msg_fixture9001 model=claude-haiku-5-5
+usage input=40 cache_read=0 cache_write=0[] output=1 reasoning=- speed=standard asked=-
+usage input=40 cache_read=0 cache_write=0[] output=3 reasoning=0 speed=standard asked=-
+end stop=refusal raw=refusal detail=cyber input=40 cache_read=0 cache_write=0[] output=3 reasoning=0 speed=standard asked=-

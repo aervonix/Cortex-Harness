@@ -1,0 +1,13 @@
+start id=msg_fixture0018 model=claude-haiku-5-5
+usage input=2 cache_read=1496 cache_write=284[5m=284] output=8 reasoning=- speed=standard asked=-
+block_start 0 Text
+text 0 "Oslo is 18 "
+text 0 "degrees Celsius with"
+text 0 " a clear sky and"
+text 0 " light wind.\nCair"
+text 0 "o is 18 degrees"
+text 0 " Celsius with a clear"
+text 0 " sky and light wind."
+block_end 0 {"type":"text","text":"Oslo is 18 degrees Celsius with a clear sky and light wind.\nCairo is 18 degrees Celsius with a clear sky and light wind."}
+usage input=2 cache_read=1496 cache_write=284[5m=284] output=55 reasoning=0 speed=standard asked=-
+end stop=end raw=end_turn detail=- input=2 cache_read=1496 cache_write=284[5m=284] output=55 reasoning=0 speed=standard asked=-
