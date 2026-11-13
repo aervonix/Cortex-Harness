@@ -461,9 +461,19 @@ fn engine_parts(
     }
     // The user's configuration file, which `CORTEX_CONFIG` can put outside
     // the configuration directory: it holds the level and the rules the
-    // next session starts with, and can hold a provider's header.
-    if let Some(file) = dirs.user_config.as_deref().and_then(resolve_dir) {
-        protected = protected.closed(file);
+    // next session starts with, and can hold a provider's header. Closed
+    // as named and, when it is a link (a dotfiles repository), where it
+    // leads, which is what a read or a write of it reaches.
+    if let Some(file) = dirs.user_config.as_deref() {
+        if let Some(named) = resolve_dir(file) {
+            protected = protected.closed(named);
+        }
+        if let Some(target) = std::fs::canonicalize(file)
+            .ok()
+            .and_then(|target| AbsPath::from_os(&target).ok())
+        {
+            protected = protected.closed(target);
+        }
     }
     if let Some(state) = state.and_then(|state| resolve_dir(state.root())) {
         protected = protected.closed(state);
