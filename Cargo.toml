@@ -44,6 +44,7 @@ grep-regex = { version = "0.1.14", default-features = false }
 grep-searcher = { version = "0.1.17", default-features = false }
 ignore = { version = "0.4.34", default-features = false }
 keyring-core = { version = "1.0.1", default-features = false }
+libc = { version = "0.2.191", default-features = false }
 reqwest = { version = "0.13.5", default-features = false, features = ["http2", "rustls-no-provider"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 schemars = { version = "1.2.3", default-features = false, features = ["derive", "std"] }

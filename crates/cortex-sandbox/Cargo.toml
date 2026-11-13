@@ -1,6 +1,6 @@
 [package]
 name = "cortex-sandbox"
-description = "Sandbox policy types and the per-OS launchers."
+description = "Sandbox policy types and the per-OS launchers, and process trees: a command and everything it starts, stopped as one."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,6 +11,27 @@ doctest = false
 
 [dependencies]
 cortex-base.workspace = true
+
+# Sessions, group signals, the death signal and a wait on two pipes: what
+# the standard library does not reach
+# (docs/decisions/0030-process-tree-control-in-cortex-sandbox.md).
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+# Job Objects, console events, and letting a suspended process run.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+cortex-testkit.workspace = true
 
 [lints]
 workspace = true

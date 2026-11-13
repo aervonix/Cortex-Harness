@@ -44,7 +44,7 @@ const CRATES: &[(&str, &[&str])] = &[
     (PROTOCOL, &[]),
     (BASE, &[PROTOCOL]),
     (LLM, &[PROTOCOL, BASE]),
-    (TOOLS, &[PROTOCOL, BASE]),
+    (TOOLS, &[PROTOCOL, BASE, SANDBOX]),
     (SANDBOX, &[BASE]),
     (POLICY, &[PROTOCOL, BASE]),
     (SESSION, &[PROTOCOL, BASE]),

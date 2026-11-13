@@ -7,6 +7,7 @@
 //! | [`cases`] | Property tests without a property-testing crate. |
 //! | [`timer`] | [`FakeTimer`]: waits that move the fake clock instead of waiting. |
 //! | [`gate`] | [`Gate`]: how two sides of a test take turns without sleeping. |
+//! | [`children`] | Child processes for process tests: the test binary run again as a child, a grandchild or a child that will not stop, and a [`Roll`](children::Roll) that shows each one start and die. |
 //! | [`exec`] | [`block_on`], which runs async code with no runtime, and [`join`], which runs two futures together. |
 //! | [`provider`] | [`ScriptedProvider`]: a model that says what the test tells it to. For tests of the agent loop. |
 //! | [`transport`] | [`ScriptedTransport`]: recorded responses in place of a network. For tests of protocols and of the client. |
@@ -31,6 +32,7 @@
 )]
 
 pub mod cases;
+pub mod children;
 pub mod exec;
 pub mod fixtures;
 pub mod gate;
