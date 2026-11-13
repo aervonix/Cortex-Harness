@@ -587,7 +587,7 @@ const PATHS: [&str; 12] = [
     "/srv/other/src/main.rs",
 ];
 
-// The properties below run a few hundred cases each on a pull request, and
+// The properties below run a hundred or so cases each on a pull request, and
 // fifty times that every night (`CORTEX_PROPERTY_SCALE`). Each case compiles
 // rule sets, which is where the time goes in CI's unoptimised build: at
 // three thousand cases each, this crate's properties took a third of the
