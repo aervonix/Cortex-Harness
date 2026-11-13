@@ -22,6 +22,24 @@
       ],
       "description": "Who made a change."
     },
+    "AddedRule": {
+      "description": "A rule an answer to an approval request would add: always an `allow`.\n\nIt only informs, so it is read as everything that informs is: an effect\nthis version does not know is kept as it was written, and a field it does\nnot know is ignored. It is never enforced: the rule an answer adds is the\none the server worked out, never what a client sends back. The enforced\n`Rule`, which refuses both, is for rules that are applied\n(`docs/decisions/0028-enforced-values-fail-closed.md`).",
+      "properties": {
+        "effect": {
+          "$ref": "#/$defs/Effect",
+          "description": "The effect it allows."
+        },
+        "match": {
+          "description": "What it matches: a path glob, a command pattern, a host, or a\n`server/tool` name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "effect",
+        "match"
+      ],
+      "type": "object"
+    },
     "ApprovalChoice": {
       "anyOf": [
         {
@@ -160,7 +178,7 @@
         "adds": {
           "description": "The rules that `allow_session` or `allow_project` would add, so that\na front end can show exactly what such an answer allows from then\non. Empty when only this one call can be allowed.",
           "items": {
-            "$ref": "#/$defs/Rule"
+            "$ref": "#/$defs/AddedRule"
           },
           "type": "array"
         },
@@ -971,8 +989,15 @@
       "description": "The detail of an approval for a change to a file.",
       "properties": {
         "diff": {
-          "description": "The change, as a unified diff.",
+          "description": "The change, as a unified diff. Empty when it is left out.",
           "type": "string"
+        },
+        "omitted": {
+          "description": "Why the diff is left out, in a sentence: it is larger than a request\ncarries, or the change cannot be worked out before the call runs.\nAbsent when `diff` is the whole change.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "path": {
           "description": "The file.",

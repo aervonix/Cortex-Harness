@@ -17,7 +17,7 @@ const CONTEXT: usize = 3;
 
 /// Two versions with more lines than this between them are not diffed: the
 /// file has "changed a lot", and its content is sent.
-const MAX_LINES: usize = 50_000;
+pub(crate) const MAX_LINES: usize = 50_000;
 
 /// The difference between two versions of a text.
 #[derive(Debug, Clone, PartialEq, Eq)]

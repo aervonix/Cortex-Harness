@@ -200,12 +200,15 @@ A pattern that ends in `/**`, or in a separator, matches the directory itself as
 
 | Closed | To |
 |---|---|
-| The configuration directory (credentials, configuration) | Reading and writing. |
+| The configuration directory (configuration, and credentials on Linux) | Reading and writing. |
+| The credentials file and its lock, wherever they are kept (on Windows, the local folder that is the data directory) | Reading and writing. |
 | The state directory (trust, stored approvals, what was learned) | Reading and writing. |
 | The data directory | Writing. |
 | The session directories of other projects | Reading. This project's own are outside the workspace, so reading one asks. |
 
 Closing the state directory to writing is what makes trust and approvals mean something: a model that could write `trust.toml` could trust its own project.
+
+Where each of these is on each system is one table, beside what is closed in it: [08-configuration.md](08-configuration.md), "Where each system keeps the harness's files". The credentials file has a row of its own because on Windows it is not in the configuration directory, and before the review of step 13a nothing closed it to reading there.
 
 The protection holds for a path a command only names, too: `cat` of the credentials file, or `cp` to it, is refused and not asked about. A command that searches a tree with one of these directories somewhere in it is asked about.
 

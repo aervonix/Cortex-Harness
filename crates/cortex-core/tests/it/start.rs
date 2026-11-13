@@ -256,6 +256,110 @@ fn world_config_path_placeholder() -> &'static str {
     "no-such-file.txt"
 }
 
+/// "Built-in deny rules protect the harness's own files and credentials":
+/// no allow and no level lifts them. The stored keys are closed to reading
+/// wherever they are kept: in the configuration directory on Linux, and on
+/// Windows in the local folder, which is the data directory and is
+/// otherwise closed only to writing (`docs/architecture/08-configuration.md`,
+/// "Where each system keeps the harness's files"). Both layouts are given
+/// to the core on every system, as `Dirs::from_env` makes them. The files
+/// are the ones the real store leaves: the keys and their lock. Found on
+/// Windows by the review of step 13a.
+#[test]
+fn the_stored_keys_are_closed_to_the_tools_in_each_systems_layout() {
+    for windows in [false, true] {
+        let world = World::new(
+            if windows {
+                "credentials_windows"
+            } else {
+                "credentials_linux"
+            },
+            [],
+        );
+        let mut dirs = world.dirs();
+        if windows {
+            // `%LOCALAPPDATA%\cortex-harness`, beside the sessions.
+            dirs.credentials.clone_from(&dirs.data);
+        } else {
+            // `~/.config/cortex-harness`, beside the configuration.
+            dirs.credentials.clone_from(&dirs.config);
+        }
+        let store = cortex_config::open_store(
+            cortex_config::schema::StoreChoice::File,
+            &dirs,
+            std::sync::Arc::new(world.clock.clone()),
+        )
+        .unwrap();
+        store
+            .set(
+                "openrouter",
+                &cortex_base::Secret::new("stored-key-material-0000000000"),
+            )
+            .unwrap();
+        let mut files: Vec<std::path::PathBuf> =
+            std::fs::read_dir(dirs.credentials.as_ref().unwrap())
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with("credentials"))
+                })
+                .collect();
+        files.sort();
+        assert_eq!(files.len(), 2, "the keys and their lock: {files:?}");
+        for (index, file) in files.iter().enumerate() {
+            world.provider.push(calls(&[(
+                &format!("c{index}"),
+                "read",
+                json!({"path": file.to_str().unwrap()}),
+            )]));
+        }
+        world.provider.push(says("Done."));
+        let core = world.core_with(|options| {
+            options.dirs = Some(dirs.clone());
+            // The session's own key is given, so the store is not asked.
+            options.api_keys.insert(
+                "anthropic".to_owned(),
+                cortex_base::Secret::new("sk-ant-test-0000000000000000000000"),
+            );
+        });
+        world.run(async {
+            // At `unrestricted`, with a user there who would say yes.
+            let front = Front::start_as(
+                &world,
+                &core,
+                ClientInfo::user(),
+                SessionSettings {
+                    level: Some(cortex_protocol::lease::Level::Unrestricted),
+                    ..SessionSettings::default()
+                },
+            )
+            .await
+            .unwrap();
+            let asked = front.turn_allowing("read the stored keys").await;
+            assert!(asked.is_empty(), "the stored keys were asked about");
+            let results = front.results();
+            assert_eq!(results.len(), files.len());
+            for ((_, outcome, text), file) in results.iter().zip(&files) {
+                assert_eq!(
+                    outcome,
+                    "denied",
+                    "{} was read ({}): {text}",
+                    file.display(),
+                    if windows {
+                        "Windows layout"
+                    } else {
+                        "Linux layout"
+                    }
+                );
+                assert!(!text.contains("stored-key-material"), "{text}");
+            }
+            front.close().await;
+        });
+    }
+}
+
 /// The configuration directory reached through a link is protected as
 /// where it really is.
 #[cfg(unix)]

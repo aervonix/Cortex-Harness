@@ -89,6 +89,14 @@ export interface ServerNotifications {
 /** Who made a change. */
 export type Actor = "agent" | "user" | "harness" | (string & {});
 
+/** A rule an answer to an approval request would add: always an `allow`. It only informs, so it is read as everything that informs is: an effect this version does not know is kept as it was written, and a field it does not know is ignored. It is never enforced: the rule an answer adds is the one the server worked out, never what a client sends back. The enforced `Rule`, which refuses both, is for rules that are applied (`docs/decisions/0028-enforced-values-fail-closed.md`). */
+export interface AddedRule {
+  /** The effect it allows. */
+  effect: Effect;
+  /** What it matches: a path glob, a command pattern, a host, or a `server/tool` name. */
+  match: string;
+}
+
 /** An answer to an approval request. A note may go with any of them, and with `deny` it reaches the model as the reason. */
 export type ApprovalChoice = "allow_once" | "allow_session" | "allow_project" | "deny" | (string & {});
 
@@ -109,7 +117,7 @@ export type ApprovalId = string;
 /** `approval/request`: may this tool call run? */
 export interface ApprovalRequest {
   /** The rules that `allow_session` or `allow_project` would add, so that a front end can show exactly what such an answer allows from then on. Empty when only this one call can be allowed. */
-  adds?: Array<Rule>;
+  adds?: Array<AddedRule>;
   /** The tool call. */
   call_id: CallId;
   /** The answers on offer. */
@@ -324,8 +332,10 @@ export type Delta = ({
 
 /** The detail of an approval for a change to a file. */
 export interface DiffDetail {
-  /** The change, as a unified diff. */
+  /** The change, as a unified diff. Empty when it is left out. */
   diff: string;
+  /** Why the diff is left out, in a sentence: it is larger than a request carries, or the change cannot be worked out before the call runs. Absent when `diff` is the whole change. */
+  omitted?: string | null;
   /** The file. */
   path: string;
 }

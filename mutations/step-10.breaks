@@ -58,7 +58,7 @@ caught-by:
 [break] size-limit-is-exclusive
 rule: A file of exactly the limit (16 MiB in the product) is changed; only a larger one is refused.
 file: crates/cortex-tools/src/change.rs
-in: Target::find
+in: Target::find_within
 find: metadata.len() > limit
 replace: metadata.len() >= limit
 caught-by:

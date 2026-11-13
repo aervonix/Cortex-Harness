@@ -69,8 +69,8 @@ pub use checkpoint::{
 };
 pub use context::{ImageSupport, OpenGate, Outliner, PlanCx, ReadGate, RunCx};
 pub use contract::{
-    BoxFuture, Concurrency, ConcurrencyClass, Effect, Json, NetworkTarget, NoOutput, Plan, Tool,
-    ToolOutput, ToolSpec,
+    BoxFuture, ChangePreview, Concurrency, ConcurrencyClass, Effect, Json, NetworkTarget, NoOutput,
+    Plan, Preview, Tool, ToolOutput, ToolSpec,
 };
 pub use edit::EditTool;
 pub use files::{FileSnapshot, FileTable, LineRanges, Shown, Staleness};

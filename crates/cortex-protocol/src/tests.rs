@@ -711,6 +711,39 @@ fn a_rule_in_a_message_is_enforced_too() {
     assert!(error.contains("unknown field `unless`"), "{error}");
 }
 
+/// What an approval would add only informs: "a level and an effect are open
+/// where they inform (… an approval prompt)", and a receiver ignores what it
+/// does not know. A client must be able to read, show and answer an
+/// approval request from a newer server whose `adds` names an effect, or
+/// carries a field, this version does not know. Found by the review of step
+/// 13a: `adds` was the enforced `Rule`, which refuses both.
+#[test]
+fn an_approval_request_whose_adds_this_version_does_not_know_is_still_read() {
+    use crate::methods::ApprovalRequest;
+
+    let request = |adds: Value| {
+        json!({
+            "session_id": "s_1", "turn_id": "t_1", "call_id": "c_1",
+            "tool": "docs/search", "summary": "search the docs",
+            "detail": {"kind": "tool", "arguments": {}},
+            "choices": ["allow_once", "allow_session", "deny"],
+            "adds": adds,
+        })
+    };
+    // An effect this version does not know is kept as it was written.
+    let read: ApprovalRequest = round_trip(request(json!([{"effect": "teleport", "match": "x"}])));
+    assert_eq!(read.adds[0].effect.as_str(), "teleport");
+    assert!(!read.adds[0].effect.is_known());
+    // A field it does not know is ignored: one a later version might add,
+    // and the `action` a server may send, which is always `allow`.
+    let read: ApprovalRequest = serde_json::from_value(request(json!([
+        {"effect": "ext", "match": "docs/*", "action": "allow", "expires": "1h"}
+    ])))
+    .unwrap();
+    assert_eq!(read.adds[0].pattern, "docs/*");
+    assert!(read.adds[0].effect.is_known());
+}
+
 #[test]
 fn the_closed_enumerations_have_no_way_to_hold_an_unknown_value() {
     use crate::lease::{ExpiryKind, GrantorKind, NetworkAccess, RuleAction};

@@ -103,6 +103,8 @@ The reference harnesses load extensions into the agent process with the user's f
 
 **Residual risk.** A secret that a tool reads from a file and that does not look like a key is stored in the session like any other text. Sessions should be treated as sensitive. Retention is configurable.
 
+**What goes to a client is not filtered, today, by design.** The filter is for what is written to disk. Events (a tool's output, the deltas, items as they complete), approval requests (a command line in full) and `session/read`'s items in progress reach a front end as the model saw them, so headless `--output jsonl` redirected to a file holds in clear what the session log masks. Whether that should change is left open in [outstanding/secret-filter-on-what-clients-are-sent.md](outstanding/secret-filter-on-what-clients-are-sent.md), from the review of step 13a.
+
 ## 5. The RPC surface
 
 **Threat.** Another local user, another program, or a web page in the user's browser connects to the RPC server and drives the agent, which can run commands as the user.

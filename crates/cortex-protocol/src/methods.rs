@@ -638,8 +638,13 @@ pub struct CommandDetail {
 pub struct DiffDetail {
     /// The file.
     pub path: String,
-    /// The change, as a unified diff.
+    /// The change, as a unified diff. Empty when it is left out.
     pub diff: String,
+    /// Why the diff is left out, in a sentence: it is larger than a request
+    /// carries, or the change cannot be worked out before the call runs.
+    /// Absent when `diff` is the whole change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted: Option<String>,
 }
 
 /// The detail of an approval for access to a path or a host.
@@ -715,7 +720,26 @@ pub struct ApprovalRequest {
     /// a front end can show exactly what such an answer allows from then
     /// on. Empty when only this one call can be allowed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub adds: Vec<Rule>,
+    pub adds: Vec<AddedRule>,
+}
+
+/// A rule an answer to an approval request would add: always an `allow`.
+///
+/// It only informs, so it is read as everything that informs is: an effect
+/// this version does not know is kept as it was written, and a field it does
+/// not know is ignored. It is never enforced: the rule an answer adds is the
+/// one the server worked out, never what a client sends back. The enforced
+/// `Rule`, which refuses both, is for rules that are applied
+/// (`docs/decisions/0028-enforced-values-fail-closed.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct AddedRule {
+    /// The effect it allows.
+    pub effect: Effect,
+    /// What it matches: a path glob, a command pattern, a host, or a
+    /// `server/tool` name.
+    #[serde(rename = "match")]
+    pub pattern: String,
 }
 
 /// The answer to `approval/request`.

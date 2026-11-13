@@ -54,6 +54,7 @@ use cortex_base::{
 
 use crate::checkpoint::Editing;
 use crate::context::RunCx;
+use crate::contract::ChangePreview;
 use crate::files::{FileSnapshot, FileTable, Staleness};
 use crate::output::{count, size};
 use crate::result::ToolResult;
@@ -180,6 +181,12 @@ impl Target {
 
     /// Opens and reads what is at the target (step 2).
     pub(crate) fn find(&self, env: &Env) -> Result<Found, ToolResult> {
+        self.find_within(env.editing.limit)
+    }
+
+    /// Opens and reads what is at the target, refusing a file over `limit`
+    /// bytes.
+    fn find_within(&self, limit: u64) -> Result<Found, ToolResult> {
         let shown = &self.shown;
         let refuse = |why: String| Err(ToolResult::error(why));
         let (file, metadata) = match cortex_base::open_regular(&self.fs_path) {
@@ -205,7 +212,6 @@ impl Target {
                 return refuse(format!("`{shown}` could not be read: {error}."));
             }
         };
-        let limit = env.editing.limit;
         if metadata.len() > limit {
             return refuse(too_large(shown, metadata.len(), limit));
         }
@@ -488,6 +494,69 @@ fn too_large(shown: &str, bytes: u64, limit: u64) -> String {
         human(bytes),
         human(limit)
     )
+}
+
+/// What a planned change to `path` would be, worked out without making it
+/// ([`Tool::preview`](crate::Tool::preview)). The file is read as a change
+/// reads it (steps 1 to 3 above), `change` works out the new text from the
+/// old (`None` for a file that is not there yet) as the tool would, and the
+/// two are diffed as a result's payload is, under the same limit
+/// ([`MAX_PAYLOAD_DIFF`]). Nothing is written, and the table of seen files
+/// is not asked: the staleness guard is the call's, when it runs.
+pub(crate) fn preview(
+    path: &ResolvedPath,
+    paths: &PathResolver,
+    limit: u64,
+    change: impl FnOnce(Option<&str>) -> Result<String, String>,
+) -> ChangePreview {
+    let shown = path.abs().to_native_string();
+    let left_out = |why: String| ChangePreview {
+        path: shown.clone(),
+        diff: String::new(),
+        omitted: Some(why),
+    };
+    let cannot = |why: String| {
+        left_out(format!(
+            "The change cannot be worked out before the call runs: {why}"
+        ))
+    };
+    let target = match Target::new(path, paths) {
+        Ok(target) => target,
+        Err(refused) => return cannot(refused.text()),
+    };
+    let found = match target.find_within(limit) {
+        Ok(found) => found,
+        Err(refused) => return cannot(refused.text()),
+    };
+    let old = match &found {
+        Found::Missing => None,
+        Found::File(existing) => match target.text(existing) {
+            Ok((_, text)) => Some(text),
+            Err(refused) => return cannot(refused.text()),
+        },
+    };
+    let new = match change(old) {
+        Ok(new) => new,
+        Err(why) => return cannot(why),
+    };
+    let Some(diff) = crate::diff::diff_bounded(old.unwrap_or(""), &new) else {
+        return left_out(format!(
+            "The diff is not shown: together the two versions have more than {} lines.",
+            count(crate::diff::MAX_LINES)
+        ));
+    };
+    if diff.text.len() > MAX_PAYLOAD_DIFF {
+        return left_out(format!(
+            "The diff is not shown: it is {}, more than the {} an approval request carries.",
+            size(diff.text.len()),
+            size(MAX_PAYLOAD_DIFF)
+        ));
+    }
+    ChangePreview {
+        path: shown,
+        diff: diff.text,
+        omitted: None,
+    }
 }
 
 /// The diff a result's payload carries, or `null` when it is too large to

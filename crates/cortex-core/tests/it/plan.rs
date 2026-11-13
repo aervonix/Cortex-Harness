@@ -291,3 +291,96 @@ fn a_rewind_goes_back_to_the_plan_of_that_point() {
         front.close().await;
     });
 }
+
+/// The plan of a branch is the plan as that branch left it. A `plan` call's
+/// result says the plan was replaced, so a rewind or a fork at that result
+/// keeps the call, its result and the plan the call made. Found by the
+/// review of step 13a: the `plan` entry was written after the result, and a
+/// rewind to the result dropped it.
+#[test]
+fn a_rewind_or_a_fork_at_a_plan_calls_result_keeps_the_plan_that_call_made() {
+    let world = World::new(
+        "plan_rewind_result",
+        [
+            plan_call("c1", &[("a", "First plan", "active")]),
+            says("Planned."),
+            plan_call("c2", &[("a", "Second plan", "active")]),
+            says("Planned again."),
+        ],
+    );
+    let core = world.core();
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        front.turn("plan it").await;
+        front.turn("plan it again").await;
+        let items = front.items();
+        let result_of = |call: &str| {
+            items
+                .iter()
+                .find_map(|item| match item {
+                    Item::ToolResult(result) if result.call_id.as_str() == call => {
+                        Some(result.id.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+
+        // A fork at the second call's result has the second plan.
+        let forked = front
+            .op(Op::SessionFork(
+                cortex_protocol::methods::SessionForkParams {
+                    session_id: front.session.clone(),
+                    at: Some(result_of("c2")),
+                },
+            ))
+            .await
+            .unwrap();
+        let OpResult::SessionFork(forked) = forked else {
+            panic!("not a fork");
+        };
+        let on_fork = Front {
+            session: forked.session.session_id.clone(),
+            state: forked.session,
+            seen: std::cell::RefCell::default(),
+            answered: std::cell::RefCell::default(),
+            core: front.core.clone(),
+            client: front.client.clone(),
+        };
+        assert_eq!(
+            texts(&get(&on_fork).await),
+            [("Second plan", &PlanStatus::Active)],
+            "the fork holds the call that made the second plan, and its result"
+        );
+        on_fork.close().await;
+
+        // So does a rewind to it.
+        front
+            .op(Op::SessionRewind(SessionRewindParams {
+                session_id: front.session.clone(),
+                to: result_of("c2"),
+                restore_files: false,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            texts(&get(&front).await),
+            [("Second plan", &PlanStatus::Active)],
+            "the branch holds the call that made the second plan, and its result"
+        );
+        // And a rewind to the first call's result has the first.
+        front
+            .op(Op::SessionRewind(SessionRewindParams {
+                session_id: front.session.clone(),
+                to: result_of("c1"),
+                restore_files: false,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            texts(&get(&front).await),
+            [("First plan", &PlanStatus::Active)]
+        );
+        front.close().await;
+    });
+}

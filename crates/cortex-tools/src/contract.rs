@@ -62,6 +62,39 @@ pub trait Tool: Send + Sync {
         cx: &'a RunCx,
         out: &'a mut dyn ToolOutput,
     ) -> BoxFuture<'a, ToolResult>;
+
+    /// What a planned call would change in a file, for a question put to
+    /// the user about it: the work that finds out, worked out the way
+    /// [`run`](Self::run) would make the change, and changing nothing.
+    /// `None`, the default, for a tool that changes no file.
+    ///
+    /// The work reads the file, so a caller on an async thread runs it
+    /// through [`run_blocking`](crate::run_blocking). Calling this method
+    /// does no work itself.
+    fn preview(&self, plan: &Plan, cx: &PlanCx) -> Option<Preview> {
+        let _ = (plan, cx);
+        None
+    }
+}
+
+/// The work that makes a [`ChangePreview`] ([`Tool::preview`]). It reads
+/// the file it is about, and blocks.
+pub type Preview = Box<dyn FnOnce() -> ChangePreview + Send>;
+
+/// What a planned call would change in a file, for a question put to the
+/// user (`approval/request`'s `diff` detail).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangePreview {
+    /// The file, as an absolute path in the system's own form.
+    pub path: String,
+    /// The change, as a unified diff of the lines it changes. Empty when it
+    /// is left out.
+    pub diff: String,
+    /// Why the diff is left out, in a sentence: it is larger than a request
+    /// carries, or the change cannot be worked out before the call runs
+    /// (the call will then say why it failed). `None` when `diff` is the
+    /// whole change.
+    pub omitted: Option<String>,
 }
 
 /// What a tool is, as the model and the permission engine are told.

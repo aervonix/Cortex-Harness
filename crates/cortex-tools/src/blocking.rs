@@ -110,11 +110,20 @@ mod inline {
 
     use super::{BlockingError, panic_message};
 
+    /// What decides when this thread's blocking work finishes.
+    #[derive(Debug)]
+    enum Order {
+        /// A generator, from a seed.
+        Seeded(SeededRng),
+        /// The same number of turns for every piece.
+        Fixed(u32),
+    }
+
     thread_local! {
-        /// The generator that decides when this thread's blocking work
-        /// finishes. `None`, as it is everywhere outside a test that asked:
-        /// the work goes to the blocking pool.
-        static ORDER: RefCell<Option<SeededRng>> = const { RefCell::new(None) };
+        /// The order of this thread's blocking work. `None`, as it is
+        /// everywhere outside a test that asked: the work goes to the
+        /// blocking pool.
+        static ORDER: RefCell<Option<Order>> = const { RefCell::new(None) };
     }
 
     /// How many turns of the runtime a piece of work may be made to wait:
@@ -142,14 +151,29 @@ mod inline {
     #[derive(Debug)]
     pub struct InlineBlocking {
         /// What was in force before, put back when this is dropped.
-        before: Option<SeededRng>,
+        before: Option<Order>,
     }
 
     impl InlineBlocking {
         /// Starts a seeded order on the calling thread.
         #[must_use = "the order ends when this is dropped"]
         pub fn seeded(seed: u64) -> Self {
-            let before = ORDER.with(|order| order.replace(Some(SeededRng::new(seed))));
+            let before =
+                ORDER.with(|order| order.replace(Some(Order::Seeded(SeededRng::new(seed)))));
+            Self { before }
+        }
+
+        /// Starts an order on the calling thread in which every piece of
+        /// work waits exactly `turns` turns of the runtime, then runs.
+        ///
+        /// For a test that steps a future by hand and acts between two of
+        /// its steps: with `after(1)`, each piece of blocking work is one
+        /// `Pending` of the future that waits for it, so the test knows
+        /// what is under way when it acts. A test of every order there can
+        /// be uses [`seeded`](Self::seeded), and is run under many seeds.
+        #[must_use = "the order ends when this is dropped"]
+        pub fn after(turns: u32) -> Self {
+            let before = ORDER.with(|order| order.replace(Some(Order::Fixed(turns))));
             Self { before }
         }
     }
@@ -161,14 +185,15 @@ mod inline {
         }
     }
 
-    /// The turns the next piece of work waits, when a seeded order is in
-    /// force on this thread.
+    /// The turns the next piece of work waits, when an order is in force on
+    /// this thread.
     pub(super) fn turns() -> Option<u32> {
-        ORDER.with(|order| {
-            let mut order = order.borrow_mut();
-            let rng = order.as_mut()?;
-            let index = usize::try_from(rng.below(TURNS.len() as u64)).unwrap_or(0);
-            TURNS.get(index).copied()
+        ORDER.with(|order| match order.borrow_mut().as_mut()? {
+            Order::Seeded(rng) => {
+                let index = usize::try_from(rng.below(TURNS.len() as u64)).unwrap_or(0);
+                TURNS.get(index).copied()
+            }
+            Order::Fixed(turns) => Some(*turns),
         })
     }
 
@@ -334,6 +359,39 @@ mod tests {
         // The order they were started in is one of them, and not the only one.
         assert!(orders.contains(&vec![0, 1, 2]), "{orders:?}");
         assert!(orders.iter().any(|order| order != &[0, 1, 2]), "{orders:?}");
+    }
+
+    /// With a fixed order a test knows where a future that waits for
+    /// blocking work stands: each piece is that many `Pending`s, and then
+    /// done, on the test's own thread.
+    #[cfg(feature = "test-hooks")]
+    #[test]
+    fn under_a_fixed_order_each_piece_of_work_waits_exactly_that_many_turns() {
+        use std::future::Future as _;
+        use std::task::{Context, Waker};
+
+        for turns in [0_u32, 1, 3] {
+            let _order = InlineBlocking::after(turns);
+            let here = std::thread::current().id();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("a runtime");
+            let _entered = runtime.enter();
+            let cancel = CancelToken::new();
+            let mut work = std::pin::pin!(run_blocking(&cancel, |_| std::thread::current().id()));
+            let mut cx = Context::from_waker(Waker::noop());
+            for pending in 0..turns {
+                assert!(
+                    work.as_mut().poll(&mut cx).is_pending(),
+                    "{turns} turns: done after {pending}"
+                );
+            }
+            assert_eq!(
+                work.as_mut().poll(&mut cx),
+                std::task::Poll::Ready(Ok(here)),
+                "{turns} turns"
+            );
+        }
     }
 
     #[cfg(feature = "test-hooks")]

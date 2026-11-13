@@ -170,8 +170,16 @@ fn absolute_entries(path: &std::ffi::OsStr, windows: bool) -> OsString {
     };
     let kept: Vec<&str> = text
         .split(separator)
-        // Windows allows an entry in quotes, for one with a semicolon.
-        .filter(|entry| absolute(entry.trim_matches('"')))
+        .filter(|entry| {
+            // Windows allows an entry in quotes, for one with a semicolon.
+            // On Linux a quote is part of a name: `"/x"` is the directory
+            // `x` in a directory named `"`, which is relative.
+            if windows {
+                absolute(entry.trim_matches('"'))
+            } else {
+                absolute(entry)
+            }
+        })
         .collect();
     OsString::from(kept.join(&separator.to_string()))
 }
@@ -381,6 +389,14 @@ mod tests {
         // left, and the variable stays, empty.
         let built = build(env(&[("PATH", ".::bin")]), &defaults(), false);
         assert_eq!(get(&built, "PATH"), [""]);
+        // A quote is a character of a name on Linux, not a way to write an
+        // entry: `"/usr/bin"` is relative, and goes.
+        let built = build(
+            env(&[("PATH", "\"/usr/bin\":/bin:\"/opt/x\"")]),
+            &defaults(),
+            false,
+        );
+        assert_eq!(get(&built, "PATH"), ["/bin"]);
         // Another variable that holds a list is left alone.
         let built = build(env(&[("MANPATH", ".:/usr/share/man")]), &defaults(), false);
         assert_eq!(get(&built, "MANPATH"), [".:/usr/share/man"]);

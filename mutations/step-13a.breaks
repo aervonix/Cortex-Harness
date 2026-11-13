@@ -579,8 +579,8 @@ rule: An observer may not rewind a session.
 file: crates/cortex-core/src/core.rs
 find:
     self.may_drive(client)?;
-    let _changing = Changing::begin(&live.changing)?;
-replace: let _changing = Changing::begin(&live.changing)?;
+    let mut change = live.handle.change_history()?;
+replace: let mut change = live.handle.change_history()?;
 caught-by:
     cortex-core::it approvals::an_observer_starts_nothing_changes_no_history_and_ends_nothing
 
@@ -712,14 +712,17 @@ caught-by:
     cortex-core::it approvals::a_user_who_joins_while_a_question_waits_is_put_it_and_may_answer
 
 [break] turn-starts-under-a-rewind
-rule: No turn starts while a rewind is under way.
-file: crates/cortex-core/src/core.rs
+rule: No turn starts while a rewind is under way. (Since the fixes to the review, the check is in the session's handle, under its lock.)
+file: crates/cortex-agent/src/session.rs
+in: SessionHandle::prompt
 find:
-    if live.changing.load(Ordering::Acquire) {
+    if inbox.changing {
         return Err(history_changing());
     }
 replace:
+packages: cortex-agent, cortex-core
 caught-by:
+    cortex-agent::it sessions::a_session_can_be_told_to_read_its_history_again_but_not_under_a_turn
     cortex-core::it turns::no_turn_starts_while_a_rewind_is_under_way
 
 [break] level-set-before-the-rest-is-checked

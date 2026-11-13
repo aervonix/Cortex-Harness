@@ -27,6 +27,7 @@
 mod approvals;
 mod events;
 mod gates;
+mod lifecycle;
 mod plan;
 mod provider;
 mod secrets;
@@ -88,11 +89,12 @@ pub struct World {
     pub timer: FakeTimer,
     pub provider: ScriptedProvider,
     pub env: Env,
-    /// The loop's blocking work (planning a call, bounding a result) runs
-    /// on the test's thread, in the order this run's seed gives. The
-    /// core's own blocking work, and a command's, stay real threads and
+    /// The loop's blocking work (planning a call, bounding a result) and
+    /// the core's own (putting a session together, a rewind's work on the
+    /// log) run on the test's thread, in the order this run's seed gives.
+    /// The session store's writes, and a command, stay real threads and
     /// processes: their order is the machine's.
-    _order: cortex_tools::InlineBlocking,
+    _order: Option<cortex_tools::InlineBlocking>,
     /// Removes the test's directory when the test ends, unless it failed.
     _scratch: cortex_testkit::Scratch,
 }
@@ -122,7 +124,7 @@ impl World {
                 .build()
                 .unwrap(),
             provider: ScriptedProvider::new(responses),
-            _order: cortex_tools::InlineBlocking::seeded(seed),
+            _order: Some(cortex_tools::InlineBlocking::seeded(seed)),
             _scratch: scratch,
             dir,
             home,
@@ -133,6 +135,18 @@ impl World {
         };
         world.user_config("");
         world
+    }
+
+    /// Makes every piece of blocking work, the loop's and the core's, wait
+    /// exactly one turn of the runtime, in place of the seed's order: for a
+    /// test that polls an operation by hand and acts between two of its
+    /// steps. Each piece is then one `Pending` of the operation that waits
+    /// for it.
+    pub fn one_turn_each(&mut self) {
+        // The seeded order goes first: dropping it puts back the order
+        // that was before it, which is none.
+        self._order = None;
+        self._order = Some(cortex_tools::InlineBlocking::after(1));
     }
 
     /// Where this machine's configuration, state and data are. Nothing of
@@ -649,6 +663,12 @@ pub fn says(text: &str) -> Response {
 /// A shell command for the machine's own shell that prints `text`.
 pub fn echo(text: &str) -> Value {
     json!({ "command": format!("echo {text}") })
+}
+
+/// Polls `future` once, by hand: what it returns now, if it is done.
+pub async fn poll_once<F: Future>(future: std::pin::Pin<&mut F>) -> std::task::Poll<F::Output> {
+    let mut future = future;
+    std::future::poll_fn(|cx| std::task::Poll::Ready(future.as_mut().poll(cx))).await
 }
 
 /// Lets every task that can run without the test's help run.

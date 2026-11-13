@@ -225,36 +225,6 @@ pub(crate) struct Live {
     loaded: Arc<Loaded>,
     images: Arc<dyn ImageSource>,
     lease_count: AtomicU64,
-    /// Set while the session's history is being changed (a rewind). No
-    /// turn starts then, and no second change.
-    changing: AtomicBool,
-}
-
-/// The mark that a session's history is being changed, taken down when the
-/// change is over, however it ends.
-struct Changing<'a>(&'a AtomicBool);
-
-impl<'a> Changing<'a> {
-    fn begin(flag: &'a AtomicBool) -> Result<Self, OpError> {
-        if flag.swap(true, Ordering::AcqRel) {
-            return Err(history_changing());
-        }
-        Ok(Self(flag))
-    }
-}
-
-impl Drop for Changing<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
-
-fn history_changing() -> OpError {
-    error(
-        ErrorKind::Usage,
-        "history_changing",
-        "The session is being rewound. Send this again when that is done.",
-    )
 }
 
 impl std::fmt::Debug for Live {
@@ -282,6 +252,8 @@ pub(crate) struct Inner {
     /// runs after this one ([`crate::shell_cache`]). [`Core::shutdown`]
     /// waits for them, so that a short run still keeps it.
     pub(crate) probes: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    /// Set when [`Core::shutdown`] begins: no session starts after it.
+    shutting_down: AtomicBool,
 }
 
 /// What a shell was looked for with: `shell.program` and `shell.args`.
@@ -376,6 +348,7 @@ impl Core {
                 sessions: Mutex::new(BTreeMap::new()),
                 shells: Mutex::new(BTreeMap::new()),
                 probes: Mutex::new(Vec::new()),
+                shutting_down: AtomicBool::new(false),
             }),
         })
     }
@@ -389,14 +362,26 @@ impl Core {
 
     /// Disconnects a front end: it has no session open any more, and its
     /// queue takes nothing more. Sessions it alone had open are closed.
+    ///
+    /// The client is taken out first, and the sessions looked at after: a
+    /// session that is put together for it meanwhile either is in the table
+    /// by then, and is closed here, or finds the client gone when it is
+    /// put in the table, and closes itself.
     pub async fn disconnect(&self, client: ClientId) {
+        self.inner.clients.disconnect(client);
         let sessions: Vec<Arc<Live>> = lock(&self.inner.sessions).values().cloned().collect();
         for live in sessions {
             if live.sink.unsubscribe(client.0) && live.sink.subscribers().is_empty() {
                 self.end(live.handle.id()).await;
             }
         }
-        self.inner.clients.disconnect(client);
+    }
+
+    /// The sessions this core has open, by id, in id order: what a server's
+    /// status shows, and what is ended at [`shutdown`](Self::shutdown).
+    #[must_use]
+    pub fn open_sessions(&self) -> Vec<SessionId> {
+        lock(&self.inner.sessions).keys().cloned().collect()
     }
 
     /// The calls of a session that were refused because nobody could be
@@ -461,13 +446,22 @@ impl Core {
         }
     }
 
-    /// Runs blocking work on the blocking pool.
+    /// Runs blocking work on the blocking pool, through the one seam the
+    /// loop's blocking work goes through too (`cortex_tools::run_blocking`):
+    /// a test that orders the loop's work orders the core's as well
+    /// (`docs/testing-and-ci.md`, "A seeded order of events"). The work is
+    /// not cancelled: what the core starts on the pool, it finishes.
     async fn blocking<T: Send + 'static>(
         work: impl FnOnce() -> Result<T, OpError> + Send + 'static,
     ) -> Result<T, OpError> {
-        match tokio::task::spawn_blocking(work).await {
+        match cortex_tools::run_blocking(&CancelToken::new(), move |_| work()).await {
             Ok(done) => done,
-            Err(_) => Err(error(
+            Err(cortex_tools::BlockingError::Panicked(panic)) => Err(error(
+                ErrorKind::Internal,
+                "task_failed",
+                format!("internal error: the work panicked part-way ({panic})."),
+            )),
+            Err(cortex_tools::BlockingError::Cancelled) => Err(error(
                 ErrorKind::Internal,
                 "task_failed",
                 "The work was abandoned part-way.",
@@ -475,14 +469,55 @@ impl Core {
         }
     }
 
+    fn not_connected() -> OpError {
+        error(
+            ErrorKind::Usage,
+            code::NOT_INITIALIZED,
+            "This client is not connected.",
+        )
+    }
+
+    fn shutting_down() -> OpError {
+        error(
+            ErrorKind::Usage,
+            code::SHUTTING_DOWN,
+            "The server is shutting down, and starts no session.",
+        )
+    }
+
+    /// Keeps a session that `client` was just put on, if the client is
+    /// still there to have it.
+    ///
+    /// Called after the client is subscribed and the session is in the
+    /// table, which is the order [`disconnect`](Self::disconnect) and
+    /// [`shutdown`](Self::shutdown) look in the other way round: a client
+    /// that left, or a shutdown that began, before this look is seen here,
+    /// and one after it sees the session. A session nobody else has open is
+    /// then ended, so it never runs with no client.
+    async fn still_wanted(&self, client: ClientId, live: &Arc<Live>) -> Result<(), OpError> {
+        let gone = self.inner.clients.queue(client).is_none();
+        let stopping = self.inner.shutting_down.load(Ordering::SeqCst);
+        if !gone && !stopping {
+            return Ok(());
+        }
+        live.sink.unsubscribe(client.0);
+        if stopping || live.sink.subscribers().is_empty() {
+            self.end(live.handle.id()).await;
+        }
+        Err(if stopping {
+            Self::shutting_down()
+        } else {
+            Self::not_connected()
+        })
+    }
+
     /// Puts a session together and starts its loop.
     async fn open(&self, client: ClientId, wanted: Wanted) -> Result<Arc<Live>, OpError> {
+        if self.inner.shutting_down.load(Ordering::SeqCst) {
+            return Err(Self::shutting_down());
+        }
         let Some(queue) = self.inner.clients.queue(client) else {
-            return Err(error(
-                ErrorKind::Usage,
-                code::NOT_INITIALIZED,
-                "This client is not connected.",
-            ));
+            return Err(Self::not_connected());
         };
         let inner = Arc::clone(&self.inner);
         let cancel = self.inner.options.cancel.child();
@@ -524,9 +559,11 @@ impl Core {
             loaded,
             images,
             lease_count: AtomicU64::new(lease_count),
-            changing: AtomicBool::new(false),
         });
         lock(&self.inner.sessions).insert(live.handle.id().clone(), Arc::clone(&live));
+        // The client may have left, or a shutdown begun, while the session
+        // was put together off this thread.
+        self.still_wanted(client, &live).await?;
         Ok(live)
     }
 
@@ -542,7 +579,7 @@ impl Core {
             let _ = task.await;
         }
         let log = Arc::clone(&live.log);
-        let closed = tokio::task::spawn_blocking(move || {
+        let closed = Self::blocking(move || {
             let mut kept = lock(&log);
             if let Some(disk) = kept.disk() {
                 // The base state, if its capture ends in time. It nearly
@@ -559,6 +596,7 @@ impl Core {
                 }
                 let _ = disk.session.end_turn();
             }
+            Ok(())
         })
         .await;
         if closed.is_err() {
@@ -566,8 +604,14 @@ impl Core {
         }
     }
 
-    /// Ends every session. For the end of the process.
+    /// Ends every session, and starts no more. For the end of the process.
+    ///
+    /// The mark that no session starts is set first, and the sessions are
+    /// looked at after: one that is put together meanwhile either is in the
+    /// table by then, and is ended here, or finds the mark when it is put
+    /// in the table, and ends itself.
     pub async fn shutdown(&self) {
+        self.inner.shutting_down.store(true, Ordering::SeqCst);
         let sessions: Vec<SessionId> = lock(&self.inner.sessions).keys().cloned().collect();
         for session in sessions {
             self.end(&session).await;
@@ -576,10 +620,11 @@ impl Core {
         // answer is kept: each ask is bounded by its own time limit.
         let probes = std::mem::take(&mut *lock(&self.inner.probes));
         if !probes.is_empty() {
-            let _ = tokio::task::spawn_blocking(move || {
+            let _ = Self::blocking(move || {
                 for probe in probes {
                     let _ = probe.join();
                 }
+                Ok(())
             })
             .await;
         }
@@ -641,6 +686,14 @@ impl Core {
             Op::SessionNew(params) => {
                 self.may_drive(client)?;
                 let overrides = config_overrides(&params.config)?;
+                // `session/set`'s rule, at the start: only a `user` raises a
+                // level or loosens what the harness enforces. Anyone else's
+                // session starts no higher than it would without them.
+                let user =
+                    self.inner.clients.info(client).map(|info| info.role) == Some(ClientRole::User);
+                if !user {
+                    not_enforced(&overrides)?;
+                }
                 let live = self
                     .open(
                         client,
@@ -653,6 +706,7 @@ impl Core {
                             workspace: PathBuf::from(params.workspace),
                             settings: params.settings,
                             overrides,
+                            no_raise: !user,
                         },
                     )
                     .await?;
@@ -663,9 +717,12 @@ impl Core {
             Op::SessionOpen(params) => {
                 // Open already: this client joins it.
                 if let Ok(live) = self.live(&params.session_id) {
-                    if let Some(queue) = self.inner.clients.queue(client) {
-                        live.sink.subscribe(client.0, queue);
-                    }
+                    let Some(queue) = self.inner.clients.queue(client) else {
+                        return Err(Self::not_connected());
+                    };
+                    live.sink.subscribe(client.0, queue);
+                    // A client that left in the meantime is not left on it.
+                    self.still_wanted(client, &live).await?;
                     // A question that is waiting is put to a client that
                     // may answer it.
                     self.inner.clients.join(&params.session_id, client);
@@ -687,6 +744,7 @@ impl Core {
                             workspace,
                             settings: SessionSettings::default(),
                             overrides: Vec::new(),
+                            no_raise: false,
                         },
                     )
                     .await?;
@@ -807,6 +865,7 @@ impl Core {
                             workspace: PathBuf::from(workspace),
                             settings: SessionSettings::default(),
                             overrides: Vec::new(),
+                            no_raise: false,
                         },
                     )
                     .await?;
@@ -819,11 +878,11 @@ impl Core {
                 self.may_drive(client)?;
                 // History is not changed under a turn, and no turn starts
                 // while it is being changed: the rewind itself runs off
-                // this thread, and a prompt could arrive meanwhile.
-                let _changing = Changing::begin(&live.changing)?;
-                live.handle.reload()?;
+                // this thread, and a prompt could arrive meanwhile. Both
+                // are decided under the session's own lock.
+                let mut change = live.handle.change_history()?;
                 let log = Arc::clone(&live.log);
-                let (plan, not_restored) = Self::blocking(move || {
+                let (plan, restored, not_restored) = Self::blocking(move || {
                     let mut kept = lock(&log);
                     let Some(disk) = kept.disk() else {
                         return Err(error(
@@ -860,12 +919,21 @@ impl Core {
                         .session
                         .read_branch()
                         .map_err(|failure| session_error(&failure))?;
-                    Ok((crate::store::plan_of(&entries), done.not_restored))
+                    Ok((
+                        crate::store::plan_of(&entries),
+                        done.restored,
+                        done.not_restored,
+                    ))
                 })
                 .await?;
-                // The plan goes back with the conversation.
+                // The table of seen files forgets the files put back, and
+                // the loop reads the history again before its next turn.
+                change.restored(restored);
+                // The plan goes back with the conversation, before a turn
+                // can start on it.
                 live.hooks.forget_plan_notices();
                 live.board.restore(plan.unwrap_or_default());
+                drop(change);
                 live.handle.emit(Event::PlanUpdated(PlanUpdated {
                     plan: live.board.get(),
                     by: Actor::Harness,
@@ -896,9 +964,8 @@ impl Core {
             Op::TurnStart(params) => {
                 let live = self.open_for(client, &params.session_id)?;
                 self.may_drive(client)?;
-                if live.changing.load(Ordering::Acquire) {
-                    return Err(history_changing());
-                }
+                // Refused with `history_changing` while a rewind is under
+                // way, under the session's own lock.
                 let result = live.handle.prompt(params.input, params.delivery)?;
                 Ok(OpResult::TurnStart(result))
             }
@@ -1062,7 +1129,7 @@ impl Core {
         settings: SessionSettings,
     ) -> Result<(), OpError> {
         let inner = &self.inner;
-        let has_history = live.handle.usage().totals.requests > 0;
+        let has_history = live.handle.has_history();
         let mut uncached = false;
         let mut told = Vec::new();
 
@@ -1340,6 +1407,40 @@ impl Core {
 
 fn session_error(failure: &cortex_session::SessionError) -> OpError {
     Box::new(cortex_base::Classified::to_error_data(failure))
+}
+
+/// Refuses a session's configuration overrides from a client that is not a
+/// `user` when they touch what the harness enforces: anything under
+/// `[permissions]`, `[sandbox]` or `[limits]`, in a profile too. (Choosing
+/// a profile is not an override anyone may give: the loader refuses it.)
+/// Such overrides rank as the user's own command line, so they are the
+/// user's to give.
+fn not_enforced(overrides: &[Override]) -> Result<(), OpError> {
+    use cortex_config::schema::{Lookup, lookup};
+    for one in overrides {
+        let enforced = match cortex_config::KeyPath::parse(&one.key) {
+            Ok(path) => match lookup(&path) {
+                Lookup::Setting { enforced, .. }
+                | Lookup::Table { enforced }
+                | Lookup::Unknown { enforced, .. } => enforced,
+                Lookup::InsideSetting { .. } | Lookup::Reserved { .. } => false,
+            },
+            // A key that cannot be read cannot be shown to be harmless.
+            Err(_) => true,
+        };
+        if enforced {
+            return Err(error(
+                ErrorKind::Permission,
+                code::ROLE_NOT_ALLOWED,
+                format!(
+                    "Only a `user` client may set `{}` for a session: permissions, the sandbox \
+                     and limits are the user's.",
+                    one.key
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// A session's configuration overrides, as the configuration file would

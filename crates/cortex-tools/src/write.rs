@@ -15,11 +15,12 @@ use serde_json::json;
 
 use crate::args;
 use crate::blocking::{BlockingError, run_blocking};
-use crate::change::{Env, Found, Target, payload_diff};
+use crate::change::{self, Env, Found, Target, payload_diff};
 use crate::checkpoint::Editing;
 use crate::context::{PlanCx, RunCx};
 use crate::contract::{
-    BoxFuture, Concurrency, ConcurrencyClass, Effect, Json, Plan, Tool, ToolOutput, ToolSpec,
+    BoxFuture, Concurrency, ConcurrencyClass, Effect, Json, Plan, Preview, Tool, ToolOutput,
+    ToolSpec,
 };
 use crate::diff;
 use crate::matching;
@@ -173,6 +174,23 @@ impl Tool for WriteTool {
             })
             .await
         })
+    }
+
+    fn preview(&self, plan: &Plan, cx: &PlanCx) -> Option<Preview> {
+        let call = plan.args::<Call>()?.clone();
+        let paths = std::sync::Arc::clone(&cx.paths);
+        let limit = self.editing.limit;
+        Some(Box::new(move || {
+            change::preview(&call.path, &paths, limit, |old| {
+                let content = call.content.strip_prefix(BOM).unwrap_or(&call.content);
+                Ok(match old {
+                    // A new file is the content, exactly as it was given.
+                    None => call.content.clone(),
+                    // Over a file, the content keeps its line endings.
+                    Some(old) => matching::rewrite(&Text::new(old), content),
+                })
+            })
+        }))
     }
 }
 
