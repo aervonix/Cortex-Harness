@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Made up for xtask's comparison tests (compare.rs). The branch's side: a runner that starts a test 10 ms later, one integration test 2 s slower, a unit test added and one removed. -->
+<testsuites name="nextest-run" tests="8">
+<testsuite name="cortex-base">
+<testcase name="text::tests::a" classname="cortex-base" time="0.020"/>
+<testcase name="text::tests::b" classname="cortex-base" time="0.220"/>
+<testcase name="text::tests::c" classname="cortex-base" time="0.420"/>
+<testcase name="text::tests::new_one" classname="cortex-base" time="0.620"/>
+<testcase name="text::tests::d" classname="cortex-base" time="0.020"/>
+</testsuite>
+<testsuite name="cortex-llm::it">
+<testcase name="replay::every_cut" classname="cortex-llm::it" time="3.020"/>
+<testcase name="replay::quick" classname="cortex-llm::it" time="0.520"/>
+</testsuite>
+<testsuite name="cortex-cli::system">
+<testcase name="sys_version" classname="cortex-cli::system" time="2.020"/>
+</testsuite>
+</testsuites>

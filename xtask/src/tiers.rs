@@ -27,7 +27,7 @@ const SLOWEST_IN_CI: usize = 5;
 
 /// A test tier that blocks pull requests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Tier {
+pub(crate) enum Tier {
     Unit,
     Integration,
     System,
@@ -63,7 +63,7 @@ fn start_cost(cases: &[TestCase]) -> f64 {
 
 /// The start cost, and how many unit and integration tests it was
 /// measured on.
-fn start_of(cases: &[TestCase]) -> (f64, usize) {
+pub(crate) fn start_of(cases: &[TestCase]) -> (f64, usize) {
     let mut times: Vec<f64> = cases
         .iter()
         .filter(|case| Tier::of(&case.binary, &case.name) != Tier::System)
@@ -95,9 +95,18 @@ impl Os {
 }
 
 impl Tier {
-    const ALL: [Tier; 3] = [Tier::Unit, Tier::Integration, Tier::System];
+    pub(crate) const ALL: [Tier; 3] = [Tier::Unit, Tier::Integration, Tier::System];
 
-    fn name(self) -> &'static str {
+    /// The tier's place in [`Tier::ALL`].
+    pub(crate) fn index(self) -> usize {
+        match self {
+            Tier::Unit => 0,
+            Tier::Integration => 1,
+            Tier::System => 2,
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Tier::Unit => "1, unit",
             Tier::Integration => "2, integration",
@@ -108,7 +117,7 @@ impl Tier {
     /// The budget for the tier's total test time, in seconds: the sum of the
     /// times of its tests above the start of their processes, not the wall
     /// time of the run.
-    fn budget(self, os: Os) -> f64 {
+    pub(crate) fn budget(self, os: Os) -> f64 {
         match (self, os) {
             (Tier::Unit, _) => 20.0,
             (Tier::Integration, _) => 40.0,
@@ -118,7 +127,7 @@ impl Tier {
     }
 
     /// Where a test lives, and its name, decide its tier.
-    fn of(binary: &str, test: &str) -> Tier {
+    pub(crate) fn of(binary: &str, test: &str) -> Tier {
         if test.starts_with("sys_") || test.contains("::sys_") {
             Tier::System
         } else if binary.ends_with("::it") {
@@ -145,10 +154,12 @@ pub(crate) fn check_report(report: &Path, os: Os, slowest: usize) -> Result<()> 
     let cases = junit::read(report)?;
     let (table, over) = summarise(&cases, os);
     print!("{table}");
+    print!("{}", crates_text(&cases, CRATES_SHOWN));
     print!("{}", slowest_tests(&cases, slowest));
     steps::append_job_summary(&format!(
-        "### Test time by tier\n\n{}\n{}\n",
+        "### Test time by tier\n\n{}\n{}\n{}\n",
         markdown(&cases, os),
+        crates_markdown(&cases),
         slowest_markdown(&cases, slowest)
     ));
 
@@ -215,16 +226,16 @@ fn verdict(seconds: f64, budget: f64) -> Option<Verdict> {
 
 /// What a tier's tests took together.
 #[derive(Clone, Copy, Debug)]
-struct Totals {
-    count: usize,
+pub(crate) struct Totals {
+    pub(crate) count: usize,
     /// The sum of the tests' times.
-    seconds: f64,
+    pub(crate) seconds: f64,
     /// The sum of what each test took above the start cost, a test that
     /// took less counting as nothing. This is what the budget is held to.
-    above_start: f64,
+    pub(crate) above_start: f64,
 }
 
-fn total(cases: &[TestCase], tier: Tier, start: f64) -> Totals {
+pub(crate) fn total(cases: &[TestCase], tier: Tier, start: f64) -> Totals {
     let of_tier = cases
         .iter()
         .filter(|case| Tier::of(&case.binary, &case.name) == tier);
@@ -319,6 +330,89 @@ fn markdown(cases: &[TestCase], os: Os) -> String {
     table
 }
 
+/// How many crates the terminal report lists by name; the rest are one
+/// line. The job summary lists them all.
+const CRATES_SHOWN: usize = 12;
+
+/// The crate a test binary belongs to: `cortex-agent` for
+/// `cortex-agent::it`, `cortex-cli` for `cortex-cli::bin/cortex`.
+pub(crate) fn crate_of(binary: &str) -> &str {
+    binary.split("::").next().unwrap_or(binary)
+}
+
+/// Each crate's time in each tier, above the start of the tests'
+/// processes, in the order of [`Tier::ALL`]. The crates come largest total
+/// first, and crates with the same total in name order.
+pub(crate) fn by_crate(cases: &[TestCase], start: f64) -> Vec<(String, [f64; 3])> {
+    let mut crates: Vec<(String, [f64; 3])> = Vec::new();
+    for case in cases {
+        let name = crate_of(&case.binary);
+        let index = match crates.iter().position(|(crate_name, _)| crate_name == name) {
+            Some(index) => index,
+            None => {
+                crates.push((name.to_owned(), [0.0; 3]));
+                crates.len() - 1
+            }
+        };
+        crates[index].1[Tier::of(&case.binary, &case.name).index()] +=
+            (case.seconds - start).max(0.0);
+    }
+    crates.sort_by(|(a_name, a), (b_name, b)| {
+        let (a_sum, b_sum): (f64, f64) = (a.iter().sum(), b.iter().sum());
+        b_sum.total_cmp(&a_sum).then_with(|| a_name.cmp(b_name))
+    });
+    crates
+}
+
+/// Each tier's time above the start, split by crate: where to look when a
+/// tier grows. The first `shown` crates by name, the rest summed in one
+/// line.
+fn crates_text(cases: &[TestCase], shown: usize) -> String {
+    let (start, _) = start_of(cases);
+    let crates = by_crate(cases, start);
+    let mut text = String::from("\n  by crate, above start           unit  integration  system\n");
+    for (name, seconds) in crates.iter().take(shown) {
+        let _ = writeln!(
+            text,
+            "    {name:<28} {:>6.1}  {:>11.1}  {:>6.1}",
+            seconds[0], seconds[1], seconds[2]
+        );
+    }
+    if crates.len() > shown {
+        let mut rest = [0.0; 3];
+        for (_, seconds) in &crates[shown..] {
+            for (sum, each) in rest.iter_mut().zip(seconds) {
+                *sum += each;
+            }
+        }
+        let _ = writeln!(
+            text,
+            "    {:<28} {:>6.1}  {:>11.1}  {:>6.1}",
+            format!("{} more crates", crates.len() - shown),
+            rest[0],
+            rest[1],
+            rest[2]
+        );
+    }
+    text
+}
+
+fn crates_markdown(cases: &[TestCase]) -> String {
+    let (start, _) = start_of(cases);
+    let mut table = String::from(
+        "Each tier's time above the start, by crate:\n\n\
+         | Crate | Unit | Integration | System |\n|---|---:|---:|---:|\n",
+    );
+    for (name, seconds) in by_crate(cases, start) {
+        let _ = writeln!(
+            table,
+            "| `{name}` | {:.1} s | {:.1} s | {:.1} s |",
+            seconds[0], seconds[1], seconds[2]
+        );
+    }
+    table
+}
+
 /// The `count` slowest tests of a tier, slowest first. Tests that took the
 /// same time are in name order, so the list is the same for the same report.
 fn slowest(cases: &[TestCase], tier: Tier, count: usize) -> Vec<&TestCase> {
@@ -398,8 +492,8 @@ fn slowest_markdown(cases: &[TestCase], count: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Os, Tier, Totals, Verdict, markdown, slowest_markdown, slowest_tests, start_cost,
-        summarise, total, verdict,
+        Os, Tier, Totals, Verdict, by_crate, crate_of, crates_markdown, crates_text, markdown,
+        slowest_markdown, slowest_tests, start_cost, summarise, total, verdict,
     };
     use crate::junit::tests::case;
     use crate::junit::{self, TestCase};
@@ -511,6 +605,72 @@ mod tests {
 | 2, integration | 6.250 | `cortex-llm::it` `anthropic::replay::every_fixture_cut_in_two` |
 | 3, system | 10.000 | `cortex-policy::it` `differential::sys_bash_agrees` |
 "
+        );
+    }
+
+    #[test]
+    fn a_tier_is_split_by_crate_above_the_start() {
+        assert_eq!(crate_of("cortex-agent::it"), "cortex-agent");
+        assert_eq!(crate_of("cortex-cli::bin/cortex"), "cortex-cli");
+        assert_eq!(crate_of("cortex-base"), "cortex-base");
+
+        let cases = junit::parse(REPORT);
+        // The start cost of the fixed report is 0.2 s.
+        let crates = by_crate(&cases, 0.2);
+        let rounded: Vec<(&str, [i64; 3])> = crates
+            .iter()
+            .map(|(name, seconds)| {
+                (
+                    name.as_str(),
+                    seconds.map(|each| (each * 100.0).round() as i64),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rounded,
+            [
+                ("cortex-policy", [280, 0, 980]),
+                ("cortex-llm", [0, 605, 0]),
+                ("cortex-agent", [0, 315, 0]),
+                ("cortex-tools", [0, 0, 260]),
+                ("cortex-base", [220, 0, 0]),
+                ("xtask", [0, 0, 180]),
+            ]
+        );
+        // Every second above the start is in one crate's row, in its tier.
+        for tier in Tier::ALL {
+            let split: f64 = crates
+                .iter()
+                .map(|(_, seconds)| seconds[tier.index()])
+                .sum();
+            assert!(
+                (split - total(&cases, tier, 0.2).above_start).abs() < 1e-9,
+                "{tier:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_crates_past_the_first_few_are_one_line() {
+        let cases = junit::parse(REPORT);
+        let text = crates_text(&cases, 2);
+        assert!(text.contains("cortex-policy"), "{text}");
+        assert!(text.contains("cortex-llm"), "{text}");
+        assert!(!text.contains("cortex-agent"), "{text}");
+        // agent 3.15, tools 2.6, base 2.2, xtask 1.8.
+        assert!(text.contains("4 more crates"), "{text}");
+        let rest = text
+            .lines()
+            .find(|line| line.contains("more crates"))
+            .unwrap();
+        assert!(
+            rest.trim_start().starts_with("4 more crates") && rest.ends_with("4.4"),
+            "{text}"
+        );
+        let markdown = crates_markdown(&cases);
+        assert!(
+            markdown.contains("| `xtask` | 0.0 s | 0.0 s | 1.8 s |"),
+            "{markdown}"
         );
     }
 

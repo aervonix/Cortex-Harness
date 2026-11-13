@@ -8,10 +8,11 @@ use std::process::{Command, Stdio};
 use crate::Result;
 use crate::mutate;
 use crate::rules;
+use crate::runs::{self, Source};
 use crate::schema;
 use crate::steps::{self, Step};
-use crate::tiers;
 use crate::workspace;
+use crate::{compare, tiers};
 
 /// The tier 0 steps, in the order they run: cheapest first.
 const CHECK_STEPS: [&str; 6] = ["fmt", "rules", "breaks", "generated", "clippy", "deny"];
@@ -224,7 +225,9 @@ pub(crate) fn ci(arguments: &[String]) -> Result<()> {
 
 const CI_USAGE: &str = "usage: cargo xtask ci [lint|test]
        cargo xtask ci --tiers [-p CRATE]... [--top N] [-- NEXTEST ARGUMENT...]
-       cargo xtask ci --tiers --from JUNIT.XML [--os linux|windows] [--top N]";
+       cargo xtask ci --tiers --from JUNIT.XML [--os linux|windows] [--top N]
+       cargo xtask ci --tiers --compare NEW [--against OLD] [--os linux|windows] [--top N]
+                              NEW and OLD: a JUnit report, a run's id, or `main` (OLD's default)";
 
 /// How many of each tier's slowest tests `ci --tiers` lists when it is not
 /// told.
@@ -241,6 +244,10 @@ struct TiersRequest {
     from: Option<PathBuf>,
     /// The OS the report is from, which decides tier 3's budget.
     os: tiers::Os,
+    /// A report to compare with `against`, in place of running anything.
+    compare: Option<Source>,
+    /// What `compare` is compared with: the main branch when not given.
+    against: Option<Source>,
     /// What follows `--`: more arguments for nextest, a filter for example.
     rest: Vec<String>,
 }
@@ -252,6 +259,8 @@ impl TiersRequest {
             top: TIERS_TOP,
             from: None,
             os: tiers::Os::here(),
+            compare: None,
+            against: None,
             rest: Vec::new(),
         };
         let mut os_given = false;
@@ -274,6 +283,12 @@ impl TiersRequest {
                         .map_err(|_| format!("`--top {text}` is not a number"))?;
                 }
                 "--from" => request.from = Some(PathBuf::from(value("a JUnit report")?)),
+                "--compare" => {
+                    request.compare = Some(Source::parse(value("a report, a run or `main`")?));
+                }
+                "--against" => {
+                    request.against = Some(Source::parse(value("a report, a run or `main`")?));
+                }
                 "--os" => {
                     os_given = true;
                     request.os = match value("`linux` or `windows`")?.as_str() {
@@ -287,14 +302,24 @@ impl TiersRequest {
                 other => return Err(format!("unknown argument `{other}`\n{CI_USAGE}")),
             }
         }
-        if request.from.is_some() && !(request.packages.is_empty() && request.rest.is_empty()) {
+        if request.against.is_some() && request.compare.is_none() {
+            return Err("`--against` says what `--compare` is compared with".to_owned());
+        }
+        if request.compare.is_some() && request.from.is_some() {
+            return Err("`--compare` and `--from` both read a report: give one".to_owned());
+        }
+        if request.compare.is_some() {
+            request.against.get_or_insert(Source::Main);
+        }
+        let reads = request.from.is_some() || request.compare.is_some();
+        if reads && !(request.packages.is_empty() && request.rest.is_empty()) {
             return Err(
-                "`--from` reads a report and runs nothing, so `-p` and arguments for nextest \
-                 have no meaning with it"
+                "`--from` and `--compare` read reports and run nothing, so `-p` and arguments \
+                 for nextest have no meaning with them"
                     .to_owned(),
             );
         }
-        if os_given && request.from.is_none() {
+        if os_given && !reads {
             return Err(
                 "`--os` says where a report given with `--from` was made. A run made here is \
                  measured against this machine's budgets."
@@ -319,6 +344,14 @@ fn ci_tiers(arguments: &[String]) -> Result<()> {
     let (top, os) = (request.top, request.os);
     if let Some(report) = request.from {
         return tiers::check_report(&report, os, top);
+    }
+    if let (Some(new), Some(old)) = (&request.compare, &request.against) {
+        let (label, cases) = runs::report(new, os)?;
+        let new = compare::Side { label, cases };
+        let (label, cases) = runs::report(old, os)?;
+        let old = compare::Side { label, cases };
+        print!("{}", compare::compare(&new, &old, os, top));
+        return Ok(());
     }
     require_nextest()?;
     let mut run = ci_run(&request.packages);
@@ -355,6 +388,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{CHECK_STEPS, TiersRequest, check, check_step, ci, ci_run, selects_packages};
+    use crate::runs::Source;
     use crate::tiers::Os;
 
     fn strings(arguments: &[&str]) -> Vec<String> {
@@ -445,6 +479,8 @@ mod tests {
                 top: 10,
                 from: None,
                 os: Os::here(),
+                compare: None,
+                against: None,
                 rest: vec![],
             }
         );
@@ -464,6 +500,8 @@ mod tests {
                 top: 3,
                 from: None,
                 os: Os::here(),
+                compare: None,
+                against: None,
                 // After `--` nothing is this command's, whatever it looks like.
                 rest: strings(&["replay::", "--top"]),
             }
@@ -475,9 +513,24 @@ mod tests {
                 top: 10,
                 from: Some(PathBuf::from("junit.xml")),
                 os: Os::Windows,
+                compare: None,
+                against: None,
                 rest: vec![],
             }
         );
+    }
+
+    #[test]
+    fn a_comparison_is_against_the_main_branch_unless_told() {
+        let request =
+            TiersRequest::parse(&strings(&["--compare", "123", "--os", "windows"])).unwrap();
+        assert_eq!(request.compare, Some(Source::Run(123)));
+        assert_eq!(request.against, Some(Source::Main));
+        assert_eq!(request.os, Os::Windows);
+        let request =
+            TiersRequest::parse(&strings(&["--compare", "a.xml", "--against", "b.xml"])).unwrap();
+        assert_eq!(request.compare, Some(Source::File("a.xml".into())));
+        assert_eq!(request.against, Some(Source::File("b.xml".into())));
     }
 
     #[test]
@@ -487,8 +540,15 @@ mod tests {
             (&["--top", "many"], "is not a number"),
             (&["--os", "macos", "--from", "x"], "`linux` or `windows`"),
             (&["--os", "windows"], "`--os` says where a report"),
-            (&["--from", "x", "-p", "cortex-llm"], "runs nothing"),
-            (&["--from", "x", "--", "replay::"], "runs nothing"),
+            (&["--from", "x", "-p", "cortex-llm"], "run nothing"),
+            (&["--from", "x", "--", "replay::"], "run nothing"),
+            (&["--compare", "x", "-p", "cortex-llm"], "run nothing"),
+            (
+                &["--against", "main"],
+                "says what `--compare` is compared with",
+            ),
+            (&["--compare", "1", "--from", "x"], "give one"),
+            (&["--compare"], "needs a report, a run or `main`"),
             (&["--fast"], "unknown argument `--fast`"),
         ] {
             let error = TiersRequest::parse(&strings(arguments)).unwrap_err();
