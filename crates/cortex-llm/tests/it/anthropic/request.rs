@@ -501,6 +501,13 @@ fn a_model_switch_that_drops_reasoning() {
         content_types(&self::body(&request), 1),
         ["text", "tool_use"]
     );
+    // So is another protocol under the same provider's name, as a provider
+    // entry that was pointed at another kind of server would leave behind.
+    let request = after_switch(SONNET, "openai-chat", anthropic::PROVIDER, SONNET);
+    assert_eq!(
+        content_types(&self::body(&request), 1),
+        ["text", "tool_use"]
+    );
     // And so is a message with no origin at all.
     let mut request = after_switch(SONNET, anthropic::NAME, anthropic::PROVIDER, SONNET);
     request.messages[1].origin = None;
@@ -783,6 +790,14 @@ fn a_round_longer_than_the_lookback_gets_one_more_marker() {
             .contains("cache_control")
     );
 
+    // One position more is one too many: the same round with a closing
+    // remark after its last call is twenty-one positions.
+    let mut just_beyond = long_round(9);
+    just_beyond.messages[3]
+        .parts
+        .push(Part::text("That is all nine."));
+    assert_eq!(markers(&body(&just_beyond)), [(2, 0)]);
+
     // One pair more, and the entry the request before wrote would be
     // missed. It is marked, where that request ended, and nowhere else.
     let beyond = long_round(10);
@@ -1021,13 +1036,45 @@ fn text_from_anyone_stays_inside_its_string() {
     assert_eq!(body["tools"][0]["description"], hostile);
     assert_eq!(body["messages"][0]["content"][0]["text"], hostile);
     assert_eq!(body["messages"][1]["content"][0]["text"], hostile);
-    assert_eq!(body["messages"][1]["content"][1]["id"], hostile);
     assert_eq!(body["messages"][1]["content"][1]["input"]["city"], hostile);
-    assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], hostile);
+    // An id is not text: it is written in the characters the provider takes
+    // for one, the same way in the call and in its result.
+    let id = body["messages"][1]["content"][1]["id"].as_str().unwrap();
+    assert!(!id.is_empty());
+    assert!(
+        id.bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'),
+        "{id}"
+    );
+    assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], id);
     assert_eq!(
         body["messages"][2]["content"][0]["content"][0]["text"],
         hostile
     );
+}
+
+#[test]
+fn a_call_id_from_another_provider_is_written_as_one_this_provider_takes() {
+    let mut request = after_switch(SONNET, "openai-chat", "other", "m");
+    for (theirs, ours) in [
+        ("call_abc-123", "call_abc-123"),
+        ("functions.get_weather:0", "functions_get_weather_0"),
+        ("chatcmpl tool/7", "chatcmpl_tool_7"),
+        ("é", "_"),
+        ("", "_"),
+    ] {
+        let Part::ToolCall(call) = &mut request.messages[1].parts[3] else {
+            panic!()
+        };
+        call.id = CallId::new(theirs);
+        request.messages[2] = result(theirs, "Oslo: 18 degrees Celsius.");
+        let body = body(&request);
+        assert_eq!(body["messages"][1]["content"][1]["id"], ours, "{theirs}");
+        assert_eq!(
+            body["messages"][2]["content"][0]["tool_use_id"], ours,
+            "{theirs}"
+        );
+    }
 }
 
 #[test]

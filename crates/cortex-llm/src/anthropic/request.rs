@@ -491,7 +491,7 @@ fn wire_message(
                         let mut json = String::new();
                         let mut object = Object::open(&mut json);
                         object.str("type", "tool_result");
-                        object.str("tool_use_id", result.call_id.as_str());
+                        object.str("tool_use_id", &wire_id(result.call_id.as_str()));
                         let mut content = Vec::with_capacity(result.content.len());
                         for part in &result.content {
                             match part {
@@ -546,6 +546,29 @@ fn misplaced(part: &Part, place: &str) -> BuildError {
         "a part of kind `{}` cannot be in {place}",
         part.tag()
     ))
+}
+
+/// A tool call's id as this provider takes one: letters, digits, `_` and
+/// `-`. Its own ids are that already. An id another provider made can hold
+/// other characters (a dot, a colon), and the provider refuses those, so
+/// each is written as `_`. A call and its result go through here alike, so
+/// they still name each other.
+fn wire_id(id: &str) -> std::borrow::Cow<'_, str> {
+    let fits = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-';
+    if !id.is_empty() && id.bytes().all(fits) {
+        return std::borrow::Cow::Borrowed(id);
+    }
+    let mut written: String = id
+        .chars()
+        .map(|character| match u8::try_from(character) {
+            Ok(byte) if fits(byte) => character,
+            _ => '_',
+        })
+        .collect();
+    if written.is_empty() {
+        written.push('_');
+    }
+    std::borrow::Cow::Owned(written)
 }
 
 /// A text block. The provider refuses empty text, so none is written for it.
@@ -628,7 +651,7 @@ fn assistant_block(part: &Part, replay: Replay, blocks: &mut Vec<Block>) -> Resu
                 let mut json = String::new();
                 let mut object = Object::open(&mut json);
                 object.str("type", "tool_use");
-                object.str("id", call.id.as_str());
+                object.str("id", &wire_id(call.id.as_str()));
                 object.str("name", &call.name);
                 if call.arguments.is_object() {
                     object.value("input", &call.arguments);

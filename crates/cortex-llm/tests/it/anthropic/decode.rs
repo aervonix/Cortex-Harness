@@ -168,6 +168,7 @@ every_cut! {
     tool_calls => "tool-calls",
     tool_call_cut => "tool-call-cut",
     server_tool => "server-tool",
+    compaction => "compaction",
     unknown_event => "unknown-event",
     error_after_200 => "error-after-200",
     error_after_200_fast => "error-after-200-fast",
@@ -532,6 +533,29 @@ fn a_server_side_tool_is_kept_as_provider_blocks() {
 }
 
 #[test]
+fn a_block_of_an_unknown_kind_keeps_what_the_stream_adds_to_it() {
+    // A compaction block: it starts empty, and all of its content arrives
+    // in one addition of a kind this build has no name for.
+    let events = events_of("compaction");
+    assert_well_formed(&events);
+    assert_eq!(kinds(&events), [BlockKind::ProviderBlock, BlockKind::Text]);
+    let blocks = raw_blocks(&events);
+    assert_eq!(
+        blocks[0],
+        json!({"type": "compaction", "content": "The user asked for the weather in Oslo and in Cairo. Both were looked up: Oslo 18 degrees, Cairo 31."})
+    );
+    // Nothing of it is text for the loop to show.
+    let shown: String = events
+        .iter()
+        .filter_map(|event| match event {
+            ModelEvent::TextDelta { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown, "Cairo is warmer, by 13 degrees.");
+}
+
+#[test]
 fn what_is_not_known_is_skipped_and_nothing_else_is() {
     let events = events_of("unknown-event");
     assert_well_formed(&events);
@@ -846,6 +870,16 @@ fn a_stream_that_breaks_the_dialect_is_an_error_and_not_a_guess() {
             format!("{start}{text_start}{text_start}"),
         ),
         ("an end with no stop reason", format!("{start}{stop}")),
+        (
+            "a block that starts again under an index that was used",
+            format!(
+                "{start}{text_start}{}{text_start}",
+                event(
+                    "content_block_stop",
+                    json!({"type":"content_block_stop","index":0})
+                )
+            ),
+        ),
         (
             "a known event that is not JSON",
             format!(

@@ -31,7 +31,9 @@ All crates use the `cortex-` prefix, live under `crates/`, and set `publish = fa
 | `cortex-tui` | The interactive UI: transcript, editor, dialogs, status line, slash commands, themes. | protocol, base, term | pulldown-cmark; a syntax highlighter behind a feature |
 | `cortex-cli` | The `cortex` binary, also installed under the alias `cx`: argument parsing, mode selection, headless printer. Kept tiny because it relinks on every change. | core, rpc, tui, config | lexopt |
 | `cortex-testkit` | Test support: scripted provider, scripted transport, scripted SSE server, a test protocol, the fake timer, the property-test helper, virtual terminal, PTY driver, temp workspaces, fake clock. Dev-dependency only. | protocol, base, llm, term | vt100, portable-pty (with the terminal steps); serde_json |
-| `xtask` | Developer commands: schema generation, perf runs, fixture recording, release packaging. Not shipped. | as needed | none shipped |
+| `xtask` | Developer commands: schema generation, perf runs, fixture recording, release packaging. Not shipped. Fixture recording and the live smoke test are ignored tests of `cortex-llm` that `xtask` starts, so that `xtask` does not build the HTTP stack. | as needed | none shipped |
+
+One package is in the repository and outside the workspace: `fuzz/`, the fuzz targets for the stream decoders, with a lockfile of its own. It depends on `cortex-llm` and `cortex-protocol`, needs a nightly compiler, and is built only by the nightly workflow's `fuzz` job and by `cargo xtask fuzz` ([../testing-and-ci.md](../testing-and-ci.md), "Not blocking").
 
 ## Dependency direction
 

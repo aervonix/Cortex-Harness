@@ -19,7 +19,9 @@ use cortex_llm::{
     ModelRequest, Protocol, ProviderClient, ProviderError, RetryPolicy,
 };
 use cortex_protocol::message::{ImagePart, ToolResultPart};
-use cortex_protocol::speed::{CooldownState, SpeedFallbackBy, SpeedFallbackReason};
+use cortex_protocol::speed::{
+    CooldownState, SpeedFallbackBy, SpeedFallbackReason, SpeedUnavailable,
+};
 use cortex_protocol::usage::{LimitMeasure, LimitWindow};
 use cortex_protocol::{ArtifactId, CallId, Message, Part, Role, Speed};
 use cortex_testkit::fixture::Fixture;
@@ -77,6 +79,16 @@ fn classify_fixture(name: &str, request: &ModelRequest) -> ProviderError {
         },
         request,
     )
+}
+
+/// The request at fast speed, to a model whose fast tier is described
+/// differently.
+fn altered(change: impl FnOnce(&mut cortex_protocol::model::SpeedOffer)) -> ModelRequest {
+    let mut request = scenario::fast();
+    let mut entry = cortex_llm::ModelEntry::clone(&request.model);
+    change(&mut entry.info.speeds[0]);
+    request.model = Arc::new(entry);
+    request
 }
 
 /// What the retry layer does about an error on a request's first attempt.
@@ -615,6 +627,24 @@ fn the_fast_tiers_own_limit_and_capacity() {
     let error = classify(429, &[], &never[0].1, &fast);
     assert_eq!(error.kind, ErrorKind::Provider);
     assert_eq!(decision(&error, &Speed::Fast), Decision::GiveUp);
+
+    // A tier with no rate limit of its own cannot be what a rate limit
+    // belongs to; its capacity still can. And a tier the provider serves at
+    // standard when it is busy turns nothing away at all.
+    let shared_limit = altered(|offer| offer.separate_limit = false);
+    assert_eq!(classify(429, &[], &rate_limit, &shared_limit).tier, None);
+    let used_up = [("anthropic-fast-output-tokens-remaining", "0")];
+    assert_eq!(
+        classify(429, &used_up, &rate_limit, &shared_limit).tier,
+        None
+    );
+    assert_eq!(
+        classify(529, &[], &overloaded, &shared_limit).tier,
+        Some(Speed::Fast)
+    );
+    let downgrades = altered(|offer| offer.when_unavailable = SpeedUnavailable::Downgrade);
+    assert_eq!(classify(429, &[], &rate_limit, &downgrades).tier, None);
+    assert_eq!(classify(529, &[], &overloaded, &downgrades).tier, None);
 
     // An overload at fast speed is the tier's, and at standard speed it is
     // nobody's tier. The headers are read for it as for a rate limit.
@@ -1244,6 +1274,22 @@ fn a_stored_image_that_cannot_be_loaded_fails_the_request_before_it_is_sent() {
     assert_eq!(final_error(&events).kind, ErrorKind::Internal);
     assert!(final_error(&events).message.contains("was not loaded"));
     assert!(client.transport.requests().is_empty());
+
+    // A model that takes no images is not sent one, so none is loaded for
+    // it, and one that is gone does not fail its request.
+    let images = Arc::new(Images::default());
+    let client = Client::with([reply("text")], Some(images.clone()));
+    let mut request = with_images("a_gone", "a_png");
+    let mut entry = cortex_llm::ModelEntry::clone(&request.model);
+    entry
+        .info
+        .input
+        .retain(|modality| *modality != cortex_protocol::model::Modality::Image);
+    request.model = Arc::new(entry);
+    assert_eq!(kinds(&client.run(request)), ["start", "end"]);
+    assert!(images.asked.lock().unwrap().is_empty());
+    let sent = String::from_utf8(client.transport.requests()[0].body.clone()).unwrap();
+    assert!(sent.contains("An image was here") && !sent.contains("base64"));
 
     // A request with no stored image never asks the store for anything.
     let images = Arc::new(Images::default());

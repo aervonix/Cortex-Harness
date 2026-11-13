@@ -58,7 +58,6 @@ pub fn keeps_header(name: &str) -> bool {
     matches!(name.as_str(), "content-type" | "retry-after" | "request-id")
         || name.starts_with("anthropic-ratelimit-")
         || name.starts_with("anthropic-fast-")
-        || name.starts_with("anthropic-priority-")
 }
 
 /// The prefixes of the identifiers a provider makes up, each followed by an
@@ -314,43 +313,49 @@ impl Scrubber {
     }
 
     /// Replaces the string value of each opaque member: `"signature": "…"`.
+    ///
+    /// Every value that is not empty is replaced, whatever it looks like:
+    /// what is not recognised as a payload is taken for one. The member is
+    /// found as a key of JSON, and also as a key of JSON that is itself
+    /// inside a JSON string (`\"signature\": \"…\"`), which is how a
+    /// block appears inside a tool result or an event that quotes one.
     fn replace_opaque(&mut self, text: &str) -> String {
         let mut out = String::with_capacity(text.len());
         let mut rest = text;
         'scan: while !rest.is_empty() {
             for member in OPAQUE_MEMBERS {
-                // The member as a key, in a body or inside an event's data.
-                let Some(after_key) = rest
-                    .strip_prefix('"')
-                    .and_then(|rest| rest.strip_prefix(member))
-                    .and_then(|rest| rest.strip_prefix('"'))
-                else {
-                    continue;
-                };
-                let after_colon = after_key.trim_start();
-                let Some(after_colon) = after_colon.strip_prefix(':') else {
-                    continue;
-                };
-                let value = after_colon.trim_start();
-                let Some(value) = value.strip_prefix('"') else {
-                    continue;
-                };
-                // A payload is base64: it has no quote and no escape.
-                let Some(end) = value.find('"') else { continue };
-                let payload = &value[..end];
-                if payload.len() < 16 || payload.contains('\\') {
-                    continue;
+                for quote in ["\\\"", "\""] {
+                    let Some(after_key) = rest
+                        .strip_prefix(quote)
+                        .and_then(|rest| rest.strip_prefix(member))
+                        .and_then(|rest| rest.strip_prefix(quote))
+                    else {
+                        continue;
+                    };
+                    let Some(after_colon) = after_key.trim_start().strip_prefix(':') else {
+                        continue;
+                    };
+                    let Some(value) = after_colon.trim_start().strip_prefix(quote) else {
+                        continue;
+                    };
+                    let Some(end) = string_end(value, quote) else {
+                        continue;
+                    };
+                    let payload = &value[..end];
+                    if payload.is_empty() {
+                        continue;
+                    }
+                    let next = self.opaque.len() + 1;
+                    let stand_in = self
+                        .opaque
+                        .entry(payload.to_owned())
+                        .or_insert_with(|| format!("fixture-{member}-{next:02}"));
+                    let consumed = rest.len() - value.len();
+                    out.push_str(&rest[..consumed]);
+                    out.push_str(stand_in);
+                    rest = &value[end..];
+                    continue 'scan;
                 }
-                let next = self.opaque.len() + 1;
-                let stand_in = self
-                    .opaque
-                    .entry(payload.to_owned())
-                    .or_insert_with(|| format!("fixture-{member}-{next:02}"));
-                let consumed = rest.len() - value.len();
-                out.push_str(&rest[..consumed]);
-                out.push_str(stand_in);
-                rest = &value[end..];
-                continue 'scan;
             }
             let width = rest.chars().next().map_or(1, char::len_utf8);
             out.push_str(&rest[..width]);
@@ -385,6 +390,26 @@ impl Scrubber {
         }
         Ok(fixture)
     }
+}
+
+/// Where a JSON string's content ends, given the text after its opening
+/// quote: the offset of the quote that closes it. `quote` is `"` for a
+/// string of the document itself, where a backslash escapes what follows
+/// it, and `\"` for a string inside a string.
+fn string_end(text: &str, quote: &str) -> Option<usize> {
+    if quote != "\"" {
+        return text.find(quote);
+    }
+    let mut escaped = false;
+    for (at, byte) in text.bytes().enumerate() {
+        match byte {
+            _ if escaped => escaped = false,
+            b'\\' => escaped = true,
+            b'"' => return Some(at),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn is_id_byte(byte: u8) -> bool {
@@ -567,11 +592,13 @@ mod tests {
             "anthropic-ratelimit-requests-remaining",
             "anthropic-ratelimit-input-tokens-reset",
             "anthropic-fast-output-tokens-limit",
-            "anthropic-priority-input-tokens-limit",
         ] {
             assert!(keeps_header(kept), "{kept}");
         }
         for dropped in [
+            // Capacity an account has reserved: nothing reads it, and it
+            // says something about the account.
+            "anthropic-priority-input-tokens-limit",
             "anthropic-organization-id",
             "anthropic-workspace-id",
             "x-api-key",
@@ -663,12 +690,43 @@ mod tests {
             scrubber.text(other),
             r#"{"type":"redacted_thinking","data":"fixture-data-02"}"#
         );
-        // An empty or short value is not a payload: a block as it starts.
+        // An empty value is a block as it starts, and stays.
         let start = r#"{"type":"thinking","thinking":"","signature":""}"#;
         assert_eq!(scrubber.text(start), start);
+        // Anything else is replaced, whatever it looks like: a short value,
+        // one with escapes in it, one that holds an escaped quote.
+        for (value, written) in [
+            ("abc", "abc"),
+            ("EqQB\\/CgIY+AhIM", "EqQB\\/CgIY+AhIM"),
+            ("a\\\"b\\\\", "a\\\"b\\\\"),
+        ] {
+            let block = format!(r#"{{"type":"thinking","signature":"{written}","after":1}}"#);
+            let scrubbed = scrubber.text(&block);
+            assert!(!scrubbed.contains(value), "{scrubbed}");
+            assert!(scrubbed.starts_with(r#"{"type":"thinking","signature":"fixture-signature-"#));
+            assert!(scrubbed.ends_with(r#"","after":1}"#), "{scrubbed}");
+            assert!(
+                serde_json::from_str::<Value>(&scrubbed).is_ok(),
+                "{scrubbed}"
+            );
+        }
+        // A block quoted inside a string, as a tool result that holds JSON
+        // has it.
+        let quoted = r#"{"type":"text","text":"{\"type\":\"thinking\",\"signature\": \"EqQBCgIYAhIM1gbcDa9GJwZA2b3h\"}"}"#;
+        let scrubbed = scrubber.text(quoted);
+        assert!(
+            !scrubbed.contains("EqQBCgIYAhIM1gbcDa9GJwZA2b3h"),
+            "{scrubbed}"
+        );
+        assert!(
+            serde_json::from_str::<Value>(&scrubbed).is_ok(),
+            "{scrubbed}"
+        );
         // An image's data is a payload too, and is not kept.
         let image = r#"{"type":"base64","media_type":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"}"#;
-        assert!(scrubber.text(image).contains("fixture-data-03"));
+        let scrubbed = scrubber.text(image);
+        assert!(scrubbed.contains(r#""data":"fixture-data-"#), "{scrubbed}");
+        assert!(!scrubbed.contains("iVBORw0KGgo"));
     }
 
     #[test]
