@@ -17,10 +17,14 @@ Everything goes through the `xtask` crate: `cargo xtask <command>`, or `./x <com
 
 | Command | What it does |
 |---|---|
-| `cargo xtask check` | The static checks (tier 0): `fmt`, `rules`, `generated`, `clippy`, `deny`. `cargo xtask check clippy` runs one of them. Every step runs even if an earlier one fails, and the timings are printed at the end. |
-| `cargo xtask test` | All tests. Arguments go to `cargo nextest run`: `cargo xtask test --profile fast` runs tiers 1 and 2 only, `cargo xtask test -p cortex-cli` one crate. |
+| `cargo xtask check` | The static checks (tier 0): `fmt`, `rules`, `breaks`, `generated`, `clippy`, `deny`. `cargo xtask check clippy` runs one of them. Every step runs even if an earlier one fails, and the timings are printed at the end. |
+| `cargo xtask test` | All tests. Arguments go to `cargo nextest run`: `cargo xtask test --profile fast` runs tiers 1 and 2 only, `cargo xtask test -p cortex-cli` one crate, and builds only that crate's tests. |
 | `cargo xtask ci` | Exactly what the blocking CI jobs run: the static checks, then tiers 1 to 3. Run it before opening a pull request. It builds with cargo's `ci` profile, as CI does, so its first run builds the dependencies once more, unoptimised, into `target/ci`. |
+| `cargo xtask ci --tiers` | Builds and runs the tests as CI does, and prints each tier's time against its budget and its slowest tests. `-p <crate>` for some crates, `--top N` for more tests, `--from junit.xml --os windows` to read the report a CI run kept. |
+| `cargo xtask stress -p <crate>` | Runs the crate's tests many times over (`--count N`, 100 when not given), each time under the next seed, and reports each test that failed on some, with the seed that brings the failure back. |
+| `cargo xtask mutate` | Breaks the code on purpose, one break of `mutations/*.breaks` at a time, on a copy of the tree, and reports which tests failed. It stops after five minutes and carries on from there the next time. `--check` only checks that every break still applies, which `check` also does. |
 | `cargo xtask rules` | The repo-rule checks alone (see below). |
+| `cargo xtask links` | The part of `rules` that is about the docs, by itself: every link inside the repository leads to a file and a heading that are there, and `docs/steps/` and `docs/outstanding/` hold what they should. It asks cargo nothing, so it answers at once. |
 | `cargo xtask fmt` | Formats the workspace. |
 | `cargo xtask schema` | Regenerates the protocol's JSON Schema and TypeScript declarations in `docs/protocol/` from the types in `cortex-protocol`. Run it after any change to those types and commit the result. `--check` only compares. |
 | `cargo xtask gen` | Regenerates every generated file: what `schema` writes, and the configuration schema and reference in `docs/configuration/`, from the settings in `cortex-config`. Run it after adding or changing a configuration key. |
@@ -37,6 +41,7 @@ crates/cortex-cli  the `cortex` binary; `cx` is a link to it
 catalog/           the model catalog, embedded in the binary by cortex-llm's build script
 xtask/             developer commands; not shipped
 fuzz/              fuzz targets for the stream decoders; a package of its own, outside the workspace
+mutations/         the break lists `cargo xtask mutate` runs, one file per step
 docs/              the specification
 docs/protocol/     generated: the protocol's JSON Schema and TypeScript declarations
 docs/configuration/  generated: the configuration file's JSON Schema and reference
@@ -46,6 +51,7 @@ AGENTS.md          the rules for agents; CLAUDE.md is one line that includes it
 .github/workflows/ci.yml             the blocking checks
 .github/workflows/main.yml           after each merge: release build, size, crate count
 .github/workflows/nightly.yml        nightly: advisories, unused dependencies, every release target
+.github/workflows/windows-try.yml    by hand: one crate's tests on Windows, for a branch with no pull request
 ```
 
 A crate may depend only on the workspace crates that [docs/architecture/01-workspace.md](docs/architecture/01-workspace.md) lists for it. `cargo xtask rules` checks this from `cargo metadata`. If the design has to change, change that page and the table in `xtask/src/rules/crate_graph.rs` in the same pull request.
@@ -66,6 +72,8 @@ The tiers are defined in [docs/testing-and-ci.md](docs/testing-and-ci.md). Where
 - **No doc tests.** An example that must compile is an ordinary test.
 - **No real waiting.** Timeouts, retries, backoff and cooldowns are tested with paused or simulated time: the async runtime's test clock, or the fake clock. A test never sleeps. A process test waits on a condition with a deadline, never on a fixed delay.
 - **Property tests** are written with the small helper described in [docs/testing-and-ci.md](docs/testing-and-ci.md) ("Property tests"), not with a property-testing crate. Every run is the same, a failure prints the seed of the failing case, `CORTEX_PROPERTY_SEED=<seed>` runs that case alone, and `CORTEX_PROPERTY_SCALE=<n>` multiplies the number of cases.
+- **A test of the agent loop sees a seeded order of events.** The rig puts the blocking pool's work on the test's thread, at moments a seed decides: 0 in an ordinary run, the next one for each repeat of `cargo xtask stress`. A test must pass under every seed, so it fixes an order it needs with a gate. A failed test prints its seed, and `CORTEX_TEST_SEED=<seed>` runs it again in the same order.
+- **A test's directory** is `cortex_testkit::scratch!("name")`: new each time, removed when the test passes, with helpers for files and for a git repository that reads none of the machine's git configuration.
 - **No retries**, with one exception: a test inside a module named `timing_sensitive` gets one retry, and nextest reports it as flaky when the retry was needed.
 - **A test that starts a process** is a system test and is named `sys_…`, wherever it lives. That name puts it in nextest's `process` group (two at a time), gives it tier 3's time limit, and keeps it out of the `fast` profile.
 - **A process test's children are the test binary itself,** run again (`cortex_testkit::children`): a child that stays until it is killed, a grandchild, a child that ignores the polite interrupt. Each reports to the test over a loopback socket and keeps the connection until it dies, so the test sees it start and sees it go. No helper program is built, and no test uses `sleep`.
@@ -103,8 +111,13 @@ Clippy treats `#[test]` functions and `#[cfg(test)]` modules as tests. Helper fu
 - **A file contains an absolute home-directory path.** Write `~` or a path relative to the repository. Every file is scanned, binary files included.
 - **A crate depends on a workspace crate it must not**, a heavy third-party crate is used outside its owner crate, or a manifest breaks the conventions above.
 - **`docs/dependencies.md` and the manifests disagree.**
+- **Anything but a dev-dependency turns on a crate's `test-hooks` feature:** another kind of dependency, a feature of the crate itself (`default` above all), or a feature of another crate that passes it on. The feature holds switches for tests, and must not be in a build of the product.
+- **A link inside the repository leads nowhere:** a relative link in a Markdown file to a file that is not there, a `#fragment` that is no heading of the page it names, or a `docs/….md` path in prose, configuration or a code comment that names no file. A heading's name is its text in lower case, without punctuation, with a `-` for each space.
+- **A step's record or an open item is not where the others expect it:** anything in a folder of `docs/steps/` but `answered.md` and `ci.md`, a folder name that is not a step's (`07`, `13a`) or a hyphenated name, a first line that is not the heading its kind has, or a file of `docs/outstanding/` that is not the table's header and one row.
 - **`cortex-protocol` depends on anything but serde and serde_json**, other than schemars behind its `schema` feature.
 - **A workflow uses an action that is not pinned by commit hash**; a workflow that runs on pull requests uses a secret or a token that can write; or any job other than the `report` job of a non-blocking workflow has a write permission, or that job has one other than `issues: write`.
+
+`cargo xtask check` fails in its `breaks` step when a break in `mutations/` no longer finds the code it changes: the message names the list and the line. Change the break to the code as it is now, or delete it if the rule it breaks is gone ([docs/testing-and-ci.md](docs/testing-and-ci.md), "Breaking the code on purpose").
 
 `cargo xtask check` also fails, in its `generated` step, when the files in `docs/protocol/` are not what the protocol types generate. Run `cargo xtask schema`. The files in `docs/configuration/` are checked the same way by a test in `cortex-config`, on both OSes. Run `cargo xtask gen`.
 
@@ -139,4 +152,5 @@ These hold for every change. They are the "Rules for every step" of the [build p
 
 - Keep a pull request to one subject, and say in its description what was built, what was measured, and what is left open.
 - Run `cargo xtask ci` first.
+- For a change to the loop, or to code that starts processes or crosses threads, run `cargo xtask stress` for the crate first.
 - Commit messages say what changed and why, in the imperative: "Add the session index", not "Added" or "Adds".

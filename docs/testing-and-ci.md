@@ -45,6 +45,7 @@ Tiers 1 to 3 are separated by where the test lives and by nextest filters, not b
 
 - The limits on one test are nextest's `slow-timeout` and `terminate-after`, set per tier in `.config/nextest.toml`. They hold in every profile, at a desk as in CI, except `properties`, the nightly run with fifty times the property cases, whose limits are scaled for it ("Property tests", below).
 - The tier totals are the sum of the tests' own times, not the wall time of the run. `cargo xtask ci test` reads them from nextest's JUnit report after the run, prints them with the share of the budget used, and writes them to the CI job's summary page.
+- **The report lists each tier's slowest tests,** five of them in CI, with the share of the tier's time they are. A CI log shows no time for a test under two seconds, and a tier's total is made of hundreds of those: this is where to look when a tier grows. "A CI run's test times", below, has how to get the rest.
 - **A tier over its budget is a warning; a tier over one and a half times its budget is a failure.** Both are annotations on the pull request. The gap is there because hosted runners vary by tens of percent from one run to the next, and more on Windows (the same build took 60 to 82 s on four Windows runners in step 2). A failure at exactly the budget would turn a tier that is near its limit into red builds at random, which teaches people to re-run instead of to fix. The warning is the signal to act; the failure is for a tier that is over on any runner. The limits on a single test stay hard failures: they are several times what a healthy test takes.
 - A test over its slow mark needs a reason or moves to tier 6.
 
@@ -78,6 +79,8 @@ All three were built in step 5, with two more pieces they need.
 - **A test protocol** (`TestProtocol`): a wire dialect small enough to write by hand in a test and complete enough to say everything a real one can, including the speed that served a request and a refusal that belongs to a speed tier. `cortex-llm` has no real protocol until the first provider step, and its client is tested with this one. It is not a model of any provider's API.
 - **Fixture models** with every shape of speed tier: one that fails when it cannot be served and has a limit and a cache of its own, one the provider downgrades by itself, and a model with no tier.
 
+**A directory of a test's own** is `cortex_testkit::Scratch`, made with the `scratch!` macro: a new, empty directory under the one Cargo gives the crate's integration tests, with helpers to write files and to make a git repository whose configuration is the test's own and not the machine's. It is removed when the test ends, and left in place when the test fails. A test that needs "no repository above this directory" asks for `Scratch::outside`, in the system's temporary directory. The tests of `cortex-config`, `cortex-policy`, `cortex-session` and `cortex-agent` use it. The ones that still have their own are listed in [steps/tooling-w5/answered.md](steps/tooling-w5/answered.md).
+
 **A crate's own unit tests cannot use test-kit types that are made of that crate's types.** The test kit depends on `cortex-llm`, so in `cortex-llm`'s unit-test build there are two copies of the crate, the one under test and the one the test kit was built against, and a `ModelEvent` of one is not a `ModelEvent` of the other. So `cortex-llm` tests its pure parts (the parser, the retry rules, the catalog, cost) as unit tests, and its client, which needs the scripted transport and the fake timer, in its integration-test binary. The parts of the test kit that involve only `cortex-base` types, such as the property helper, work in unit tests too.
 
 **Fixtures.** Recorded provider responses live in the repo under each protocol's `fixtures/` directory: the raw response stream, the request that produced it, and a note. `xtask record` captures them from a real provider by hand, scrubs credentials and identifiers, and is never run in CI. Each provider step adds fixtures for every case in its checklist ([build-plan.md](build-plan.md)).
@@ -108,6 +111,131 @@ As built in step 14, for the first protocol:
 **No paid API in CI.** Pull-request jobs have no secrets. The scripted fakes and fixtures cover everything that blocks.
 
 **Usage records from other tools.** The adapters in [architecture/18-usage.md](architecture/18-usage.md) are tested only against small, made-up example files written for the purpose: one set per format version an adapter supports, plus damaged and unknown-version examples. Real session data from any tool is never used as a fixture and never committed. The static check that rejects home-directory paths covers the fixture folders, and an adapter test asserts that no text from the input reaches the output.
+
+## Showing that the tests bite
+
+A test that passes says little until it has been seen to fail. Two things are checked before a step is reported, with a command for each: that a test does not pass only because of the order things happened to run in, and that it fails when the rule it tests is broken.
+
+### A seeded order of events
+
+**Where the order came from.** The loop plans each tool call, and bounds each result, on the blocking pool (`cortex_tools::run_blocking`). Those are real threads, and they finish when the machine lets them: a call's plan arrives before or after the response's next event, and one call's plan before or after another's. The loop itself looks at what is ready in a fixed order and picks nothing at random. A test of step 12 failed three runs in ten for this reason, and a break of the code was once reported as caught by a test that had only lost that race.
+
+**What a test of the loop does now.** `cortex-agent`'s rig (`crates/cortex-agent/tests/it/main.rs`, `World`) puts that work on the test's own thread, at moments a seeded generator decides. The session already runs on a single-threaded runtime on that thread, so with the blocking work there too, **one seed is one order of events, on every machine.** That holds for work that goes through `run_blocking`, which is all the loop has. A thread that a test or a tool starts by itself is still the machine's to schedule. And work given to `run_blocking` must not wait for another task of the same runtime (a gate, a channel): on the pool it would be let go, and on the test's only thread it never is.
+
+- **The seam** is `cortex_tools::InlineBlocking`, behind the `test-hooks` feature of `cortex-tools`. While one is alive, `run_blocking` called on the thread that made it runs its work on that thread, after a number of turns of the runtime drawn from the seeded generator (none to eight, mostly few). Work whose token fires before its turn comes is not run, and the caller gets "cancelled", as it does from the pool.
+- **Only tests have it.** A dev-dependency turns the feature on, and `cargo xtask rules` fails when anything else does. A build of the binary by itself (`cargo build -p cortex-cli`, the `dist` build) resolves `cortex-tools` with no feature, and the released binary has none of it. A build of the whole workspace with its tests (`cargo nextest run --workspace`) resolves it with the feature, for every crate in that build, so the binary the system tests start has the branch compiled in. It does nothing there: the switch is a thread-local that only an `InlineBlocking` sets, and only a test makes one.
+- **The seed** comes from `cortex_testkit::seed::for_this_test()`. An ordinary run uses 0, every time. `CORTEX_TEST_SEED=<n>` fixes it. In a run of `cargo xtask stress`, repeat `n` uses the first seed plus `n`.
+- **A failed test shows its seed.** The rig prints `test seed 17: run this test again in the same order with CORTEX_TEST_SEED=17`, and the test runner shows a test's output when it fails.
+- **A test must pass under every seed.** It asserts on what the loop promises (the results are recorded in the model's order, a refused call stops the turn at that call), and where it needs one order it makes it, with a gate. It does not assert on an order the seed decides.
+
+When the rig was seeded, every test of `cortex-agent` passed under seeds 0 to 299: none depended on an order.
+
+**Other rigs.** A crate whose tests drive the loop or the tools on a single-threaded runtime (the core's, from step 13) takes the same two lines: `cortex-tools` with `test-hooks` in its dev-dependencies, and an `InlineBlocking::seeded(cortex_testkit::seed::for_this_test())` kept for the life of the test. A test whose order is the operating system's to decide (processes, sockets, threads of its own) cannot be seeded, and is repeated instead.
+
+### Running the tests many times over
+
+`cargo xtask stress -p <crate>… [--count N] [--first-seed S]` runs the crates' tests `N` times over (100 when not given), and reports each test that failed on some repeat:
+
+```text
+1 test(s), 40 time(s) each, with seeds 0 to 39.
+
+FAILED 20 of 40 times: cortex-agent::it order::stress_fixture_expects_the_first_sessions_call_to_start_first
+  seeds: 0, 1, 2, 6, 7, 8, 11, 14, 16, 17, 18, 22, and 8 more
+  again: CORTEX_TEST_SEED=0 cargo xtask test -p cortex-agent -E 'test(=order::stress_fixture_expects_the_first_sessions_call_to_start_first)'
+```
+
+That is the command's own test case, a test that is wrong on purpose (below). Seed 0 fails it every time and seed 3 passes it every time.
+
+- The repeating is nextest's (`--stress-count`, in a nextest profile of its own, `stress`). The command sets the first seed, reads which repeat of which test failed from the JUnit report, and says how to run one failure again. Anything it does not know goes to nextest: a filter, `-E`, `--run-ignored`.
+- **A test that passed only on its retry counts as failed for that repeat.** nextest gives a test in a `timing_sensitive` module one retry, and reports it as passed when the retry passes. A test that needs its retry some of the time is what this command looks for.
+- **For a seeded rig** each repeat is another order, and the seed brings a failure back exactly. **For process and thread tests** each repeat is another roll of the machine's own dice, and the seed means nothing: a test that fails one time in two hundred there is still a test with a race in it.
+- **Run it before reporting a step,** for `cortex-agent` and for every crate whose tests start processes or cross threads: `cargo xtask stress -p cortex-agent --count 300` takes 17 s on the desktop. Stress first, then break the code: a test that fails by chance makes a break look caught.
+- **How it is tested.** Its reading of a report, on reports written for the purpose (unit tests). And by hand on the test above, `order::stress_fixture_…` in `cortex-agent`: it expects the first of two sessions' calls to start first, which nothing promises, so it fails under about half the seeds. It is ignored in every ordinary run; `cargo xtask stress -p cortex-agent --count 40 --run-ignored only stress_fixture` runs it.
+
+### Breaking the code on purpose
+
+A done criterion of the form "X is tested" is evidence only if the test fails when X is broken. Every step since step 5 has broken its own rules on purpose, one at a time, and listed which tests failed. The breaks are now data in the repository, and one command runs them.
+
+**The lists** are `mutations/<name>.breaks`, one file for each step or crate, so that two steps adding breaks at the same time do not touch the same file. A break is a small change that breaks one rule, with the tests that must fail when it is made:
+
+```text
+[break] cancellation-not-seen-in-wake
+rule: Cancellation is an input: a wait for the response or the round is ended by the turn being cancelled.
+file: crates/cortex-agent/src/turn.rs
+in: wake
+find: cancelled.as_mut().poll(context).is_ready()
+replace: cancelled.as_mut().poll(context).is_ready() && false
+caught-by:
+    transitions::an_interruption_is_taken_in_every_state_that_waits
+```
+
+That one is from `mutations/step-07.breaks`.
+
+| Key | What it is |
+|---|---|
+| `[break] <name>` | Begins a break. Lower-case letters, digits and `-`. It is shown, and chosen, as `<file>/<name>`: `step-12/deny-beats-allow`. |
+| `rule` | The rule the break breaks, in a sentence. Required. |
+| `file` | The file to change, relative to the repository. Required. |
+| `in` | The item the code is in: names separated by `::`, such as `Round::spawn`. An `impl` block answers to every name in its header. Optional. |
+| `find` | The code to replace. Required. It must be there exactly once, in the item if one is named. |
+| `replace` | What to put there. Required, and may be empty. |
+| `occurrence` | Which match of `find` is meant, counted from 1, when there are several. Optional. |
+| `packages` | The crates whose tests to run, separated by commas. Without it, the crate the file is in. |
+| `caught-by` | The tests that must fail, one a line: a test's name as nextest prints it, or its binary and its name (`cortex-agent::it denials::…`). A `*` at the end stands for any ending. Without it, any failing test catches the break. |
+| `expect: survives` | Marks a break that changes nothing a test can see, kept so that nobody tries it again. Its `rule` says why. |
+
+A value is on the key's line, or on the indented lines after a key that ends its line. A line that begins with `#` is a comment. Anything else is an error with its line: an unknown key, a key given twice, a break without a required key.
+
+**`find` is matched by token,** not as text. White space, comments and a comma before a closing bracket are not tokens, so however `rustfmt` lays the code out, the break still applies. An exact-text break stops applying the day a line is wrapped, and that is how breaks were lost in earlier steps.
+
+**A break that does not apply is an error, never a result.** `cargo xtask check` has a step, `breaks`, that applies every break of every list to the tree in memory and fails when one cannot be made: its code is gone, or is there twice, or its replacement is the same code. It reads the files the breaks name and runs nothing (0.1 s for the 211 breaks there are), so it is in the blocking checks: a change that moves code out from under a break updates the break in the same pull request, or deletes it if the rule is gone. The message names the list and the line, and says which.
+
+**`cargo xtask mutate [BREAK…]`** runs the breaks: all of them, or the ones named (a break, a whole list, or the end of a name).
+
+1. Every break is applied in memory, as `check` does. Nothing is built if one fails.
+2. **The work is done on a copy** of the tree under `target/mutate/`, with a build directory of its own. The working tree is only read. The copy is brought up to date at the start of each run, which also undoes a break that a killed run left in it. The first build of the copy is a whole build; after that each break rebuilds one crate.
+3. **The tests are run once with nothing broken,** for each set of packages that a break runs. A test that fails by itself stops the run: it is no evidence about anything. A break is judged against the tests of exactly the build it runs in, because which tests there are depends on what is built together.
+4. **Each break is compiled** (`cargo check`) before any break's tests are run, and the ones that do not compile are named.
+5. **Each break's tests are run,** and the tests that failed are read from nextest's JUnit report (profile `mutate`), not from its terminal output.
+
+What it says of each break:
+
+| Verdict | Meaning | What to do |
+|---|---|---|
+| caught by N test(s) | At least one test failed, and every test of `caught-by` did. | Nothing. |
+| survived, as its list expects | A break marked `expect: survives`, and no test failed. | Nothing. |
+| NOT CAUGHT | No test failed. | Write the test. If nothing a test can see changes, mark the break `expect: survives`. |
+| NOT CAUGHT BY ITS OWN TESTS | Some test failed, and one that `caught-by` names passed. | A test that used to catch this no longer does: find out why. |
+| NAMES A TEST THAT DOES NOT EXIST | A `caught-by` entry matches no test. | The test was renamed or removed: correct the list. |
+| CAUGHT, AND EXPECTED TO SURVIVE | A break marked `expect: survives` made a test fail. | Take the mark off and name the test. |
+| DOES NOT COMPILE | The code does not build with the break made. | Correct `replace`. |
+| COULD NOT BE JUDGED | The run failed and named no failed test. | Read the log it names. |
+
+It exits 0 when every break did what its list expects, 1 when one did not, and 2 when its time ran out.
+
+**It stops, and carries on.** Every result is written to `target/mutate/results.jsonl` as it is known, under a key made of the code (every file but the lists) and the break. A run does not start new work after its time budget (`--minutes N`, 5 when not given, 0 for none), and the next run starts where it stopped: run the same command until it exits 0 or 1.
+
+- **The budget is on starting work, not on finishing it.** One piece of work, a break's build and tests, is seconds. The first build of the copy is a whole build of the crates named, and runs to its end whatever the budget. After it, a long list gives a shared build machine back every five minutes or so.
+- A run that is killed loses at most the break it was in.
+- **One run at a time on a copy.** A second run on the same copy is refused while the first holds it: it would bring the copy up to date under the first, which would then report a break as survived that was no longer made. The lock is the operating system's, so a killed run lets go of it. A copy that cannot be locked at all is not used.
+- A change to the code forgets every result. A change to a list forgets only the breaks it changed.
+- **A run that ended without a verdict is tried again by the next run:** a break that did not compile, or a test run that failed and named no failed test. The cause may have been the machine's. A break that did not compile is reported with the compiler's first errors. A test run that named no failed test keeps its whole output in a file of its own under `target/mutate/logs/`, which the message names.
+- `--again` forgets the results of the breaks named, and runs them again. To carry on after the time ran out, leave it off: with it, the next run would forget what this one did. The command says so.
+- `--report` prints what is known and runs nothing.
+
+**What it cannot tell.**
+
+- **A break in code the build does not compile is reported as not caught.** A break is made in the text, so it can be made in code that is only built on Windows, or behind a feature that is off, and the tests then pass because nothing changed. Run such a break where the code is built, and name in `packages` a crate whose build turns the feature on.
+- **Which tests exist depends on what is built.** `cortex-tools` has tests of the seeded order that are only built when `cortex-agent`'s tests are in the same build, because that is what turns `test-hooks` on. A break that names them in `caught-by` names `packages: cortex-tools, cortex-agent`.
+- **"Caught" with no `caught-by` is one failing test in one run.** A test that fails by chance would do. The tests with nothing broken are run once, not many times: stress the crate first, and name the tests a break should fail.
+- **`find` passes over a trailing comma,** so `f(a)` also finds `f(a,)`, and `(x)` finds the tuple `(x,)`. Whether a break changes anything is judged with commas counted. A match never begins or ends inside an operator of two characters: `= 0` does not find the second half of `x == 0`.
+- **A break's tests are run without the caller's test settings:** under seed 0, with the ordinary number of property cases, and writing no snapshot or generated file. A result is kept by the code and the break alone.
+
+**Adding a step's breaks.** Write `mutations/step-NN.breaks` as the rules are built, run `cargo xtask mutate step-NN`, and put the verdicts in the step's report. A break that nothing catches is a missing test.
+
+**The lists as seeded.** Wave 4's breaks were kept only in the reports of the sessions that made them. The lists of steps 7, 8, 9, 10, 12 and 14 were written again from the pull requests' descriptions, the code's own documentation and the tests: 101 breaks, 14 to 20 a step. Every one is caught, by the tests its list names. All 101 run in under five minutes on the desktop, about a second each once the copy is built. What running them showed is in [steps/tooling-w5/answered.md](steps/tooling-w5/answered.md). This step's own code has a list too, `mutations/tooling-w5.breaks`: 23 breaks of the seeded order, the scratch directory and the commands of `xtask`, written with the code. And `mutations/step-31.breaks` is the 87 breaks step 31's session kept, each as text before and after, converted by a script. All 87 apply and are caught. Six of them no longer applied in the session's own last run, which matched the text exactly: by token, they still find their code.
+
+**How the command is tested.** With a runner that reads the copy and says which tests "fail" for what it finds: three breaks, two that are caught and one that nothing catches, and each verdict in the table (unit tests, in the blocking checks). And against the real cargo and nextest, on a small workspace kept for it (`xtask/fixtures/mutate`), with five breaks: two caught, one not, one expected to survive and one that does not compile. That test builds a workspace ten times over (0.8 s in all on the desktop, several times that on a hosted Windows runner), so it is ignored in the blocking checks. The nightly workflow runs it on Linux, and so does anyone who changes the driver: `cargo xtask test -p xtask --run-ignored only sys_the_real`.
 
 ## Testing the TUI
 
@@ -154,9 +282,9 @@ Four jobs in parallel, in `.github/workflows/ci.yml`. Wall time is the slowest j
 
 | Job | Runner | Runs |
 |---|---|---|
-| `lint-linux` | `ubuntu-latest` | `cargo xtask check`: `cargo fmt --all --check`; the repo rules; the generated files (the protocol's schema and TypeScript declarations are what the types generate); `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo deny check licenses bans sources`. |
+| `lint-linux` | `ubuntu-latest` | `cargo xtask check`: `cargo fmt --all --check`; the repo rules; the break lists, each break of which must still apply ("Breaking the code on purpose"); the generated files (the protocol's schema and TypeScript declarations are what the types generate); `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo deny check licenses bans sources`. |
 | `lint-windows` | `windows-latest` | `cargo xtask check clippy`. Formatting, the repo rules and cargo-deny give the same answer on every OS and run once. Clippy runs on both, because code compiled only for Windows is otherwise never linted. |
-| `test-linux` | `ubuntu-latest` | `cargo xtask ci test`: build the tests, run tiers 1 to 3 (`cargo nextest run --workspace --locked --cargo-profile ci --profile ci`), check the tier budgets. |
+| `test-linux` | `ubuntu-latest` | `cargo xtask ci test`: build the tests, run tiers 1 to 3 (`cargo nextest run --workspace --locked --cargo-profile ci --profile ci`), check the tier budgets and list each tier's slowest tests. Then the JUnit report is kept as an artifact. |
 | `test-windows` | `windows-latest` | The same. |
 
 The first draft of this page had three jobs. `lint-windows` was added in step 2: it runs beside the others, so it adds nothing to the wall time, and it closes a gap that would have opened as soon as the first Windows-only module was written.
@@ -179,7 +307,7 @@ Settings common to all jobs:
 **Documentation-only pull requests skip the Rust build and tests.** Each job starts with a step (`.github/actions/changes`) that lists what the pull request changes. If every changed file is under `docs/` or ends in `.md`, the job's remaining steps are skipped and the job still reports success under its own name.
 
 - The decision is made inside each job, not in a separate job that the others wait for. All four checks therefore always report, so they can be required by branch protection as they are, with no gate job, and a pull request that does touch code pays about a second for the question.
-- **The repo rules still run on a documentation-only pull request, deliberately.** The check for home-directory paths and the check of `docs/dependencies.md` exist mostly for documentation, and skipping them on exactly the pull requests that write prose would open the hole they close. This compiles `xtask`, which is five small crates, and nothing else.
+- **The repo rules still run on a documentation-only pull request, deliberately.** The check for home-directory paths, the check of `docs/dependencies.md`, the check that every link inside the repository leads somewhere and the check of where the step records are exist mostly for documentation, and skipping them on exactly the pull requests that write prose would open the hole they close. This compiles `xtask`, which is five small crates, and nothing else.
 - Anything else in the change set (a manifest, a workflow, an asset, a source file) runs everything. So does every push to the main branch and every scheduled or manual run.
 - **The generated files under `docs/protocol/` and `docs/configuration/` count as code.** They are checked against the Rust types by tests, so a pull request that touches them runs the tests, wherever else its changes are.
 
@@ -187,9 +315,40 @@ Settings common to all jobs:
 
 - the per-test limits of each tier, from the table under "Test tiers", in every profile;
 - profile `ci`: fail fast off, quiet on success, JUnit output for the tier budgets;
+- profiles `mutate` and `stress`, for the two commands of "Showing that the tests bite": fail fast off, only failures printed, JUnit output;
 - a test group that limits pseudo-terminal and process tests (everything named `sys_…`) to two at a time, so they do not starve each other on a 4-core runner;
 - no retries, except tests in a module named `timing_sensitive`, which get one retry and are reported as flaky when it is used;
 - profile `fast` for local use: tiers 1 and 2 only.
+
+### A CI run's test times
+
+Each test job keeps nextest's JUnit report as an artifact, `junit-linux` or `junit-windows`, for 14 days, whether the tests passed or not. It has the time of every test, which the log does not.
+
+```text
+gh run download <run id> --name junit-windows --dir junit
+cargo xtask ci --tiers --from junit/junit.xml --os windows --top 20
+```
+
+prints the tier totals of that run against the Windows budgets, and its twenty slowest tests in each tier. Two runs' reports can be compared the same way. The upload is the one step these tools add to a blocking job. What they add in all (that step, three static checks and their own tests) is measured in [steps/tooling-w5/ci.md](steps/tooling-w5/ci.md).
+
+**The same report at a desk.** `cargo xtask ci --tiers [-p CRATE]… [--top N] [-- NEXTEST ARGUMENT…]` builds and runs the tests as the blocking job does, in cargo's `ci` profile, and prints the same report with ten tests a tier. The profile is the point: a desk's own build optimises third-party crates and CI's does not, so a test that spends its time in one (a JSON reader, a regular-expression engine) is several times slower in CI than it looks. Steps 12 and 14 each put a Windows tier over its budget that way. A desk is still faster than a hosted runner, and Windows about twice as slow as Linux there: read the report for which tests the time is in, and for the tier's share of its budget with room to spare.
+
+### A Windows run without a pull request
+
+Code behind `#[cfg(windows)]` is built and run only on a Windows runner, and the blocking checks reach one only through a pull request. The `windows-try` workflow (`.github/workflows/windows-try.yml`) runs a crate's tests on a hosted Windows runner for any branch that has been pushed:
+
+```text
+git push origin <branch>
+gh workflow run windows-try --ref <branch> -f crate=cortex-tools -f filter=shell::
+ci-wait --workflow windows-try
+```
+
+- `crate` is one crate, or several separated by spaces or commas; empty is the whole workspace. `filter` is part of a test's name, as nextest takes it; empty is every test.
+- It runs `cargo xtask ci --tiers` for them: the build and the run of the blocking `test-windows` job, then the tier report with the twenty slowest tests, and the JUnit report kept as `junit-windows-try`.
+- It restores the build cache the main branch wrote for `test-windows` (its job has the same id and environment on purpose) and writes none. It has 20 minutes, not 5: it blocks nothing.
+- `ci-wait`, or `gh run watch`, waits for it: it is a run on the branch's head commit like any other. `gh run list --workflow windows-try --branch <branch>` finds it.
+- **A workflow can be started by hand only once it is on the main branch.** A branch made before this workflow was merged has to be rebased first.
+- Code that needs no run can be checked at a desk without it: `cargo clippy -p <crate> --all-targets --target x86_64-pc-windows-msvc` lints Windows-only code on Linux, for a crate with no C code.
 
 ### Where the five minutes go
 
@@ -332,7 +491,7 @@ With the `dev` profile's optimised dependencies the cold Windows column would be
 | Workflow | When | What it runs now | What later steps add |
 |---|---|---|---|
 | `main` (`.github/workflows/main.yml`) | After each merge to the main branch, and by hand | `cargo xtask size --check` for Linux x86-64 and Windows x86-64: a build of the published profile (`dist`), the binary's size checked against its budget ([performance-budgets.md](performance-budgets.md)), and the number of crates in the build. Each run keeps its record as an artifact, and shows it on its summary page. | Tier 4 performance checks on both OSes with stored baselines (step 20), and a comparison of the size and the crate count with the run before. |
-| `nightly` (`.github/workflows/nightly.yml`) | Every night at 03:17 UTC, and by hand | `cargo xtask advisories` (`cargo deny check advisories`); `cargo xtask unused` (cargo-machete); `cargo xtask size --check` for every release target, each on a runner of its own architecture: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-pc-windows-msvc`; and, since step 4, tiers 1 and 2 on Linux with fifty times the property-test cases ("Property tests", above); and, since step 14, coverage-guided fuzzing of the stream decoders for two minutes a target (`cargo xtask fuzz --seconds 120`). | Tier 6: a fuzz target for each later decoder, the long-session memory test. Tier 5 where a key is configured. |
+| `nightly` (`.github/workflows/nightly.yml`) | Every night at 03:17 UTC, and by hand | `cargo xtask advisories` (`cargo deny check advisories`); `cargo xtask unused` (cargo-machete); `cargo xtask size --check` for every release target, each on a runner of its own architecture: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-pc-windows-msvc`; and, since step 4, tiers 1 and 2 on Linux with fifty times the property-test cases ("Property tests", above); and, since step 14, coverage-guided fuzzing of the stream decoders for two minutes a target (`cargo xtask fuzz --seconds 120`); and `cargo xtask mutate` against the real cargo and nextest, on the small workspace kept for that ("Breaking the code on purpose"). | Tier 6: a fuzz target for each later decoder, the long-session memory test. Tier 5 where a key is configured. |
 | `release` | On a version tag | Not built yet. | Builds, checks and publishes binaries with checksums. |
 | `live` | By hand | Not built yet. | Tier 5 and fixture recording. Uses a protected environment for secrets. |
 
@@ -372,7 +531,12 @@ With the `dev` profile's optimised dependencies the cold Windows column would be
 - the crate dependency rules of [architecture/01-workspace.md](architecture/01-workspace.md), read from `cargo metadata`, and the manifest conventions (the `cortex-` prefix, `publish = false`, shared lints, no doc tests, one integration-test binary);
 - `cortex-protocol` depends on serde and serde_json and nothing else, and on schemars only as an optional dependency behind its `schema` feature;
 - `docs/dependencies.md` agrees with the manifests;
-- workflow actions are pinned by commit hash; every workflow's token is read-only; a workflow that runs on pull requests uses no secret and can write nothing; and the only write permission anywhere is `issues: write` on the `report` job of a workflow that does not run on pull requests ("Not blocking", above).
+- workflow actions are pinned by commit hash; every workflow's token is read-only; a workflow that runs on pull requests uses no secret and can write nothing; and the only write permission anywhere is `issues: write` on the `report` job of a workflow that does not run on pull requests ("Not blocking", above);
+- a crate's `test-hooks` feature is turned on by a dev-dependency and in no other way: not by a normal or build dependency, not by `default` or another feature of the crate that has it, and not by a feature of another crate that passes it on ("A seeded order of events", above);
+- **every link inside the repository leads somewhere:** a relative link in a Markdown file names a file or a directory that is there; a link with a `#fragment` names a heading the page has, by the name GitHub gives it (the text in lower case, without punctuation, a `-` for each space, and `-1`, `-2` for a second and third heading of the same name); and a `docs/….md` path written in prose, in configuration or in a comment of the code names a file that is there. In Rust source only what follows `//` on a line is read, on a line of its own or after code: a string there is as likely to be a test's made-up file. Links to other sites are not followed;
+- **the step records and the open items are where the others expect them** ([steps/README.md](steps/README.md), [outstanding/README.md](outstanding/README.md)): a folder of `docs/steps/` is a step's number in two digits with its letter, or a name in lower-case words joined by hyphens; it holds `answered.md` and `ci.md` and nothing else; each begins with the heading its kind has, naming the step the folder is for; and a file of `docs/outstanding/` is named in hyphenated words and holds the table's header and one row.
+
+`cargo xtask links` runs the last two alone. They read text files and ask cargo nothing, so they answer at once: under a tenth of a second for the 137 pages there are.
 
 `cargo xtask check` also has a `generated` step: the protocol's JSON Schema and TypeScript declarations in `docs/protocol/` must be what the types in `cortex-protocol` generate. A test makes the same comparison on both OSes. `cargo xtask schema` regenerates them.
 
@@ -409,9 +573,13 @@ The commands, all through `cargo xtask` (or `./x`):
 
 | Command | Runs |
 |---|---|
-| `check` | The static checks: `fmt`, `rules`, `generated`, `clippy`, `deny`. All of them run even when one fails, and the time of each is printed. |
-| `test` | All tests. Arguments go to nextest: `--profile fast` for tiers 1 and 2. |
+| `check` | The static checks: `fmt`, `rules`, `breaks`, `generated`, `clippy`, `deny`. All of them run even when one fails, and the time of each is printed. |
+| `test` | All tests. Arguments go to nextest: `--profile fast` for tiers 1 and 2, `-p cortex-agent` for one crate, and then only that crate is built and run. |
 | `ci` | What the blocking jobs run: `check`, then the tests in the `ci` profiles, then the tier budgets. |
+| `ci --tiers` | The tests as CI builds them, and each tier's time and slowest tests ("A CI run's test times"). |
+| `stress` | The tests of the crates named, many times over, each time under the next seed ("Running the tests many times over"). |
+| `mutate` | The breaks of `mutations/*.breaks`, one at a time, on a copy of the tree ("Breaking the code on purpose"). |
+| `links` | The part of `rules` that is about the docs: links inside the repository, and where the step records are. |
 | `schema` | Regenerates the protocol's JSON Schema and TypeScript declarations in `docs/protocol/`. `schema --check` only compares. |
 | `gen` | Regenerates every generated file: what `schema` writes, and the configuration schema and reference in `docs/configuration/`. |
 | `size`, `unused`, `advisories` | What the non-blocking workflows run: the `dist` build with its size and crate count (`--check` fails over the budget, `--target` names the target), cargo-machete, and `cargo deny check advisories`. |
