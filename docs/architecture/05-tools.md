@@ -23,6 +23,7 @@ pub struct Plan {
     pub effects: Vec<Effect>,          // Read | ReadTree | Write | Exec | Network | Ext
     pub concurrency: Concurrency,      // ReadOnly | Keyed(paths) | Exclusive
     pub summary: String,               // one line for approval prompts and the UI
+    pub changes_session: bool,         // the call changes the plan or the proposals: see below
     // plus the validated arguments, private to the tool
 }
 
@@ -51,6 +52,7 @@ The two phases exist so the permission engine, the sandbox and the scheduler can
 
 - A path in an effect is the resolver's result: the real location, with every link followed, and whether it is inside the workspace. A rule is matched against that, never against what the model wrote.
 - A plan with no effect but reads has no side effects, and is what the loop may start early ([15-efficiency.md](15-efficiency.md)). A call of an extension or MCP tool is never one.
+- **A call that changes the session says so on its plan** (`Plan::changes_session`, added in step 10 as an agreed addition to the contract). `plan` and `remember` touch nothing outside the session, so they have no effect to declare and are scheduled as read-only. Without the marker the loop would start them while the model is still writing, and a response that was then thrown away would leave a replaced plan or a proposed memory behind. The loop reads the marker beside `has_side_effects`: such a call never starts before its response has ended. It is not an effect: there is nothing for the permission engine to decide. The plan of a `tool_call` carries the marker of the tool it wraps.
 - **A walk is checked twice.** `ReadTree` is decided once, before the walk. But a rule can protect one file inside an allowed tree, and the tree cannot be listed in advance. So a walk asks a gate (`ReadGate`, which the permission engine supplies) about each entry it meets, steps past what it may not read, and says in its result how many entries that was. Walks do not follow links, so they stay under the path they declared.
 
 **Concurrency.** A tool's spec has a class, and each plan says how that call is scheduled, with the paths of a keyed call. `Plan::conflicts_with` is the rule the scheduler applies:
@@ -58,7 +60,8 @@ The two phases exist so the permission engine, the sandbox and the scheduler can
 - an exclusive call conflicts with every call;
 - two keyed calls conflict when they share a path, or when a path of one is inside a path of the other;
 - a keyed call conflicts with a read-only call that reads one of its paths, a directory that holds one, or something inside one, so that `edit a.rs` followed by `read a.rs` sees the edit, and `write src/new.rs` followed by `list src` sees the file;
-- two read-only calls never conflict.
+- two calls that both change the session conflict, so that of two `plan` calls in one response the second is the one that stands. Beside any other call they run as read-only calls do;
+- two read-only calls never conflict otherwise.
 
 Calls that conflict run in the model's order.
 
@@ -123,6 +126,8 @@ The Windows rows apply on Windows only. On Linux `notes:2026` and `name.` are or
 **What resolution does not promise.**
 
 - **That nothing changes afterwards.** Resolving a path and opening it are two steps, and the file system can change between them: a directory can be swapped for a link after the check. The harness opens the location it checked, never the text it was given, which closes the gap for everything that is not actively racing it. A process that is racing it is the sandbox's to confine ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)).
+- **What is done about the gap, since step 10.** The last name of a path is never followed and never waited on when it is opened (`cortex_base::open_regular`): the open asks for the thing itself (`O_NOFOLLOW` and `O_NONBLOCK` on Linux; the reparse point, not its target, on Windows), and the handle is then asked what it is. So a file that was swapped for a link, or for a FIFO whose open would wait for ever, after it was looked at is refused, and what is read is the thing that was checked. `read`, the editing tools and the session's checkpoint store all open this way. The editing tools also resolve their path a second time when the call runs, which may be long after it was checked (an approval lies between), and stop if it leads anywhere else; and they write with a replace that follows no link. A directory earlier in the path that is swapped at exactly the right moment is still followed: that remains the sandbox's.
+- **Placeholders on Windows.** A file in a folder synced with a cloud service, or projected by a virtual file system, is a reparse point that is not a link. Such a file is opened a second time in the ordinary way, so that the filter that owns it supplies its content, and between the two opens it could be swapped for a link. This is done only for a short list of reparse tags that mark such files; a link-like tag (a symbolic link, a junction, a WSL link, an app execution alias, the NFS and DFS tags) and any tag this build does not know are refused.
 - **That one file has one path.** A file with a second hard link has two, and both are real. And Linux is taken to compare names exactly: on a mount that ignores case there (a FAT or NTFS volume, a directory with case folding on), two spellings of one file resolve to two paths. A rule that protects a file by name does not protect its other names.
 - **That its case folding is exactly Windows's.** Windows compares names by a table of its own. The harness folds case by the same rule with the Rust standard library's tables, which differ for a few letters outside ASCII. Inside or outside the workspace does not depend on it: that is decided on the file system's own spelling, compared exactly. Rule matching does depend on it ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)), so there a deny may match a little too much and an allow must not.
 
@@ -131,11 +136,23 @@ The Windows rows apply on Windows only. On Linux `notes:2026` and `name.` are or
 
 **Text files.** Tools read and write UTF-8. A file that is not valid UTF-8 is refused by the editing tools with a message that says so. `read` shows such a file with the bytes that are not UTF-8 replaced, and a note that the editing tools will refuse it. Line endings and a byte-order mark are detected on read and preserved on write, and are not part of a line as `read` shows it.
 
+As built in step 10, the rule the editing tools keep is that **what they do not replace does not change by a byte**:
+
+- **Neither tool converts a file.** They work on the file's own bytes, never on text that `read` has shown, so a file that is not UTF-8 cannot be written back with its bad bytes replaced: both `write` and `edit` refuse it, and the message names the line of the first bad byte and says to use a shell command. A binary file is refused the same way.
+- **A byte-order mark stays** where there was one, and is not added where there was none. One at the start of a `write`'s content is not written twice.
+- **A line break in new text is written as the file writes its line breaks.** In a file with one kind of ending, that kind. In a file with both: `edit` gives each line break of its new text the ending of the first line it replaces, and `write` lets every line that the old and the new content have in common keep the ending it had. A line that has no ending to go by (the last line of a file that does not end with a line break) gets the ending most of the file's lines have, and with as many of one kind as of the other, the first line's.
+- **A new file is written exactly as the model gave it,** on both OSes. Over a file with no line break at all, `write` does the same: there is no ending to keep.
+
 **File snapshots.** When a tool reads or writes a file it records the file's size, modification time and content hash in the session's table of seen files. The hash is what decides whether a file has changed: it is `ContentHash` of `cortex-base` (SHA-256). The editing tools use the table for the staleness guard below, and `read` for changed-only re-reads. The table also remembers which lines of each file the model has been shown in the current context epoch; a new epoch forgets that and keeps the snapshots, because the guard is about the session.
 
 **The content store.** Artifacts and file versions go through one trait, which the session implements: `cortex-session`'s `DiskStore`, which the core adapts to it (`begin_artifact`, `open_artifact`, `put_version` as `put_blob`, `get_version` as `get_blob`). File versions and checkpoints share its content-addressed store ([07-sessions-and-context.md](07-sessions-and-context.md), "On-disk layout"). An artifact is written in pieces, so output still arriving never has to be held in memory. A file version is the content of a file as the model last saw it, kept under its hash, so that a later read can send a diff. Only files of up to 1 MiB are kept as versions.
 
 **Checkpoints.** Before a tool changes or creates a file, the previous content (or the fact that the file did not exist) is saved in the session's checkpoint store. The checkpoints of one turn form that turn's snapshot. This is what lets edits apply without asking: every one of them can be undone (see [07-sessions-and-context.md](07-sessions-and-context.md)).
+
+- **The seam.** The store is `cortex-session`'s, which `cortex-tools` cannot see. The editing tools reach it through a trait of their own crate, `Checkpoints`: `before(file, content)` with the bytes the tool read (or nothing, for a file that does not exist), and `after(file, snapshot)` with what the tool left. The core fills it with the checkpoint of the tool round that is running. `WriteTool` and `EditTool` are made with it (`Editing`), so a session's tools record in that session.
+- **The tool hands over the bytes it read,** not a path to read again. The file is read once, what is kept for undo is exactly what the tool replaced, and there is no moment between two reads in which the file could have become something else.
+- **If the earlier content cannot be kept, the file is not changed.** A change that could not be undone is not made.
+- **The editing tools do not change a file over 16 MiB,** which is the most a checkpoint keeps: the change could not be undone, and a change that cannot be undone must not apply without asking. The refusal says why and names another way (a shell command). The limit also bounds what one call reads into memory and hashes: at the limit an edit takes about 50 ms, and a typical one well under a millisecond before the flush to disk ([../performance-budgets.md](../performance-budgets.md)). Asking the user, through the permission engine, in place of refusing is left for a later step ([../build-plan.md](../build-plan.md), step 10).
 
 **Atomic writes.** New content goes to a temporary file in the same directory, is flushed, and is renamed over the target. On Windows the replace is retried briefly when another process holds the file open (six more attempts over half a second), and fails with a clear message if it stays locked. File permissions are preserved: the new file takes the mode of the one it replaces, and the temporary file is private until it does.
 
@@ -144,6 +161,7 @@ The Windows rows apply on Windows only. On Linux `notes:2026` and `name.` are or
 - A target that could not have been written in place is refused. A rename needs only the right to change the directory, so without this it would replace a file its owner had protected. Refused: a file marked read-only (on Linux one with no write permission at all, on Windows one with the read-only attribute), and on Linux also a file the user may not open for writing.
 - Only a regular file is replaced. A directory, a device, a socket or a pipe under the target's name is refused, not swapped for a file.
 - A symbolic link is written through: the file it points to is replaced, and the link stays.
+- **Unless the write is told that its target must not be a link** (`follow_links` off, added in step 10). Then a link under the target's name is refused and nothing on the way to the replace follows one. The editing tools write this way: the path resolver has already followed every link, so the location they write to is a file's own, and a link that appears there afterwards must not carry the write somewhere else. A rename replaces a name and never follows it, so a link swapped in at the last moment is itself replaced.
 - Not preserved: hard links (the file's other names keep the old content), the owner of a file that belonged to someone else, and on Windows the hidden and system attributes and any access rules set on the file itself, as opposed to inherited from its directory.
 
 ## `read`
@@ -185,6 +203,16 @@ Creates a file or replaces its whole content.
 - Returns a short confirmation (lines written, lines added and removed). Front ends receive the diff as a structured payload.
 - Concurrency: keyed by path.
 
+As built in step 10:
+
+- **What counts as read.** A file is "what the session last saw" when its content hashes to what `read` recorded, or to what `write` or `edit` themselves last left. So a second change to a file the tools just wrote needs no read in between, and any change made by someone else since does.
+- **Content that is already there writes nothing,** and the result says so.
+- **A path that names a directory** (it ends with a separator, or a directory is there) is refused.
+- **The order of a change, for both tools,** and what each step protects (`crates/cortex-tools/src/change.rs`): the path is resolved again and must lead where it led when the call was checked; the file is opened without following a link or waiting, and read whole, up to the limit; it must be UTF-8 text; the staleness guard; the new content is worked out, and a call that fails here has touched nothing; the file is looked at once more, and must still be the one that was opened; the checkpoint is given the bytes that were read; the write is atomic and follows no link; the table of seen files and the checkpoint are told what was left.
+- **A change is never abandoned half-way.** The work runs to its end whatever happens to the call's token, which is asked once, before the write. A call cancelled before that changes nothing and says so. One cancelled after it has made its change, and its result says that. So a cancelled call is over within the time of one write, and on Windows within the half second a replace waits for a file in use.
+- The payload: `kind` (`create`, `write` or `unchanged`), the path, the lines and bytes written, the lines added and removed, and the diff. A diff over 256 KiB, or of versions too long to compare, is left out, and the payload says so: the payload is stored in the session log with the result.
+- Effects: one `write` of the resolved file. A path through a link names the file it leads to, which is what a rule is matched against and what is checkpointed.
+
 ## `edit`
 
 Replaces exact pieces of text in a file.
@@ -199,11 +227,19 @@ Replaces exact pieces of text in a file.
   1. Exact match.
   2. If there is no exact match: a line-wise match that ignores trailing whitespace, line-ending differences and a uniform difference in leading indentation. It is accepted only if it finds exactly `count` places. The result then says that the tolerant match was used and shows the text actually replaced.
   There is no further fuzzy matching. No Unicode folding, no edit-distance search. A longer ladder of fallbacks makes more edits succeed and also makes a wrong edit more likely. This is revisited with eval data.
+- **Both tiers match against the text as `read` shows it** (the owner, 2026-11-13, in step 10). `read` shows a line without its line ending, so an `old` the model copies from a CRLF file has line feeds. Matched against the file's bytes, every such edit of more than one line would fall to the tolerant tier and be reported, with a "text replaced" that looks identical to `old`. So the file's text is matched with every CRLF read as one line break: an `old` copied from `read` is an exact match, and is not reported. The bytes replaced are still the file's own, and the new text takes the file's line ending ("Text files", above).
+- **The tolerant tier, exactly.** `old` is matched line by line against whole lines of the file. Not compared: spaces, tabs and carriage returns at the end of a line, and a uniform difference in indentation, which means that every line of the file has the same extra spaces or tabs in front of what `old` has, or every line of `old` has. Tabs against spaces is not a uniform difference. A blank line matches a blank line only, and an `old` of blank lines alone matches nothing. The new text is given the same change of indentation, so that it fits where it is put; if one of its lines has less indentation than is to be taken off, the edit is refused. Whole lines are replaced by whole lines, each ending as the lines it replaces did.
+- **Counting.** `old` must occur exactly `count` times, and every occurrence is replaced. Occurrences that share text (`aa` in `aaa`) are refused, as are two edits that would replace the same text: neither has one meaning. The tolerant tier is tried only when the exact tier finds nothing at all, never to make up a number.
+- **An edit that changes nothing** (`old` and `new` the same) is refused when the call is planned. A call holds at most 100 edits.
 - **On failure** the result shows the closest region of the file and how it differs from `old`, so the model can fix the call in one step. Too many or too few occurrences are reported with their line numbers.
+  - Every edit of the call that failed is reported, not only the first.
+  - The closest region is the run of lines that shares the most text with `old` as whole lines, whatever their indentation, or failing that the run around the line most like `old`'s longest line. It is shown as a diff from `old` to the file. Where the two differ only in spaces against tabs, which a diff does not show, a line says what each is indented with. When nothing in the file is like `old`, the result says so.
 - **Staleness guard:** as for `write`.
 - Line endings and a byte-order mark are preserved. A `new` text with LF endings is converted when the file uses CRLF.
 - Returns a short confirmation with the changed line ranges. Front ends receive the unified diff as a structured payload. The model does not get the diff back, because it already knows what it asked for.
 - Concurrency: keyed by path.
+- The line ranges are those of the file as it now is. The payload: `kind` (`edit` or `unchanged`), the path, the ranges, the number of replacements, whether the tolerant tier was used, the lines added and removed, and the diff, under the same size limit as `write`'s.
+- A file that does not exist is an error that says to use `write`. The order of a change, cancellation, the size limit and the effects are as for `write`.
 
 ## `shell`
 
@@ -375,6 +411,15 @@ Keeps the plan for the current work: a task list that the user can see and chang
 - **The user can edit it.** Reordering, skipping, rewording, adding or removing an item in the panel (or through the RPC protocol) updates the stored plan at once. The change reaches the model as an appended notice at the next safe boundary, saying exactly what changed. The tool's next result always returns the current plan, so the model never works from a stale copy.
 - No side effects outside the session. Concurrency: read-only.
 
+As built in step 10 (`PlanBoard` and `PlanTool` in `cortex-tools`):
+
+- **The plan is a `PlanBoard`,** one for a session, shared by the tool and the core. The model writes it through the tool. The user's edits are applied with `PlanBoard::apply`, all of a batch or none, and an edit that does not fit (an item that is not there, an order that does not name every item once) is an error that changes nothing. Every change makes a new revision. A resumed session starts from the plan it had (`PlanBoard::with_plan`).
+- **The notice** is the text `apply` returns: one line for each thing the user changed (the item, by its id and its text; a new item's id; a new order), and then the plan as it now is. The core hands it to the loop (`SessionHandle::notice` with `NoticeSource::Plan`). An edit that changes nothing, such as skipping an item that is skipped, has no notice.
+- **The user's edit wins over a call that crosses it** (the owner, 2026-11-13). Each call replaces the whole list, so a call the model wrote before it saw the user's edit would silently undo it. While the user has changed something the model has not been shown, a call replaces nothing: its result is an error that says what the user changed and gives the current plan, and the model's next call goes through. It is the staleness guard of the file tools, for the plan. The model has been shown an edit once a result of the tool has returned the plan, or once the core has said that the edit's notice was recorded in the conversation (`PlanBoard::delivered`). A call that sends exactly the current plan crosses nothing.
+- **What a call returns.** When the list was taken as sent, one line: how many items, how many in each status, and the revision. The plan is then exactly what the model sent, so it is not sent back. When the call crossed an edit, the plan in full. Front ends get the plan in the payload either way.
+- **The marker.** The call changes the session and says so on its plan ("The tool trait", above): it never runs for a response that is thrown away, and two calls in one response apply in order.
+- Limits: at most 100 items; an id of up to 40 characters with no spaces, unique in the list; a text of one line and up to 400 characters. An item the user adds gets an id of the form `u1`.
+
 ## `remember`
 
 Proposes a fact or convention for the project's memory.
@@ -388,6 +433,14 @@ Proposes a fact or convention for the project's memory.
 
 - The entry is stored as proposed, with its source, and becomes active only when the user accepts it ([14-adaptation.md](14-adaptation.md)).
 - Concurrency: read-only.
+
+As built in step 10 (`RememberTool` in `cortex-tools`):
+
+- **Proposals go through a trait,** `Proposals`, because the project's memory (`cortex-knowledge`, step 17) is not built yet and is a crate the tools cannot see. A proposal carries the kind, the text, the evidence, the check and the turn it was made in. What takes it stores it as proposed: nothing in the tool can make an entry active. `MemoryProposals` keeps them in memory for a session with nowhere else to put them.
+- **The result says that the entry is not in use,** so that the model does not rely on it in the session that proposed it. An entry that is already known, or already waiting for review, adds nothing, and the result says that too.
+- **A check is validated when the call is planned:** `exists` takes `path`, `contains` takes `path` and `pattern`, `command` takes `command`, and nothing else. A check's path goes through the path resolver like every other path, must be inside the workspace, and is stored relative to its root. Nothing runs a check yet.
+- Limits: a text of up to 600 characters, and evidence, a pattern or a command of up to 400.
+- The call changes the session and says so on its plan, like `plan`. It touches nothing outside the session and the project's store of proposals.
 
 ## `tool_search` and `tool_call`
 
@@ -431,17 +484,17 @@ Tools that are not built in (MCP tools and extension tools) are not declared to 
 |---|---|
 | Path separators | `/` and `\` accepted. `/` shown. |
 | Case | Comparisons are case-insensitive. The on-disk case is kept. |
-| Line endings | Detected and preserved per file. New files use LF unless configuration says otherwise. |
+| Line endings | Detected and preserved per file, and per line in a file with both kinds. A new file is written with the line breaks the model gave it, which are line feeds: nothing converts them, and there is no setting for it yet. |
 | Shell | PowerShell by default, with `cmd.exe` supported. The model is told which. A command with a line break is refused for `cmd.exe`. |
 | Process tree | Job Objects, with a suspended start. Ctrl-Break as the polite interrupt. |
 | Command output | PowerShell is told to write UTF-8. `cmd.exe` writes in the console's code page. |
-| Locked files | Replace is retried briefly, then fails with the reason. |
+| Locked files | Replace is retried briefly, then fails with the reason. A file another program holds so that it cannot even be read fails at once. Either way the file is left byte for byte as it was, with no temporary file beside it. |
 | Long paths | Handled internally with extended-length paths. Not shown to the model. |
 | Reserved names and device paths | Rejected. |
 | Trailing dots and spaces, alternate data streams | Rejected. |
 | Drive-relative and root-relative paths (`C:name`, `\name`) | Rejected. |
 | Network paths | Rejected unless the server and share are allowed in configuration. |
-| Junctions and directory links | Resolved like symbolic links. The check applies to the target. |
+| Junctions and directory links | Resolved like symbolic links. The check applies to the target. One that is put where a checked file was is refused when the file is opened, and never written through. |
 | Short (8.3) names | Resolved to the long name. |
 | Names on disk that the rules refuse (made through an extended-length path) | A walk steps past them and says so in its result. |
 | Globs | Either separator accepted. Matching ignores case. |

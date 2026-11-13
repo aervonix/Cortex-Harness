@@ -80,6 +80,7 @@ The provider adapter yields neutral model events (see [04-providers.md](04-provi
 **Calls start as soon as their arguments are complete.** When a tool call's block ends, the loop plans it at once, while the model is still streaming the rest of the response.
 
 - A call whose plan has no side effects (no write, exec or network effect) starts running immediately.
+- A call that changes the session itself (`plan`, `remember`) has no such effect and still waits for the response to end: its plan says that it changes the session ([05-tools.md](05-tools.md), "The tool trait").
 - A call that needs approval puts its question to the user immediately.
 - A call with side effects that is already allowed starts when the response ends.
 
@@ -111,6 +112,7 @@ As built, one rule decides what may start: a call waits for every earlier call i
 
 - **"The model's order" is the order of the blocks' indexes,** not the order the blocks happened to end in. While the response is arriving, nothing after a tool call that is still being written starts or is asked about.
 - **A call that is not scheduled as read-only is taken to have side effects,** whatever effects its plan declares, and so waits for the response to end. A tool from outside whose author declared nothing is exclusive ([05-tools.md](05-tools.md)), and must not start early because its list of effects is empty.
+- **So is a call whose plan says that it changes the session** (`Plan::changes_session`, since step 10). `plan` and `remember` declare no effect and are scheduled as read-only, because they touch nothing outside the session. Started early, they would replace the plan or propose a memory for a response that might then fail and be thrown away. Two such calls also conflict with each other, so they run one at a time in the model's order: of two `plan` calls in one response the second stands. Beside every other call they run as read-only calls do.
 - **A call that repeats the id of another call of the response is dropped,** from the message and from the round. A result names its call by id, so two calls with one id cannot both be answered, and every provider rejects them.
 
 **4. Record.** Results are appended to the log, and sent to the model, in the model's call order whatever order they finished in. Front ends see each result as it completes.
@@ -129,6 +131,8 @@ The user can type while a turn runs. There are two delivery modes, chosen by the
 | `queue` | As a new turn, after the current turn completes. One at a time. | Line up the next task. |
 
 **Edits to the plan** made by the user while the agent works ([05-tools.md](05-tools.md)) are delivered the same way as a steering message: as a notice at the next safe boundary. A notice never starts a turn. One that arrives while the session is idle waits, and is delivered ahead of the next prompt.
+
+The text of the notice is written by the plan itself (`PlanBoard::apply` in `cortex-tools`, step 10): what the user changed, item by item, and the plan as it now is. A `plan` call the model wrote before the notice reached it replaces nothing: the user's edit wins, and the call's result gives the model the current plan ([05-tools.md](05-tools.md), "`plan`"). The result is recorded with its round, and the notice after it, at the boundary.
 
 A safe boundary is the only place a user message can be appended without breaking a tool round. It is the `Preparing` state. An RPC `Op::Prompt` sent while a turn is running must say which mode it wants; the loop rejects it otherwise (`turn_running`) instead of guessing. A prompt is answered at once with the turn it belongs to: the one it started, the running one it steers, or the one it will start, whose id is given when it is queued.
 

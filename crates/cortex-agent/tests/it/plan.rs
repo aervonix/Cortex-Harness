@@ -129,7 +129,9 @@ fn a_users_edit_reaches_the_model_as_a_notice_and_the_next_result_returns_the_cu
         .expect("the call has its result");
     let notice = log
         .iter()
-        .position(|item| matches!(item, Item::Notice(notice) if notice.source == NoticeSource::Plan))
+        .position(
+            |item| matches!(item, Item::Notice(notice) if notice.source == NoticeSource::Plan),
+        )
         .expect("the notice is in the log");
     assert!(result < notice);
 }
@@ -139,10 +141,7 @@ fn a_notice_delivered_while_idle_is_followed_by_a_call_that_goes_through() {
     let first = items(&[("a", "First", "active"), ("b", "Second", "pending")]);
     // The model has been told of the user's edit, and its next list is
     // written with it: the plan as the user left it, moved on.
-    let informed = items(&[
-        ("a", "First", "done"),
-        ("b", "Second, carefully", "active"),
-    ]);
+    let informed = items(&[("a", "First", "done"), ("b", "Second, carefully", "active")]);
     let world = World::new(
         "plan_idle_edit",
         [
@@ -168,8 +167,10 @@ fn a_notice_delivered_while_idle_is_followed_by_a_call_that_goes_through() {
             text: "Second, carefully".to_owned(),
         })])
         .unwrap();
-    rig.handle
-        .notice(NoticeSource::Plan, change.notice.expect("something to tell"));
+    rig.handle.notice(
+        NoticeSource::Plan,
+        change.notice.expect("something to tell"),
+    );
     world.run(async {
         // A notice starts no turn. It goes out ahead of the next prompt.
         rig.prompt("carry on");
