@@ -269,7 +269,11 @@ fn ignored_test(name: &str, variables: &[(&str, &str)]) -> Result<()> {
 
 /// Runs one ignored test of the test binary `selection` names, and shows
 /// its output. Fails unless exactly one test ran and passed.
-pub(crate) fn run_ignored(selection: &[&str], name: &str, variables: &[(&str, &str)]) -> Result<()> {
+pub(crate) fn run_ignored(
+    selection: &[&str],
+    name: &str,
+    variables: &[(&str, &str)],
+) -> Result<()> {
     run_ignored_with(selection, name, variables, false)
 }
 
