@@ -20,11 +20,21 @@ use crate::clock;
 
 /// An engine for the real workspace at `root`, with the real resolver.
 fn real_engine(root: &Path, shell: ShellSyntax, rules: Vec<SourcedRule>) -> (Engine, PathResolver) {
+    real_engine_at(root, shell, rules, Level::Supervised)
+}
+
+/// The same, at a level.
+fn real_engine_at(
+    root: &Path,
+    shell: ShellSyntax,
+    rules: Vec<SourcedRule>,
+    level: Level,
+) -> (Engine, PathResolver) {
     let resolver = PathResolver::new(root, PathOptions::new()).expect("open the workspace");
     let workspace = resolver.root().clone();
     let engine = Engine::start(Parts {
         lease_id: LeaseId::new("l_1"),
-        level: Level::Supervised,
+        level,
         rules,
         approved: Vec::new(),
         sandbox_policy: default_sandbox(&workspace, &[], &[]),
@@ -60,6 +70,88 @@ fn run(engine: &Engine, resolver: &PathResolver, command: &str) -> Outcome {
             },
         ],
     })
+}
+
+/// A pattern is expanded against the directory as it is now, and each match
+/// is judged as the name written out. So `rm *` runs where nothing
+/// protected, secret or denied is there, and a rule that holds a name back
+/// is met through a pattern (`rm *.lock`). The owner's decision on the
+/// second independent review of the fixes to step 12.
+#[test]
+fn a_pattern_is_judged_by_what_the_directory_holds() {
+    use cortex_policy::RuleSource;
+    use cortex_protocol::lease::{Effect, Rule};
+
+    use crate::Said::{Allow, Ask};
+    use crate::{reason, said};
+
+    let scratch = cortex_testkit::scratch!("real_patterns");
+    for file in [
+        "ws/a.o",
+        "ws/b.o",
+        "ws/dist/app.js",
+        "ws/dist/app.css",
+        "ws/src/main.rs",
+        "ws/Cargo.lock",
+        "ws/keys/server.pem",
+        "ws/.git/config",
+    ] {
+        scratch.file(file, "x");
+    }
+    for number in 0..1001 {
+        scratch.file(&format!("ws/big/{number}.txt"), "");
+    }
+    let ws = scratch.path().join("ws");
+    let deny_lock = SourcedRule::new(
+        Rule {
+            effect: Effect::Write,
+            pattern: "**/*.lock".to_owned(),
+            action: RuleAction::Deny,
+        },
+        RuleSource::User,
+    );
+    let (plain, resolver) = real_engine_at(&ws, ShellSyntax::Posix, Vec::new(), Level::Autonomous);
+    let (ruled, _) = real_engine_at(&ws, ShellSyntax::Posix, vec![deny_lock], Level::Autonomous);
+    let decide = |engine: &Engine, command: &str| {
+        let outcome = run(engine, &resolver, command);
+        (said(&outcome), reason(&outcome))
+    };
+    // Nothing protected, secret or denied is there: it runs.
+    for command in [
+        "rm *",
+        "rm *.o",
+        "rm -rf dist/*",
+        "rm src/*",
+        "rm *.zip",
+        "cat dist/*",
+        "echo x > dist/*.js",
+    ] {
+        let (outcome, why) = decide(&plain, command);
+        assert_eq!(outcome, Allow, "{command:?}: {why}");
+    }
+    // A rule that holds back a name is met through a pattern.
+    for command in ["rm *.lock", "rm *", "rm Cargo.*"] {
+        let (outcome, why) = decide(&ruled, command);
+        assert_eq!(outcome, Ask, "{command:?}: {why}");
+    }
+    assert_eq!(decide(&ruled, "rm *.o").0, Allow);
+    // A secret, a protected path, and more names than are listed.
+    for command in [
+        "rm keys/*",
+        "cat keys/*",
+        "rm -rf .g*",
+        "cp evil .g*/config",
+        "rm big/*",
+        "rm big/*.txt",
+    ] {
+        let (outcome, why) = decide(&plain, command);
+        assert_eq!(outcome, Ask, "{command:?}: {why}");
+    }
+    // After a part that may write, a listing taken now could miss what it
+    // made: the pattern is judged by its text, and `*` could be `HEAD`.
+    assert_eq!(decide(&plain, "touch new && rm *").0, Ask);
+    assert_eq!(decide(&plain, "touch new | rm *").0, Ask);
+    assert_eq!(decide(&plain, "touch new && rm *.o").0, Allow);
 }
 
 #[cfg(unix)]
@@ -231,6 +323,38 @@ mod unix {
                 reason(&outcome)
             );
         }
+    }
+
+    /// A pattern can match a link, and is followed through it as a name
+    /// written out is. A link made earlier in the same line, which no
+    /// listing taken now can see, makes every later part that names
+    /// something one to ask about. The owner's decision on the second
+    /// independent review of the fixes to step 12.
+    #[test]
+    fn a_pattern_is_followed_through_links_and_after_a_link_is_made() {
+        let scratch = cortex_testkit::scratch!("real_pattern_links");
+        scratch.file("ws/.github/workflows/ci.yml", "on: push");
+        scratch.file("ws/.bashrc", "");
+        scratch.file("ws/notes.txt", "");
+        let ws = scratch.path().join("ws");
+        symlink(".github", ws.join("ci")).unwrap();
+        symlink(".bashrc", ws.join("a.o")).unwrap();
+        let (engine, resolver) =
+            super::real_engine_at(&ws, ShellSyntax::Posix, Vec::new(), Level::Autonomous);
+        for command in [
+            "cp evil.yml c?/workflows/x.yml",
+            "cp evil.yml ci/workflows/x.yml",
+            "cp x *.o",
+            "echo x >> *.o",
+            "ln -s .github gh && cp evil.yml gh/workflows/x.yml",
+            "ln -s .github gh && cp evil.yml g?/workflows/x.yml",
+            "ln -s .bashrc b.o; cp x *.o",
+            "cp -s .github gh2 && cp x gh2/workflows/y.yml",
+        ] {
+            let outcome = run(&engine, &resolver, command);
+            assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
+        }
+        assert_eq!(said(&run(&engine, &resolver, "rm *.txt")), Allow);
     }
 
     /// The workspace itself opened through a link is known by its real

@@ -92,6 +92,11 @@ fn measure_deciding() {
     // The same line with what it names followed on a real file system.
     let scratch = cortex_testkit::scratch!("measure_deciding");
     scratch.file("crates/cortex-policy/src/engine.rs", "fn decide() {}");
+    // A directory of a thousand files, the most a pattern is expanded
+    // against.
+    for number in 0..1000 {
+        scratch.file(format!("dist/{number}.js"), "");
+    }
     let resolver = PathResolver::new(scratch.path(), PathOptions::new()).unwrap();
     let workspace = resolver.root().clone();
     let mut real = parts();
@@ -108,13 +113,26 @@ fn measure_deciding() {
             command: line.to_owned(),
             cwd: workspace.clone(),
         },
-        Access::Write { path: workspace },
+        Access::Write {
+            path: workspace.clone(),
+        },
     ];
     let (real_median, real_max) = time(RUNS, || {
         drop(real.decide(&Request {
             tool: "shell",
             default: RuleAction::Ask,
             accesses: &accesses,
+        }));
+    });
+    let pattern = [Access::Exec {
+        command: "rm -rf dist/*".to_owned(),
+        cwd: workspace,
+    }];
+    let (pattern_median, pattern_max) = time(2000, || {
+        drop(real.decide(&Request {
+            tool: "shell",
+            default: RuleAction::Ask,
+            accesses: &pattern,
         }));
     });
     let (start_median, start_max) = time(2000, || {
@@ -136,6 +154,9 @@ fn measure_deciding() {
     );
     println!(
         "  a line that is not modelled:               median {refused_median:?}, slowest {refused_max:?}"
+    );
+    println!(
+        "`rm -rf dist/*`, a thousand files listed:   median {pattern_median:?}, slowest {pattern_max:?}"
     );
     println!(
         "making the engine (compiling 20 rules):      median {start_median:?}, slowest {start_max:?}"

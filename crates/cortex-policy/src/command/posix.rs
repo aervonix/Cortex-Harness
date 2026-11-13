@@ -19,7 +19,8 @@
 //!   never treats it as safe, because the names it expands to can begin
 //!   with a `-`.
 //! - **Redirections** `< file`, `> file`, `>> file`, each with an optional
-//!   descriptor number, to a word with no glob; and `2>&1`, `>&2`, `>&-`.
+//!   descriptor number, to a word, a glob kept and flagged as in an
+//!   argument; and `2>&1`, `>&2`, `>&-`.
 //!
 //! # What is not, and is therefore asked about
 //!

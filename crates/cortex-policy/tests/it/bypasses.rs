@@ -1578,7 +1578,13 @@ fn patterns_and_lost_directories_hold_against_the_second_review() {
     // about and not refused: it writes nothing. One that could read a
     // secret is asked about at every level that asks about reading one.
     let read_only = at(Level::ReadOnly);
-    for command in ["ls src/*", "cat docs/*", "grep -n x src/*", "wc -l *", "cat *.pem"] {
+    for command in [
+        "ls src/*",
+        "cat docs/*",
+        "grep -n x src/*",
+        "wc -l *",
+        "cat *.pem",
+    ] {
         let outcome = shell(&read_only, command);
         assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
     }
@@ -1611,4 +1617,52 @@ fn patterns_and_lost_directories_hold_against_the_second_review() {
         parts.rules = vec![user(Effect::Exec, "Get-Content *", RuleAction::Allow)];
     });
     assert_eq!(said(&shell(&reading, "Get-Content '.en?'")), Ask);
+}
+
+/// A line the analysis does not model is decided by the level, and what its
+/// words could name is still checked: the harness's own files are refused,
+/// and a protected path, a file that looks like a secret or a path a rule
+/// holds back is asked about, at every level that asks about those. So is a
+/// word with a space in it, which may be a command line for another program
+/// (`sh -c '…'`). The owner's decision on the second independent review of
+/// the fixes to step 12.
+#[test]
+fn what_an_unmodelled_line_names_is_still_checked() {
+    let autonomous = engine_with(|parts| {
+        parts.level = Level::Autonomous;
+        parts.rules = vec![user(Effect::Write, "**/*.lock", RuleAction::Deny)];
+    });
+    for command in [
+        "cp evil .git/hooks/pre-commit #x",
+        "cp evil .git/hooks/pre-commit $X",
+        "cp evil \\.github/workflows/ci.yml",
+        "sh -c 'cp evil .git/hooks/pre-commit'",
+        "bash -c \"echo x >> .bashrc\"",
+        "grep -r $KEY .env",
+        "rm Cargo.lock # tidy",
+        "cp evil .gi?/config #x",
+    ] {
+        let outcome = shell(&autonomous, command);
+        assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
+    }
+    for engine in [&autonomous, &at(Level::Unrestricted)] {
+        for command in [
+            "cat ~/.config/cortex-harness/credentials.toml #x",
+            "sh -c 'cat ~/.config/cortex-harness/credentials.toml'",
+        ] {
+            assert_eq!(said(&shell(engine, command)), Deny, "{command:?}");
+        }
+    }
+    // An unmodelled line that names nothing held back runs, as before.
+    for command in ["echo $HOME", "cargo test # all", "make -j$(nproc)"] {
+        assert_eq!(said(&shell(&autonomous, command)), Allow, "{command:?}");
+    }
+    // At `unrestricted` the level asks nothing about protected paths.
+    assert_eq!(
+        said(&shell(
+            &at(Level::Unrestricted),
+            "cp evil .git/hooks/pre-commit #x"
+        )),
+        Allow
+    );
 }

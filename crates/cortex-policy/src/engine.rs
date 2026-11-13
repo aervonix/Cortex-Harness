@@ -73,7 +73,7 @@ use cortex_protocol::lease::{
 use cortex_protocol::methods::{ApprovalChoice, StoredApproval};
 
 use crate::approvals::{ApprovalError, ApprovalStore, SessionApprovals};
-use crate::command::pattern::words_of;
+use crate::command::pattern::{raw_words, words_of};
 use crate::command::{Analysis, Joiner, Part, Redirect, ShellSyntax, Word, analyse, table};
 use crate::expansion::{NamePattern, has_wildcards};
 use crate::lease::{StandingTerms, standing_lease};
@@ -213,6 +213,30 @@ pub trait Locate: Send + Sync + std::fmt::Debug {
     /// reach it: relative to `cwd`, absolute, or under `~`. `None` when it
     /// is not a path the harness accepts, or cannot be followed.
     fn locate(&self, cwd: &AbsPath, written: &str) -> Option<AbsPath>;
+
+    /// The names in the directory `dir`, a real location, up to `most` of
+    /// them: what a pattern a shell expands there could match. The default
+    /// is [`Listing::Unknown`], a `Locate` that does not look, and then a
+    /// pattern is judged by its text alone.
+    fn list(&self, dir: &AbsPath, most: usize) -> Listing {
+        let _ = (dir, most);
+        Listing::Unknown
+    }
+}
+
+/// What a directory holds, for expanding a pattern against it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Listing {
+    /// The names in it, `.` and `..` left out, each with whether it is a
+    /// link, which is followed before what it leads to is judged. None, for
+    /// a directory that is not there, or for something that is not a
+    /// directory.
+    Names(Vec<(String, bool)>),
+    /// More names than were asked for.
+    TooMany,
+    /// It could not be listed, or a name in it is not one the harness can
+    /// judge.
+    Unknown,
 }
 
 /// Whether a path as written starts somewhere other than the directory
@@ -240,6 +264,43 @@ impl Locate for PathResolver {
             self.resolve(&format!("{}{separator}{written}", cwd.to_native_string()))
         };
         resolved.ok().map(|resolved| resolved.abs().clone())
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a listing of one directory, bounded, where a decision about a pattern needs it"
+    )]
+    fn list(&self, dir: &AbsPath, most: usize) -> Listing {
+        let entries = match std::fs::read_dir(dir.to_fs_path()) {
+            Ok(entries) => entries,
+            // Nothing there to match.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Listing::Names(Vec::new());
+            }
+            Err(_) => return Listing::Unknown,
+        };
+        let mut names = Vec::new();
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return Listing::Unknown;
+            };
+            if names.len() == most {
+                return Listing::TooMany;
+            }
+            // A file type that cannot be told is taken for a link, and
+            // followed.
+            let link = entry.file_type().map_or(true, |kind| kind.is_symlink());
+            match entry.file_name().into_string() {
+                Ok(name) => names.push((name, link)),
+                Err(_) => return Listing::Unknown,
+            }
+        }
+        Listing::Names(names)
     }
 }
 
@@ -428,6 +489,91 @@ struct Directory {
     real: AbsPath,
 }
 
+/// What the other parts of a line could have done by the time a part's
+/// words are expanded: written, so that names a listing taken now cannot
+/// see may be there; or made a link, so that a path may lead anywhere. A
+/// part after one of those, or beside one in a pipeline, which runs at the
+/// same time, is affected.
+#[derive(Debug)]
+struct Around {
+    /// For each part: whether it may write.
+    writes: Vec<bool>,
+    /// For each part: whether it makes a link.
+    links: Vec<bool>,
+    /// For each part: the index of the first part of its pipeline.
+    pipeline: Vec<usize>,
+}
+
+impl Around {
+    fn of(engine: &Engine, parts: &[Part]) -> Self {
+        let mut pipeline = Vec::with_capacity(parts.len());
+        for (index, part) in parts.iter().enumerate() {
+            let start = if part.joiner == Joiner::Pipe && index > 0 {
+                pipeline[index - 1]
+            } else {
+                index
+            };
+            pipeline.push(start);
+        }
+        Self {
+            writes: parts
+                .iter()
+                .map(|part| {
+                    part.redirects
+                        .iter()
+                        .any(|redirect| matches!(redirect, Redirect::Write { .. }))
+                        || (!is_change_of_directory(part, engine.shell)
+                            && table::read_only(part, engine.shell, engine.repository_trusted)
+                                .is_none())
+                })
+                .collect(),
+            links: parts.iter().map(makes_a_link).collect(),
+            pipeline,
+        }
+    }
+
+    /// The parts that could act before the words of part `index` are
+    /// expanded: every one before it, and the rest of its pipeline.
+    fn others(&self, index: usize) -> impl Iterator<Item = usize> + '_ {
+        (0..self.writes.len()).filter(move |&other| {
+            other != index && (other < index || self.pipeline[other] == self.pipeline[index])
+        })
+    }
+
+    /// Whether a pattern of part `index` may be expanded against the
+    /// directories as they are now.
+    fn may_list(&self, index: usize) -> bool {
+        self.others(index).all(|other| !self.writes[other])
+    }
+
+    /// Whether a part that makes a link runs before part `index`, or beside
+    /// it.
+    fn after_a_link(&self, index: usize) -> bool {
+        self.others(index).any(|other| self.links[other])
+    }
+}
+
+/// Whether a part makes a link: `ln`, `link`, `mklink`, or `cp` told to make
+/// links instead of copies.
+fn makes_a_link(part: &Part) -> bool {
+    let program = part.program();
+    let name = program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    match name {
+        "ln" | "link" | "mklink" => true,
+        "cp" => part.arguments().iter().any(|word| {
+            let text = word.text.as_str();
+            matches!(text, "--symbolic-link" | "--link")
+                || (text.starts_with('-') && !text.starts_with("--") && text.contains(['s', 'l']))
+        }),
+        _ => false,
+    }
+}
+
 /// Where the parts after a `cd` the analysis could not follow may be
 /// running. Any `cd` may have failed, and then the next ran from where the
 /// one before left the shell. So each later `cd` is applied from every
@@ -575,6 +721,42 @@ impl Lost {
             }
         }
     }
+}
+
+/// How a part uses what a path or a pattern it gives leads to.
+#[derive(Debug, Clone, Copy)]
+struct How {
+    /// It only reads it.
+    reads: bool,
+    /// It writes it for certain, as a redirection does: a match outside the
+    /// scope is asked about, as a file named outright is.
+    scope: bool,
+    /// Its directory may be listed to expand a pattern: nothing earlier in
+    /// the line, or beside it in a pipeline, can have made names there.
+    listing: bool,
+}
+
+/// The most names one directory is listed for, to expand a pattern against
+/// it, and the most a pattern's matches are judged. Enough for a directory
+/// of sources or build output (`rm -rf dist/*`), and bounded so that a
+/// decision on the path of every command stays well under a millisecond
+/// on a local disk. Past it the pattern is asked about.
+const MOST_NAMES_LISTED: usize = 1000;
+
+/// The most directories listed for one pattern: `*/*/x` lists the base
+/// and then every directory its first name matched.
+const MOST_DIRECTORIES_LISTED: usize = 64;
+
+/// What a pattern expands to, against the directories as they are now.
+#[derive(Debug)]
+enum Expansion {
+    /// The paths it matches, each with whether a link may be in it that
+    /// is still to be followed.
+    Matches(Vec<(AbsPath, bool)>),
+    /// More than [`MOST_NAMES_LISTED`] names, or directories.
+    TooMany,
+    /// A directory could not be listed: the pattern is judged by its text.
+    Unknown,
 }
 
 /// What a `cd` is given, past its options.
@@ -1098,6 +1280,7 @@ impl Engine {
                     "The command has {why}. The analysis does not model that, so no rule and no \
                      safe list applies to it."
                 )));
+                findings.extend(self.judge_unmodelled(rules, command, cwd));
                 return (findings, false);
             }
         };
@@ -1115,13 +1298,25 @@ impl Engine {
         let mut visited = vec![directory.clone()];
         let mut lost: Option<Lost> = None;
         let mut only_reads = true;
+        let around = Around::of(self, parts);
         for (index, part) in parts.iter().enumerate() {
             let changes_directory = is_change_of_directory(part, self.shell);
             let later = parts.get(index + 1..).unwrap_or(&[]);
+            let listing = around.may_list(index);
+            if around.after_a_link(index)
+                && !part.arguments().is_empty()
+                && level::decider(self.level(), Matter::WriteBeyond) != Decider::Holder
+            {
+                findings.push(Finding::ask(format!(
+                    "`{}` runs after a part of the line that makes a link, which can give any \
+                     path another name, so what it names cannot be checked.",
+                    words_of(part).join(" ")
+                )));
+            }
             if let Some(lost) = &mut lost {
                 // A `cd`'s own redirections are opened before it moves, and
                 // its target is not itself a path it reads or writes.
-                findings.extend(self.judge_lost(rules, part, lost, !changes_directory));
+                findings.extend(self.judge_lost(rules, part, lost, !changes_directory, listing));
                 if changes_directory {
                     lost.moved_by(self, part);
                 }
@@ -1153,7 +1348,7 @@ impl Engine {
                 findings.push(self.lost_finding());
                 lost = Some(Lost::after(self, &visited, part));
             }
-            let (standing, found) = self.judge_part(rules, part, &here);
+            let (standing, found) = self.judge_part(rules, part, &here, listing);
             findings.extend(found);
             only_reads &= standing == Standing::ReadOnly;
             // A command that may write, run after a `cd`, writes where it
@@ -1318,11 +1513,11 @@ impl Engine {
         part: &Part,
         lost: &Lost,
         arguments: bool,
+        listing: bool,
     ) -> Vec<Finding> {
         let shown = words_of(part).join(" ");
         let mut findings = Vec::new();
-        if lost.overflowed && level::decider(self.level(), Matter::WriteBeyond) != Decider::Holder
-        {
+        if lost.overflowed && level::decider(self.level(), Matter::WriteBeyond) != Decider::Holder {
             findings.push(Finding::ask(format!(
                 "`{shown}` runs after more changes of directory than the analysis follows, so \
                  what it names cannot be placed."
@@ -1361,20 +1556,28 @@ impl Engine {
             }
         }
         for (text, pattern, reads) in relative {
+            let how = How {
+                reads,
+                scope: !reads,
+                listing,
+            };
             let found = if pattern {
-                self.judge_pattern(rules, text, &places, &shown, reads)
+                self.judge_pattern(rules, text, &places, &shown, how)
             } else {
                 self.judge_name(rules, text, &places, &shown, reads)
             };
-            if let Some(found) =
-                found.or_else(|| self.judge_under(rules, text, lost, &shown, reads))
+            if let Some(found) = found.or_else(|| self.judge_under(rules, text, lost, &shown, how))
             {
                 findings.push(found);
             }
         }
         if arguments {
-            let reads = self.only_reads_but_for_patterns(part);
-            findings.extend(self.judge_named(rules, part, &places, Some(lost), &shown, reads));
+            let how = How {
+                reads: self.only_reads_but_for_patterns(part),
+                scope: false,
+                listing,
+            };
+            findings.extend(self.judge_named(rules, part, &places, Some(lost), &shown, how));
         }
         findings
     }
@@ -1402,7 +1605,7 @@ impl Engine {
         text: &str,
         lost: &Lost,
         shown: &str,
-        reads: bool,
+        how: How,
     ) -> Option<Finding> {
         if text.starts_with('~') || starts_elsewhere(text, self.workspace.style()) {
             return None;
@@ -1413,7 +1616,7 @@ impl Engine {
                 &format!("{pattern}/{text}"),
                 std::slice::from_ref(base),
                 shown,
-                reads,
+                how,
             )
         })
     }
@@ -1442,7 +1645,7 @@ impl Engine {
         places: &[AbsPath],
         lost: Option<&Lost>,
         shown: &str,
-        reads: bool,
+        how: How,
     ) -> Vec<Finding> {
         let mut findings = Vec::new();
         for word in part.arguments() {
@@ -1459,17 +1662,27 @@ impl Engine {
                 }
                 texts.into_iter().find_map(|text| {
                     let here = if pattern_word && has_wildcards(text) {
-                        self.judge_pattern(rules, text, places, shown, reads)
+                        self.judge_pattern(rules, text, places, shown, how)
                     } else {
-                        self.judge_name(rules, text, places, shown, reads)
+                        self.judge_name(rules, text, places, shown, how.reads)
                     };
                     here.or_else(|| {
-                        lost.and_then(|lost| self.judge_under(rules, text, lost, shown, reads))
+                        lost.and_then(|lost| self.judge_under(rules, text, lost, shown, how))
                     })
                 })
             });
             if let Some(found) = found {
                 findings.push(found);
+            }
+        }
+        // A word with a space in it may be a command line for another
+        // program (`sh -c '…'`, `ssh host '…'`): its words are judged as
+        // those of a line the analysis does not model.
+        if let Some(place) = places.first() {
+            for word in part.arguments() {
+                if word.text.contains(char::is_whitespace) {
+                    findings.extend(self.judge_unmodelled(rules, &word.text, place));
+                }
             }
         }
         // `git config` writes the repository's configuration, which can
@@ -1588,8 +1801,9 @@ impl Engine {
         text: &str,
         places: &[AbsPath],
         shown: &str,
-        reads: bool,
+        how: How,
     ) -> Option<Finding> {
+        let reads = how.reads;
         let hidden_rule = self.shell == ShellSyntax::Posix;
         let (_, rest) = self.split_pattern(text)?;
         let names: Vec<&str> = rest
@@ -1623,6 +1837,27 @@ impl Engine {
             if found.is_some() {
                 return found;
             }
+            // Where nothing can have made names since, the pattern is what
+            // the directory holds now: each match is judged as a name
+            // written out, through any link.
+            if how.listing {
+                match self.expand(&base, &names, hidden_rule) {
+                    Expansion::Matches(paths) => {
+                        return paths
+                            .iter()
+                            .find_map(|path| self.judge_match(rules, path, shown, how));
+                    }
+                    Expansion::TooMany => {
+                        return Some(Finding::ask(format!(
+                            "`{shown}` names `{text}`, a pattern that matches more than \
+                             {MOST_NAMES_LISTED} names, or reaches into more than \
+                             {MOST_DIRECTORIES_LISTED} directories: too many to check."
+                        )));
+                    }
+                    Expansion::Unknown => {}
+                }
+            }
+            // Otherwise, by its text: what it could match.
             if let Some(hit) = rules.protected_under(&base) {
                 return Some(Finding::ask(format!(
                     "`{shown}` names `{text}`, a pattern the shell may expand to a path protected \
@@ -1661,8 +1896,8 @@ impl Engine {
             }
             let last = patterns.last()?;
             let repository = patterns.iter().any(|pattern| could(pattern, ".git"));
-            let secret =
-                secret_names().any(|name| last.could_match(&NamePattern::parse(&name), hidden_rule));
+            let secret = secret_names()
+                .any(|name| last.could_match(&NamePattern::parse(&name), hidden_rule));
             let in_cargo = |at: usize| match at.checked_sub(1) {
                 Some(before) => could(&patterns[before], ".cargo"),
                 None => base
@@ -1684,6 +1919,149 @@ impl Engine {
             });
             (repository || secret || cargo || guarded).then(flagged)
         })
+    }
+
+    /// Expands a pattern against the directories as they are now: `names`
+    /// below `base`, as a shell would. A name that begins with `.` is
+    /// matched only as a shell's pattern matches one. Past the bounds, or
+    /// where a directory cannot be listed, it says so.
+    fn expand(&self, base: &AbsPath, names: &[&str], hidden_rule: bool) -> Expansion {
+        // Each path so far, and whether a link may be in it still to be
+        // followed: the base was resolved, and a name a listing gave says
+        // whether it is a link, but a name written out may be one.
+        let mut current = vec![(base.clone(), false)];
+        let mut listed = 0;
+        for name in names {
+            if *name == ".." {
+                return Expansion::Unknown;
+            }
+            let mut next = Vec::new();
+            for (directory, unresolved) in &current {
+                if !has_wildcards(name) {
+                    match directory.join(name) {
+                        Ok(path) => next.push((path, true)),
+                        Err(_) => return Expansion::Unknown,
+                    }
+                    continue;
+                }
+                // The real directory, through any link to it.
+                let real = if *unresolved {
+                    match self.locate.locate(directory, directory.as_str()) {
+                        Some(real) => real,
+                        None => return Expansion::Unknown,
+                    }
+                } else {
+                    directory.clone()
+                };
+                listed += 1;
+                if listed > MOST_DIRECTORIES_LISTED {
+                    return Expansion::TooMany;
+                }
+                let pattern = NamePattern::parse(name);
+                match self.locate.list(&real, MOST_NAMES_LISTED) {
+                    Listing::Names(found) => {
+                        for (found, link) in found {
+                            if pattern.could_match_name(&found, hidden_rule) {
+                                match real.join(&found) {
+                                    Ok(path) => next.push((path, link)),
+                                    Err(_) => return Expansion::Unknown,
+                                }
+                            }
+                        }
+                    }
+                    Listing::TooMany => return Expansion::TooMany,
+                    Listing::Unknown => return Expansion::Unknown,
+                }
+            }
+            if next.len() > MOST_NAMES_LISTED {
+                return Expansion::TooMany;
+            }
+            current = next;
+        }
+        Expansion::Matches(current)
+    }
+
+    /// The finding for one path a pattern matched, as for the same name
+    /// written out: through any link, a rule that holds it back, a
+    /// protected path or a file that looks like a secret, and for a write
+    /// that is certain, the scope.
+    fn judge_match(
+        &self,
+        rules: &RuleSet,
+        (path, unresolved): &(AbsPath, bool),
+        shown: &str,
+        how: How,
+    ) -> Option<Finding> {
+        let real = if *unresolved {
+            let Some(real) = self.locate.locate(path, path.as_str()) else {
+                return Some(Finding::ask(format!(
+                    "`{shown}` names `{path}`, which is not a path that can be checked."
+                )));
+            };
+            real
+        } else {
+            path.clone()
+        };
+        if how.reads {
+            return self.judge_read_path(rules, &real, shown);
+        }
+        if let Some(found) = self.judge_named_path(rules, &real, shown) {
+            return Some(found);
+        }
+        (how.scope
+            && !self.in_scope(&real)
+            && level::decider(self.level(), Matter::WriteBeyond) != Decider::Holder)
+            .then(|| {
+                Finding::ask(format!(
+                    "`{shown}` writes `{real}`, which is outside the workspace."
+                ))
+            })
+    }
+
+    /// Judges the words of a line the analysis does not model, as they
+    /// stand in the raw line (both ways [`pattern`] cuts it), for what each
+    /// could name: the harness's own files are refused, and a protected
+    /// path, a file that looks like a secret, or a path a rule holds back is
+    /// asked about, at every level that asks about those. Nothing else of
+    /// such a line is judged: the level decides it. Found by the second
+    /// independent review of the fixes to step 12: `cp evil
+    /// .git/hooks/pre-commit #x` ran unasked at `autonomous`.
+    ///
+    /// [`pattern`]: crate::command::pattern
+    fn judge_unmodelled(&self, rules: &RuleSet, command: &str, cwd: &AbsPath) -> Vec<Finding> {
+        let shown = "The command";
+        let mut places = vec![cwd.clone()];
+        if *cwd != self.workspace {
+            places.push(self.workspace.clone());
+        }
+        let how = How {
+            reads: false,
+            scope: false,
+            listing: false,
+        };
+        let mut findings = Vec::new();
+        for word in raw_words(command) {
+            let found = may_name(&word).into_iter().find_map(|text| {
+                let as_name = text.starts_with('~').then(|| format!("./{text}"));
+                as_name
+                    .as_deref()
+                    .into_iter()
+                    .chain(std::iter::once(text))
+                    .find_map(|text| {
+                        if has_wildcards(text) {
+                            self.judge_pattern(rules, text, &places, shown, how)
+                        } else {
+                            self.judge_name(rules, text, &places, shown, false)
+                        }
+                    })
+            });
+            if let Some(found) = found {
+                // A word may be text, not a path: a rule's denial is a
+                // question, and the harness's own files stay refused.
+                findings.push(mentioned(found));
+            }
+        }
+        findings
     }
 
     /// The separators of a path in the engine's shell.
@@ -1745,7 +2123,13 @@ impl Engine {
 
     /// Judges one simple command, run in `here`: how it is allowed, and
     /// what its redirections and the paths it names come to.
-    fn judge_part(&self, rules: &RuleSet, part: &Part, here: &AbsPath) -> (Standing, Vec<Finding>) {
+    fn judge_part(
+        &self,
+        rules: &RuleSet,
+        part: &Part,
+        here: &AbsPath,
+        listing: bool,
+    ) -> (Standing, Vec<Finding>) {
         let shown = words_of(part).join(" ");
         let mut findings = Vec::new();
         let mut writes = false;
@@ -1773,7 +2157,12 @@ impl Engine {
                 writes = true;
                 let reads = effect == Effect::Read;
                 let at = std::slice::from_ref(here);
-                if let Some(found) = self.judge_pattern(rules, &target.text, at, &shown, reads) {
+                let how = How {
+                    reads,
+                    scope: !reads,
+                    listing,
+                };
+                if let Some(found) = self.judge_pattern(rules, &target.text, at, &shown, how) {
                     findings.push(found);
                 }
                 if !reads && let Some(found) = self.pattern_outside(&target.text, at, &shown) {
@@ -1853,14 +2242,18 @@ impl Engine {
             // secret makes the command one to ask about, whatever allows
             // the command. The harness's own files stay refused.
             None => {
-                let reads = !writes && self.only_reads_but_for_patterns(part);
+                let how = How {
+                    reads: !writes && self.only_reads_but_for_patterns(part),
+                    scope: false,
+                    listing,
+                };
                 findings.extend(self.judge_named(
                     rules,
                     part,
                     std::slice::from_ref(here),
                     None,
                     &shown,
-                    reads,
+                    how,
                 ));
             }
         }

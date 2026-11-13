@@ -135,17 +135,8 @@ impl ExecPattern {
     /// command the analysis does not model can be dodged that way.
     #[must_use]
     pub fn restricts(&self, line: &str) -> bool {
-        // A backslash, a back-tick or a caret before a line break joins the
-        // two lines in one word (`g\` then `it push`), so the pair goes
-        // first (found by the independent review of the fixes to step 12).
-        let joined = ["\\\r\n", "\\\n", "`\r\n", "`\n", "^\r\n", "^\n"]
-            .iter()
-            .fold(line.to_owned(), |line, join| line.replace(join, ""));
-        let unquoted: String = joined
-            .chars()
-            .filter(|character| !matches!(character, '\'' | '"' | '\\' | '`' | '^'))
-            .collect();
-        self.restricts_words(&loose_words(line)) || self.restricts_words(&loose_words(&unquoted))
+        self.restricts_words(&loose_words(line))
+            || self.restricts_words(&loose_words(&unquoted(line)))
     }
 
     fn restricts_words(&self, stream: &[String]) -> bool {
@@ -203,6 +194,34 @@ fn loose_words(line: &str) -> Vec<String> {
     .filter(|word| !word.is_empty())
     .map(str::to_owned)
     .collect()
+}
+
+/// A raw line with every quote, backslash, back-tick and caret taken out,
+/// as the shells take them out of a word. A backslash, a back-tick or a
+/// caret before a line break joins the two lines in one word (`g\` then
+/// `it push`), so the pair goes first (found by the independent review of
+/// the fixes to step 12).
+fn unquoted(line: &str) -> String {
+    let joined = ["\\\r\n", "\\\n", "`\r\n", "`\n", "^\r\n", "^\n"]
+        .iter()
+        .fold(line.to_owned(), |line, join| line.replace(join, ""));
+    joined
+        .chars()
+        .filter(|character| !matches!(character, '\'' | '"' | '\\' | '`' | '^'))
+        .collect()
+}
+
+/// The words of a raw line, each once, as both of the ways a rule that
+/// holds back is matched cut it ([`ExecPattern::restricts`]): what a line
+/// the analysis does not model could name.
+pub(crate) fn raw_words(line: &str) -> Vec<String> {
+    let mut words = loose_words(line);
+    for word in loose_words(&unquoted(line)) {
+        if !words.contains(&word) {
+            words.push(word);
+        }
+    }
+    words
 }
 
 /// The words of a simple command as text, for showing in a rule made from
