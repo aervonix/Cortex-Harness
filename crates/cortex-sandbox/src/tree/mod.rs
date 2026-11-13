@@ -118,7 +118,8 @@ impl Limits {
     pub fn standard() -> Self {
         Self {
             processes: Some(Self::PROCESSES),
-            memory: imp::installed_memory().map(|bytes| bytes / 4 * 3),
+            // In whole pages of 4 KiB, which is how Windows keeps it.
+            memory: imp::installed_memory().map(|bytes| (bytes / 4 * 3) & !4095),
         }
     }
 }
