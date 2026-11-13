@@ -137,7 +137,13 @@ impl World {
     pub fn user_config(&self, extra: &str) {
         let path = self.dirs().user_config.unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, format!("[model]\nmain = \"{MODEL}\"\n\n{extra}")).unwrap();
+        // Nothing is flushed to the disk: a flush takes as long as the
+        // disk takes, and is not what these tests check.
+        std::fs::write(
+            path,
+            format!("[session]\ndurability = \"never\"\n\n[model]\nmain = \"{MODEL}\"\n\n{extra}"),
+        )
+        .unwrap();
     }
 
     /// Writes the user's configuration as it is given, with nothing added.
@@ -182,6 +188,12 @@ impl World {
                 .with_clock(Arc::new(self.clock.clone()))
                 .with_frame(Duration::ZERO),
         );
+        // The machine's shell, found once for the whole test binary and
+        // not asked its version: no process is started to open a session.
+        static SHELL: std::sync::OnceLock<Option<cortex_tools::Shell>> = std::sync::OnceLock::new();
+        options.shell = SHELL
+            .get_or_init(|| cortex_tools::ShellSearch::from_env().find(None, None).ok())
+            .clone();
         // A command inherits a small environment of the test's own, never
         // the developer's.
         options.shell_env = Some(self.shell_env(&[]));
@@ -192,15 +204,21 @@ impl World {
     /// An environment for shell commands: what is needed to find programs,
     /// and `extra`.
     pub fn shell_env(&self, extra: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
-        let mut env: Vec<(OsString, OsString)> = ["PATH", "SystemRoot", "PATHEXT", "TEMP", "TMP"]
-            .iter()
-            .filter_map(|name| Some((OsString::from(name), std::env::var_os(name)?)))
-            .collect();
-        env.extend(
-            extra
+        // On Windows a shell needs more of the machine's environment than
+        // can be listed here (PowerShell reads a dozen variables to start),
+        // so there the test's own environment is the base.
+        let mut env: Vec<(OsString, OsString)> = if cfg!(windows) {
+            std::env::vars_os().collect()
+        } else {
+            ["PATH", "TMPDIR"]
                 .iter()
-                .map(|(name, value)| (OsString::from(name), OsString::from(value))),
-        );
+                .filter_map(|name| Some((OsString::from(name), std::env::var_os(name)?)))
+                .collect()
+        };
+        for (name, value) in extra {
+            env.retain(|(known, _)| !known.eq_ignore_ascii_case(name));
+            env.push((OsString::from(name), OsString::from(value)));
+        }
         env
     }
 
