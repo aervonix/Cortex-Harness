@@ -76,8 +76,7 @@ impl Classified for ImageError {
 /// in.
 #[must_use]
 pub fn encode_base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     let mut push = |six: u32| out.push(char::from(ALPHABET[(six & 0x3f) as usize]));
     for chunk in bytes.chunks(3) {

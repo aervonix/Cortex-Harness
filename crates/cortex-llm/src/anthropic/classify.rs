@@ -329,14 +329,24 @@ mod tests {
     #[test]
     fn every_documented_error_type_has_its_signal() {
         let rows: &[(&str, Option<&str>, &str, Signal)] = &[
-            ("invalid_request_error", None, "max_tokens: too large", Signal::None),
+            (
+                "invalid_request_error",
+                None,
+                "max_tokens: too large",
+                Signal::None,
+            ),
             (
                 "invalid_request_error",
                 None,
                 "prompt is too long: 1200000 tokens > 1000000 maximum",
                 Signal::ContextLength,
             ),
-            ("authentication_error", None, "invalid x-api-key", Signal::Auth),
+            (
+                "authentication_error",
+                None,
+                "invalid x-api-key",
+                Signal::Auth,
+            ),
             ("billing_error", None, "", Signal::Quota),
             ("permission_error", None, "", Signal::Auth),
             ("not_found_error", None, "", Signal::None),

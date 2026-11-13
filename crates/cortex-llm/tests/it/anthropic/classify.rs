@@ -104,6 +104,10 @@ struct Row {
 
 const NO_HEADERS: &[(&str, &str)] = &[];
 
+/// A case of the fast tier's table: what it is, the headers that came with
+/// the refusal, and whether the refusal is the tier's.
+type TierCase<'a> = (&'a str, &'a [(&'a str, &'a str)], bool);
+
 #[test]
 fn every_row_of_the_table_at_standard_speed() {
     use ErrorKind::{Auth, ContextOverflow, Provider, Transient};
@@ -121,36 +125,99 @@ fn every_row_of_the_table_at_standard_speed() {
         retried,
     };
     let rows = vec![
-        row("400 invalid request", 400, "invalid_request_error", Provider, None, false),
+        row(
+            "400 invalid request",
+            400,
+            "invalid_request_error",
+            Provider,
+            None,
+            false,
+        ),
         Row {
             message: "prompt is too long: 1200042 tokens > 1000000 maximum",
             expect_kind: ContextOverflow,
-            ..row("400 prompt too long", 400, "invalid_request_error", ContextOverflow, None, false)
+            ..row(
+                "400 prompt too long",
+                400,
+                "invalid_request_error",
+                ContextOverflow,
+                None,
+                false,
+            )
         },
         Row {
             // A limit the user set themselves arrives as a 400 and is not
             // a context problem, whatever its message mentions.
             message: "You have reached your specified API usage limits. You will regain access on 2026-12-01 at 00:00 UTC.",
-            ..row("400 own spend limit", 400, "invalid_request_error", Provider, None, false)
+            ..row(
+                "400 own spend limit",
+                400,
+                "invalid_request_error",
+                Provider,
+                None,
+                false,
+            )
         },
-        row("401 authentication", 401, "authentication_error", Auth, None, false),
+        row(
+            "401 authentication",
+            401,
+            "authentication_error",
+            Auth,
+            None,
+            false,
+        ),
         row("402 billing", 402, "billing_error", Provider, None, false),
         row("403 permission", 403, "permission_error", Auth, None, false),
-        row("404 not found", 404, "not_found_error", Provider, None, false),
+        row(
+            "404 not found",
+            404,
+            "not_found_error",
+            Provider,
+            None,
+            false,
+        ),
         row("409 conflict", 409, "conflict_error", Transient, None, true),
-        row("413 too large", 413, "request_too_large", ContextOverflow, None, false),
+        row(
+            "413 too large",
+            413,
+            "request_too_large",
+            ContextOverflow,
+            None,
+            false,
+        ),
         Row {
             headers: &[("retry-after", "12")],
             expect_wait: Some(12),
-            ..row("429 rate limit", 429, "rate_limit_error", Transient, Some(Throttle::RateLimit), true)
+            ..row(
+                "429 rate limit",
+                429,
+                "rate_limit_error",
+                Transient,
+                Some(Throttle::RateLimit),
+                true,
+            )
         },
-        row("429 rate limit, no wait named", 429, "rate_limit_error", Transient, Some(Throttle::RateLimit), true),
+        row(
+            "429 rate limit, no wait named",
+            429,
+            "rate_limit_error",
+            Transient,
+            Some(Throttle::RateLimit),
+            true,
+        ),
         Row {
             headers: &[("retry-after", "30")],
             detail: Some("ramp_limit_exceeded"),
             expect_code: "ramp_limit_exceeded",
             expect_wait: Some(30),
-            ..row("429 ramp limit", 429, "rate_limit_error", Transient, Some(Throttle::RateLimit), true)
+            ..row(
+                "429 ramp limit",
+                429,
+                "rate_limit_error",
+                Transient,
+                Some(Throttle::RateLimit),
+                true,
+            )
         },
         Row {
             // A spending cap: the same status and type as a rate limit, no
@@ -158,7 +225,14 @@ fn every_row_of_the_table_at_standard_speed() {
             message: "You have reached your API usage limits: your organization has crossed its monthly API usage threshold.",
             detail: Some("enforced_spend_limit_reached"),
             expect_code: "enforced_spend_limit_reached",
-            ..row("429 spend cap", 429, "rate_limit_error", Provider, None, false)
+            ..row(
+                "429 spend cap",
+                429,
+                "rate_limit_error",
+                Provider,
+                None,
+                false,
+            )
         },
         Row {
             // Even if a server were to name a wait with it.
@@ -166,24 +240,73 @@ fn every_row_of_the_table_at_standard_speed() {
             detail: Some("enforced_spend_limit_reached"),
             expect_code: "enforced_spend_limit_reached",
             expect_wait: Some(5),
-            ..row("429 spend cap with a wait", 429, "rate_limit_error", Provider, None, false)
+            ..row(
+                "429 spend cap with a wait",
+                429,
+                "rate_limit_error",
+                Provider,
+                None,
+                false,
+            )
         },
         Row {
             headers: &[("retry-after", "121")],
             expect_wait: Some(121),
             // Longer than the longest wait that is obeyed: reported, with
             // the time, and not sent again.
-            ..row("429 with a long wait", 429, "rate_limit_error", Transient, Some(Throttle::RateLimit), false)
+            ..row(
+                "429 with a long wait",
+                429,
+                "rate_limit_error",
+                Transient,
+                Some(Throttle::RateLimit),
+                false,
+            )
         },
         row("500 api error", 500, "api_error", Transient, None, true),
         row("500 timeout", 500, "timeout_error", Transient, None, true),
         row("504 timeout", 504, "timeout_error", Transient, None, true),
-        row("529 overloaded", 529, "overloaded_error", Transient, Some(Throttle::Overload), true),
-        row("503 overloaded", 503, "overloaded_error", Transient, Some(Throttle::Overload), true),
+        row(
+            "529 overloaded",
+            529,
+            "overloaded_error",
+            Transient,
+            Some(Throttle::Overload),
+            true,
+        ),
+        row(
+            "503 overloaded",
+            503,
+            "overloaded_error",
+            Transient,
+            Some(Throttle::Overload),
+            true,
+        ),
         // A type added later is read by its status.
-        row("400 unknown type", 400, "some_new_error", Provider, None, false),
-        row("503 unknown type", 503, "some_new_error", Transient, None, true),
-        row("429 unknown type", 429, "some_new_error", Transient, Some(Throttle::RateLimit), true),
+        row(
+            "400 unknown type",
+            400,
+            "some_new_error",
+            Provider,
+            None,
+            false,
+        ),
+        row(
+            "503 unknown type",
+            503,
+            "some_new_error",
+            Transient,
+            None,
+            true,
+        ),
+        row(
+            "429 unknown type",
+            429,
+            "some_new_error",
+            Transient,
+            Some(Throttle::RateLimit),
+            true,
+        ),
     ];
 
     let request = scenario::text();
@@ -198,7 +321,10 @@ fn every_row_of_the_table_at_standard_speed() {
         assert_eq!(error.retry_after, row.expect_wait.map(secs), "{what}: wait");
         assert_eq!(error.message, row.message, "{what}: message");
         assert_eq!(error.request_id.as_deref(), Some("req_body"), "{what}: id");
-        assert_eq!(error.tier, None, "{what}: sent at standard, so never a tier's");
+        assert_eq!(
+            error.tier, None,
+            "{what}: sent at standard, so never a tier's"
+        );
         let decided = decision(&error, &Speed::Standard);
         if row.retried {
             match (&decided, row.expect_wait) {
@@ -216,16 +342,46 @@ fn every_row_of_the_table_at_standard_speed() {
 fn a_failure_with_no_readable_body_is_read_by_its_status() {
     let request = scenario::text();
     let rows: &[(u16, &str, ErrorKind, &str, Option<Throttle>)] = &[
-        (429, "", ErrorKind::Transient, "rate_limited", Some(Throttle::RateLimit)),
-        (529, "", ErrorKind::Transient, "overloaded", Some(Throttle::Overload)),
-        (502, "<html><body>Bad Gateway</body></html>", ErrorKind::Transient, "unknown_error", None),
+        (
+            429,
+            "",
+            ErrorKind::Transient,
+            "rate_limited",
+            Some(Throttle::RateLimit),
+        ),
+        (
+            529,
+            "",
+            ErrorKind::Transient,
+            "overloaded",
+            Some(Throttle::Overload),
+        ),
+        (
+            502,
+            "<html><body>Bad Gateway</body></html>",
+            ErrorKind::Transient,
+            "unknown_error",
+            None,
+        ),
         (500, "not json", ErrorKind::Transient, "unknown_error", None),
         (401, "", ErrorKind::Auth, "unknown_error", None),
         (403, "{}", ErrorKind::Auth, "unknown_error", None),
         (400, "[1,2,3]", ErrorKind::Provider, "unknown_error", None),
-        (404, "{\"error\":\"a string, not an object\"}", ErrorKind::Provider, "unknown_error", None),
+        (
+            404,
+            "{\"error\":\"a string, not an object\"}",
+            ErrorKind::Provider,
+            "unknown_error",
+            None,
+        ),
         // A request too large in bytes is turned away by a proxy, in HTML.
-        (413, "<html>Request Entity Too Large</html>", ErrorKind::ContextOverflow, "unknown_error", None),
+        (
+            413,
+            "<html>Request Entity Too Large</html>",
+            ErrorKind::ContextOverflow,
+            "unknown_error",
+            None,
+        ),
         (302, "", ErrorKind::Provider, "unknown_error", None),
     ];
     for (status, body, kind, code, throttle) in rows {
@@ -258,19 +414,52 @@ fn a_failure_with_no_readable_body_is_read_by_its_status() {
 fn the_failures_recorded_from_the_real_api() {
     let request = scenario::text();
     let rows: &[(&str, ErrorKind, &str, u16)] = &[
-        ("error-authentication", ErrorKind::Auth, "authentication_error", 401),
-        ("error-not-found", ErrorKind::Provider, "not_found_error", 404),
-        ("error-invalid-request", ErrorKind::Provider, "invalid_request_error", 400),
-        ("error-speed-not-offered", ErrorKind::Provider, "invalid_request_error", 400),
+        (
+            "error-authentication",
+            ErrorKind::Auth,
+            "authentication_error",
+            401,
+        ),
+        (
+            "error-not-found",
+            ErrorKind::Provider,
+            "not_found_error",
+            404,
+        ),
+        (
+            "error-invalid-request",
+            ErrorKind::Provider,
+            "invalid_request_error",
+            400,
+        ),
+        (
+            "error-speed-not-offered",
+            ErrorKind::Provider,
+            "invalid_request_error",
+            400,
+        ),
     ];
     for (name, kind, code, status) in rows {
         let error = classify_fixture(name, &request);
         assert_eq!(error.kind, *kind, "{name}");
         assert_eq!(error.code, *code, "{name}");
         assert_eq!(error.status, Some(*status), "{name}");
-        assert!(error.request_id.as_deref().is_some_and(|id| id.starts_with("req_")), "{name}");
-        assert_eq!((error.throttle, error.tier.clone(), error.retry_after), (None, None, None));
-        assert_eq!(decision(&error, &Speed::Standard), Decision::GiveUp, "{name}");
+        assert!(
+            error
+                .request_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("req_")),
+            "{name}"
+        );
+        assert_eq!(
+            (error.throttle, error.tier.clone(), error.retry_after),
+            (None, None, None)
+        );
+        assert_eq!(
+            decision(&error, &Speed::Standard),
+            Decision::GiveUp,
+            "{name}"
+        );
         assert!(!error.message.is_empty());
     }
     // The refusal of a speed is a refusal of the request: it is never the
@@ -296,7 +485,10 @@ fn the_fast_tiers_own_limit_and_capacity() {
     // A short wait is waited out in place: the speed does not change.
     assert_eq!(decision(&error, &Speed::Fast), Decision::Wait(secs(7)));
     // The same response to a request sent at standard is the model's.
-    assert_eq!(classify_fixture("error-fast-rate-limit", &standard).tier, None);
+    assert_eq!(
+        classify_fixture("error-fast-rate-limit", &standard).tier,
+        None
+    );
 
     // The fixture: a 529 with no wait. Falls back at once, for the
     // cooldown used when the provider names no time.
@@ -313,7 +505,7 @@ fn the_fast_tiers_own_limit_and_capacity() {
 
     // Each row: the headers that came with a 429 for a request sent at
     // fast, and whether the refusal is the tier's.
-    let rows: &[(&str, &[(&str, &str)], bool)] = &[
+    let rows: &[TierCase<'_>] = &[
         ("nothing said by any header", &[], true),
         (
             "the tier's input tokens used up",
@@ -362,7 +554,11 @@ fn the_fast_tiers_own_limit_and_capacity() {
         assert_eq!(error.tier.is_some(), *tiers, "{what}");
         assert_eq!(error.kind, ErrorKind::Transient, "{what}");
         // The same headers never make a standard request a tier's.
-        assert_eq!(classify(429, headers, &rate_limit, &standard).tier, None, "{what}");
+        assert_eq!(
+            classify(429, headers, &rate_limit, &standard).tier,
+            None,
+            "{what}"
+        );
     }
 
     // A ramp limit is kept for the tier separately from the model's, so at
@@ -391,7 +587,11 @@ fn the_fast_tiers_own_limit_and_capacity() {
 
     // What is never a tier's refusal, at any speed: a spending cap, a
     // server failure, a bad request, a bad key.
-    let spend = error_body("rate_limit_error", "Cap.", Some("enforced_spend_limit_reached"));
+    let spend = error_body(
+        "rate_limit_error",
+        "Cap.",
+        Some("enforced_spend_limit_reached"),
+    );
     let never: &[(u16, String)] = &[
         (429, spend),
         (500, error_body("api_error", "Oops.", None)),
@@ -418,10 +618,21 @@ fn the_fast_tiers_own_limit_and_capacity() {
 
     // An overload at fast speed is the tier's, and at standard speed it is
     // nobody's tier. The headers are read for it as for a rate limit.
-    assert_eq!(classify(529, &[], &overloaded, &fast).tier, Some(Speed::Fast));
+    assert_eq!(
+        classify(529, &[], &overloaded, &fast).tier,
+        Some(Speed::Fast)
+    );
     assert_eq!(classify(529, &[], &overloaded, &standard).tier, None);
-    let error = classify(529, &[("anthropic-ratelimit-requests-remaining", "0")], &overloaded, &fast);
-    assert_eq!(error.tier, None, "the model's own limit is used up: not the tier's doing");
+    let error = classify(
+        529,
+        &[("anthropic-ratelimit-requests-remaining", "0")],
+        &overloaded,
+        &fast,
+    );
+    assert_eq!(
+        error.tier, None,
+        "the model's own limit is used up: not the tier's doing"
+    );
 }
 
 #[test]
@@ -440,7 +651,10 @@ fn the_headers_of_a_good_response_give_the_id_and_the_limits() {
     // A response at standard speed: the model's four limits.
     let (id, limits) = read(&load("text"));
     assert_eq!(id.as_deref(), Some("req_fixture0001"));
-    let measures: Vec<_> = limits.iter().map(|limit| (limit.measure.clone(), limit.speed.clone())).collect();
+    let measures: Vec<_> = limits
+        .iter()
+        .map(|limit| (limit.measure.clone(), limit.speed.clone()))
+        .collect();
     assert_eq!(
         measures,
         [
@@ -457,14 +671,21 @@ fn the_headers_of_a_good_response_give_the_id_and_the_limits() {
             speed: None,
             limit: Some(1000),
             remaining: Some(999),
-            resets_at: Some(UtcTime::parse("2026-11-13T05:39:18Z").unwrap().to_timestamp()),
+            resets_at: Some(
+                UtcTime::parse("2026-11-13T05:39:18Z")
+                    .unwrap()
+                    .to_timestamp()
+            ),
         }
     );
 
     // A response at fast speed, as recorded: the requests are still the
     // model's, and the tokens are the fast tier's own, labelled with it.
     let (_, limits) = read(&load("fast"));
-    let measures: Vec<_> = limits.iter().map(|limit| (limit.measure.clone(), limit.speed.clone())).collect();
+    let measures: Vec<_> = limits
+        .iter()
+        .map(|limit| (limit.measure.clone(), limit.speed.clone()))
+        .collect();
     assert_eq!(
         measures,
         [
@@ -473,8 +694,14 @@ fn the_headers_of_a_good_response_give_the_id_and_the_limits() {
             (LimitMeasure::OutputTokens, Some(Speed::Fast)),
         ]
     );
-    assert_eq!((limits[1].limit, limits[1].remaining), (Some(1_000_000), Some(1_000_000)));
-    assert_eq!((limits[2].limit, limits[2].remaining), (Some(100_000), Some(100_000)));
+    assert_eq!(
+        (limits[1].limit, limits[1].remaining),
+        (Some(1_000_000), Some(1_000_000))
+    );
+    assert_eq!(
+        (limits[2].limit, limits[2].remaining),
+        (Some(100_000), Some(100_000))
+    );
     assert!(limits[1].resets_at.is_some());
 
     // Capacity an account bought is not a speed and is not reported as
@@ -518,7 +745,10 @@ impl Client {
         Self::with(replies, None)
     }
 
-    fn with(replies: impl IntoIterator<Item = Reply>, images: Option<Arc<dyn ImageSource>>) -> Self {
+    fn with(
+        replies: impl IntoIterator<Item = Reply>,
+        images: Option<Arc<dyn ImageSource>>,
+    ) -> Self {
         let clock = FakeClock::starting_at(NOW).unwrap();
         let timer = FakeTimer::auto(&clock);
         let transport = ScriptedTransport::new(replies);
@@ -623,10 +853,17 @@ fn fast_refused_for_a_moment_is_waited_out_and_stays_fast() {
     let client = Client::new([reply("error-fast-rate-limit"), reply("fast")]);
     let events = client.run(scenario::fast());
     assert_eq!(kinds(&events), ["retry", "start", "end"]);
-    assert_eq!(client.timer.sleeps(), [secs(7)], "the wait the provider asked for");
+    assert_eq!(
+        client.timer.sleeps(),
+        [secs(7)],
+        "the wait the provider asked for"
+    );
     assert_eq!(client.speeds(), ["fast", "fast"]);
     let usage = final_usage(&events);
-    assert_eq!((&usage.speed, &usage.speed_requested), (&Speed::Fast, &None));
+    assert_eq!(
+        (&usage.speed, &usage.speed_requested),
+        (&Speed::Fast, &None)
+    );
     // The two requests are the same bytes: nothing in the prefix moved.
     let sent = client.transport.requests();
     assert_eq!(sent[0].body, sent[1].body);
@@ -641,7 +878,10 @@ fn fast_with_no_capacity_falls_back_says_so_and_cools_down() {
         reply("fast"),
     ]);
     let events = client.run(scenario::fast());
-    assert_eq!(kinds(&events), ["speed_fallback", "speed_cooldown", "start", "end"]);
+    assert_eq!(
+        kinds(&events),
+        ["speed_fallback", "speed_cooldown", "start", "end"]
+    );
     assert!(client.timer.sleeps().is_empty(), "nothing is waited for");
     assert_eq!(client.speeds(), ["fast", "standard"]);
 
@@ -650,7 +890,11 @@ fn fast_with_no_capacity_falls_back_says_so_and_cools_down() {
         panic!()
     };
     assert_eq!(
-        (moved.requested.clone(), moved.served.clone(), moved.by.clone()),
+        (
+            moved.requested.clone(),
+            moved.served.clone(),
+            moved.by.clone()
+        ),
         (Speed::Fast, Speed::Standard, SpeedFallbackBy::Harness)
     );
     assert_eq!(moved.reason, SpeedFallbackReason::Overloaded);
@@ -658,7 +902,10 @@ fn fast_with_no_capacity_falls_back_says_so_and_cools_down() {
     let ModelEvent::SpeedCooldown(change) = &events[1] else {
         panic!()
     };
-    assert_eq!((change.state.clone(), change.until), (CooldownState::Started, Some(until)));
+    assert_eq!(
+        (change.state.clone(), change.until),
+        (CooldownState::Started, Some(until))
+    );
     // The record says what ran and what was asked for: never silently not
     // fast.
     let usage = final_usage(&events);
@@ -691,7 +938,10 @@ fn a_long_wait_for_fast_cools_down_for_the_providers_time_or_the_floor() {
             reply("standard-named"),
         ]);
         let events = client.run(scenario::fast());
-        assert_eq!(kinds(&events), ["speed_fallback", "speed_cooldown", "start", "end"]);
+        assert_eq!(
+            kinds(&events),
+            ["speed_fallback", "speed_cooldown", "start", "end"]
+        );
         let ModelEvent::SpeedFallback(moved) = &events[0] else {
             panic!()
         };
@@ -760,7 +1010,10 @@ fn a_response_that_reports_another_speed_than_was_asked_is_never_silent() {
         })
         .unwrap();
     assert_eq!(moved.by, SpeedFallbackBy::Provider);
-    assert_eq!(moved.cooldown_until, None, "the provider's own move starts no cooldown");
+    assert_eq!(
+        moved.cooldown_until, None,
+        "the provider's own move starts no cooldown"
+    );
     let usage = final_usage(&events);
     assert_eq!(usage.speed, Speed::Standard);
     assert_eq!(usage.speed_requested, Some(Speed::Fast));
@@ -808,15 +1061,25 @@ fn ordinary_failures_are_retried_or_reported_as_the_table_says() {
     // An overload, then a server failure, then the answer.
     let overloaded = error_body("overloaded_error", "Overloaded", None);
     let api = error_body("api_error", "Internal server error", None);
-    let client = Client::new([failure(529, &[], &overloaded), failure(500, &[], &api), reply("text")]);
+    let client = Client::new([
+        failure(529, &[], &overloaded),
+        failure(500, &[], &api),
+        reply("text"),
+    ]);
     let events = client.run(scenario::text());
     assert_eq!(kinds(&events), ["retry", "retry", "start", "end"]);
     assert_eq!(client.timer.sleeps().len(), 2);
 
     // A rate limit waits as long as the server asked.
     let limited = error_body("rate_limit_error", "Slow down.", None);
-    let client = Client::new([failure(429, &[("retry-after", "12")], &limited), reply("text")]);
-    assert_eq!(kinds(&client.run(scenario::text())), ["retry", "start", "end"]);
+    let client = Client::new([
+        failure(429, &[("retry-after", "12")], &limited),
+        reply("text"),
+    ]);
+    assert_eq!(
+        kinds(&client.run(scenario::text())),
+        ["retry", "start", "end"]
+    );
     assert_eq!(client.timer.sleeps(), [secs(12)]);
 
     // An error after a good status is retried like the failure it is.
@@ -829,13 +1092,21 @@ fn ordinary_failures_are_retried_or_reported_as_the_table_says() {
     let client = Client::new([Reply::ok(&cut[..cut.len() / 2]), reply("text")]);
     let events = client.run(scenario::text());
     assert_eq!(kinds(&events), ["start", "retry", "start", "end"]);
-    let ModelEvent::Retry(retry) = &events[events.iter().position(|e| matches!(e, ModelEvent::Retry(_))).unwrap()] else {
+    let ModelEvent::Retry(retry) = &events[events
+        .iter()
+        .position(|e| matches!(e, ModelEvent::Retry(_)))
+        .unwrap()]
+    else {
         panic!()
     };
     assert_eq!(retry.error.code, "incomplete_stream");
 
     // What is not retried is reported at once, with the provider's id.
-    for name in ["error-authentication", "error-not-found", "error-invalid-request"] {
+    for name in [
+        "error-authentication",
+        "error-not-found",
+        "error-invalid-request",
+    ] {
         let client = Client::new([reply(name)]);
         let events = client.run(scenario::text());
         assert_eq!(kinds(&events), ["error"], "{name}");
@@ -843,9 +1114,16 @@ fn ordinary_failures_are_retried_or_reported_as_the_table_says() {
         assert!(final_error(&events).request_id.is_some());
     }
     // A prompt that is too long is the loop's to compact away.
-    let long = error_body("invalid_request_error", "prompt is too long: 1000001 tokens > 1000000 maximum", None);
+    let long = error_body(
+        "invalid_request_error",
+        "prompt is too long: 1000001 tokens > 1000000 maximum",
+        None,
+    );
     let client = Client::new([failure(400, &[], &long)]);
-    assert_eq!(final_error(&client.run(scenario::text())).kind, ErrorKind::ContextOverflow);
+    assert_eq!(
+        final_error(&client.run(scenario::text())).kind,
+        ErrorKind::ContextOverflow
+    );
 }
 
 /// A store with one image in it.
@@ -914,7 +1192,10 @@ fn a_stored_image_is_loaded_into_the_request_that_is_sent() {
     let images = Arc::new(Images::default());
     let limited = error_body("rate_limit_error", "Slow down.", None);
     let client = Client::with(
-        [failure(429, &[("retry-after", "3")], &limited), reply("text")],
+        [
+            failure(429, &[("retry-after", "3")], &limited),
+            reply("text"),
+        ],
         Some(images.clone()),
     );
     let request = with_images("a_png", "a_png");
@@ -949,7 +1230,10 @@ fn a_stored_image_that_cannot_be_loaded_fails_the_request_before_it_is_sent() {
     let events = client.run(with_images("a_png", "a_gone"));
     assert_eq!(kinds(&events), ["error"]);
     let error = final_error(&events);
-    assert_eq!((error.kind, error.code.as_str()), (ErrorKind::Internal, IMAGE_UNAVAILABLE));
+    assert_eq!(
+        (error.kind, error.code.as_str()),
+        (ErrorKind::Internal, IMAGE_UNAVAILABLE)
+    );
     assert!(error.message.contains("a_gone"), "{}", error.message);
     assert!(client.transport.requests().is_empty(), "nothing was sent");
 
@@ -969,7 +1253,11 @@ fn a_stored_image_that_cannot_be_loaded_fails_the_request_before_it_is_sent() {
     // And a cancelled request does not load one.
     let cancel = CancelToken::new();
     cancel.cancel();
-    let events: Vec<ModelEvent> =
-        block_on(client.client.stream(with_images("a_png", "a_png"), cancel).collect());
+    let events: Vec<ModelEvent> = block_on(
+        client
+            .client
+            .stream(with_images("a_png", "a_png"), cancel)
+            .collect(),
+    );
     assert_eq!(final_error(&events).kind, ErrorKind::Interrupted);
 }

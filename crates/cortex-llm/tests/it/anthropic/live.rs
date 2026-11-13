@@ -181,7 +181,10 @@ impl Live {
             Arc::new(SystemClock::new()),
             Arc::new(TokioTimer),
         )
-        .auth(Arc::new(anthropic::api_key(sent, "a file, for a live test")))
+        .auth(Arc::new(anthropic::api_key(
+            sent,
+            "a file, for a live test",
+        )))
         // One send for each request: a live test never retries by itself.
         .policy(RetryPolicy {
             max_attempts: 1,
@@ -219,7 +222,11 @@ impl Live {
             self.spent_nanos < SPEND_LIMIT_NANOS,
             "this run has spent its limit; nothing more is sent"
         );
-        let before = self.exchanges.lock().unwrap_or_else(PoisonError::into_inner).len();
+        let before = self
+            .exchanges
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -229,7 +236,10 @@ impl Live {
                 .stream(request.clone(), CancelToken::new())
                 .collect(),
         );
-        let exchanges = self.exchanges.lock().unwrap_or_else(PoisonError::into_inner)[before..]
+        let exchanges = self
+            .exchanges
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)[before..]
             .to_vec();
         self.account(request, &events);
         (events, exchanges)
@@ -240,7 +250,9 @@ impl Live {
         let info = &request.model.info;
         let asked = request.speed.as_str();
         match events.last() {
-            Some(ModelEvent::End { usage, raw_stop, .. }) => {
+            Some(ModelEvent::End {
+                usage, raw_stop, ..
+            }) => {
                 let version = Catalog::builtin().map_or("", Catalog::version);
                 let record = request_usage(
                     usage.clone(),
@@ -405,11 +417,17 @@ fn live_smoke() {
     live.say("smoke: a plain request");
     let (events, _) = live.send(&scenario::text());
     assert!(
-        matches!(events.first(), Some(ModelEvent::Limits(_) | ModelEvent::Start { .. })),
+        matches!(
+            events.first(),
+            Some(ModelEvent::Limits(_) | ModelEvent::Start { .. })
+        ),
         "{events:?}"
     );
     let usage = final_usage(&events);
-    assert!(usage.tokens.input > 0 && usage.tokens.output > 0, "{usage:?}");
+    assert!(
+        usage.tokens.input > 0 && usage.tokens.output > 0,
+        "{usage:?}"
+    );
     assert_eq!(usage.speed, Speed::Standard);
     let text: String = events
         .iter()
@@ -426,8 +444,8 @@ fn live_smoke() {
     let first = scenario::desk(HAIKU, vec![user(scenario::PROMPTS[0])]);
     let (events, _) = live.send(&first);
     let wrote = final_usage(&events).tokens.clone();
-    let history = scenario::after(first.messages.clone(), &events, &first)
-        .expect("the conversation goes on");
+    let history =
+        scenario::after(first.messages.clone(), &events, &first).expect("the conversation goes on");
     let second = scenario::desk(HAIKU, history);
     let (events, _) = live.send(&second);
     let read = final_usage(&events).tokens.clone();

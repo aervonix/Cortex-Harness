@@ -397,7 +397,10 @@ fn a_provider_that_keeps_saying_soon_does_not_make_the_speed_flap() {
     harness.clock.advance(secs(34));
     let events = harness.run_at(Speed::Fast);
     assert_eq!(fallbacks(&events)[0].reason, SpeedFallbackReason::Cooldown);
-    assert_eq!(harness.speeds_sent(), ["fast", "standard", "standard", "standard"]);
+    assert_eq!(
+        harness.speeds_sent(),
+        ["fast", "standard", "standard", "standard"]
+    );
 
     // At the minute the tier is asked for again. It is refused again, and
     // cools down for another whole minute.
@@ -413,7 +416,9 @@ fn a_provider_that_keeps_saying_soon_does_not_make_the_speed_flap() {
     );
     assert_eq!(
         harness.speeds_sent(),
-        ["fast", "standard", "standard", "standard", "fast", "standard"]
+        [
+            "fast", "standard", "standard", "standard", "fast", "standard"
+        ]
     );
     assert_eq!(harness.transport.remaining(), 0);
 }

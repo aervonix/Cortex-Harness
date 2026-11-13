@@ -197,7 +197,11 @@ fn every_stream_in_the_fixtures_directory_is_replayed() {
     )]
     let entries = std::fs::read_dir(super::fixtures_directory()).expect("the fixtures directory");
     for entry in entries {
-        let name = entry.expect("an entry").file_name().into_string().expect("a name");
+        let name = entry
+            .expect("an entry")
+            .file_name()
+            .into_string()
+            .expect("a name");
         if load(&name).status == 200 {
             on_disk.push(name);
         }
@@ -252,7 +256,10 @@ fn end_of(events: &[ModelEvent]) -> (&StopReason, &str, Option<&str>, &cortex_ll
 /// What every complete response must look like: one start first, each block
 /// started once and ended once, and exactly one terminal event, last.
 fn assert_well_formed(events: &[ModelEvent]) {
-    assert!(matches!(events.first(), Some(ModelEvent::Start { .. })), "{events:?}");
+    assert!(
+        matches!(events.first(), Some(ModelEvent::Start { .. })),
+        "{events:?}"
+    );
     let terminals = events.iter().filter(|event| event.is_terminal()).count();
     assert_eq!(terminals, 1);
     assert!(events.last().is_some_and(ModelEvent::is_terminal));
@@ -261,7 +268,10 @@ fn assert_well_formed(events: &[ModelEvent]) {
     for event in events {
         match event {
             ModelEvent::BlockStart { index, .. } => {
-                assert!(!open.contains(index) && !closed.contains(index), "{index} twice");
+                assert!(
+                    !open.contains(index) && !closed.contains(index),
+                    "{index} twice"
+                );
                 open.push(*index);
             }
             ModelEvent::BlockEnd { index, .. } => {
@@ -301,13 +311,23 @@ fn text_is_its_deltas_and_the_block_the_provider_would_have_sent() {
     // The provider's input count leaves the cache out already: nothing is
     // subtracted. The later count of output tokens replaces the first.
     assert_eq!(
-        (usage.tokens.input, usage.tokens.output, usage.tokens.reasoning),
+        (
+            usage.tokens.input,
+            usage.tokens.output,
+            usage.tokens.reasoning
+        ),
         (29, 10, Some(0))
     );
-    assert_eq!((&usage.speed, &usage.speed_requested), (&Speed::Standard, &None));
+    assert_eq!(
+        (&usage.speed, &usage.speed_requested),
+        (&Speed::Standard, &None)
+    );
     let raw: Value = serde_json::from_str(usage.raw.as_ref().unwrap().as_str()).unwrap();
     assert_eq!(raw["output_tokens"], 10);
-    assert_eq!(raw["service_tier"], "standard", "what only the first part said is kept");
+    assert_eq!(
+        raw["service_tier"], "standard",
+        "what only the first part said is kept"
+    );
 }
 
 #[test]
@@ -336,9 +356,23 @@ fn reasoning_keeps_its_signature_byte_for_byte() {
     else {
         unreachable!()
     };
-    assert!(raw.as_str().starts_with(r#"{"type":"thinking","thinking":""#), "{raw}");
-    assert!(raw.as_str().ends_with(r#","signature":"fixture-signature-01"}"#), "{raw}");
-    assert!(end_of(&events).3.tokens.reasoning.is_some_and(|count| count > 0));
+    assert!(
+        raw.as_str()
+            .starts_with(r#"{"type":"thinking","thinking":""#),
+        "{raw}"
+    );
+    assert!(
+        raw.as_str()
+            .ends_with(r#","signature":"fixture-signature-01"}"#),
+        "{raw}"
+    );
+    assert!(
+        end_of(&events)
+            .3
+            .tokens
+            .reasoning
+            .is_some_and(|count| count > 0)
+    );
 
     // A block that arrives whole goes back exactly as it came, and so does
     // one whose text is empty.
@@ -355,13 +389,18 @@ fn reasoning_keeps_its_signature_byte_for_byte() {
             _ => None,
         })
         .collect();
-    assert_eq!(raws[0], r#"{"type":"redacted_thinking","data":"fixture-data-92"}"#);
+    assert_eq!(
+        raws[0],
+        r#"{"type":"redacted_thinking","data":"fixture-data-92"}"#
+    );
     assert_eq!(
         raws[1],
         r#"{"type":"thinking","thinking":"","signature":"fixture-signature-93"}"#
     );
     assert!(
-        !events.iter().any(|event| matches!(event, ModelEvent::ReasoningDelta { .. })),
+        !events
+            .iter()
+            .any(|event| matches!(event, ModelEvent::ReasoningDelta { .. })),
         "empty reasoning text is not an event"
     );
 }
@@ -426,7 +465,10 @@ fn tool_calls_are_named_and_their_arguments_are_the_models_own_text() {
                 _ => None,
             })
             .collect();
-        assert!(serde_json::from_str::<Value>(&own).is_ok(), "{index}: {own}");
+        assert!(
+            serde_json::from_str::<Value>(&own).is_ok(),
+            "{index}: {own}"
+        );
     }
 }
 
@@ -478,7 +520,10 @@ fn a_server_side_tool_is_kept_as_provider_blocks() {
                "input": {"query": "weather in Oslo today"}})
     );
     assert_eq!(blocks[2]["type"], "web_search_tool_result");
-    assert_eq!(blocks[2]["content"][0]["encrypted_content"], "fixture-encrypted_content-91");
+    assert_eq!(
+        blocks[2]["content"][0]["encrypted_content"],
+        "fixture-encrypted_content-91"
+    );
     assert_eq!(blocks[2]["content"][0]["page_age"], Value::Null);
     // The citation that arrived as a delta is in the stored text block.
     assert_eq!(blocks[3]["text"], "It is clear in Oslo, 18 degrees.");
@@ -505,7 +550,10 @@ fn what_is_not_known_is_skipped_and_nothing_else_is() {
     // The usage is the one the response reported, not the unknown event's.
     assert_eq!(end_of(&events).3.tokens.output, 10);
     assert_eq!(
-        events.iter().filter(|event| matches!(event, ModelEvent::BlockStart { .. })).count(),
+        events
+            .iter()
+            .filter(|event| matches!(event, ModelEvent::BlockStart { .. }))
+            .count(),
         1
     );
 }
@@ -520,9 +568,16 @@ fn an_error_after_a_good_status_is_classified_like_a_failed_response() {
     assert_eq!(error.code, "overloaded_error");
     assert_eq!(error.throttle, Some(Throttle::Overload));
     assert_eq!(error.status, None);
-    assert_eq!(error.tier, None, "sent at standard: the model's, not a tier's");
+    assert_eq!(
+        error.tier, None,
+        "sent at standard: the model's, not a tier's"
+    );
     // What arrived before it is still there: the client decides what to do.
-    assert!(events.iter().any(|event| matches!(event, ModelEvent::TextDelta { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ModelEvent::TextDelta { .. }))
+    );
     assert_eq!(events.iter().filter(|event| event.is_terminal()).count(), 1);
 
     // In a response to a request at fast speed, it is the tier's.
@@ -540,9 +595,19 @@ fn every_stop_reason_arrives_in_its_neutral_form() {
         ("text", StopReason::End, "end_turn", None),
         ("tool-call", StopReason::ToolCalls, "tool_use", None),
         ("max-tokens", StopReason::MaxOutput, "max_tokens", None),
-        ("stop-sequence", StopReason::End, "stop_sequence", Some("END")),
+        (
+            "stop-sequence",
+            StopReason::End,
+            "stop_sequence",
+            Some("END"),
+        ),
         ("stop-pause-turn", StopReason::Paused, "pause_turn", None),
-        ("stop-refusal", StopReason::Refusal, "refusal", Some("cyber")),
+        (
+            "stop-refusal",
+            StopReason::Refusal,
+            "refusal",
+            Some("cyber"),
+        ),
         (
             "stop-context-window",
             StopReason::ContextOverflow,
@@ -571,8 +636,15 @@ fn the_usage_reports_the_speed_that_served_the_request() {
     let events = events_of("fast");
     assert_well_formed(&events);
     let usage = end_of(&events).3;
-    assert_eq!((&usage.speed, &usage.speed_requested), (&Speed::Fast, &None));
-    assert!(!events.iter().any(|event| matches!(event, ModelEvent::SpeedFallback(_))));
+    assert_eq!(
+        (&usage.speed, &usage.speed_requested),
+        (&Speed::Fast, &None)
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, ModelEvent::SpeedFallback(_)))
+    );
     let raw: Value = serde_json::from_str(usage.raw.as_ref().unwrap().as_str()).unwrap();
     assert_eq!(raw["speed"], "fast");
 
@@ -603,7 +675,10 @@ fn the_usage_reports_the_speed_that_served_the_request() {
         (moves[0].requested.clone(), moves[0].served.clone()),
         (Speed::Fast, Speed::Standard)
     );
-    assert_eq!(moves[0].by, cortex_protocol::speed::SpeedFallbackBy::Provider);
+    assert_eq!(
+        moves[0].by,
+        cortex_protocol::speed::SpeedFallbackBy::Provider
+    );
     assert_eq!(moves[0].cooldown_until, None);
 
     // A response that says nothing of the speed ran at the speed it was
@@ -614,7 +689,10 @@ fn the_usage_reports_the_speed_that_served_the_request() {
     assert!(!silent.contains("\"speed\""));
     let events = decode_whole(&scenario::fast(), silent.as_bytes());
     let usage = end_of(&events).3;
-    assert_eq!((&usage.speed, &usage.speed_requested), (&Speed::Fast, &None));
+    assert_eq!(
+        (&usage.speed, &usage.speed_requested),
+        (&Speed::Fast, &None)
+    );
     let events = decode_whole(&scenario::standard_named(), silent.as_bytes());
     assert_eq!(end_of(&events).3.speed, Speed::Standard);
 }
@@ -634,7 +712,10 @@ fn cache_tokens_are_reported_by_class() {
     assert_eq!(tokens.cache_read, 0);
     let events = events_of("conversation-2");
     let tokens = &end_of(&events).3.tokens;
-    assert_eq!((tokens.input, tokens.cache_read, tokens.cache_write), (2, 1496, 284));
+    assert_eq!(
+        (tokens.input, tokens.cache_read, tokens.cache_write),
+        (2, 1496, 284)
+    );
 }
 
 /// A stream short enough to try every pair of cuts near each other: a tool
@@ -642,11 +723,26 @@ fn cache_tokens_are_reported_by_class() {
 /// line endings.
 fn small_stream() -> Vec<u8> {
     let events: [(&str, Value); 6] = [
-        ("message_start", json!({"type":"message_start","message":{"id":"m","model":"x","usage":{"input_tokens":1}}})),
-        ("content_block_start", json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t","name":"n","input":{}}})),
-        ("content_block_delta", json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"a\":\"é\"}"}})),
-        ("content_block_stop", json!({"type":"content_block_stop","index":1})),
-        ("message_delta", json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}})),
+        (
+            "message_start",
+            json!({"type":"message_start","message":{"id":"m","model":"x","usage":{"input_tokens":1}}}),
+        ),
+        (
+            "content_block_start",
+            json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t","name":"n","input":{}}}),
+        ),
+        (
+            "content_block_delta",
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"a\":\"é\"}"}}),
+        ),
+        (
+            "content_block_stop",
+            json!({"type":"content_block_stop","index":1}),
+        ),
+        (
+            "message_delta",
+            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}),
+        ),
         ("message_stop", json!({"type":"message_stop"})),
     ];
     let mut stream = String::new();
@@ -699,7 +795,11 @@ fn a_stream_that_stops_early_has_no_end_and_loses_nothing_that_arrived() {
                     "{name}: stopped at {stop}, and the response is called complete"
                 );
                 // What was decoded is the beginning of the whole response.
-                assert_eq!(events[..], whole[..events.len()], "{name}: stopped at {stop}");
+                assert_eq!(
+                    events[..],
+                    whole[..events.len()],
+                    "{name}: stopped at {stop}"
+                );
             }
         }
     }
@@ -725,36 +825,77 @@ fn a_stream_that_breaks_the_dialect_is_an_error_and_not_a_guess() {
             "an addition to a block that has not started",
             format!(
                 "{start}{}",
-                event("content_block_delta", json!({"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":"x"}}))
+                event(
+                    "content_block_delta",
+                    json!({"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":"x"}})
+                )
             ),
         ),
         (
             "the end of a block that has not started",
-            format!("{start}{}", event("content_block_stop", json!({"type":"content_block_stop","index":0}))),
+            format!(
+                "{start}{}",
+                event(
+                    "content_block_stop",
+                    json!({"type":"content_block_stop","index":0})
+                )
+            ),
         ),
-        ("a block that starts twice", format!("{start}{text_start}{text_start}")),
+        (
+            "a block that starts twice",
+            format!("{start}{text_start}{text_start}"),
+        ),
         ("an end with no stop reason", format!("{start}{stop}")),
         (
             "a known event that is not JSON",
-            format!("{start}event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\n\n"),
+            format!(
+                "{start}event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\n\n"
+            ),
         ),
         (
             "a block with no index",
-            format!("{start}{}", event("content_block_start", json!({"type":"content_block_start","content_block":{"type":"text","text":""}}))),
+            format!(
+                "{start}{}",
+                event(
+                    "content_block_start",
+                    json!({"type":"content_block_start","content_block":{"type":"text","text":""}})
+                )
+            ),
         ),
         (
             "an index that is not a number",
-            format!("{start}{}", event("content_block_start", json!({"type":"content_block_start","index":"0","content_block":{"type":"text","text":""}}))),
+            format!(
+                "{start}{}",
+                event(
+                    "content_block_start",
+                    json!({"type":"content_block_start","index":"0","content_block":{"type":"text","text":""}})
+                )
+            ),
         ),
         (
             "a block that is not an object",
-            format!("{start}{}", event("content_block_start", json!({"type":"content_block_start","index":0,"content_block":"text"}))),
+            format!(
+                "{start}{}",
+                event(
+                    "content_block_start",
+                    json!({"type":"content_block_start","index":0,"content_block":"text"})
+                )
+            ),
         ),
         (
             "a usage that is not counts",
-            format!("{start}{}", event("message_delta", json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":"many"}}))),
+            format!(
+                "{start}{}",
+                event(
+                    "message_delta",
+                    json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":"many"}})
+                )
+            ),
         ),
-        ("a message start with no message", event("message_start", json!({"type":"message_start"}))),
+        (
+            "a message start with no message",
+            event("message_start", json!({"type":"message_start"})),
+        ),
     ];
     for (what, stream) in broken {
         let result = decode(&request, stream.as_bytes(), &[]);
@@ -763,8 +904,14 @@ fn a_stream_that_breaks_the_dialect_is_an_error_and_not_a_guess() {
     // An end that follows an error is not a second ending.
     let after_error = format!(
         "{start}{}{}{stop}",
-        event("error", json!({"type":"error","error":{"type":"api_error","message":"x"}})),
-        event("message_delta", json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}})),
+        event(
+            "error",
+            json!({"type":"error","error":{"type":"api_error","message":"x"}})
+        ),
+        event(
+            "message_delta",
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}})
+        ),
     );
     let events = decode(&request, after_error.as_bytes(), &[]).unwrap();
     assert_eq!(events.iter().filter(|event| event.is_terminal()).count(), 1);
@@ -775,7 +922,13 @@ fn a_stream_that_breaks_the_dialect_is_an_error_and_not_a_guess() {
 fn no_bytes_make_the_decoder_panic_or_end_a_response_twice() {
     // The pieces of real streams, in any order, with pieces damaged.
     let mut pieces: Vec<Vec<u8>> = Vec::new();
-    for name in ["reasoning", "tool-calls", "server-tool", "unknown-event", "error-after-200"] {
+    for name in [
+        "reasoning",
+        "tool-calls",
+        "server-tool",
+        "unknown-event",
+        "error-after-200",
+    ] {
         let stream = load(name).response;
         let mut from = 0;
         for at in 0..stream.len().saturating_sub(1) {
@@ -796,7 +949,9 @@ fn no_bytes_make_the_decoder_panic_or_end_a_response_twice() {
                 let mut piece = cases::pick(rng, &pieces).clone();
                 match rng.below(6) {
                     // Cut the piece short.
-                    0 => piece.truncate(usize::try_from(rng.below(piece.len() as u64)).unwrap_or(0)),
+                    0 => {
+                        piece.truncate(usize::try_from(rng.below(piece.len() as u64)).unwrap_or(0))
+                    }
                     // Change one byte.
                     1 => {
                         let at = usize::try_from(rng.below(piece.len() as u64)).unwrap_or(0);

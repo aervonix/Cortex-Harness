@@ -1,8 +1,9 @@
 # Every night: the checks that do not belong on a pull request. So far, the
 # advisory check, the unused-dependency check, a release build for every
-# release target, and the property tests with many more cases than a pull
-# request runs. Later steps add fuzzing, the long-session memory test and
-# the live smoke tests (tiers 5 and 6).
+# release target, the property tests with many more cases than a pull
+# request runs, and coverage-guided fuzzing of the stream decoders. Later
+# steps add the long-session memory test and the live smoke tests (tiers 5
+# and 6).
 #
 # It does not block anything. When it fails, the `report` job opens an issue,
 # or adds a comment to the one that is open. The layout and the reasons are
@@ -135,9 +136,40 @@ jobs:
       - name: Tiers 1 and 2, with more property cases
         run: cargo run --locked --quiet --package xtask -- test --locked --profile properties
 
+  # Coverage-guided fuzzing of the stream decoders (docs/testing-and-ci.md,
+  # "Not blocking"): the parser of server-sent events and the decoder of
+  # each provider protocol, each for a fixed time, starting from the recorded
+  # fixtures. The fuzzer needs a nightly compiler, which only this job
+  # installs; the targets are a package of their own, `fuzz/`, outside the
+  # workspace. An input that fails is kept as an artifact of the run.
+  fuzz:
+    if: ${{ !inputs.force_failure }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the toolchain from rust-toolchain.toml, and a nightly one for the fuzzer
+        run: |
+          rustup toolchain install
+          rustup toolchain install nightly --profile minimal
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-fuzz@0.13.2
+      - name: Fuzz the stream decoders
+        run: cargo run --locked --quiet --package xtask -- fuzz --seconds 120
+      - name: Keep the inputs that failed
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+          retention-days: 30
+
   # The only job with a token that can write, and all it can write is issues.
   report:
-    needs: [dependencies, release, properties]
+    needs: [dependencies, release, properties, fuzz]
     if: ${{ failure() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5

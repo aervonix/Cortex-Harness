@@ -64,8 +64,20 @@ pub fn keeps_header(name: &str) -> bool {
 /// The prefixes of the identifiers a provider makes up, each followed by an
 /// underscore and letters and digits.
 const ID_PREFIXES: &[&str] = &[
-    "msg", "req", "toolu", "srvtoolu", "org", "wrkspc", "user", "file", "container", "batch",
-    "msgbatch", "resp", "call", "chatcmpl",
+    "msg",
+    "req",
+    "toolu",
+    "srvtoolu",
+    "org",
+    "wrkspc",
+    "user",
+    "file",
+    "container",
+    "batch",
+    "msgbatch",
+    "resp",
+    "call",
+    "chatcmpl",
 ];
 
 /// The members whose values are opaque payloads tied to an account.
@@ -461,10 +473,15 @@ mod tests {
         assert!(scrubber.check("the response body", clean).is_ok());
 
         let whole = format!("{{\"error\":\"invalid x-api-key {KEY}\"}}");
-        let error = scrubber.check("the response body", whole.as_bytes()).unwrap_err();
+        let error = scrubber
+            .check("the response body", whole.as_bytes())
+            .unwrap_err();
         assert!(error.message.contains("refused"), "{error}");
         assert!(error.message.contains("the response body"));
-        assert!(!error.message.contains(KEY), "the refusal does not repeat the key");
+        assert!(
+            !error.message.contains(KEY),
+            "the refusal does not repeat the key"
+        );
         assert!(!error.message.contains(&KEY[..KEY_WINDOW]));
 
         // Part of the key is enough: its start, its middle or its end.
@@ -479,7 +496,10 @@ mod tests {
         // Fewer characters than the window are not the key.
         let short = format!("starts like a key: {}", &KEY[..KEY_WINDOW - 1]);
         assert!(scrubber.check("the output", short.as_bytes()).is_ok());
-        assert_eq!(scrubber.printable("recorded 3 events").unwrap(), "recorded 3 events");
+        assert_eq!(
+            scrubber.printable("recorded 3 events").unwrap(),
+            "recorded 3 events"
+        );
         // Bytes that are not text are searched too.
         let mut binary = vec![0xff, 0xfe, 0x00];
         binary.extend_from_slice(KEY.as_bytes());
@@ -494,7 +514,11 @@ mod tests {
         let clean = b"event: ping\ndata: {\"type\":\"ping\"}\n\n";
 
         let mut scrubber = scrubber();
-        assert!(scrubber.fixture(request, 200, &headers, clean, "A ping.").is_ok());
+        assert!(
+            scrubber
+                .fixture(request, 200, &headers, clean, "A ping.")
+                .is_ok()
+        );
 
         // The key in the response body, in the request body, in a kept
         // header, and in the note: each is a refusal.
@@ -512,9 +536,17 @@ mod tests {
         );
         let mut echoing = headers.clone();
         echoing.insert("retry-after", KEY);
-        assert!(scrubber.fixture(request, 200, &echoing, clean, "note").is_err());
+        assert!(
+            scrubber
+                .fixture(request, 200, &echoing, clean, "note")
+                .is_err()
+        );
         let note = format!("Recorded with {KEY}.");
-        assert!(scrubber.fixture(request, 200, &headers, clean, &note).is_err());
+        assert!(
+            scrubber
+                .fixture(request, 200, &headers, clean, &note)
+                .is_err()
+        );
 
         // A header that is not kept cannot leak it: it is not in the fixture.
         let mut dropped = headers.clone();
@@ -558,7 +590,10 @@ mod tests {
         let mut scrubber = scrubber();
         let headers: Headers = [
             ("request-id", "req_011CSHoEeqs5C35K2UUqR7Fy"),
-            ("anthropic-organization-id", "0f0f0f0f-aaaa-bbbb-cccc-121212121212"),
+            (
+                "anthropic-organization-id",
+                "0f0f0f0f-aaaa-bbbb-cccc-121212121212",
+            ),
             ("anthropic-fast-input-tokens-remaining", "159000"),
             ("set-cookie", "session=abc"),
         ]
@@ -567,7 +602,10 @@ mod tests {
         let kept = scrubber.headers(&headers);
         assert_eq!(kept.len(), 2);
         assert_eq!(kept.get("request-id"), Some("req_fixture0001"));
-        assert_eq!(kept.get("anthropic-fast-input-tokens-remaining"), Some("159000"));
+        assert_eq!(
+            kept.get("anthropic-fast-input-tokens-remaining"),
+            Some("159000")
+        );
     }
 
     #[test]
@@ -609,7 +647,10 @@ mod tests {
         );
         let scrubbed = scrubber.text(&delta);
         assert!(!scrubbed.contains(payload));
-        assert!(scrubbed.contains(r#""signature": "fixture-signature-01""#), "{scrubbed}");
+        assert!(
+            scrubbed.contains(r#""signature": "fixture-signature-01""#),
+            "{scrubbed}"
+        );
 
         // The same payload in the request that sends the block back.
         let block = format!(r#"{{"type":"thinking","thinking":"","signature":"{payload}"}}"#);
@@ -651,7 +692,10 @@ mod tests {
         let read = Fixture::load(&directory).unwrap();
         std::fs::remove_dir_all(&directory).unwrap();
         assert_eq!(read, fixture);
-        assert!(Fixture::load(&directory).is_err(), "a fixture that is not there");
+        assert!(
+            Fixture::load(&directory).is_err(),
+            "a fixture that is not there"
+        );
     }
 
     #[test]
