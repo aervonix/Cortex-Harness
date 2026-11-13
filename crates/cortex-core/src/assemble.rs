@@ -19,10 +19,11 @@
 //!   project's rules are the ones the user saw: any change to them sets it
 //!   aside until the change is approved.
 //! - **Have git read the repository's own configuration**
-//!   ([`Trust::repository`]): given to the shell tool (which asks git what
-//!   a command changed only in a trusted repository, because a
-//!   repository's configuration can make git run a program) and to the
-//!   capture of the base state (for the same reason). A change to the
+//!   ([`Trust::repository`]): given to the engine (which takes git's
+//!   commands for ones that only read in a trusted repository alone,
+//!   because a repository's configuration can make git run a program), to
+//!   the shell tool (which asks git what a command changed, under the same
+//!   condition) and to the capture of the base state (the same again). A change to the
 //!   project's permission rules does not touch what git would run, so
 //!   this answer is the user's trust alone: a project that adds a `deny`
 //!   does not lose its base state for it.
@@ -205,7 +206,7 @@ fn sourced_rules(loaded: &Loaded) -> Vec<SourcedRule> {
 /// The one place the trust store's answer about a project's rules is
 /// asked for: every consumer of trust is given what this returns.
 fn project_rules_approved(trust: &cortex_policy::ProjectTrust, project_rules: &[Rule]) -> bool {
-    trust.allows_rules(project_rules)
+    trust.rules_approved(project_rules)
 }
 
 /// What was learned about the project's trust.
@@ -375,6 +376,7 @@ fn engine_parts(
     session: &SessionId,
     lease_id: LeaseId,
     trusted: bool,
+    repository_trusted: bool,
     shell: ShellSyntax,
     notices: &mut Vec<String>,
 ) -> Parts {
@@ -465,6 +467,7 @@ fn engine_parts(
         workspace: root,
         home,
         trusted,
+        repository_trusted,
         protected,
         shell,
         locate: Arc::clone(resolver) as Arc<dyn cortex_policy::Locate>,
@@ -835,6 +838,7 @@ pub(crate) fn assemble(
             &id,
             lease_id.clone(),
             rules_trusted,
+            repository_trusted,
             syntax,
             &mut told,
         ),

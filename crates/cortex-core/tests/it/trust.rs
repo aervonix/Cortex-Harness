@@ -7,12 +7,13 @@
 //! | Consumer | What a trusted project gets | Which answer |
 //! |---|---|---|
 //! | Configuration | Its own `model.main`, which raises cost and so waits for trust. | Trusted, and its rules are the ones the user saw. |
-//! | The permission engine | Its `allow` rule: a write under `.github/` is not asked about. And `git status` is a command that only reads. | The same. |
+//! | The permission engine | Its `allow` rule: a write under `.github/` is not asked about. | The same. |
+//! | The permission engine | `git status` is a command that only reads. | Trusted. |
 //! | The shell tool | Git is asked what a command changed (`changes.method` is `git`). | Trusted. |
 //! | The base state | A complete record, marked as taken from a trusted project. | Trusted. |
 //!
 //! A project whose rules changed since the user saw them keeps the last
-//! two and loses the first two until the change is approved.
+//! three and loses the first two until the change is approved.
 //!
 //! The tests start a shell and git, so they are named `sys_…`.
 
@@ -83,8 +84,9 @@ struct Seen {
     /// Whether the write the project's rule allows was asked about.
     write_asked: bool,
     /// Whether `git status` was asked about. The engine takes git for a
-    /// command that only reads in a trusted project alone: the project's
-    /// own configuration of git can make any git command run a program.
+    /// command that only reads in a project the user trusts, and in no
+    /// other: the repository's own configuration of git can make any git
+    /// command run a program.
     git_asked: bool,
     /// How the shell tool looked for what the command changed.
     method: String,
@@ -128,7 +130,6 @@ impl Seen {
         Self {
             model: MODEL.to_owned(),
             write_asked: true,
-            git_asked: true,
             ..Self::trusted()
         }
     }
@@ -289,19 +290,25 @@ fn sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_th
     // until the user has looked again. What git reads of the repository
     // has not changed, and the user's trust in that stands.
     let more = "[[permissions.rules]]\neffect = \"exec\"\nmatch = \"curl *\"\naction = \"allow\"\n";
-    world.project_config(&format!(
-        "[model]\nmain = \"{OTHER_MODEL}\"\n\n[[permissions.rules]]\neffect = \"write\"\nmatch \
-         = \".github/**\"\naction = \"allow\"\n\n{more}"
-    ));
-    put_back(&world);
-    let (seen, notices) = observe(&world, |_| {});
-    assert_eq!(seen, Seen::rules_set_aside(), "{more}");
-    assert!(
-        notices
-            .iter()
-            .any(|notice| notice.contains("rules have changed")),
-        "{notices:?}"
-    );
+    // A project that only forbids itself something is treated the same:
+    // its rules are not the ones the user saw.
+    let less =
+        "[[permissions.rules]]\neffect = \"read\"\nmatch = \"secret/**\"\naction = \"deny\"\n";
+    for added in [more, less] {
+        world.project_config(&format!(
+            "[model]\nmain = \"{OTHER_MODEL}\"\n\n[[permissions.rules]]\neffect = \"write\"\nmatch \
+             = \".github/**\"\naction = \"allow\"\n\n{added}"
+        ));
+        put_back(&world);
+        let (seen, notices) = observe(&world, |_| {});
+        assert_eq!(seen, Seen::rules_set_aside(), "{added}");
+        assert!(
+            notices
+                .iter()
+                .any(|notice| notice.contains("rules have changed")),
+            "{notices:?}"
+        );
+    }
 }
 
 #[test]
