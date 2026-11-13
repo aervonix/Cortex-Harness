@@ -1,0 +1,1036 @@
+# Step 31 (pull request 26): the openai-chat protocol, in cortex-llm.
+# Converted from the list the step's session kept: each break's text before
+# and after, and the tests that failed when it was made. `rule` is the
+# session's own name for the break, which says what is broken.
+
+[break] 01-tool-call-deltas-merged-by-order-instead-of-index
+rule: Tool-call deltas merged by order instead of index.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+        (None, None) => u32::try_from(place).unwrap_or(u32::MAX),
+    };
+replace:
+        (None, None) => u32::try_from(place).unwrap_or(u32::MAX),
+    };
+    let wire = self.by_wire.keys().next_back().copied().filter(|_| id.is_none()).unwrap_or(wire);
+packages: cortex-llm, cortex-testkit
+
+[break] 02-reasoning-read-under-the-wrong-name
+rule: Reasoning read under the wrong name.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    const REASONING_FIELDS: &[&str] = &["reasoning_content", "reasoning"];
+replace:
+    const REASONING_FIELDS: &[&str] = &["reasoning_text", "reasoning"];
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::conversation::a_change_of_model_inside_one_provider_drops_the_reasoning_and_the_server_takes_it
+    openai_chat::conversation::a_change_to_earlier_content_breaks_the_prefix_and_the_test_can_tell
+
+[break] 03-usage-counted-twice-added-up
+rule: Usage counted twice (added up).
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    out.usage(reported.clone());
+    self.usage = Some(reported);
+replace:
+    if let Some(before) = &self.usage {
+        reported.tokens.input += before.tokens.input;
+        reported.tokens.output += before.tokens.output;
+    }
+    out.usage(reported.clone());
+    self.usage = Some(reported);
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::a_usage_object_replaces_the_one_before_it_and_is_never_added_up
+
+[break] 04-an-error-inside-a-200-taken-as-success
+rule: An error inside a 200 taken as success.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    if chunk.error.is_some() || event.event == "error" {
+replace:
+    if false && (chunk.error.is_some() || event.event == "error") {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::classify::a_refusal_at_a_speed_tier_is_the_tiers_only_when_the_tier_refuses
+    openai_chat::classify::no_part_of_a_key_is_kept_in_a_message
+
+[break] 05-a-stop-reason-mapped-wrongly-length-as-end
+rule: A stop reason mapped wrongly (length as end).
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    "length" => StopReason::MaxOutput,
+replace:
+    "length" => StopReason::End,
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::a_call_that_never_gets_a_name_is_left_out_and_said_to_be_malformed
+    openai_chat::decode::a_response_with_tool_calls_stops_for_them_whatever_word_the_server_uses
+
+[break] 06-a-speed-asked-of-a-model-with-no-tier-is-let-through
+rule: A speed asked of a model with no tier is let through.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    if !info.offers(&request.speed) {
+        return Err(BuildError::new(format!(
+            "the model `{}` does not offer the speed `{}`",
+replace:
+    if false && !info.offers(&request.speed) {
+        return Err(BuildError::new(format!(
+            "the model `{}` does not offer the speed `{}`",
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::a_model_with_no_tier_is_never_told_a_speed
+    openai_chat::request::a_request_at_fast_speed
+
+[break] 07-fast-written-as-fast-not-priority
+rule: Fast written as `fast`, not `priority`.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    Speed::Fast => "priority",
+replace:
+    Speed::Fast => "fast",
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::a_hand_written_fixture_holds_the_request_its_response_would_answer
+    openai_chat::request::a_request_at_fast_speed
+
+[break] 08-priority-in-a-response-not-read-as-fast
+rule: `priority` in a response not read as fast.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    "priority" | "fast" => Some(Speed::Fast),
+replace:
+    "fast" => Some(Speed::Fast),
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::at_every_cut::openai
+    openai_chat::decode::at_every_cut::openrouter
+
+[break] 09-a-response-s-tier-read-from-every-model
+rule: A response's tier read from every model.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    reads_tier: !request.model.info.speeds.is_empty() && !flags::speeds_are_models(request),
+replace:
+    reads_tier: true,
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::a_tier_is_read_only_from_a_model_that_is_asked_for_one_that_way
+    openai_chat::decode::at_every_cut::venice
+
+[break] 10-the-member-a-server-demands-is-not-added
+rule: The member a server demands is not added.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    if let Some(member) = passback
+        && self.slot(member).is_none()
+    {
+replace:
+    if let Some(member) = passback
+        && false
+        && self.slot(member).is_none()
+    {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::conversation::a_change_of_model_inside_one_provider_drops_the_reasoning_and_the_server_takes_it
+    openai_chat::conversation::a_session_changes_from_an_anthropic_model_to_a_compatible_one
+
+[break] 11-reasoning-replayed-to-a-model-that-cannot-read-it
+rule: Reasoning replayed to a model that cannot read it.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    if readable || flags::replays_every_block(provider) {
+replace:
+    if true || readable || flags::replays_every_block(provider) {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::conversation::a_change_of_model_inside_one_provider_drops_the_reasoning_and_the_server_takes_it
+    openai_chat::conversation::every_rebuilt_request_is_the_one_that_was_recorded
+
+[break] 13-cached-tokens-not-taken-out-of-the-prompt-count
+rule: Cached tokens not taken out of the prompt count.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    input: crate::usage::uncached_input(
+        wire.prompt_tokens.unwrap_or(0),
+        cache_read,
+        cache_write,
+    ),
+replace:
+    input: wire.prompt_tokens.unwrap_or(0),
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::conversation::the_servers_that_report_a_cache_say_it_was_read
+    openai_chat::decode::at_every_cut::deepseek
+
+[break] 14-exhausted-credit-retried-as-a-rate-limit
+rule: Exhausted credit retried as a rate limit.
+file: crates/cortex-llm/src/openai_chat/classify.rs
+find:
+    | "credit_balance_exhausted"
+replace:
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::classify::openais_failures
+    openai_chat::classify::tests::every_name_in_the_table_has_its_signal
+
+[break] 15-a-bare-503-not-an-overload
+rule: A bare 503 not an overload.
+file: crates/cortex-llm/src/openai_chat/classify.rs
+find:
+    Some(503) => Signal::Overload,
+replace:
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::classify::a_refusal_at_a_speed_tier_is_the_tiers_only_when_the_tier_refuses
+    openai_chat::classify::deepseeks_failures
+
+[break] 16-a-refused-request-on-a-403-taken-for-a-credential-failure
+rule: A refused request on a 403 taken for a credential failure.
+file: crates/cortex-llm/src/openai_chat/classify.rs
+find:
+    if named == Some(Named::Refused) {
+replace:
+    if false && named == Some(Named::Refused) {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::classify::a_refusal_by_moderation_is_not_a_credentials_failure_with_or_without_a_name
+    openai_chat::classify::openrouters_failures
+
+[break] 17-a-rate-limit-always-the-tier-s
+rule: A rate limit always the tier's.
+file: crates/cortex-llm/src/openai_chat/classify.rs
+find:
+    Throttle::RateLimit if offer.separate_limit => Some(sent.clone()),
+replace:
+    Throttle::RateLimit if true || offer.separate_limit => Some(sent.clone()),
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::classify::a_refusal_at_a_speed_tier_is_the_tiers_only_when_the_tier_refuses
+
+[break] 18-a-tier-that-downgrades-said-to-refuse
+rule: A tier that downgrades said to refuse.
+file: crates/cortex-llm/src/openai_chat/classify.rs
+find:
+    if offer.when_unavailable != SpeedUnavailable::Error {
+        return None;
+    }
+replace:
+    if false && offer.when_unavailable != SpeedUnavailable::Error {
+        return None;
+    }
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::classify::a_refusal_at_a_speed_tier_is_the_tiers_only_when_the_tier_refuses
+
+[break] 19-a-call-without-an-id-gets-the-same-id-as-every-other
+rule: A call without an id gets the same id as every other.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    format!("call_{at}")
+replace:
+    "call_0".to_owned()
+packages: cortex-llm, cortex-testkit
+
+[break] 20-pieces-of-reasoning-details-never-joined
+rule: Pieces of reasoning_details never joined.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    Some(position) if position < open.details.len() => position,
+replace:
+    Some(position) if false && position < open.details.len() => position,
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::conversation::a_models_own_response_goes_back_with_its_reasoning_as_it_came
+    openai_chat::conversation::every_rebuilt_request_is_the_one_that_was_recorded
+
+[break] 21-a-failed-tool-result-does-not-say-so
+rule: A failed tool result does not say so.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    if result.is_error {
+        text.push_str(ERROR_PREFIX);
+    }
+replace:
+    if false && result.is_error {
+        text.push_str(ERROR_PREFIX);
+    }
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::tool_results_carry_errors_and_images
+
+[break] 22-a-provider-s-own-members-may-replace-the-builder-s
+rule: A provider's own members may replace the builder's.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    if OWN_MEMBERS.contains(&name.as_str()) {
+replace:
+    if false && OWN_MEMBERS.contains(&name.as_str()) {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::a_providers_own_members_are_added_and_cannot_replace_the_builders
+
+[break] 23-an-amount-read-a-thousand-times-too-small
+rule: An amount read a thousand times too small.
+file: crates/cortex-llm/src/openai_chat/account.rs
+find:
+    let total = whole.checked_mul(1_000_000_000)?.checked_add(nanos)?;
+replace:
+    let total = whole.checked_mul(1_000_000)?.checked_add(nanos)?;
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::account::tests::an_amount_is_read_exactly_as_billionths
+    openai_chat::endpoints::deepseeks_balance_endpoint_gives_a_balance_in_each_currency
+
+[break] 24-lm-studio-s-trained-size-taken-for-the-loaded-one
+rule: LM Studio's trained size taken for the loaded one.
+file: crates/cortex-llm/src/openai_chat/context.rs
+find:
+    .and_then(|entry| entry.get("loaded_instances"))
+    .and_then(Value::as_array)
+    .and_then(|instances| instances.first())
+    .and_then(|instance| instance.get("config"))
+    .and_then(|config| config.get("context_length"))
+    .and_then(Value::as_u64),
+replace:
+    .and_then(|entry| entry.get("max_context_length"))
+    .and_then(Value::as_u64),
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::endpoints::each_local_server_is_asked_where_it_keeps_its_loaded_context_size
+    openai_chat::endpoints::over_http::sys_a_local_servers_loaded_context_size_is_asked_for_and_read
+
+[break] 25-keep-alive-bytes-do-not-restart-the-first-event-wait
+rule: Keep-alive bytes do not restart the first-event wait.
+file: crates/cortex-llm/src/client.rs
+find:
+    *limit = inner.timer.sleep(first_event_limit.min(left));
+replace:
+packages: cortex-llm, cortex-testkit
+caught-by:
+    retry::a_connection_that_goes_dead_after_a_keep_alive_fails_at_the_ordinary_limit
+    retry::a_server_that_only_ever_says_it_is_alive_is_given_up_on
+
+[break] 26-a-stand-in-replaced-again-by-the-scrubber
+rule: A stand-in replaced again by the scrubber.
+file: crates/cortex-testkit/src/fixture.rs
+find:
+    (length >= 8 && !rest.starts_with("fixture"))
+replace:
+    (length >= 8)
+packages: cortex-llm, cortex-testkit
+caught-by:
+    fixture::tests::a_stand_in_is_not_replaced_again
+
+[break] 27-reasoning-in-tags-not-taken-out
+rule: Reasoning in tags not taken out.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    tags: flags::reasoning_tags(request, provider).then(|| Tags::Start(String::new())),
+replace:
+    tags: None,
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::at_every_cut::lmstudio
+    openai_chat::decode::reasoning_inside_the_text_is_taken_out_where_the_flag_says_so
+
+[break] 28-reasoning-shown-though-the-request-asked-for-none
+rule: Reasoning shown though the request asked for none.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    show_reasoning: request.reasoning.visibility != ReasoningVisibility::None,
+replace:
+    show_reasoning: true,
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::reasoning_that_is_not_to_be_shown_is_still_stored
+
+[break] 29-stop-with-tool-calls-taken-for-the-end-of-the-turn
+rule: `stop` with tool calls taken for the end of the turn.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    "stop" | "tool_calls" | "function_call" if has_calls => StopReason::ToolCalls,
+replace:
+    "tool_calls" | "function_call" if has_calls => StopReason::ToolCalls,
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::a_response_with_tool_calls_stops_for_them_whatever_word_the_server_uses
+    openai_chat::decode::tests::every_stop_reason_has_its_neutral_form
+
+[break] 30-deepseek-s-failing-stop-reason-taken-for-a-stop
+rule: DeepSeek's failing stop reason taken for a stop.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    "error" | "insufficient_system_resource" => {
+replace:
+    "error" => {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::an_error_inside_a_successful_response_is_an_error_and_never_an_end
+    openai_chat::decode::at_every_cut::deepseek
+
+[break] 31-a-reset-in-milliseconds-read-as-seconds
+rule: A reset in milliseconds read as seconds.
+file: crates/cortex-llm/src/openai_chat/classify.rs
+find:
+    100_000_000_000.. => UtcTime::from_unix_millis(number),
+replace:
+    100_000_000_000.. => UtcTime::from_unix(number, 0),
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::classify::tests::a_reset_is_read_in_all_three_forms
+    openai_chat::classify::the_headers_of_a_response_give_its_id_and_the_rate_limits
+
+[break] 32-an-image-a-tool-returned-is-dropped
+rule: An image a tool returned is dropped.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    said.append(&mut returned);
+replace:
+    returned.clear();
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::tool_results_carry_errors_and_images
+
+[break] 33-the-system-prompt-always-under-system
+rule: The system prompt always under `system`.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    message.str("role", flags::system_role(provider));
+replace:
+    message.str("role", "system");
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::the_system_prompt_is_the_first_message_under_the_servers_role_for_it
+
+[break] 34-the-output-limit-always-under-max-tokens
+rule: The output limit always under `max_tokens`.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    flags::max_tokens_field(provider),
+replace:
+    "max_tokens",
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::conversation::a_session_changes_from_an_anthropic_model_to_a_compatible_one
+    openai_chat::conversation::every_rebuilt_request_is_the_one_that_was_recorded
+
+[break] 35-a-model-s-own-maximum-sent-when-no-limit-was-asked-for
+rule: A model's own maximum sent when no limit was asked for.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    if let Some(asked) = request.max_output {
+replace:
+    if let Some(asked) = request.max_output.or(Some(info.max_output)) {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::a_model_switch_that_drops_reasoning
+    openai_chat::request::a_model_that_takes_tools_at_one_level_only_is_told_that_level
+
+[break] 36-a-speed-that-is-a-model-still-sent-as-service-tier
+rule: A speed that is a model still sent as service_tier.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    if request.model.info.speeds.is_empty() || flags::speeds_are_models(request) {
+        return None;
+    }
+replace:
+    if request.model.info.speeds.is_empty() {
+        return None;
+    }
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::conversation::a_session_changes_from_an_anthropic_model_to_a_compatible_one
+    openai_chat::conversation::every_rebuilt_request_is_the_one_that_was_recorded
+
+[break] 37-the-fast-model-s-id-not-used
+rule: The fast model's id not used.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    if request.speed.is_standard() || !flags::speeds_are_models(request) {
+replace:
+    if true || request.speed.is_standard() || !flags::speeds_are_models(request) {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::a_hand_written_fixture_holds_the_request_its_response_would_answer
+    openai_chat::request::a_model_of_openrouters_for_claude_is_in_the_catalog_with_its_flag
+
+[break] 38-the-response-ends-at-the-stop-reason-before-the-usage
+rule: The response ends at the stop reason, before the usage.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    self.close_all(out);
+    if self.stop.is_none() {
+replace:
+    self.close_all(out);
+    if self.stop.is_none() && false {
+    }
+    if self.stop.is_none() {
+        self.stop = Some((reason.clone().into_owned(), None));
+        return self.end(out);
+    }
+    if self.stop.is_none() {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::conversation::the_servers_that_report_a_cache_say_it_was_read
+    openai_chat::decode::a_cost_the_provider_states_is_read_from_where_it_puts_it
+
+[break] 39-a-tool-call-closed-when-the-next-one-begins
+rule: A tool call closed when the next one begins.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+in: call
+find:
+    self.flush_tags(out);
+    self.close_open(out);
+replace:
+    self.flush_tags(out);
+    self.close_all(out);
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::at_every_cut::deepseek
+    openai_chat::decode::at_every_cut::openai
+
+[break] 40-the-usage-endpoint-s-answer-kept-debug-of-the-body
+rule: The usage endpoint's answer kept (debug of the body).
+file: crates/cortex-llm/src/openai_chat/account.rs
+find:
+    let mut usage = AccountUsage {
+        available: None,
+replace:
+    let mut usage = AccountUsage {
+        available: Some(String::from_utf8_lossy(body).contains("sk-or")).filter(|found| *found),
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::endpoints::openrouters_key_endpoint_gives_the_keys_budget_and_never_its_label
+
+[break] 41-a-local-server-gets-the-ordinary-time-limits
+rule: A local server gets the ordinary time limits.
+file: crates/cortex-llm/src/openai_chat/providers.rs
+find:
+    info.first_event_timeout = Some(LOCAL_FIRST_EVENT);
+replace:
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::providers::tests::a_local_server_gets_time_to_read_a_long_prompt_and_a_hosted_one_does_not
+
+[break] 42-deepseek-s-entry-loses-its-reasoning-flag
+rule: DeepSeek's entry loses its reasoning flag.
+file: crates/cortex-llm/src/openai_chat/providers.rs
+find:
+    flags.set(flag::REASONING_PASSBACK, text("reasoning_content"));
+replace:
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::conversation::a_change_of_model_inside_one_provider_drops_the_reasoning_and_the_server_takes_it
+    openai_chat::conversation::a_session_changes_from_an_anthropic_model_to_a_compatible_one
+
+[break] 43-a-repeated-stop-reason-replaces-the-first
+rule: A repeated stop reason replaces the first.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    if self.stop.is_none() {
+        self.stop = Some((
+replace:
+    if true {
+        self.stop = Some((
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::the_first_stop_reason_stands_and_an_empty_one_is_none
+
+[break] 44-content-that-is-not-text-is-skipped-silently
+rule: Content that is not text is skipped silently.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    Some(_) => {
+        return Err(DecodeError::new(
+            "a delta's `content` is neither text nor null",
+        ));
+    }
+replace:
+    Some(_) => {}
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::a_stream_that_is_damaged_is_an_error_and_not_a_guess
+
+[break] 45-a-413-not-a-context-overflow
+rule: A 413 not a context overflow.
+file: crates/cortex-llm/src/openai_chat/classify.rs
+find:
+    Some(413) => Signal::ContextLength,
+replace:
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::classify::what_no_body_explains_is_classified_by_its_status
+
+[break] 46-the-cache-marker-left-off-the-system-prompt
+rule: The cache marker left off the system prompt.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    let marker = marker.as_deref().filter(|_| request.cache.stable_prefix);
+replace:
+    let marker = marker.as_deref().filter(|_| false);
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::conversation::every_rebuilt_request_is_the_one_that_was_recorded
+    openai_chat::request::cache_markers
+
+[break] 47-an-empty-list-of-reasoning-pieces-opens-a-block
+rule: An empty list of reasoning pieces opens a block.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    if pieces.is_empty() {
+        return Ok(None);
+    }
+replace:
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::an_empty_reasoning_member_is_no_reasoning
+
+[break] 48-another-id-under-an-index-in-use-is-merged-into-the-first-ca
+rule: Another id under an index in use is merged into the first call.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    !call.id_given || id.is_none_or(|id| id == call.id)
+replace:
+    true
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::another_id_under_an_index_in_use_is_another_call
+
+[break] 49-a-call-that-never-got-a-name-is-not-said-to-be-malformed
+rule: A call that never got a name is not said to be malformed.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    self.malformed_call = true;
+replace:
+    self.malformed_call = false;
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::a_call_that_never_gets_a_name_is_left_out_and_said_to_be_malformed
+
+[break] 50-an-opaque-reasoning-payload-is-shown
+rule: An opaque reasoning payload is shown.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    if name != "data" {
+replace:
+    if true {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::pieces_of_reasoning_are_joined_by_type_and_index_and_an_opaque_one_is_never_shown
+
+[break] 51-pieces-of-reasoning-joined-by-index-alone
+rule: Pieces of reasoning joined by index alone.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    Some(*open.placed.entry((kind.clone(), at)).or_insert(next))
+replace:
+    Some(*open.placed.entry((None, at)).or_insert(next))
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::pieces_of_reasoning_are_joined_by_type_and_index_and_an_opaque_one_is_never_shown
+
+[break] 52-an-empty-stop-reason-taken-for-one
+rule: An empty stop reason taken for one.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    choice.finish_reason.filter(|reason| !reason.is_empty())
+replace:
+    choice.finish_reason
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::the_first_stop_reason_stands_and_an_empty_one_is_none
+
+[break] 53-a-text-part-s-block-may-bring-any-member
+rule: A text part's block may bring any member.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    matches!(name, "content" | "refusal")
+replace:
+    name != "role"
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::a_stored_block_cannot_change_a_messages_role_or_shape
+    openai_chat::request::a_stored_block_gives_a_message_only_the_members_of_its_parts_kind
+
+[break] 54-a-tool-call-s-block-may-be-another-call
+rule: A tool call's block may be another call.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    .filter(own)
+replace:
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::a_stored_block_gives_a_message_only_the_members_of_its_parts_kind
+
+[break] 55-flags-are-not-checked
+rule: Flags are not checked.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    flags::check(request, provider).map_err(BuildError::new)?;
+replace:
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::a_flag_that_is_misspelt_or_has_a_value_it_cannot_have_is_refused
+    openai_chat::request::a_providers_own_members_are_added_and_cannot_replace_the_builders
+
+[break] 56-a-masked-key-is-kept-in-a-message
+rule: A masked key is kept in a message.
+file: crates/cortex-llm/src/openai_chat/classify.rs
+find:
+    .map(|word| if masked(word) { "[key]" } else { word })
+replace:
+    .map(|word| word)
+packages: cortex-llm, cortex-testkit
+
+[break] 57-moderation-without-a-typed-name-is-a-credential-failure
+rule: Moderation without a typed name is a credential failure.
+file: crates/cortex-llm/src/openai_chat/classify.rs
+find:
+    if metadata.contains_key("flagged_input") || metadata.contains_key("reasons") {
+replace:
+    if false {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::classify::a_refusal_by_moderation_is_not_a_credentials_failure_with_or_without_a_name
+
+[break] 58-keep-alives-are-waited-on-for-ever
+rule: Keep-alives are waited on for ever.
+file: crates/cortex-llm/src/client.rs
+find:
+    let left = longest.saturating_sub(waited);
+replace:
+    let left = longest;
+packages: cortex-llm, cortex-testkit
+caught-by:
+    retry::a_server_that_only_ever_says_it_is_alive_is_given_up_on
+
+[break] 59-a-uuid-is-not-scrubbed
+rule: A UUID is not scrubbed.
+file: crates/cortex-testkit/src/fixture.rs
+find:
+    (boundary && is_uuid(&bytes[at..])).then_some(("uuid", UUID_LENGTH))
+replace:
+    (false && is_uuid(&bytes[at..])).then_some(("uuid", UUID_LENGTH))
+packages: cortex-llm, cortex-testkit
+caught-by:
+    fixture::tests::a_uuid_is_an_identifier_wherever_it_is
+
+[break] 60-ollama-s-latest-tag-not-understood
+rule: Ollama's `latest` tag not understood.
+file: crates/cortex-llm/src/openai_chat/context.rs
+find:
+    || latest(entry))
+replace:
+    )
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::endpoints::the_loaded_size_is_not_the_size_the_model_was_trained_for
+
+[break] 61-calls-without-an-index-numbered-within-one-delta-only
+rule: Calls without an index numbered within one delta only.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    let before = self.calls.len();
+replace:
+    let before = 0;
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::a_server_that_numbers_nothing_may_still_send_a_call_in_pieces
+    openai_chat::decode::calls_without_an_index_are_numbered_through_the_whole_response
+
+[break] 62-a-context-too-long-inside-a-response-not-told-apart
+rule: A context too long inside a response not told apart.
+file: crates/cortex-llm/src/openai_chat/classify.rs
+find:
+    Some(400 | 422) | None
+replace:
+    Some(400 | 422)
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::a_context_that_is_too_long_is_told_apart_inside_a_response_too
+
+[break] 63-text-held-back-for-a-tag-comes-out-after-the-call
+rule: Text held back for a tag comes out after the call.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+in: call
+find:
+    self.flush_tags(out);
+    self.close_open(out);
+replace:
+    self.close_open(out);
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::text_held_back_for_a_tag_is_handed_on_before_a_call_begins
+
+[break] 64-a-late-id-begins-another-call
+rule: A late id begins another call.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    !call.id_given || id.is_none_or(|id| id == call.id)
+replace:
+    call.id.is_empty() || id.is_none_or(|id| id == call.id)
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::an_id_that_comes_before_the_name_is_the_calls_and_one_that_comes_after_is_not
+
+[break] 65-a-refusal-with-no-other-text-is-dropped-from-the-history
+rule: A refusal with no other text is dropped from the history.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    if content.is_none() && !calls && !refused {
+replace:
+    if content.is_none() && !calls {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::a_refusal_goes_back_as_one
+
+[break] 66-a-made-up-call-id-is-the-same-in-every-response
+rule: A made-up call id is the same in every response.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    format!("call_{tail}_{at}")
+replace:
+    format!("call_{at}")
+packages: cortex-llm, cortex-testkit
+
+[break] 67-a-reasoning-part-s-block-may-bring-a-tool-call
+rule: A reasoning part's block may bring a tool call.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    "reasoning_content" | "reasoning" | "reasoning_details"
+replace:
+    "reasoning_content" | "reasoning" | "reasoning_details" | "tool_calls"
+packages: cortex-llm, cortex-testkit
+
+[break] 68-a-first-empty-reasoning-name-hides-the-second
+rule: A first empty reasoning name hides the second.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    if let Some(text) = string(field)?.filter(|text| !text.is_empty()) {
+replace:
+    if let Some(text) = string(field)? {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::an_empty_reasoning_member_is_no_reasoning
+    openai_chat::decode::at_every_cut::deepseek
+
+[break] 69-what-a-failed-response-used-is-dropped
+rule: What a failed response used is dropped.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    self.take_usage(&chunk, out)?;
+    let error = classify::stopped_with_failure
+replace:
+    let error = classify::stopped_with_failure
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::at_every_cut::deepseek
+    openai_chat::decode::what_a_failed_response_used_is_counted
+
+[break] 70-usage-in-an-error-chunk-is-dropped
+rule: Usage in an error chunk is dropped.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    self.take_usage(&chunk, out)?;
+    let error = classify::stream_error(event.data, &self.request);
+replace:
+    let error = classify::stream_error(event.data, &self.request);
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::what_a_failed_response_used_is_counted
+
+[break] 71-a-count-of-cache-reads-beside-the-details-is-not-read
+rule: A count of cache reads beside the details is not read.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    .or(wire.cache_read_input_tokens)
+replace:
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::tests::cached_tokens_are_taken_out_of_the_prompt_count
+
+[break] 72-a-count-of-cache-writes-beside-the-details-is-not-read
+rule: A count of cache writes beside the details is not read.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    .or(wire.cache_creation_input_tokens)
+replace:
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::tests::cached_tokens_are_taken_out_of_the_prompt_count
+
+[break] 73-white-space-is-held-back-without-end
+rule: White space is held back without end.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    || held.len() > LEADING_SPACE
+replace:
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::tests::text_without_the_opening_tag_is_text
+
+[break] 74-the-index-of-keys-forgets-what-is-added-to-it
+rule: The index of keys forgets what is added to it.
+file: crates/cortex-llm/src/json.rs
+find:
+    places.insert(key.clone(), members.len());
+replace:
+packages: cortex-llm, cortex-testkit
+caught-by:
+    json::tests::an_object_with_very_many_members_is_read_in_order_and_quickly
+
+[break] 75-a-fragment-with-no-index-is-always-another-call
+rule: A fragment with no index is always another call.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    delta.index.is_none() && id.is_none() && !named && !self.calls[*last].ended
+replace:
+    false && delta.index.is_none() && id.is_none() && !named && !self.calls[*last].ended
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::a_server_that_numbers_nothing_may_still_send_a_call_in_pieces
+
+[break] 76-what-a-later-fragment-carries-is-dropped
+rule: What a later fragment carries is dropped.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    if known.is_some() {
+replace:
+    if false && known.is_some() {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::what_a_later_fragment_of_a_call_carries_goes_back_with_it_too
+
+[break] 77-a-made-up-id-is-as-long-as-the-response-s
+rule: A made-up id is as long as the response's.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    .take(16)
+replace:
+    .take(64)
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::a_made_up_call_id_is_short_whatever_the_responses_id_is
+
+[break] 78-a-reasoning-part-may-always-write-the-text
+rule: A reasoning part may always write the text.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    || (tags && name == "content")
+replace:
+    || name == "content"
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::a_reasoning_block_gives_the_message_text_only_where_reasoning_is_in_the_text
+
+[break] 79-a-reasoning-part-may-never-write-the-text
+rule: A reasoning part may never write the text.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    || (tags && name == "content")
+replace:
+    || (false && tags && name == "content")
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::a_reasoning_block_gives_the_message_text_only_where_reasoning_is_in_the_text
+
+[break] 80-pieces-of-one-text-get-a-break-between-them
+rule: Pieces of one text get a break between them.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    replay == Replay::Projection && !ours
+replace:
+    replay == Replay::Projection
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::text_that_was_one_stream_is_one_text_again_when_its_reasoning_is_dropped
+
+[break] 81-a-faster-model-s-smaller-output-limit-is-ignored
+rule: A faster model's smaller output limit is ignored.
+file: crates/cortex-llm/src/openai_chat/request.rs
+find:
+    flags::speed_max_output(request, &request.speed).unwrap_or(info.max_output);
+replace:
+    info.max_output;
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::request::a_speed_that_is_a_smaller_model_is_held_to_that_models_output_limit
+
+[break] 82-a-word-that-begins-as-a-key-is-kept
+rule: A word that begins as a key is kept.
+file: crates/cortex-llm/src/openai_chat/classify.rs
+find:
+    .is_some_and(|start| start.eq_ignore_ascii_case("sk-"))
+replace:
+    .is_some_and(|_start| false)
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::classify::no_part_of_a_key_is_kept_in_a_message
+
+[break] 83-three-asterisks-are-not-a-mask
+rule: Three asterisks are not a mask.
+file: crates/cortex-llm/src/openai_chat/classify.rs
+find:
+    word.contains("***")
+replace:
+    word.contains("****")
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::classify::no_part_of_a_key_is_kept_in_a_message
+
+[break] 84-a-request-id-with-no-shape-is-kept-in-a-fixture
+rule: A request id with no shape is kept in a fixture.
+file: crates/cortex-testkit/src/fixture.rs
+find:
+    if scrubbed == value && !value.contains("fixture") && !value.trim().is_empty() {
+replace:
+    if false {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    fixture::tests::the_other_dialects_limit_headers_are_kept_and_made_up_too
+
+[break] 85-the-end-of-a-longer-word-is-taken-for-a-uuid
+rule: The end of a longer word is taken for a UUID.
+file: crates/cortex-testkit/src/fixture.rs
+find:
+    (boundary && is_uuid(&bytes[at..]))
+replace:
+    (is_uuid(&bytes[at..]))
+packages: cortex-llm, cortex-testkit
+caught-by:
+    fixture::tests::a_uuid_is_an_identifier_wherever_it_is
+
+[break] 86-the-ceiling-s-error-says-the-ordinary-limit
+rule: The ceiling's error says the ordinary limit.
+file: crates/cortex-llm/src/client.rs
+find:
+    at_ceiling = left <= first_event_limit;
+replace:
+    at_ceiling = false;
+packages: cortex-llm, cortex-testkit
+caught-by:
+    retry::a_server_that_only_ever_says_it_is_alive_is_given_up_on
+
+[break] 87-tool-calls-with-no-call-is-an-end-though-the-output-limit-cu
+rule: `tool_calls` with no call is an end though the output limit cut it.
+file: crates/cortex-llm/src/openai_chat/decode.rs
+find:
+    native == Some("length") => {
+replace:
+    false && native == Some("length") => {
+packages: cortex-llm, cortex-testkit
+caught-by:
+    openai_chat::decode::a_tool_call_cut_off_by_the_output_limit_is_the_output_limit
+    openai_chat::decode::tests::every_stop_reason_has_its_neutral_form
+
+[break] 88-llama-cpp-at-its-old-port
+rule: Llama.cpp at its old port.
+file: crates/cortex-llm/src/openai_chat/providers.rs
+find:
+    LLAMACPP => local("http://localhost:9931/v1"
+replace:
+    LLAMACPP => local("http://localhost:8080/v1"
+packages: cortex-llm, cortex-testkit

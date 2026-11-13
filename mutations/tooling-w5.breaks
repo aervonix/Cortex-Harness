@@ -1,0 +1,217 @@
+# The wave 5 tooling step: the seeded order of events, the scratch
+# directory, and the commands of xtask that the step added. Written with
+# the code, and run with the command they are a list for.
+
+[break] seam-token-not-looked-at
+rule: Under a seeded order, work whose token fires before its turn comes is not run.
+file: crates/cortex-tools/src/blocking.rs
+in: inline::run
+find:
+    if cancel.is_cancelled() {
+        return Err(BlockingError::Cancelled);
+    }
+replace:
+# The seam's own tests are built only when a crate that turns `test-hooks`
+# on is in the build.
+packages: cortex-tools, cortex-agent
+caught-by:
+    blocking::tests::under_a_seeded_order_a_token_that_fires_first_wins_and_the_work_never_runs
+
+[break] seam-order-outlives-its-guard
+rule: When the seeded order's guard is dropped, blocking work goes back to the pool.
+file: crates/cortex-tools/src/blocking.rs
+in: InlineBlocking::drop
+find: *order.borrow_mut() = before
+replace: drop(before)
+packages: cortex-tools, cortex-agent
+caught-by:
+    blocking::tests::when_the_seeded_order_ends_the_work_goes_back_to_the_pool
+
+[break] seed-is-the-same-for-every-repeat
+rule: Each repeat of a stress run has the next seed.
+file: crates/cortex-testkit/src/seed.rs
+in: seed_from
+find: .wrapping_add(repeat)
+replace: .wrapping_add(0)
+caught-by:
+    seed::tests::each_repeat_of_a_stress_run_has_the_next_seed
+
+[break] scratch-is-left-behind
+rule: A test's directory is removed when the test ends without failing.
+file: crates/cortex-testkit/src/scratch.rs
+in: Scratch::drop
+find: if !std::thread::panicking()
+replace: if false
+caught-by:
+    scratch::tests::it_is_removed_when_the_test_ends_read_only_files_included
+
+[break] scratch-takes-any-name
+rule: A test's directory is named by one plain name, so that making it new never removes another test's.
+file: crates/cortex-testkit/src/scratch.rs
+in: Scratch::under
+find: is_one_name(name),
+replace: true,
+caught-by:
+    scratch::tests::a_name_that_is_not_one_name_is_refused_before_anything_is_removed
+
+[break] report-misses-a-test-that-could-not-run
+rule: A test that could not be run is a failed test, like one that ran and failed.
+file: xtask/src/junit.rs
+in: parse
+find: children.contains("<failure") || children.contains("<error")
+replace: children.contains("<failure")
+caught-by:
+    junit::tests::a_test_that_could_not_be_run_is_a_failure
+
+[break] tier-of-a-process-test-in-a-module
+rule: A test that starts a process is a system test wherever it lives: the name counts at the start of any path segment.
+file: xtask/src/tiers.rs
+in: Tier::of
+find: test.starts_with("sys_") || test.contains("::sys_")
+replace: test.starts_with("sys_")
+caught-by:
+    tiers::tests::where_a_test_lives_and_its_name_decide_its_tier
+
+[break] slowest-tests-are-the-quickest
+rule: A tier's slowest tests are listed slowest first.
+file: xtask/src/tiers.rs
+in: slowest
+find: b.seconds.total_cmp(&a.seconds)
+replace: a.seconds.total_cmp(&b.seconds)
+caught-by:
+    tiers::tests::the_report_of_a_fixed_run_is_exactly_this
+
+[break] one-crate-is-still-the-workspace
+rule: `test -p <crate>` builds and runs that crate only: `--workspace` is added when no package was chosen.
+file: xtask/src/checks.rs
+in: test_command
+find: if !selects_packages(arguments)
+replace: if true
+caught-by:
+    checks::tests::a_run_of_one_crate_is_not_a_run_of_the_workspace
+
+[break] a-joined-package-option-is-not-seen
+rule: `-pcortex-agent`, written as one word, chooses a package like `-p cortex-agent`.
+file: xtask/src/checks.rs
+in: selects_packages
+find: (argument.starts_with("-p") && !argument.starts_with("--"))
+replace: false
+caught-by:
+    checks::tests::naming_a_package_keeps_the_rest_of_the_workspace_out
+
+[break] stress-seed-without-the-first
+rule: The seed of a failed repeat is the first seed plus the repeat's number.
+file: xtask/src/stress.rs
+in: summarise
+find: first_seed.wrapping_add(u64::from(*repeat)).to_string()
+replace: u64::from(*repeat).to_string()
+caught-by:
+    stress::tests::a_test_that_fails_on_some_repeats_is_reported_with_the_seeds_that_fail_it
+
+[break] stress-forgives-a-retry
+rule: A test that passed only when it was tried again failed that repeat.
+file: xtask/src/stress.rs
+in: summarise
+find: case.failed || case.retried
+replace: case.failed
+caught-by:
+    stress::tests::a_test_that_passed_only_on_its_retry_failed_that_repeat
+
+[break] trailing-comma-is-a-token
+rule: A comma before a closing bracket is the formatter's, and a search passes over it.
+file: xtask/src/mutate/lex.rs
+in: lex
+find: tokens.pop();
+replace:
+caught-by:
+    mutate::lex::tests::a_trailing_comma_is_not_a_token_and_any_other_comma_is
+
+[break] tuple-comma-is-layout
+rule: Whether a break changes anything is judged with trailing commas counted: `(x,)` is not `(x)`.
+file: xtask/src/mutate/lex.rs
+in: same_tokens
+find: (lex(a, false), lex(b, false))
+replace: (lex(a, true), lex(b, true))
+caught-by:
+    mutate::lex::tests::a_tuple_of_one_is_not_the_value_in_brackets
+
+[break] break-is-not-put-back
+rule: The copy is put back as it was after every break.
+file: xtask/src/mutate/drive.rs
+in: Broken::restore
+find: fs::write(&self.path, &self.original)
+replace: fs::write(&self.path, "")
+caught-by:
+    mutate::drive::tests::the_tree_is_only_read_and_the_copy_is_put_back_after_every_break
+
+[break] results-outlive-the-code
+rule: A result is kept for the code it was found with: a change to any file forgets it.
+file: xtask/src/mutate/drive.rs
+in: code_hash
+find: hash.add(&content);
+replace:
+caught-by:
+    mutate::drive::tests::a_change_to_the_code_runs_everything_again_and_a_change_to_a_list_only_what_changed
+
+[break] two-runs-share-a-copy
+rule: A second run on a copy is refused while the first holds it.
+file: xtask/src/mutate/drive.rs
+in: drive
+find: let _lock = lock(scratch)?;
+replace:
+caught-by:
+    mutate::drive::tests::a_second_run_on_the_same_copy_is_refused_while_the_first_holds_it
+
+[break] caught-by-anything-will-do
+rule: A break that names its tests is caught only if every one of them fails.
+file: xtask/src/mutate/drive.rs
+in: judge
+find: if !missed.is_empty()
+replace: if false
+caught-by:
+    mutate::drive::tests::a_break_caught_only_by_other_tests_than_its_own_is_flagged
+
+[break] lost-run-is-kept-for-good
+rule: A run that ended without a verdict is tried again by the next run.
+file: xtask/src/mutate/drive.rs
+in: drive
+find: if options.again || no_verdict
+replace: if options.again
+caught-by:
+    mutate::drive::tests::a_run_that_failed_without_a_verdict_is_tried_again_the_next_time
+
+[break] heading-name-keeps-no-spaces
+rule: A heading's name has a `-` for each space of its text.
+file: xtask/src/rules/links.rs
+in: slug
+find: name.push('-');
+replace:
+caught-by:
+    rules::links::tests::a_headings_name_is_githubs
+
+[break] any-fragment-will-do
+rule: A link with a fragment names a heading that the page has.
+file: xtask/src/rules/links.rs
+in: judge
+find: if known.contains(&percent_decoded(fragment))
+replace: if true
+caught-by:
+    rules::links::tests::a_link_to_a_heading_that_is_not_there_is_found
+
+[break] record-heading-names-any-step
+rule: A step record's first line names the step its folder is for.
+file: xtask/src/rules/layout.rs
+in: step_record
+find: Some(step) => who == step,
+replace: Some(_) => true,
+caught-by:
+    rules::layout::tests::a_records_heading_names_its_own_step_in_the_form_the_others_have
+
+[break] test-hooks-passed-on-by-a-feature
+rule: No feature of another crate passes a `test-hooks` feature on.
+file: xtask/src/rules/crate_graph.rs
+in: check_test_hooks
+find: if turned_on == TEST_HOOKS || passed_on
+replace: if turned_on == TEST_HOOKS
+caught-by:
+    rules::crate_graph::tests::no_feature_turns_test_hooks_on

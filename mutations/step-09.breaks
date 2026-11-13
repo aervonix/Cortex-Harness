@@ -1,0 +1,187 @@
+# Step 9 (cortex-config and credentials), the breaks behind the review fixes of
+# pull request 24. Reconstructed from the pull request's description and the
+# crate's tests, not kept from the step's own mutation runs. Windows-only fixes are left out.
+
+[break] env-debug-shows-values
+rule: The Debug form of an environment names its variables and never shows a value, since it holds the providers' keys.
+file: crates/cortex-config/src/env.rs
+in: Env::fmt
+find: &self.variables.keys().collect::<Vec<_>>()
+replace: &self.variables
+caught-by:
+    env::tests::debug_names_the_variables_and_shows_no_value
+    printing::no_debug_or_display_form_holds_a_key
+
+[break] loaded-debug-shows-raw-values
+rule: The Debug form of a loaded configuration shows the merged values redacted, never as they are.
+file: crates/cortex-config/src/load.rs
+in: Loaded::fmt
+find: &schema::redact(&KeyPath::root(), &Value::Table(self.values.clone()))
+replace: &self.values
+caught-by:
+    printing::no_debug_or_display_form_holds_a_key
+
+[break] override-error-repeats-the-argument
+rule: The error for a -c setting that is not key=value does not repeat the argument, which may be a key pasted in the wrong place.
+file: crates/cortex-config/src/load.rs
+in: Override::parse
+find: _ => Err(
+replace: _ => Err(argument.to_owned() + &
+caught-by:
+    load::tests::a_command_line_setting_is_key_equals_value
+
+[break] literal-header-not-redacted
+rule: A literal value of a key that can hold a secret, such as a provider's header, is shown as redacted; a variable name is kept.
+file: crates/cortex-config/src/schema/redact.rs
+in: redact_kind
+find: (Kind::EnvText, Value::String(_)) => redacted()
+replace: (Kind::EnvText, Value::String(_)) => value.clone()
+caught-by:
+    schema::redact::tests::a_declared_literal_is_redacted_and_a_variable_name_kept
+    printing::no_debug_or_display_form_holds_a_key
+
+[break] web-address-user-shown
+rule: The user part of a web address is redacted in any value the configuration shows.
+file: crates/cortex-config/src/schema/redact.rs
+in: redact
+find: hide_url_users(&shown)
+replace: shown
+caught-by:
+    schema::redact::tests::the_user_part_of_a_web_address_is_redacted_anywhere
+
+[break] reserved-secret-names-not-redacted
+rule: In a section whose keys are not declared yet, a value under a key that names a secret (env, headers, token, api_key) is redacted whole.
+file: crates/cortex-config/src/schema/redact.rs
+in: redact_reserved
+find: key.parts().iter().any(|part| names_a_secret(part))
+replace: false
+caught-by:
+    schema::redact::tests::in_a_reserved_section_a_secret_is_known_by_its_name
+    printing::no_debug_or_display_form_holds_a_key
+
+[break] lowering-trust-waits-for-clean-files
+rule: Lowering trust always takes effect, even while a file has an error, and the error is reported as TrustLowered.
+file: crates/cortex-config/src/reload.rs
+in: update
+find: if lowers_trust =>
+replace: if lowers_trust && false =>
+caught-by:
+    reloading::lowering_trust_takes_effect_while_a_file_is_broken
+    reloading::lowering_trust_holds_a_projects_profile_to_the_untrusted_rules
+
+[break] lowered-trust-merges-the-project-trusted
+rule: When trust is lowered, the files in force are merged again with the project untrusted, so what needs trust waits.
+file: crates/cortex-config/src/reload.rs
+in: lower_trust
+find: options.trust = ProjectTrust::Untrusted;
+replace: options.trust = ProjectTrust::Trusted;
+caught-by:
+    reloading::lowering_trust_takes_effect_while_a_file_is_broken
+
+[break] lowering-trust-loses-the-warnings
+rule: Lowering trust keeps what checking the files in force had warned about.
+file: crates/cortex-config/src/reload.rs
+in: lower_trust
+find: layer.notes.iter().cloned()
+replace: layer.notes.iter().cloned().take(0)
+caught-by:
+    reloading::lowering_trust_keeps_what_the_files_in_force_were_warned_about
+
+[break] refused-change-keeps-its-options
+rule: A change of options that does not load is undone and refused every time, not kept and then reported as unchanged.
+file: crates/cortex-config/src/reload.rs
+in: update
+find: Err(failure) => Reload::Rejected(failure)
+replace: Err(_) => { self.options = options; self.reload() }
+caught-by:
+    reloading::a_change_of_options_that_does_not_load_is_undone_and_refused_every_time
+
+[break] workspace-root-takes-any-owner
+rule: A .cortex or .git counts as the workspace's only when the current user owns it.
+file: crates/cortex-config/src/dirs.rs
+in: owns
+find: self.uid == Some(found.uid())
+replace: true
+caught-by:
+    dirs::tests::on_unix_a_candidate_another_user_owns_is_passed_over
+
+[break] profile-flag-passes-a-lock
+rule: A managed lock on the profile key holds against the --profile flag.
+file: crates/cortex-config/src/load.rs
+in: apply_profile
+find: Some(name) if merger.is_locked(&profile_key)
+replace: Some(name) if false
+caught-by:
+    layers::the_profile_flag_cannot_pass_a_lock_on_the_profile
+
+[break] value-replaces-a-table-with-a-locked-key
+rule: A value set at a key that holds a locked key further in would replace the locked entry, so it counts as locked.
+file: crates/cortex-config/src/merge.rs
+in: is_locked
+find: || lock.is_at_or_under(key)
+replace:
+caught-by:
+    layers::a_value_cannot_replace_a_table_that_holds_a_locked_key
+
+[break] data-dir-variable-moves-the-platform-directory
+rule: The platform's data directory does not read CORTEX_DATA_DIR, which is the environment layer's session.data_dir and so held by a managed lock.
+file: crates/cortex-config/src/dirs.rs
+in: Dirs::from_env
+find: data, home,
+replace: data: env.absolute_path("CORTEX_DATA_DIR").or(data), home,
+caught-by:
+    loading::the_data_directory_variable_cannot_move_a_locked_data_directory
+
+[break] credentials-written-through-a-link
+rule: The credentials file is written with links not followed, so a link swapped in at its path is refused and nothing is written where it points.
+file: crates/cortex-config/src/credentials/file.rs
+in: update
+find: follow_links: false
+replace: follow_links: true
+caught-by:
+    credentials::file::tests::a_link_swapped_in_before_the_write_is_not_written_through
+
+[break] state-dir-lets-dot-dot-out
+rule: A directory made under the state directory may not contain a .., which the operating system would follow out.
+file: crates/cortex-config/src/state.rs
+in: ensure_dir
+find: Component::Normal(_) | Component::CurDir
+replace: Component::Normal(_) | Component::CurDir | Component::ParentDir
+caught-by:
+    state::ensure_dir_refuses_a_path_that_climbs_out
+
+[break] parse-error-repeats-the-number
+rule: A parse error about a number that is too large never repeats the number, since the file may not be configuration at all.
+file: crates/cortex-config/src/document.rs
+in: convert_value
+find: i64::from_str_radix(number.as_str(), number.radix()).map_err(|_| out_of_range())?
+replace: i64::from_str_radix(number.as_str(), number.radix()).map_err(|_| ParseFailure { message: format!("`{key}`: {} is too large", number.as_str()), line: Some(line) })?
+caught-by:
+    loading::a_parse_error_never_repeats_the_file
+
+[break] project-model-needs-no-trust
+rule: A project's choice of the main model costs money, so it applies only once the project is trusted.
+file: crates/cortex-config/src/schema/sections.rs
+find: [RaisesCost, NextEpoch] pub main: Option<String>
+replace: [Preference, NextEpoch] pub main: Option<String>
+caught-by:
+    trust::a_project_chooses_what_costs_money_only_when_trusted
+
+[break] untrusted-project-sets-what-needs-trust
+rule: An untrusted project's keys that run code, widen access or raise cost are held back, not applied.
+file: crates/cortex-config/src/merge.rs
+in: Merger::admit
+find: if self.trusted =>
+replace: if true =>
+caught-by:
+    trust::an_untrusted_project_gets_its_preferences_and_nothing_that_could_hurt
+    trust::a_project_raises_the_speed_only_when_trusted
+
+[break] broken-store-fails-the-status-of-a-given-key
+rule: When the flag or the environment gives the key, a store that cannot be read does not fail the status; its error is a warning.
+file: crates/cortex-config/src/credentials/mod.rs
+in: status
+find: Err(error) if earlier.is_some() =>
+replace: Err(error) if false =>
+caught-by:
+    credentials::tests::a_broken_store_does_not_fail_the_status_of_a_key_from_the_environment
