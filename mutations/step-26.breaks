@@ -1,0 +1,285 @@
+# Step 26: the Linux sandbox, in cortex-sandbox, and what it added to
+# cortex-core, cortex-policy and cortex-cli.
+#
+# Each rule the sandbox enforces is broken here: what a command may write,
+# the network filter, failing closed, the state a session reports, the
+# levels that need the sandbox, the temporary directory, the protected
+# paths, and what the model is told.
+
+[break] write-root-widened-to-its-parent
+rule: A command may write only under the write roots, not beside them.
+file: crates/cortex-sandbox/src/confine.rs
+in: landlock
+find: created = grant(created, root, handled, abi)?;
+replace: created = grant(created, root.parent().unwrap_or(root), handled, abi)?;
+# The backends are built only with cortex-core beside it.
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_the_workspace_and_the_temporary_directory_are_writable_and_nothing_else
+
+[break] network-filter-not-loaded
+rule: With the network off, no socket reaches beyond the command's own processes.
+file: crates/cortex-sandbox/src/confine.rs
+in: seccomp
+find: if network == Network::Off {
+replace: if network == Network::Full {
+# The backends are built only with cortex-core beside it.
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_with_the_network_off_no_socket_reaches_anything
+
+[break] seccomp-not-applied
+rule: The system-call filter is applied with the file-system rules, or the command does not run.
+file: crates/cortex-sandbox/src/confine.rs
+in: apply
+find: seccomp(policy.network).map_err(|error| format!("seccomp: {error}"))?;
+replace: let _ = policy.network;
+# The backends are built only with cortex-core beside it.
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_with_the_network_off_no_socket_reaches_anything
+    cortex-sandbox::it confined::sys_a_new_user_namespace_is_refused
+
+[break] landlock-failure-runs-the-command
+rule: Where the sandbox enforces, a failure to apply it fails the call: the command does not run unconfined.
+file: crates/cortex-sandbox/src/launch.rs
+in: launch
+find: confine(&policy).map_err(Failure::sandbox)?;
+replace: let _ = confine(&policy);
+# The backends are built only with cortex-core beside it.
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_landlock_that_cannot_be_applied_runs_nothing
+    cortex-sandbox::it confined::sys_a_seccomp_filter_that_does_not_load_runs_nothing
+
+[break] landlock-error-ignored
+rule: A Landlock ruleset the kernel refuses stops the launcher.
+file: crates/cortex-sandbox/src/confine.rs
+in: apply
+find: landlock(policy).map_err(|error| format!("Landlock: {error}"))?;
+replace: let _ = landlock(policy);
+# The backends are built only with cortex-core beside it.
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_landlock_that_cannot_be_applied_runs_nothing
+
+[break] signals-not-scoped
+rule: From Landlock 6 a command cannot signal a process outside the sandbox.
+file: crates/cortex-sandbox/src/confine.rs
+in: landlock
+find: if abi >= ABI::V6 {
+replace: if abi > ABI::V9 {
+# The backends are built only with cortex-core beside it.
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_a_signal_to_a_process_outside_the_sandbox_is_refused
+
+[break] user-namespaces-allowed
+rule: A sandboxed command cannot make a user namespace.
+file: crates/cortex-sandbox/src/confine.rs
+in: seccomp
+find: libc::SYS_unshare,
+replace: libc::SYS_getpid,
+# The backends are built only with cortex-core beside it.
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_a_new_user_namespace_is_refused
+
+[break] status-enforcing-without-landlock
+rule: A kernel without Landlock does not enforce, and the status says so.
+file: crates/cortex-sandbox/src/support.rs
+in: Support::assess
+find: Self::NoLandlock => Assessment::NotEnforcing(Unconfined::NoLandlock),
+replace: Self::NoLandlock => Assessment::Enforcing { landlock: 6, gaps: Vec::new() },
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox support::tests::versions_1_and_2_and_no_landlock_do_not_enforce
+    cortex-core::it sandbox::a_kernel_without_landlock_is_reported_and_refuses_autonomous
+
+[break] an-old-landlock-counts
+rule: Landlock 1 and 2 do not enforce: a command could empty any file the user can write.
+file: crates/cortex-sandbox/src/support.rs
+in: Support::assess
+find: Self::Landlock(version) if version >= MIN_LANDLOCK =>
+replace: Self::Landlock(version) if version >= 1 =>
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox support::tests::versions_1_and_2_and_no_landlock_do_not_enforce
+    cortex-core::it sandbox::an_old_landlock_does_not_count_and_says_what_it_lacks
+
+[break] autonomous-without-an-enforcing-sandbox
+rule: `autonomous` starts only where the sandbox enforces.
+file: crates/cortex-core/src/assemble.rs
+in: engine_parts
+find: sandbox: inner.sandbox.state(settings.sandbox.enabled).0,
+replace: sandbox: cortex_policy::SandboxState::Enforcing,
+caught-by:
+    cortex-core::it sandbox::a_kernel_without_landlock_is_reported_and_refuses_autonomous
+    cortex-core::it sandbox::an_old_landlock_does_not_count_and_says_what_it_lacks
+
+[break] enforcing-without-a-launcher
+rule: A core given no launcher has nothing to confine with, and reports the sandbox off.
+file: crates/cortex-core/src/sandbox.rs
+in: CoreSandbox::state
+find: Assessment::Enforcing { .. } if self.program.is_none() =>
+replace: Assessment::Enforcing { .. } if self.program.is_none() && !enabled =>
+caught-by:
+    cortex-core::it sandbox::the_sandbox_turned_off_or_without_a_launcher_is_off
+
+[break] confined-at-unrestricted
+rule: Nothing is confined at `unrestricted`, and the session's state says so.
+file: crates/cortex-core/src/sandbox.rs
+in: SessionSandbox::set_level
+find: let confine = self.launcher.is_some() && *level != Level::Unrestricted;
+replace: let confine = self.launcher.is_some();
+caught-by:
+    cortex-core::it sandbox::sys_at_unrestricted_a_command_is_not_confined
+
+[break] commands-never-confined
+rule: Below `unrestricted`, where the sandbox enforces, every command is started through the launcher.
+file: crates/cortex-core/src/sandbox.rs
+in: SessionSandbox::launch
+find: let Some(launcher) = self.launcher.as_ref().filter(|_| self.confines()) else {
+replace: let Some(launcher) = self.launcher.as_ref().filter(|_| false) else {
+caught-by:
+    cortex-core::it sandbox::sys_commands_are_confined_where_the_sandbox_enforces
+
+[break] temporary-directory-not-given
+rule: A confined command is given the session's private temporary directory as `TMPDIR`.
+file: crates/cortex-sandbox/src/launch.rs
+in: become_command
+find: command.env("TMPDIR", temp);
+replace: let _ = temp;
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_the_workspace_and_the_temporary_directory_are_writable_and_nothing_else
+    cortex-core::it sandbox::sys_commands_are_confined_where_the_sandbox_enforces
+
+[break] temporary-directory-left-behind
+rule: The session's temporary directory goes when the session ends.
+file: crates/cortex-core/src/core.rs
+in: Core::end
+find: sandbox.remove_temp();
+replace: let _ = &sandbox;
+caught-by:
+    cortex-core::it sandbox::sys_commands_are_confined_where_the_sandbox_enforces
+
+[break] protected-change-not-detected
+rule: A protected file whose content or stamp changed is reported as modified.
+file: crates/cortex-sandbox/src/protect.rs
+in: Entry::differs_from
+find: self.stamp != old.stamp
+replace: false
+caught-by:
+    cortex-sandbox protect::tests::a_change_that_puts_the_modification_time_back_is_still_found
+
+[break] protected-names-not-found-below-the-root
+rule: Build configuration is protected at any depth.
+file: crates/cortex-sandbox/src/protect.rs
+in: Look::walk
+find: name if BUILD_FILES.contains(&name) => {
+replace: name if BUILD_FILES.contains(&name) && false => {
+caught-by:
+    cortex-sandbox protect::tests::protected_names_are_found_at_any_depth
+
+[break] nested-repository-not-looked-at
+rule: A nested repository's configuration and hooks are protected.
+file: crates/cortex-sandbox/src/protect.rs
+in: Look::walk
+find: ".git" if is_dir => self.record_git(child),
+replace: ".git" if is_dir => {}
+caught-by:
+    cortex-sandbox protect::tests::protected_names_are_found_at_any_depth
+
+[break] a-created-hook-not-reported
+rule: A protected path that was not there before the command is reported as created.
+file: crates/cortex-sandbox/src/protect.rs
+in: Snapshot::compare
+find: if !self.entries.contains_key(path) && self.covers(path) {
+replace: if !self.entries.contains_key(path) && self.covers(path) && false {
+caught-by:
+    cortex-sandbox protect::tests::a_hook_written_a_config_changed_and_a_file_removed_are_found
+
+[break] policy-with-more-after-its-end
+rule: A policy with anything after `end` is refused whole.
+file: crates/cortex-sandbox/src/policy.rs
+in: Policy::decode
+find: if !fields.rest.is_empty() {
+replace: if fields.rest.is_empty() && false {
+caught-by:
+    cortex-sandbox policy::tests::a_policy_cut_short_or_with_more_after_its_end_is_refused
+
+[break] the-wrong-path-is-named
+rule: The model is told the path a refused write was for, not the program that reported it.
+file: crates/cortex-sandbox/src/explain.rs
+in: explain
+find: paths.into_iter().rev().find(|path| outside(policy, path))
+replace: paths.into_iter().find(|path| outside(policy, path))
+caught-by:
+    cortex-sandbox explain::tests::a_refused_write_outside_the_roots_is_named
+
+[break] leaving-the-sandbox-without-an-approval
+rule: A command asked to run outside the sandbox is asked about at every level but `unrestricted`.
+file: crates/cortex-policy/src/engine.rs
+in: Engine::judge_unconfined
+find: if self.sandbox != SandboxState::Enforcing {
+replace: if true {
+packages: cortex-policy, cortex-core
+caught-by:
+    cortex-policy::it levels::leaving_the_sandbox_is_asked_every_time_below_unrestricted
+    cortex-core::it sandbox::sys_a_command_leaves_the_sandbox_only_once_the_user_allows_it
+
+[break] the-shell-leaves-the-sandbox-without-saying-so
+rule: A shell call that leaves the sandbox declares it in its plan, so the engine is asked.
+file: crates/cortex-tools/src/shell/mod.rs
+in: ShellTool::plan
+find: plan = plan.with_effect(Effect::Unconfined);
+replace: plan = plan.with_effect(Effect::Write(workspace.clone()));
+packages: cortex-tools, cortex-core
+caught-by:
+    cortex-core::it sandbox::sys_a_command_leaves_the_sandbox_only_once_the_user_allows_it
+
+[break] protected-paths-not-looked-at
+rule: A confined command that may write has its protected paths looked at before and after it.
+file: crates/cortex-core/src/checkpoints.rs
+in: RecordingShell::run
+find: plan.concurrency != Concurrency::ReadOnly
+replace: plan.concurrency != Concurrency::ReadOnly && false
+caught-by:
+    cortex-core::it sandbox::sys_a_protected_path_a_command_changes_stops_the_turn_and_undo_puts_it_back
+
+[break] a-protected-change-is-not-kept-for-undo
+rule: What a changed protected path held before the command is kept in the round's checkpoint, so undo puts it back.
+file: crates/cortex-core/src/checkpoints.rs
+in: RecordingShell::run
+find: rounds.record_protected(&protected);
+replace: let _ = protected;
+caught-by:
+    cortex-core::it sandbox::sys_a_protected_path_a_command_changes_stops_the_turn_and_undo_puts_it_back
+
+[break] a-protected-change-does-not-stop-the-turn
+rule: A confined command that changed protected paths stops its turn at the next call.
+file: crates/cortex-core/src/checkpoints.rs
+in: RecordingShell::run
+find: self.policy.stop_turn(cx.turn, note);
+replace: let _ = note;
+caught-by:
+    cortex-core::it sandbox::sys_a_protected_path_a_command_changes_stops_the_turn_and_undo_puts_it_back
+
+[break] a-stopped-turn-goes-on
+rule: Once a turn is stopped, no later call of it is decided as anything but a stop.
+file: crates/cortex-core/src/policy.rs
+in: Policy::decide
+find: if let Some(reason) = self.stopped(call) {
+replace: if let Some(reason) = self.stopped(call).filter(|_| false) {
+caught-by:
+    cortex-core::it sandbox::sys_a_protected_path_a_command_changes_stops_the_turn_and_undo_puts_it_back
+
+[break] an-incomplete-look-is-not-said
+rule: When the look at protected paths stops at its bound, the result says so.
+file: crates/cortex-core/src/sandbox.rs
+in: protected_note
+find: if !complete {
+replace: if !complete && false {
+caught-by:
+    cortex-core::it sandbox::sys_past_its_bound_the_look_at_protected_paths_warns_and_does_not_stop

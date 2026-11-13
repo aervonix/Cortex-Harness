@@ -216,6 +216,11 @@ pub enum Effect {
         /// The tool's full name.
         tool: String,
     },
+    /// Runs the call's command outside the sandbox: the model asked to
+    /// leave it, after the sandbox blocked the command. It is beside the
+    /// call's `exec` effect, and is asked about at every level but
+    /// `unrestricted` wherever the sandbox enforces.
+    Unconfined,
 }
 
 /// Where a network effect goes.
@@ -235,7 +240,7 @@ impl Effect {
         match self {
             Self::Read(_) | Self::ReadTree(_) => EffectKind::Read,
             Self::Write(_) => EffectKind::Write,
-            Self::Exec { .. } => EffectKind::Exec,
+            Self::Exec { .. } | Self::Unconfined => EffectKind::Exec,
             Self::Network(_) => EffectKind::Network,
             Self::Ext { .. } => EffectKind::Ext,
         }
@@ -246,7 +251,7 @@ impl Effect {
     pub fn path(&self) -> Option<&ResolvedPath> {
         match self {
             Self::Read(path) | Self::ReadTree(path) | Self::Write(path) => Some(path),
-            Self::Exec { .. } | Self::Network(_) | Self::Ext { .. } => None,
+            Self::Exec { .. } | Self::Network(_) | Self::Ext { .. } | Self::Unconfined => None,
         }
     }
 
@@ -268,6 +273,7 @@ impl Effect {
             Self::Exec { command, .. } => command.clone(),
             Self::Network(NetworkTarget::Host(host)) => host.clone(),
             Self::Network(NetworkTarget::Any) => "*".to_owned(),
+            Self::Unconfined => "outside the sandbox".to_owned(),
             Self::Ext { tool } => tool.clone(),
         }
     }

@@ -326,3 +326,215 @@ fn sys_at_unrestricted_a_command_is_not_confined() {
         );
     });
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sys_a_command_leaves_the_sandbox_only_once_the_user_allows_it() {
+    if !enforcing_here() {
+        return;
+    }
+    let world = World::new("leave", []);
+    let outside = world.dir.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    // `tee` names the file as an argument: the analysis lets it run at
+    // `autonomous`, and the sandbox is what refuses it.
+    let write = format!("echo x | tee '{}/f'", outside.display());
+    // At `autonomous`: the same command runs unasked in the sandbox and is
+    // refused there, then is asked about outside it and runs.
+    world
+        .provider
+        .push(calls(&[("c1", "shell", json!({"command": write}))]));
+    world.provider.push(calls(&[(
+        "c2",
+        "shell",
+        json!({"command": write, "sandbox": false}),
+    )]));
+    world.provider.push(says("Done."));
+    let core = world.core_with(|options| options.launcher = Some(launcher()));
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            cortex_core::ClientInfo::user(),
+            at(Level::Autonomous),
+        )
+        .await
+        .expect("the session starts");
+        let asked = front.turn_allowing("write outside").await;
+        assert_eq!(
+            asked,
+            vec!["shell".to_owned()],
+            "only the call that leaves is asked"
+        );
+        let approvals = front.approvals();
+        let cortex_protocol::methods::ApprovalDetail::Command(detail) = &approvals[0].detail else {
+            panic!("not a command's approval: {:?}", approvals[0].detail);
+        };
+        assert!(detail.outside_sandbox);
+        assert_eq!(
+            approvals[0].choices,
+            vec![
+                cortex_protocol::methods::ApprovalChoice::AllowOnce,
+                cortex_protocol::methods::ApprovalChoice::Deny
+            ]
+        );
+        let results = front.results();
+        assert!(
+            results[0].2.contains("\"sandbox\": false"),
+            "the model is told the way out: {results:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside.join("f")).ok().as_deref(),
+            Some("x\n")
+        );
+    });
+}
+
+/// The first assistant message's id: where a rewind goes back to.
+#[cfg(target_os = "linux")]
+fn first_message(front: &Front) -> cortex_protocol::ItemId {
+    front
+        .items()
+        .iter()
+        .find_map(|item| match item {
+            cortex_protocol::Item::AssistantMessage(message) => Some(message.id.clone()),
+            _ => None,
+        })
+        .expect("an assistant message")
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sys_a_protected_path_a_command_changes_stops_the_turn_and_undo_puts_it_back() {
+    if !enforcing_here() {
+        return;
+    }
+    let world = World::new("protected", []);
+    world.put(".git/config", "[core]\n");
+    world.put(".git/hooks/pre-commit.sample", "#!/bin/sh\n");
+    // A script that writes git's hook and configuration without its
+    // command line naming either: the analysis cannot see it.
+    world.put(
+        "fix.sh",
+        "echo evil > .git/hooks/pre-commit\nprintf '[core]\\n\\tfsmonitor = ./run\\n' > .git/config\n",
+    );
+    world.provider.push(says("Ready."));
+    world
+        .provider
+        .push(calls(&[("c1", "shell", json!({"command": "sh fix.sh"}))]));
+    world.provider.push(calls(&[(
+        "c2",
+        "shell",
+        json!({"command": "echo after > after.txt"}),
+    )]));
+    world.provider.push(says("Done."));
+    let core = world.core_with(|options| options.launcher = Some(launcher()));
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            cortex_core::ClientInfo::user(),
+            at(Level::Autonomous),
+        )
+        .await
+        .expect("the session starts");
+        front.turn("get ready").await;
+        let keep = first_message(&front);
+        let ended = front.turn("fix it").await;
+        assert!(
+            front.approvals().is_empty(),
+            "nothing was asked at autonomous"
+        );
+
+        // Found and shown.
+        let results = front.results();
+        let shown = &results[0].2;
+        assert!(
+            shown.contains("changed protected paths")
+                && shown.contains("`.git/hooks/pre-commit` (created)")
+                && shown.contains("`.git/config` (modified)")
+                && shown.contains("Undoing this turn puts them back"),
+            "{results:?}"
+        );
+        // The turn stopped at its next call, which did not run.
+        assert_eq!(
+            ended.outcome,
+            cortex_protocol::event::TurnOutcome::Denied,
+            "{ended:?}"
+        );
+        assert!(world.read("after.txt").is_none());
+        assert_eq!(
+            world.read(".git/hooks/pre-commit").as_deref(),
+            Some("evil\n")
+        );
+
+        // Undoing the turn puts both back.
+        front
+            .op(cortex_protocol::methods::Op::SessionRewind(
+                cortex_protocol::methods::SessionRewindParams {
+                    session_id: front.session.clone(),
+                    to: keep,
+                    restore_files: true,
+                },
+            ))
+            .await
+            .unwrap();
+        assert_eq!(world.read(".git/config").as_deref(), Some("[core]\n"));
+        assert!(world.read(".git/hooks/pre-commit").is_none());
+        assert!(world.read(".git/hooks/pre-commit.sample").is_some());
+        front.close().await;
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sys_past_its_bound_the_look_at_protected_paths_warns_and_does_not_stop() {
+    if !enforcing_here() {
+        return;
+    }
+    let world = World::new("protected_bound", []);
+    world.put(".git/config", "[core]\n");
+    world.put("a/b/c/file.txt", "x\n");
+    world.provider.push(calls(&[(
+        "c1",
+        "shell",
+        json!({"command": "echo one > one.txt"}),
+    )]));
+    world.provider.push(calls(&[(
+        "c2",
+        "shell",
+        json!({"command": "echo two > two.txt"}),
+    )]));
+    world.provider.push(says("Done."));
+    let core = world.core_with(|options| {
+        options.launcher = Some(launcher());
+        options.protect_limits = Some(cortex_sandbox::protect::Limits {
+            directories: 1,
+            ..cortex_sandbox::protect::Limits::default()
+        });
+    });
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            cortex_core::ClientInfo::user(),
+            at(Level::Autonomous),
+        )
+        .await
+        .expect("the session starts");
+        let ended = front.turn("write two files").await;
+        let results = front.results();
+        assert!(
+            results[0].2.contains("looked at only in part"),
+            "{results:?}"
+        );
+        // A warning, not a stop: the next call ran, and the turn ended as
+        // the model ended it.
+        assert_eq!(world.read("two.txt").as_deref(), Some("two\n"));
+        assert_eq!(
+            ended.outcome,
+            cortex_protocol::event::TurnOutcome::Completed,
+            "{ended:?}"
+        );
+    });
+}

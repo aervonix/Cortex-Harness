@@ -114,12 +114,20 @@ fn what_was_there_before_is_kept_to_put_back() {
     );
 }
 
+// Windows keeps a change time too, which the standard library does not
+// read; the check runs only where the sandbox enforces, which is Linux.
+#[cfg(unix)]
 #[test]
 fn a_change_that_puts_the_modification_time_back_is_still_found() {
     let scratch = workspace("time_put_back");
     let ws = scratch.join("ws");
     let config = ws.join(".git/config");
-    let watch = Watch::new(&ws, fixed(&ws));
+    // Content too large to keep: only what the system sets, the change
+    // time and the inode, can tell.
+    let watch = Watch::new(&ws, fixed(&ws)).with_limits(Limits {
+        file_bytes: 0,
+        ..Limits::default()
+    });
     let before = watch.take();
     let time = fs::metadata(&config).unwrap().modified().unwrap();
     // Same length, other content, the old time put back.

@@ -32,6 +32,7 @@ use cortex_protocol::lease::{Level, NetworkAccess, SandboxPolicy};
 use cortex_protocol::session::SandboxStatus;
 use cortex_sandbox::launch::Launcher as SandboxLauncher;
 use cortex_sandbox::policy::{Network, Policy, Reach};
+use cortex_sandbox::protect::{Before as Was, Changed, Limits, Watch};
 use cortex_sandbox::support::{Assessment, Support, Unconfined};
 use cortex_tools::process::{Argument, CommandLine, Direct, Exit, Launch, LaunchCx, Launcher};
 
@@ -113,11 +114,19 @@ pub(crate) struct SessionSandbox {
     confine: AtomicBool,
     /// The private temporary directory.
     temp: Temp,
+    /// The protected paths, looked at before and after each confined
+    /// command, when the sandbox enforces.
+    watch: Option<Watch>,
 }
 
 impl SessionSandbox {
-    /// The sandbox of a session in `state`, at `level`, whose lease grants
-    /// `grant`, with its temporary directory.
+    /// The sandbox of a session in `workspace`, in `state`, at `level`,
+    /// whose lease grants `grant`, with its temporary directory, looking at
+    /// its protected paths within `limits`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each is one thing a session's sandbox is made from"
+    )]
     pub(crate) fn new(
         core: &CoreSandbox,
         state: SandboxState,
@@ -125,6 +134,8 @@ impl SessionSandbox {
         level: &Level,
         grant: &SandboxPolicy,
         temp: Temp,
+        workspace: &Path,
+        limits: Limits,
     ) -> Self {
         let launcher = match (state, landlock, &core.program) {
             (SandboxState::Enforcing, Some(landlock), Some((program, prefix))) => {
@@ -136,10 +147,18 @@ impl SessionSandbox {
             }
             _ => None,
         };
+        let watch = launcher.is_some().then(|| {
+            Watch::new(
+                workspace,
+                grant.protect.roots.iter().map(PathBuf::from).collect(),
+            )
+            .with_limits(limits)
+        });
         let sandbox = Self {
             launcher,
             confine: AtomicBool::new(false),
             temp,
+            watch,
         };
         sandbox.set_level(level);
         sandbox
@@ -155,6 +174,12 @@ impl SessionSandbox {
     pub(crate) fn set_level(&self, level: &Level) {
         let confine = self.launcher.is_some() && *level != Level::Unrestricted;
         self.confine.store(confine, Ordering::Release);
+    }
+
+    /// What to look at before and after a command that runs now: the
+    /// protected paths, when the command is confined.
+    pub(crate) fn watch(&self) -> Option<&Watch> {
+        self.watch.as_ref().filter(|_| self.confines())
     }
 
     /// Removes the temporary directory and everything in it, if the
@@ -204,6 +229,51 @@ impl Launcher for SessionSandbox {
         };
         launcher.explain(code, output)
     }
+}
+
+/// What the model and the user are told after a confined command changed
+/// protected paths, or when the look at them stopped at its bound. `None`
+/// when there is nothing to say.
+pub(crate) fn protected_note(
+    changed: &[Changed],
+    complete: bool,
+    root: &Path,
+    restorable: bool,
+) -> Option<String> {
+    let mut lines = Vec::new();
+    if !changed.is_empty() {
+        let shown: Vec<String> = changed
+            .iter()
+            .map(|changed| {
+                let path = changed.path.strip_prefix(root).unwrap_or(&changed.path);
+                format!("`{}` ({})", path.display(), changed.change.as_str())
+            })
+            .collect();
+        let lost = changed.iter().any(|changed| changed.before == Was::Unknown);
+        lines.push(format!(
+            "[The command changed protected paths, which decide what runs later outside the \
+             sandbox: {}. The turn stops here, so that the user can look at the change. {}]",
+            shown.join(", "),
+            match (restorable, lost) {
+                (true, false) => "Undoing this turn puts them back.",
+                (true, true) => {
+                    "Undoing this turn puts back those whose earlier content was kept; the rest \
+                     (a link, or a file too large to keep) must be put back by hand."
+                }
+                (false, _) =>
+                    "This session keeps no checkpoints, so they cannot be put back from here.",
+            }
+        ));
+    }
+    if !complete {
+        lines.push(
+            "[Protected paths were looked at only in part: the look stopped at its bound (20,000 \
+             directories, or a quarter of a second). A change to one further down the \
+             workspace would not have been seen.]"
+                .to_owned(),
+        );
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 /// The launcher's policy, from the lease's grant.
