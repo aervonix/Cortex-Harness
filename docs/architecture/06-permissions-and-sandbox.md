@@ -451,6 +451,8 @@ Opening a project for the first time asks one question before anything from the 
 - **The second is about letting git read the repository's own configuration,** which can name programs for git to run. A change to the project's permission rules does not change what git would run, so it does not take this away: a project that adds a rule does not lose its base state, the exact record of what its commands changed, or `git status` as a command that needs no question.
 - **`--trust-project` gives both, for the run.** A trust store that cannot be read gives neither, and the user is told.
 
+**Trusting a project from the command line (step 13b).** `cortex permissions trust` trusts the project of the working directory, or approves the change of its rules when it is trusted already. It pins `Definition::of_rules` over **every** rule the project's files hold now, allow, deny and ask, read as a trusted load reads them: the very set a start compares with the pin (`assemble::project_rules`, one function for both), so the next start reads the project as trusted. An approval keeps the other definitions pinned for the project; a first trust pins only the rules. It prints the rules it pinned and the settings that trust now turns on. `permissions untrust` takes the trust away, `permissions list` says which of the three states the project is in (not trusted; trusted; trusted with its rules changed since), with its stored approvals, and `permissions revoke` removes those by id. A system test trusts a project this way and sees its model chosen on the next start, then set aside again when a rule is added.
+
 ## The sandbox
 
 `cortex-sandbox` defines a policy and applies it when a child process starts.

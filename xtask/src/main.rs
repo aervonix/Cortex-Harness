@@ -26,6 +26,7 @@ mod outside;
 mod owner_guard;
 mod rules;
 mod schema;
+mod startup;
 mod steps;
 mod stress;
 mod tiers;
@@ -77,6 +78,9 @@ Showing that the tests bite
 Not blocking (the `main` and `nightly` workflows run these)
   size [--check]    Build the `dist` profile and report the binary's size and
                     the number of crates in it. --check fails over the budget.
+  startup BINARY [--runs N] [--budget desktop|linux|windows] [--check]
+                    Time `--version` under both names, and a headless run to
+                    its request, against the start-up budgets.
   unused            Look for dependencies that no code uses (cargo-machete).
   advisories        Check the lockfile against the advisory database.
   fuzz [--seconds N] [TARGET...]
@@ -127,6 +131,7 @@ fn main() -> ExitCode {
         Some("gen") => generate(),
         Some("schema") => schema::run(&rest),
         Some("size") => nonblocking::size(&rest),
+        Some("startup") => startup::run(&rest),
         Some("unused") => nonblocking::unused(),
         Some("advisories") => nonblocking::advisories(),
         Some("alias") => alias::run(&rest),
