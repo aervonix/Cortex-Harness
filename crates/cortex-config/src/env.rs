@@ -9,6 +9,7 @@
 //! process-wide state.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// The operating system whose conventions apply: where files live, and
@@ -31,10 +32,24 @@ impl Platform {
 }
 
 /// A set of environment variables, and the platform whose rules read them.
-#[derive(Debug, Clone)]
+///
+/// **Its `Debug` form names the variables and never shows a value.** The
+/// environment holds the providers' keys (`ANTHROPIC_API_KEY` and the
+/// like), and an `Env` reaches the load options, the live configuration
+/// and a credential lookup, any of which can end up in a log line.
+#[derive(Clone)]
 pub struct Env {
     platform: Platform,
     variables: BTreeMap<String, String>,
+}
+
+impl fmt::Debug for Env {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Env")
+            .field("platform", &self.platform)
+            .field("variables", &self.variables.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 impl Env {
@@ -234,6 +249,20 @@ mod tests {
         let nowhere = Env::empty(Platform::Unix);
         assert_eq!(nowhere.home(), None);
         assert_eq!(nowhere.display_path(Path::new("/a/b")), "/a/b");
+    }
+
+    #[test]
+    fn debug_names_the_variables_and_shows_no_value() {
+        let env = Env::empty(Platform::Unix)
+            .with("HOME", "/users/someone")
+            .with("ANTHROPIC_API_KEY", "sk-test-env-0001");
+        let printed = format!("{env:?} {env:#?}");
+        assert!(!printed.contains("sk-test-env-0001"), "{printed}");
+        assert!(!printed.contains("/users/someone"), "{printed}");
+        assert!(
+            printed.contains("ANTHROPIC_API_KEY") && printed.contains("Unix"),
+            "{printed}"
+        );
     }
 
     #[test]

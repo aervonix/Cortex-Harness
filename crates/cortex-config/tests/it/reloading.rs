@@ -256,10 +256,181 @@ fn a_change_of_options_reloads() {
     assert!(live.current().withheld.is_empty());
 
     // A profile that does not exist is refused like any other error, and
-    // the configuration stays.
+    // the configuration and the options stay.
     let reload = live.update(|options| options.profile = Some("missing".to_owned()));
     assert!(matches!(reload, Reload::Rejected(_)));
     assert_eq!(live.current().settings.model.main.as_deref(), Some("small"));
+    assert_eq!(live.options().profile.as_deref(), Some("quick"));
+}
+
+/// A change of options that does not load is undone, and says so every
+/// time. Before, the options kept the change that failed, and a second
+/// attempt that failed the same way said `Unchanged`, as if it had worked.
+#[test]
+fn a_change_of_options_that_does_not_load_is_undone_and_refused_every_time() {
+    let machine = Machine::new("reload_options_refused");
+    write_at(
+        &machine,
+        LayerKind::User,
+        "[profiles.quick]\nmodel.main = \"small\"\n[model]\nmain = \"big\"\n",
+        60,
+    );
+    write_at(
+        &machine,
+        LayerKind::Project,
+        "[sandbox]\nnetwork = \"full\"\n",
+        60,
+    );
+    let (mut live, _clock) = start(&machine);
+    let before = live.current();
+
+    for _ in 0..2 {
+        let reload = live.update(|options| options.profile = Some("missing".to_owned()));
+        assert!(matches!(reload, Reload::Rejected(_)), "{reload:?}");
+        assert_eq!(live.options().profile, None);
+        assert!(Arc::ptr_eq(&live.current(), &before));
+    }
+
+    // While a file is broken, every change is refused with the error, not
+    // only the first, and none of them is kept.
+    write_at(&machine, LayerKind::User, "[retry]\nattempts = 0\n", 50);
+    let Some(Reload::Rejected(broken)) = live.check() else {
+        panic!("expected the broken file to be reported");
+    };
+    for _ in 0..2 {
+        assert_eq!(
+            live.update(|options| options.trust = ProjectTrust::Trusted),
+            Reload::Rejected(broken.clone())
+        );
+        assert_eq!(live.options().trust, ProjectTrust::Untrusted);
+        // The broken file is the one that defines the profile, so its
+        // absence is a second error.
+        let Reload::Rejected(failure) =
+            live.update(|options| options.profile = Some("quick".to_owned()))
+        else {
+            panic!("expected the profile to be refused");
+        };
+        assert_eq!(failure.diagnostics[0], broken.diagnostics[0]);
+        assert_eq!(failure.errors().count(), 2);
+        assert_eq!(live.options().profile, None);
+    }
+    assert!(Arc::ptr_eq(&live.current(), &before));
+    assert_eq!(live.current().withheld.len(), 1, "the network stays held back");
+
+    // The file is still watched under the options that stayed: fixing it
+    // is noticed, and then the change goes through.
+    write_at(
+        &machine,
+        LayerKind::User,
+        "[profiles.quick]\nmodel.main = \"small\"\n[model]\nmain = \"big\"\n",
+        40,
+    );
+    assert_eq!(live.check(), Some(Reload::Unchanged));
+    assert!(matches!(
+        live.update(|options| options.trust = ProjectTrust::Trusted),
+        Reload::Applied { .. }
+    ));
+    assert_eq!(live.current().settings.sandbox.network.as_str(), "full");
+}
+
+/// Taking trust away always takes effect, even while a file has an error,
+/// whichever file it is. The project's layers leave the configuration in
+/// force and the error is reported. Before, the trusted project's allow
+/// rule stayed in force, and a second attempt said `Unchanged`.
+#[test]
+fn lowering_trust_takes_effect_while_a_file_is_broken() {
+    const USER: &str = "[model]\nmain = \"big\"\n";
+    const PROJECT: &str = "[sandbox]\nprotect = [\"vendor\"]\n\
+                           [[permissions.rules]]\neffect = \"exec\"\nmatch = \"curl *\"\n\
+                           action = \"allow\"\n";
+    for (broken, fixed) in [(LayerKind::User, USER), (LayerKind::Project, PROJECT)] {
+        let mut machine = Machine::new(&format!("reload_revoke_{broken}"));
+        machine.trusted();
+        write_at(&machine, LayerKind::User, USER, 60);
+        write_at(&machine, LayerKind::Project, PROJECT, 60);
+        let (mut live, _clock) = start(&machine);
+        assert_eq!(live.current().rules().len(), 1, "trusted: the allow rule applies");
+
+        write_at(&machine, broken, "[retry]\nattempts = 0\n", 50);
+        assert!(matches!(live.check(), Some(Reload::Rejected(_))));
+
+        let reload = live.update(|options| options.trust = ProjectTrust::Untrusted);
+        let Reload::ProjectDropped {
+            previous,
+            changes,
+            failure,
+        } = reload
+        else {
+            panic!("{broken}: expected the project to be dropped, got {reload:?}");
+        };
+        assert!(
+            failure
+                .render(machine.env())
+                .contains("retry.attempts: 0 is out of range"),
+            "{broken}: the error is reported"
+        );
+        assert_eq!(previous.rules().len(), 1);
+        let changed: Vec<String> = changes.iter().map(|c| c.key.to_string()).collect();
+        assert_eq!(changed, ["permissions.rules", "sandbox.protect"], "{broken}");
+
+        // Trust is lowered, nothing of the project is in force, and the
+        // user's own configuration, as it was in force, stays.
+        let current = live.current();
+        assert_eq!(live.options().trust, ProjectTrust::Untrusted);
+        assert!(current.rules().is_empty(), "{broken}");
+        assert_eq!(value(&current, "sandbox.protect"), "[]", "{broken}");
+        assert_eq!(value(&current, "model.main"), "\"big\"", "{broken}");
+        assert!(
+            current
+                .files
+                .iter()
+                .all(|(kind, ..)| !kind.is_project())
+        );
+
+        // The same error is not reported again until a file changes.
+        assert!(live.check().is_none());
+        assert_eq!(live.reload(), Reload::Unchanged);
+
+        // Once the file is fixed, the project is back, held to the trust
+        // rules: its protected path applies and its allow rule waits.
+        write_at(&machine, broken, fixed, 40);
+        assert!(matches!(live.check(), Some(Reload::Applied { .. })));
+        let current = live.current();
+        assert!(current.rules().is_empty(), "{broken}");
+        assert_eq!(value(&current, "sandbox.protect"), "[\"vendor\"]");
+        assert_eq!(current.withheld.len(), 1);
+    }
+}
+
+/// The user selected a profile that only the project defines, and takes
+/// trust away while a file is broken: the project and its profile go.
+#[test]
+fn lowering_trust_drops_a_profile_only_the_project_defines() {
+    let mut machine = Machine::new("reload_revoke_profile");
+    machine.trusted();
+    write_at(&machine, LayerKind::User, "profile = \"theirs\"\n", 60);
+    write_at(
+        &machine,
+        LayerKind::Project,
+        "[profiles.theirs]\nsandbox.network = \"full\"\n",
+        60,
+    );
+    let (mut live, _clock) = start(&machine);
+    assert_eq!(live.current().profile.as_deref(), Some("theirs"));
+    assert_eq!(value(&live.current(), "sandbox.network"), "\"full\"");
+
+    write_at(&machine, LayerKind::Project, "[retry\n", 50);
+    let reload = live.update(|options| options.trust = ProjectTrust::Untrusted);
+    assert!(matches!(reload, Reload::ProjectDropped { .. }), "{reload:?}");
+    let current = live.current();
+    assert_eq!(current.profile, None);
+    assert_eq!(value(&current, "sandbox.network"), "\"off\"");
+    let said = machine.said(&current);
+    assert!(
+        said.iter()
+            .any(|line| line.contains("`theirs` was defined by the project alone")),
+        "{said:?}"
+    );
 }
 
 #[test]

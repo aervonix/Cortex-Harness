@@ -203,7 +203,7 @@ pub fn check_provider(name: &str) -> Result<(), CredentialError> {
 ///
 /// [`CredentialError::Unavailable`] when the store is not in this build or
 /// cannot be placed: the keychain on Linux, or a file store with no
-/// configuration directory to live in.
+/// directory to live in.
 pub fn open_store(
     choice: StoreChoice,
     dirs: &Dirs,
@@ -213,7 +213,7 @@ pub fn open_store(
         match dirs.credentials_file() {
             Some(path) => Ok(Box::new(FileStore::new(path, clock))),
             None => Err(CredentialError::Unavailable {
-                reason: "there is no configuration directory to keep the credentials file in: \
+                reason: "there is no directory to keep the credentials file in: \
                          the home directory is not known. Set the provider's environment variable \
                          instead"
                     .to_owned(),
@@ -612,11 +612,11 @@ mod tests {
         let clock = || -> SharedClock { Arc::new(SystemClock::new()) };
         let dirs = Dirs::from_env(&Env::empty(Platform::CURRENT).with(
             if cfg!(windows) {
-                "APPDATA"
+                "LOCALAPPDATA"
             } else {
                 "XDG_CONFIG_HOME"
             },
-            if cfg!(windows) { r"C:\cfg" } else { "/cfg" },
+            if cfg!(windows) { r"C:\local" } else { "/cfg" },
         ));
         let nowhere = Dirs::from_env(&Env::empty(Platform::CURRENT));
 
@@ -625,7 +625,7 @@ mod tests {
         let error = open_store(StoreChoice::File, &nowhere, clock()).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Config);
         assert!(
-            error.to_string().contains("no configuration directory"),
+            error.to_string().contains("no directory to keep the credentials file in"),
             "{error}"
         );
 

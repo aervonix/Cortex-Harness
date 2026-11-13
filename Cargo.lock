@@ -160,6 +160,7 @@ version = "0.0.0"
 dependencies = [
  "cortex-base",
  "cortex-protocol",
+ "cortex-testkit",
  "keyring-core",
  "serde_json",
  "thiserror",

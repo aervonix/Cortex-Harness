@@ -50,7 +50,10 @@ pub enum ProjectTrust {
 }
 
 /// One setting given on the command line.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Its `Debug` form shows the key and the flag, and not the value: a value
+/// typed on the command line may be a provider's header, with a key in it.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Override {
     /// The key, as written: `model.main`.
     pub key: String,
@@ -61,6 +64,16 @@ pub struct Override {
     /// The dedicated flag this came from, such as `--model`. `None` for
     /// `-c key=value`.
     pub flag: Option<String>,
+}
+
+impl fmt::Debug for Override {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Override")
+            .field("key", &self.key)
+            .field("value", &cortex_base::secret::REDACTED)
+            .field("flag", &self.flag)
+            .finish()
+    }
 }
 
 impl Override {
@@ -220,7 +233,13 @@ pub struct Change {
 
 /// A loaded configuration: the settings, where each came from, and what was
 /// noticed while loading.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// **Its untyped views never show a literal that may be a secret.**
+/// [`value`](Self::value), [`effective`](Self::effective),
+/// [`show`](Self::show), [`show_layer`](Self::show_layer) and `Debug` show a
+/// provider's literal header as `[redacted]`. The typed `settings` hold it
+/// as a `Secret`, which is the way to it.
+#[derive(Clone, PartialEq)]
 pub struct Loaded {
     /// The settings in effect, defaults included.
     pub settings: Settings,
@@ -243,11 +262,55 @@ pub struct Loaded {
     locks: Vec<KeyPath>,
 }
 
+impl fmt::Debug for Loaded {
+    /// The settings and what was noticed, and the merged values with every
+    /// literal that may be a secret redacted. The layers as read are left
+    /// out, so that a field added later is not printed by accident.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Loaded")
+            .field("settings", &self.settings)
+            .field("diagnostics", &self.diagnostics)
+            .field("withheld", &self.withheld)
+            .field("profile", &self.profile)
+            .field("dirs", &self.dirs)
+            .field("files", &self.files)
+            .field(
+                "values",
+                &schema::redact(&KeyPath::root(), &Value::Table(self.values.clone())),
+            )
+            .field("locks", &self.locks)
+            .finish_non_exhaustive()
+    }
+}
+
 /// One file layer, read and parsed.
-struct FileLayer {
-    kind: LayerKind,
+#[derive(Clone)]
+pub(crate) struct FileLayer {
+    pub(crate) kind: LayerKind,
     file: PathBuf,
     document: Document,
+}
+
+impl fmt::Debug for FileLayer {
+    /// The layer and its file. Not what the file says: a provider's header
+    /// in it may hold a key.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FileLayer")
+            .field("kind", &self.kind)
+            .field("file", &self.file)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What to do when the selected profile is not defined.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MissingProfile {
+    /// It is an error, as it is for every ordinary load.
+    Error,
+    /// It is a warning, and no profile is applied. For the one merge that
+    /// must not fail: dropping a project whose trust was lowered, when the
+    /// selected profile was defined by that project alone.
+    Warning,
 }
 
 /// Loads configuration.
@@ -259,6 +322,12 @@ struct FileLayer {
 /// key in an enforced table, a newer `config_version`, a profile that does
 /// not exist, or a command-line setting that is not one.
 pub fn load(options: &LoadOptions) -> Result<Loaded, LoadFailure> {
+    load_layers(options).map(|(loaded, _)| loaded)
+}
+
+/// [`load`], with the file layers the result was made from, so that a live
+/// configuration can merge them again without reading the files.
+pub(crate) fn load_layers(options: &LoadOptions) -> Result<(Loaded, Vec<FileLayer>), LoadFailure> {
     let mut diagnostics = Vec::new();
     let mut files = Vec::new();
     let mut layers = Vec::new();
@@ -274,15 +343,36 @@ pub fn load(options: &LoadOptions) -> Result<Loaded, LoadFailure> {
             });
         }
     }
+    let loaded = merge_layers(
+        options,
+        &layers,
+        files,
+        diagnostics,
+        MissingProfile::Error,
+    )?;
+    Ok((loaded, layers))
+}
+
+/// Merges file layers that were read already, then the profile, the
+/// environment and the command line. `diagnostics` holds what reading the
+/// files found: with an error among them the merge still runs, so that one
+/// load reports everything, and then fails.
+pub(crate) fn merge_layers(
+    options: &LoadOptions,
+    layers: &[FileLayer],
+    files: Vec<(LayerKind, PathBuf, bool)>,
+    mut diagnostics: Vec<Diagnostic>,
+    missing_profile: MissingProfile,
+) -> Result<Loaded, LoadFailure> {
     let failed = |diagnostics: &[Diagnostic]| {
         diagnostics
             .iter()
             .any(|diagnostic| diagnostic.severity == Severity::Error)
     };
 
-    let locks = read_locks(&layers, &mut diagnostics);
+    let locks = read_locks(layers, &mut diagnostics);
     let mut merger = Merger::new(options.trust == ProjectTrust::Trusted, locks);
-    for layer in &layers {
+    for layer in layers {
         merger.apply(
             &Source {
                 layer: layer.kind,
@@ -295,7 +385,13 @@ pub fn load(options: &LoadOptions) -> Result<Loaded, LoadFailure> {
         );
     }
 
-    let profile = apply_profile(options, &layers, &mut merger, &mut diagnostics);
+    let profile = apply_profile(
+        options,
+        layers,
+        &mut merger,
+        &mut diagnostics,
+        missing_profile,
+    );
     apply_environment(options, &mut merger, &mut diagnostics);
     for given in &options.overrides {
         apply_override(given, &mut merger, &mut diagnostics);
@@ -451,15 +547,36 @@ fn read_locks(layers: &[FileLayer], diagnostics: &mut Vec<Diagnostic>) -> Vec<Ke
 }
 
 /// Applies the selected profile from every file layer that defines it.
+///
+/// `--profile` chooses the profile over the `profile` key, unless the
+/// managed file locks that key: a lock holds against the command line too,
+/// so the managed file's choice stays, or no profile when it made none.
 fn apply_profile(
     options: &LoadOptions,
     layers: &[FileLayer],
     merger: &mut Merger,
     diagnostics: &mut Vec<Diagnostic>,
+    missing: MissingProfile,
 ) -> Option<String> {
     let profile_key = KeyPath::new(["profile"]);
-    let (name, from_flag) = match &options.profile {
-        Some(name) => (name.clone(), true),
+    let flag = match &options.profile {
+        Some(name) if merger.is_locked(&profile_key) => {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Note,
+                layer: Some(LayerKind::CommandLine),
+                file: None,
+                line: None,
+                key: Some(profile_key.clone()),
+                message: format!(
+                    "locked by the managed configuration; `--profile {name}` is not used"
+                ),
+            });
+            None
+        }
+        other => other.clone(),
+    };
+    let (name, from_flag) = match flag {
+        Some(name) => (name, true),
         None => (
             merge::get(&merger.values, &profile_key)?
                 .as_str()?
@@ -499,6 +616,20 @@ fn apply_profile(
             },
             table,
         );
+    }
+    if !defined && missing == MissingProfile::Warning {
+        diagnostics.push(Diagnostic {
+            severity: Severity::Warning,
+            layer: None,
+            file: None,
+            line: None,
+            key: Some(profile_key),
+            message: format!(
+                "the profile `{name}` was defined by the project alone, whose configuration is \
+                 no longer applied; no profile is applied"
+            ),
+        });
+        return None;
     }
     if !defined {
         let mut known: Vec<&str> = layers
@@ -693,12 +824,14 @@ impl Loaded {
         self.locks.iter().any(|lock| key.is_at_or_under(lock))
     }
 
-    /// The effective value of a key, the default included.
+    /// The effective value of a key, the default included. A literal that
+    /// may be a secret is `[redacted]`: the typed settings hold it.
     #[must_use]
     pub fn value(&self, key: &KeyPath) -> Option<Value> {
-        merge::get(&self.values, key)
-            .cloned()
-            .or_else(|| merge::get(&schema::defaults(), key).cloned())
+        match merge::get(&self.values, key) {
+            Some(value) => Some(schema::redact(key, value)),
+            None => merge::get(&schema::defaults(), key).map(|value| schema::redact(key, value)),
+        }
     }
 
     /// The content of a section as the layers left it, for a reserved
@@ -740,9 +873,22 @@ impl Loaded {
     }
 
     /// Every effective setting as a flat list in key order: the defaults,
-    /// with what the layers set laid over them.
+    /// with what the layers set laid over them. A literal that may be a
+    /// secret is `[redacted]`.
     #[must_use]
     pub fn effective(&self) -> Vec<(KeyPath, Value)> {
+        self.effective_unredacted()
+            .into_iter()
+            .map(|(key, value)| {
+                let shown = schema::redact(&key, &value);
+                (key, shown)
+            })
+            .collect()
+    }
+
+    /// [`effective`](Self::effective) as it is, for comparing two
+    /// configurations: a changed header is a change.
+    fn effective_unredacted(&self) -> Vec<(KeyPath, Value)> {
         let all = merge::overlay(&schema::defaults(), &self.values);
         merge::flatten(&all)
             .into_iter()
@@ -803,6 +949,7 @@ impl Loaded {
         // shown once, with all of them.
         let mut lines: Vec<(KeyPath, Value, Origin, Vec<Origin>)> = Vec::new();
         for (key, value, origin) in &view.values {
+            let value = &schema::redact(key, value);
             let joined = matches!(
                 schema::lookup(key),
                 Lookup::Setting { child, .. }
@@ -844,8 +991,9 @@ impl Loaded {
     /// when each change takes effect.
     #[must_use]
     pub fn changes_since(&self, earlier: &Self) -> Vec<Change> {
-        let before: BTreeMap<KeyPath, Value> = earlier.effective().into_iter().collect();
-        let after: BTreeMap<KeyPath, Value> = self.effective().into_iter().collect();
+        let before: BTreeMap<KeyPath, Value> =
+            earlier.effective_unredacted().into_iter().collect();
+        let after: BTreeMap<KeyPath, Value> = self.effective_unredacted().into_iter().collect();
         let mut changed: Vec<KeyPath> = before
             .iter()
             .filter(|(key, value)| after.get(*key) != Some(*value))

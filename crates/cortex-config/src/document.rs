@@ -123,22 +123,21 @@ fn convert_value(
     lines: &mut BTreeMap<KeyPath, u32>,
     entry_lines: &mut BTreeMap<KeyPath, Vec<u32>>,
 ) -> Result<Value, ParseFailure> {
-    let out_of_range = |what: &str| ParseFailure {
-        message: format!("`{key}`: the number {what} is too large"),
+    // The number itself is not repeated: the file may not be configuration
+    // at all (a project can link its configuration file to any file of the
+    // user's), and a long run of digits can be a secret.
+    let out_of_range = || ParseFailure {
+        message: format!("`{key}`: the number is too large"),
         line: Some(line),
     };
     Ok(match value {
         DeValue::String(text) => Value::String(text.to_string()),
         DeValue::Integer(number) => Value::Integer(
-            i64::from_str_radix(number.as_str(), number.radix())
-                .map_err(|_| out_of_range(number.as_str()))?,
+            i64::from_str_radix(number.as_str(), number.radix()).map_err(|_| out_of_range())?,
         ),
-        DeValue::Float(number) => Value::Float(
-            number
-                .as_str()
-                .parse()
-                .map_err(|_| out_of_range(number.as_str()))?,
-        ),
+        DeValue::Float(number) => {
+            Value::Float(number.as_str().parse().map_err(|_| out_of_range())?)
+        }
         DeValue::Boolean(flag) => Value::Boolean(*flag),
         DeValue::Datetime(time) => Value::Datetime(*time),
         DeValue::Array(items) => {

@@ -265,26 +265,82 @@ impl Setting for Rule {
 /// Text, or the name of an environment variable to read when the value is
 /// used: `"abc"` or `{ env = "NAME" }`.
 ///
+/// **Literal text is held as a [`Secret`].** A provider's headers are where
+/// this is used, and a gateway may take its key in one (`api-key` for
+/// Azure's). So a literal prints as `[redacted]` in `Debug`, and the
+/// configuration's own views (`cortex config show`, `--layer`) redact it
+/// too. The name of a variable is not a secret and is shown.
+///
 /// There is no other indirection: no interpolation inside strings, and no
 /// "run this command to get a value".
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum EnvText {
     /// The text itself.
-    Literal(String),
+    Literal(Secret),
     /// The name of an environment variable.
     Env(String),
 }
 
+impl PartialEq for EnvText {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            // A reload compares configurations to say what changed, and a
+            // changed header is a change.
+            (Self::Literal(one), Self::Literal(other)) => one.expose() == other.expose(),
+            (Self::Env(one), Self::Env(other)) => one == other,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for EnvText {}
+
 impl EnvText {
     /// The value, as a [`Secret`]: a header value that came from the
-    /// environment is one, and a literal is treated the same way so that
-    /// neither is logged. `None` when the variable is not set.
+    /// environment is one, and so is a literal. `None` when the variable is
+    /// not set.
     #[must_use]
     pub fn resolve(&self, env: &Env) -> Option<Secret> {
         match self {
-            Self::Literal(text) => Some(Secret::new(text.clone())),
+            Self::Literal(text) => Some(text.clone()),
             Self::Env(name) => env.get(name).map(Secret::new),
         }
+    }
+}
+
+/// What a literal that may be a secret is shown as, in the configuration's
+/// untyped views.
+pub(crate) fn redacted() -> Value {
+    Value::String(cortex_base::secret::REDACTED.to_owned())
+}
+
+/// Whether a setting of this kind can hold a secret as literal text.
+pub(crate) fn may_hold_secret(kind: &Kind) -> bool {
+    match kind {
+        Kind::EnvText => true,
+        Kind::List(inner) | Kind::Map(inner) => may_hold_secret(inner),
+        _ => false,
+    }
+}
+
+/// A value of `kind` with every literal that may be a secret replaced by
+/// `[redacted]`. `{ env = "NAME" }` is kept: a name is not a secret.
+pub(crate) fn redact_kind(kind: &Kind, value: &Value) -> Value {
+    match (kind, value) {
+        (Kind::EnvText, Value::String(_)) => redacted(),
+        (Kind::Map(inner), Value::Table(table)) => Value::Table(
+            table
+                .iter()
+                .map(|(name, entry)| (name.clone(), redact_kind(inner, entry)))
+                .collect(),
+        ),
+        (Kind::List(inner), Value::Array(items)) => Value::Array(
+            items
+                .iter()
+                .map(|item| redact_kind(inner, item))
+                .collect(),
+        ),
+        _ => value.clone(),
     }
 }
 
@@ -297,7 +353,7 @@ impl Setting for EnvText {
         const EXPECTED: &str =
             "expected text, or `{ env = \"NAME\" }` to read an environment variable";
         match value {
-            Value::String(text) => Ok(Self::Literal(text.clone())),
+            Value::String(text) => Ok(Self::Literal(Secret::new(text.clone()))),
             Value::Table(table) if table.len() == 1 => match table.get("env") {
                 Some(Value::String(name)) if !name.is_empty() => Ok(Self::Env(name.clone())),
                 _ => Err(EXPECTED.to_owned()),
@@ -308,7 +364,10 @@ impl Setting for EnvText {
 
     fn write(&self) -> Option<Value> {
         Some(match self {
-            Self::Literal(text) => Value::String(text.clone()),
+            // Written out so that a configuration read and written again is
+            // the same. Nothing prints what this returns: the views that
+            // print values redact it ([`redact_kind`]).
+            Self::Literal(text) => Value::String(text.expose().to_owned()),
             Self::Env(name) => {
                 let mut table = toml::Table::new();
                 table.insert("env".to_owned(), Value::String(name.clone()));
@@ -415,8 +474,9 @@ choice! {
         /// The default for the OS: Windows Credential Manager on Windows, an
         /// owner-only file on Linux.
         Auto => "auto",
-        /// An owner-only file, `credentials.toml`, in the configuration
-        /// directory.
+        /// An owner-only file, `credentials.toml`: in the configuration
+        /// directory on Linux, and in `%LOCALAPPDATA%\cortex-harness` on
+        /// Windows, which does not roam to the user's other machines.
         File => "file",
         /// The OS keychain: Windows Credential Manager, or on Linux the
         /// Secret Service in a build that has it.
@@ -584,8 +644,13 @@ mod tests {
     fn text_can_name_an_environment_variable() {
         let literal = EnvText::read(&toml("\"abc\"")).unwrap();
         let named = EnvText::read(&toml("{ env = \"MY_TOKEN\" }")).unwrap();
-        assert_eq!(literal, EnvText::Literal("abc".to_owned()));
+        assert_eq!(literal, EnvText::Literal(Secret::new("abc")));
+        assert_ne!(literal, EnvText::Literal(Secret::new("abd")));
+        assert_ne!(literal, EnvText::Env("abc".to_owned()));
         assert_eq!(named, EnvText::Env("MY_TOKEN".to_owned()));
+        // A literal may be a gateway's key: it is never printed.
+        assert_eq!(format!("{literal:?}"), "Literal([redacted])");
+        assert_eq!(format!("{named:?}"), "Env(\"MY_TOKEN\")");
         for wrong in [
             "5",
             "{ env = 5 }",
@@ -612,6 +677,19 @@ mod tests {
                 .starts_with("X-One:")
         );
         assert_eq!(Headers::default().write(), None);
+
+        // The untyped views redact a literal and keep a variable's name.
+        let kind = Kind::Map(Box::new(Kind::EnvText));
+        assert!(may_hold_secret(&kind) && !may_hold_secret(&Kind::Text));
+        assert_eq!(
+            redact_kind(&kind, &toml("{ api-key = \"k\", X-Two = { env = \"TWO\" } }")),
+            toml("{ api-key = \"[redacted]\", X-Two = { env = \"TWO\" } }")
+        );
+        assert_eq!(
+            redact_kind(&Kind::List(Box::new(Kind::EnvText)), &toml("[\"k\"]")),
+            toml("[\"[redacted]\"]")
+        );
+        assert_eq!(redact_kind(&Kind::Text, &toml("\"k\"")), toml("\"k\""));
     }
 
     #[test]

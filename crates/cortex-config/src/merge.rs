@@ -44,8 +44,9 @@ pub(crate) struct Source<'a> {
 }
 
 /// One layer as it was read, before locks and trust: what
-/// `cortex config show --layer` prints.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// `cortex config show --layer` prints, redacted. It has no `Debug`: it
+/// holds the values as written, a provider's literal headers included.
+#[derive(Clone, Default, PartialEq)]
 pub(crate) struct LayerView {
     pub(crate) values: Vec<(KeyPath, Value, Origin)>,
 }
@@ -191,11 +192,22 @@ impl Merger {
         ));
     }
 
+    /// Whether a value set at `key` would change a locked key: the key is
+    /// locked, or it is inside a locked table, or it holds a locked key.
+    ///
+    /// The last is the one that is easy to miss. A value set at a key
+    /// replaces whatever is there whole, so a layer that writes
+    /// `servers = "none"` over a table in which `servers.corp` is locked
+    /// would remove the locked entry. Such a value counts as locked.
+    pub(crate) fn is_locked(&self, key: &KeyPath) -> bool {
+        self.locks
+            .iter()
+            .any(|lock| key.is_at_or_under(lock) || lock.is_at_or_under(key))
+    }
+
     /// Whether a lock keeps this layer from changing the key. Says so once.
     fn locked(&mut self, source: &Source<'_>, key: &KeyPath, origin: &Origin) -> bool {
-        if source.authority <= LayerKind::Managed
-            || !self.locks.iter().any(|lock| key.is_at_or_under(lock))
-        {
+        if source.authority <= LayerKind::Managed || !self.is_locked(key) {
             return false;
         }
         self.diagnostics.push(Diagnostic {
@@ -245,7 +257,8 @@ impl Merger {
                 self.withheld.push(Withheld {
                     key: key.clone(),
                     class,
-                    value: value.clone(),
+                    // Shown to the user before trust: never a secret.
+                    value: schema::redact(key, value),
                     origin: origin.clone(),
                 });
                 false
