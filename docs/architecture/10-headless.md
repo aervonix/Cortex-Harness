@@ -82,7 +82,9 @@ Nothing can be asked in headless mode. A tool call that would need approval is d
 
 - The run continues after a denial: the model may find another way.
 - If the run ends without completing the task because of denials, the outcome is still what the model's last message makes it. Exit code 6 is used only when a denial makes the run stop (for example the model's only action was refused and it ended its turn with an error), or when `--fail-on-denial` is set, which turns the first denial into a failure: the policy then answers "stop the turn here", and the turn ends with the outcome `denied` once every call of the round has its result ([03-agent-loop.md](03-agent-loop.md), "Tool rounds").
-- Pre-approve with `--allow` rules, with configuration, or with a permission mode. `--permission-mode unrestricted` approves everything and is meant for disposable environments.
+- Pre-approve with `--allow` rules, with configuration, or with a permission mode.
+- **A write of a protected path needs an answer at every mode below `unrestricted`,** `autonomous` included: git's hooks and configuration, `.cortex/`, shell start-up files, CI configuration, registry settings, and files that look like secrets ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md), "Protected paths"). In a headless run that is a denial, unless an allow rule names the path: `--allow 'write .github/workflows/**'`.
+- **`--permission-mode unrestricted` asks nothing,** protected paths included, and is meant for disposable environments. Two things still hold there: a `deny` or `ask` rule the user wrote (an `ask` is a denial where nobody can be asked), and the built-in protection of the harness's own credentials, trust and approvals.
 
 ## Exit codes
 

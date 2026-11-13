@@ -62,7 +62,7 @@ A level says who decides when no rule has already settled the question: the **ho
 | `unrestricted` | holder | holder | holder | holder | holder | holder | holder | holder |
 
 - **The scope of a standing lease is its writable roots:** the workspace and the session's private temporary directory, plus `sandbox.write`. A read or an edit under one of them is inside the scope. The sandbox's `read` set is not asked: it says what a child process may read, and a file tool's read outside the workspace asks ([05-tools.md](05-tools.md), "Paths").
-- **Three things are beyond the scope wherever they are.** A path outside the writable roots. A write to a protected path (`.git/hooks`, `.git/config`, `.cortex/`, shell start-up files, `sandbox.protect`): whoever can write one can run code later. And a file that looks like a secret, read or written ("Files that look like secrets", below).
+- **Three things are beyond the scope wherever they are.** A path outside the writable roots. A write to a protected path ("Protected paths", below): whoever can write one can run code later. And a file that looks like a secret, read or written ("Files that look like secrets", below).
 - **A level that refuses is final.** At `read-only` a write does not happen, whatever a rule allows. Rules settle what a level leaves open; they do not open what it closes.
 - **A rule still holds at the levels that ask least.** A `deny` is a denial at `unrestricted`, and an `ask` is a question.
 - **`guided` reads like `supervised` in this table** because the kinds of command a guided lease names are allow rules of that lease, and rules are settled before the level is asked. It cannot be chosen until task leases exist (step 37).
@@ -177,7 +177,7 @@ In every pattern `*` is any run of characters, `?` any one, and `[abc]`, `[a-z]`
 |---|---|
 | `/etc/**`, `C:\Tools\**`, `\\server\share\**` | An absolute path. On Windows `\` and `/` both separate. |
 | `~/notes/**` | Under the home directory. |
-| `**/.env` | Anywhere, in the workspace or outside it. |
+| `**/.env` | In a rule that holds back (`deny`, `ask`): anywhere, in the workspace or outside it. In a rule that allows: anywhere in the workspace. |
 | `src/**`, `docs/*.md` | With a separator: under the workspace root. |
 | `*.lock`, `Cargo.toml` | With none: that name at any depth in the workspace. |
 
@@ -185,6 +185,7 @@ A pattern that ends in `/**`, or in a separator, matches the directory itself as
 
 **A rule that holds back is matched as widely as it can be, and a rule that allows as narrowly.**
 
+- **Where `**` starts.** A `deny` or an `ask` for `**/*.pem` holds for every such file on the machine. An `allow` written the same way allows them in the workspace only: an `allow write **` that reached the home directory would hand over the shell start-up files and the SSH keys in it. An allow that is to reach further says where: `~/notes/**`, `/srv/data/**`, `/**`.
 - **Case, on Windows.** A `deny` or an `ask` matches a path without regard to case, and also exactly. An `allow` matches exactly, against the resolved path, which is in the file system's own spelling. So no spelling gets round a deny. And an allow for `App` never grants `app`, which is another folder in a directory marked case-sensitive. Since every path is resolved before it is matched, an allow works however the *path* was typed; it is the *rule* that must spell the folder as it is stored, and one that does not simply does not match. A drive letter, and a share's server and name, have no case on disk and are always folded.
 - **Commands.** An `allow` matches one whole simple command of a line the analysis models, from its first word: `git status` allows `git status` and not `git status --short`, and a rule for `git` does not allow `./git` or `/tmp/git`. In PowerShell, which finds commands without regard to case, the program's name is compared that way and `git.exe` is `git`. A `deny` or an `ask` matches wherever its words appear in the raw line, one after another: `rm *` matches `sudo rm -rf x`, `echo x; rm y`, `bash -c 'rm y'` and `/bin/rm y`. It matches too much on purpose, and it is the only match there is for a line that could not be analysed.
 - **A call that cannot say which host it reaches** meets every rule that holds back, and is allowed only by an allow for every host (`*`).
@@ -204,6 +205,8 @@ A pattern that ends in `/**`, or in a separator, matches the directory itself as
 
 Closing the state directory to writing is what makes trust and approvals mean something: a model that could write `trust.toml` could trust its own project.
 
+The protection holds for a path a command only names, too: `cat` of the credentials file, or `cp` to it, is refused and not asked about. A command that searches a tree with one of these directories somewhere in it is asked about.
+
 ### Files that look like secrets
 
 Reading or writing a file whose name says it is likely to hold a secret asks first, at every level short of `unrestricted`, wherever the file is.
@@ -218,6 +221,39 @@ Reading or writing a file whose name says it is likely to hold a secret asks fir
 - **It is a default, not a rule,** and that is deliberate: `ask` beats `allow`, so as a built-in `ask` rule nothing a user wrote could lift it. As the default for such files it is what happens when no rule has settled the question. A user's `allow` lifts it (`allow read **/.env.test`). A project's `allow` lifts it only after trust. A `deny` closes the file for good.
 - **The same default decides what a session's base state may keep** ([07-sessions-and-context.md](07-sessions-and-context.md), "The base state"): the store keeps a file only if the engine would let the agent read it without asking. The session store has no list of names of its own.
 - The list is by name and short on purpose. An earlier list had `id_*`, and so held back `src/id_map.rs`.
+
+### Protected paths
+
+Some files in a workspace decide what runs later, outside the sandbox and without anybody being asked. Whoever can write one can run code, or reach a secret, so writing one always goes to the user.
+
+| Protected | Because |
+|---|---|
+| Everything in a `.git` directory, a file named `.git`, and a file named `HEAD`, at any depth | Git runs the programs its hooks and configuration name: a hook, a file-system monitor, a filter, a text converter, a pager. A nested repository, a submodule's or a worktree's configuration, and a bare repository made of plain files are read the same way. |
+| `.cortex/` at the workspace root | The project's own configuration, hooks, extensions and instructions. |
+| `.bashrc`, `.bash_profile`, `.bash_login`, `.profile`, `.zshrc`, `.zshenv`, `.zprofile`, `.envrc` | A shell, or `direnv`, runs them when it starts. |
+| `.github/workflows`, `.github/actions`, `.gitlab-ci.yml`, `.circleci`, `.pre-commit-config.yaml`, `.husky` | A CI service runs them with the repository's secrets, and a commit runs the last two. |
+| `.cargo/config.toml`, `.cargo/config`, `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `.pypirc` | They name a program to run for a build, or the registry a token is sent to. |
+| Whatever `sandbox.protect` lists | The user said so. An entry is an absolute path, a path under `~/`, or a path relative to the workspace. One that is none of these stops the session from starting: an entry that was skipped would not be protected. |
+| Files that look like secrets | Above. |
+
+**Who decides, at each level.**
+
+| Level | A write of a protected path |
+|---|---|
+| `read-only` | Refused, like every write. |
+| `supervised`, `guided`, `autonomous` | Asked about. `autonomous` lets a command run unasked and still asks about these. |
+| `unrestricted` | Left to the holder: the level asks nothing. A user's `deny` and `ask` rules still hold there, and so does the built-in protection of the harness's own files. |
+
+- **Every route asks.**
+  - The `write` and `edit` tools.
+  - A redirection: `echo x > .git/config`.
+  - A command that names one: `cp evil .git/hooks/pre-commit`, `sed -i … .github/workflows/ci.yml`, `tee`, `rm`, `dd of=…`. This holds whatever allow rule or level lets the command itself run. The engine cannot know that a command only reads a file it names, unless the command is on the table of commands that only read.
+  - `git config`, however it is written: it changes the configuration without naming the file.
+- **An allow rule that names the path lifts the question,** for that path and by every route: `allow write .github/workflows/**`. A project's own allow does so only after trust.
+- **Names are compared without regard to case on Windows,** like every rule that holds back.
+- **Reading one is not held back,** unless it also looks like a secret.
+- **What this does not cover** is a program that writes one of these without the command line naming it: `python3 fix.py`. At `supervised` such a command is asked about as a command. At `autonomous` it runs, and the sandbox is what holds the protected paths ("The sandbox", below).
+- **The list in the lease, which the sandbox enforces, is narrower in one respect.** Of `.git` it has `hooks`, `config`, `config.worktree` and `info`, because `git commit` has to write the rest. The engine asks about every write a tool or a command line names anywhere in a `.git` directory.
 
 ## Shell command analysis
 
@@ -258,10 +294,17 @@ Built in step 12 (`cortex-policy`, `command`). **The analysis is two hand-writte
 
 1. A `deny` or `ask` rule on the raw line or on any part is settled first.
 2. Each part must be allowed: by the table of read-only commands, or by an allow rule. A line is on a safe list only if every part is.
-3. **What a command names is checked as a read.** `cat` only reads, and `cat ~/.ssh/id_rsa` reads a private key. So every file a table command names, and the directory it runs in, is put to the same judgement a `read` call gets, and the command is safe only if each would be allowed unasked. Where a rule denies a named path, the command is asked about, not refused: an argument that reads like a protected file may be a search pattern (`grep .env README.md`), and nothing is lost by asking. For every other modelled command, an argument that names a path a rule denies or asks about, or one of the harness's own files, makes the command one to ask about, whatever allows the command.
-4. **`cd dir && …` is followed:** the parts after it are judged from the new directory. A `cd` whose effect cannot be known (in a pipeline, before `;` or `||`, with no argument or two) takes the line off every safe list.
-5. **A redirection is a write of its file,** or a read, judged as one: outside the scope it asks, to a protected path or a secret it asks, and where a rule denies it the line is refused, because a redirection is a write for certain. `/dev/null` is nothing.
-6. **A line whose every part only reads is marked read-only,** which is how the loop comes to run it beside other calls ([03-agent-loop.md](03-agent-loop.md)).
+3. **What a command names is checked as a read.** `cat` only reads, and `cat ~/.ssh/id_rsa` reads a private key. So every file a table command names, and the directory it runs in, is put to the same judgement a `read` call gets, and the command is safe only if each would be allowed unasked. Where a rule denies a named path, the command is asked about, not refused: an argument that reads like a protected file may be a search pattern (`grep .env README.md`), and nothing is lost by asking. The harness's own files are the exception: a command that names one is refused. For every other modelled command, an argument that names a path a rule denies or asks about, a protected path, or a file that looks like a secret makes the command one to ask about, whatever allows the command ("Protected paths", above).
+4. **A search of a whole tree reads files nobody named.** `rg`, and the `git` commands that print what tracked files hold (`diff`, `show`, `grep`, and `log` with `-p` and the like), are asked about when a `deny` or `ask` rule on reading can match something in the tree they read, or when one of the harness's own directories is in it. The check is made on the rules' patterns, so it errs towards asking, and it holds at every level, as a rule does. The `search` tool makes the same search with every file put to the gate.
+5. **`cd dir && …` is followed** where its effect is certain for every part after it: the parts after it are then judged from the new directory.
+   - The `cd` has one plain argument and no redirection.
+   - It is not in a pipeline, where it runs in a shell of its own, and it does not follow `||`, where it runs only if what came before failed.
+   - Everything after it is joined by `&&`, or is in a pipeline with something that is. Then nothing after the `cd` runs unless the `cd` ran and succeeded.
+   - Any other `cd` that is not the last part takes the line off every safe list. After `a || cd x && …` the rest runs whether the `cd` ran or not. After `cd x && a; b`, `b` runs in one directory if the `cd` succeeded and in another if it failed.
+   - A `cd` with a redirection is a command that writes the file, and is judged as one.
+   - The shell's own search for directories (`CDPATH`) is taken to be off. The shell tool's environment ensures that from step 13.
+6. **A redirection is a write of its file,** or a read, judged as one: outside the scope it asks, to a protected path or a secret it asks, and where a rule denies it the line is refused, because a redirection is a write for certain. `/dev/null` is nothing, read or written.
+7. **A line whose every part only reads is marked read-only,** which is how the loop comes to run it beside other calls ([03-agent-loop.md](03-agent-loop.md)).
 
 The paths a command names are followed by the same resolver the file tools use, so a link in the workspace leads where the file system says. The analysis itself looks only at text.
 
@@ -269,16 +312,25 @@ The paths a command names are followed by the same resolver the file tools use, 
 
 | Shell | On the table |
 |---|---|
-| POSIX | `ls`, `cat`, `head`, `tail`, `wc`, `grep`, `egrep`, `fgrep`, `rg`, `fd`, `fdfind`, `find`, `sort`, `uniq`, `stat`, `file`, `du`, `df`, `tree`, `readlink`, `realpath`, `basename`, `dirname`, `pwd`, `whoami`, `id`, `uname`, `hostname`, `which`, `true`, `false`, `echo`, `printf`, `test`, `date`, `sed` (only as `sed -n '<lines>p'`), and `git` with `status`, `diff`, `show`, `log`, `branch`, `tag`, `rev-parse`, `ls-files`, `blame`, `describe`, `grep`, `remote`, `stash list`, `version` |
+| POSIX | `ls`, `cat`, `head`, `tail`, `wc`, `grep`, `egrep`, `fgrep`, `rg`, `fd`, `fdfind`, `find`, `sort`, `uniq`, `stat`, `file`, `du`, `df`, `tree`, `readlink`, `realpath`, `basename`, `dirname`, `pwd`, `whoami`, `id`, `uname`, `hostname`, `which`, `true`, `false`, `echo`, `date`, `sed` (only as `sed -n '<lines>p'`), and `git` with `status`, `diff`, `show`, `log`, `branch`, `tag`, `rev-parse`, `ls-files`, `blame`, `describe`, `grep`, `remote`, `stash list`, `version` |
 | PowerShell | `Get-ChildItem`, `Get-Content`, `Select-String`, `Test-Path`, `Resolve-Path`, `Get-Item`, `Get-Location`, `Get-Date`, `Write-Output`, `Write-Host`, `Get-FileHash` and their aliases (`gci`, `ls`, `dir`, `gc`, `cat`, `type`, `sls`, `pwd`, `echo`, …), `whoami`, `hostname`, `rg`, `fd`, and `git` as above |
 
 - **Each entry lists the options that are safe, by their exact names.** An option that is not listed takes the command off the table: `sort -o`, `find -delete` and `-exec` and `-fprint`, `git diff --output`, `git -c …`, `rg --pre`, `fd -x`, `tail -f`, `date -s`. So does an abbreviation of a long option, which GNU programs accept and the table does not, and a parameter of a PowerShell command that is not written out in full.
 - **A subcommand that can write is listed only in the form that cannot:** `git branch` and `git tag` with no name, `git stash list`, `git remote` with no subcommand.
 - **Programs that are languages are not on it:** `awk`, `perl`, `python`, `xargs`, `env`, `tee`, and `less` and `more`, whose keys run commands. `sed` is on it only to print lines, because its scripts can write files and run commands.
+- **`printf` and `test` are not on it,** though they look harmless. In bash both evaluate an array subscript in their arguments (`printf -v 'a[$(cmd)]'`, `test -v 'a[$(cmd)]'`), which runs a command, quoted or not, and `printf -v` sets a variable such as `CDPATH`.
 - **No option that follows links is listed** (`grep -R`, `rg -L`, `find -L`, `ls -L`), and `diff` is not on the table, because it reads through the links inside the directories it compares. What a command names is checked name by name; what it finds by walking a tree must stay in the tree.
+- **A search of a whole tree is on the table only where it leaves hidden files out.**
+  - `grep -r` reads every file under a directory, a `.env` included, and names none of them. It is off the table, and `grep` of named files is on it.
+  - `rg` leaves out hidden files and what ignore files name, which is where most files that look like secrets are. It is on the table without the options that bring those back: `--hidden`, `-.`, `-u`, `--no-ignore…`, and `-g`, `--glob` and `--iglob`, since a glob that names a hidden file overrides the rule.
+  - **The limit that remains:** a file that looks like a secret and is not hidden (`server.pem`, or `id_rsa` in a visible directory) inside a tree `rg` searches is read unasked. So is one that git tracks, when `git diff`, `git show`, `git log -p` or `git grep` prints it. A rule on reading closes this, by rule 4: with `deny read **/*.pem` the search is asked about.
+  - The user's own `rg` configuration file (`RIPGREP_CONFIG_PATH`) can add options the table never sees.
+  - Commands that print names and not content (`ls -R`, `find`, `tree`, `fd`, `du`) show the names of files a rule protects.
 - **A glob takes a command off the table.** The names it expands to can begin with a `-`, which the program then reads as an option.
 - **The program is named plainly:** `ls`, not `./ls` or `/tmp/ls`.
 - **`git` is on the table only in a trusted project.** A repository's own configuration can name programs that `git status` and `git diff` run ([../security.md](../security.md), section 2), and an untrusted repository can arrive with that configuration.
+  - In a trusted project the `git` forms on the table are as safe as `.git/config` is. That is why nothing writes git's configuration unasked, in the workspace's repository or in one nested in it, and why `git config` is asked about ("Protected paths", above).
+  - What is left is a program that runs unasked at `autonomous` and writes the configuration without the command line saying so. Only the sandbox holds that. From step 13 every shell command runs with git's file-system monitor turned off in its environment, which closes the shortest of those routes.
 
 **The tokenizers are compared with the shells themselves.** A test generates lines, keeps the ones the analysis models, and checks that bash and dash pass exactly the words the analysis gave, and that PowerShell's own parser reads the line as one command with those words. The comparison found, on its first run, that dash and bash disagree about `20<file`.
 
@@ -305,7 +357,7 @@ An approval never outlives its scope. Session approvals are not saved. Stored ap
 **As built in step 12** (`cortex-policy`, `approvals` and `engine`).
 
 - **What a choice would add is worked out before the question is put,** and travels with it, so a front end shows it in full: "always allow `cargo build *` in this project". For a command that is the program and its subcommand, with any further words: `cargo build *`, `npm run *`, `make *`. For a path, that one path. For a host, that host. For an extension's tool, that tool.
-- **A program that runs its arguments is approved line by line.** For `sudo`, `env`, `xargs`, `timeout`, `nohup`, a shell, an interpreter, `ssh`, `docker` and the like, the rule is the exact line, word for word: approving `sudo apt list` must not become "allow `sudo *`". Where the line cannot be written as a pattern (`bash -c 'rm -rf x'` has a word with a space), no rule is offered.
+- **A program that runs its arguments is approved line by line.** For `sudo`, `env`, `xargs`, `timeout`, `nohup`, a shell, an interpreter, `ssh`, `docker`, and programs with a language of their own in their arguments (`find`, `sed`, `tar`, `rsync`, `npx`) and the like, the rule is the exact line, word for word: approving `sudo apt list` must not become "allow `sudo *`", nor approving one `find` "allow `find *`". The same holds for a program that works through subcommands when an option stands where the subcommand would be: `git -C sub commit -m x` is approved as that line, not as `git *`. Where the line cannot be written as a pattern (`bash -c 'rm -rf x'` has a word with a space), no rule is offered.
 - **Where no rule could say the approval safely, only "allow once" and "deny" are offered:** a line the analysis does not model, a question an `ask` rule raised (an allow would not lift it), a call that reaches "any host". Rules are offered only when they would settle every reason the call was asked about.
 - **An approval is only ever an allow, and only ever lifts a default.** A `deny` or an `ask` rule still beats it, and so does the built-in protection.
 - **Stored approvals are the user's own:** they are kept outside the repository and apply whether or not the project is trusted. The file is `approvals/<project key>.toml` in the state directory, one `[[approval]]` table per rule with its id, the time it was given and the rule. It is written owner-only and atomically on every write, and read strictly: a key this build does not know, a newer `version`, or an entry that does anything but allow, refuses the whole file, which then grants nothing and is not overwritten.
@@ -357,7 +409,7 @@ pub struct SandboxPolicy {
 
 **Default policy at the `supervised` level:** read anywhere, write only inside the workspace and a per-session temporary directory, no network.
 
-**Protected paths inside the workspace:** `.git/hooks`, `.git/config`, the project's `.cortex` directory, and shell start-up files. A process that can write these can run code later, outside the sandbox.
+**Protected paths inside the workspace:** git's hooks and configuration (`.git/hooks`, `.git/config`, `.git/config.worktree`, `.git/info`), the project's `.cortex` directory, shell start-up files, CI configuration, and registry and build settings, as listed in "Protected paths" above, plus `sandbox.protect`. A process that can write these can run code later, outside the sandbox. A nested repository's configuration (`sub/.git/config`, `.git/modules/*/config`) is not a fixed path, so the sandbox step looks for it by name.
 
 ### How it is applied
 
