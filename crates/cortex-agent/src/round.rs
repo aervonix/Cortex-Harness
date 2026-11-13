@@ -912,11 +912,11 @@ impl Round {
                 (false, None)
             }
         };
-        // Once the turn is stopped, nobody is asked anything, and the only
-        // calls left to start are the ones before the stop.
-        if self.stopped.is_none() {
-            self.ask_next(open_call);
-        }
+        // Once the turn is stopped there is nobody left to ask about: a
+        // stop gives every call that was waiting for an answer its result,
+        // and a call planned after it never waits for one. The only calls
+        // left to start are the ones before the stop.
+        self.ask_next(open_call);
 
         let mut running = self
             .calls

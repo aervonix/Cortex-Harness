@@ -1,7 +1,9 @@
 //! The level table, row by row, through the engine
 //! (`docs/architecture/06-permissions-and-sandbox.md`, "Levels").
 
-use cortex_policy::{Access, Engine, NoSandbox, Outcome, Request, SandboxState, StartError};
+use cortex_policy::{
+    Access, Engine, NoSandbox, Outcome, Request, SandboxState, StartError, default_sandbox,
+};
 use cortex_protocol::error::code;
 use cortex_protocol::lease::{Effect, ExpiryKind, GrantorKind, Level, RuleAction};
 
@@ -374,4 +376,108 @@ fn a_call_that_declares_nothing_follows_its_tools_own_default() {
     // The shell tool's default is `ask`, and a command the level decides
     // is not asked about because of it.
     assert_eq!(said(&shell(&engine, "ls")), ReadOnly);
+
+    // At `unrestricted` nothing is asked, and a tool that is turned off
+    // stays off: the level lifts questions, not refusals.
+    let unrestricted = at(Level::Unrestricted);
+    let call = |default| {
+        said(&unrestricted.decide(&Request {
+            tool: "plan",
+            default,
+            accesses: &[],
+        }))
+    };
+    assert_eq!(call(RuleAction::Allow), Allow);
+    assert_eq!(call(RuleAction::Ask), Allow);
+    assert_eq!(call(RuleAction::Deny), Deny);
+    assert_eq!(said(&ext(&unrestricted, "docs/find")), Allow);
+}
+
+/// An entry of `sandbox.write` or `sandbox.protect` is placed: absolute as
+/// it is, `~/…` under the home directory, anything else under the
+/// workspace. One that cannot be placed stops the session: an entry that
+/// was skipped would not be protected.
+#[test]
+fn a_protected_path_from_configuration_is_placed_or_the_session_does_not_start() {
+    let workspace = crate::path("/work/app");
+    let engine = engine_with(|parts| {
+        parts.sandbox_policy = default_sandbox(
+            &workspace,
+            &["~/scratch".to_owned(), "build/out".to_owned()],
+            &[
+                "deploy/keys".to_owned(),
+                "~/scratch/pinned".to_owned(),
+                "/work/app/Makefile".to_owned(),
+            ],
+        );
+    });
+    // Protected, wherever the entry was relative to.
+    for file in [
+        "/work/app/deploy/keys/prod.txt",
+        "/work/app/deploy/keys",
+        "/users/dev/scratch/pinned/x",
+        "/work/app/Makefile",
+    ] {
+        assert_eq!(said(&write(&engine, file)), Ask, "{file}");
+        assert_eq!(
+            said(&shell(&at_autonomous(&workspace), &format!("cp x {file}"))),
+            Ask,
+            "{file}"
+        );
+    }
+    // Writable, likewise.
+    assert_eq!(said(&write(&engine, "/users/dev/scratch/a.txt")), Allow);
+    assert_eq!(said(&write(&engine, "/users/dev/other/a.txt")), Ask);
+    assert_eq!(said(&write(&engine, "/work/app/deploy/readme.md")), Allow);
+    // The lease holds the paths as they were placed.
+    let protect = &engine.lease().grant.sandbox.protect.roots;
+    assert!(
+        protect.contains(&"/work/app/deploy/keys".to_owned()),
+        "{protect:?}"
+    );
+    assert!(
+        protect.contains(&"/users/dev/scratch/pinned".to_owned()),
+        "{protect:?}"
+    );
+    let writable = &engine.lease().grant.sandbox.write.roots;
+    assert!(
+        writable.contains(&"/users/dev/scratch".to_owned()),
+        "{writable:?}"
+    );
+    assert!(
+        writable.contains(&"/work/app/build/out".to_owned()),
+        "{writable:?}"
+    );
+
+    // An entry that cannot be placed: under `~` with no home directory, or
+    // one that climbs out of where it starts.
+    for (entry, home) in [("~/keys", false), ("../../../../x", true), ("", true)] {
+        let mut parts = parts();
+        if !home {
+            parts.home = None;
+        }
+        parts.sandbox_policy = default_sandbox(&workspace, &[], &[entry.to_owned()]);
+        match Engine::start(parts) {
+            Err(StartError::Sandbox { entry: named, list }) => {
+                assert_eq!(named, entry);
+                assert_eq!(list, "sandbox.protect");
+            }
+            other => panic!("{entry:?}: {:?}", other.map(|_| "an engine")),
+        }
+    }
+}
+
+fn at_autonomous(workspace: &cortex_base::AbsPath) -> Engine {
+    engine_with(|parts| {
+        parts.level = Level::Autonomous;
+        parts.sandbox_policy = default_sandbox(
+            workspace,
+            &["~/scratch".to_owned()],
+            &[
+                "deploy/keys".to_owned(),
+                "~/scratch/pinned".to_owned(),
+                "/work/app/Makefile".to_owned(),
+            ],
+        );
+    })
 }
