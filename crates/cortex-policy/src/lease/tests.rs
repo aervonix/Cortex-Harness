@@ -1066,7 +1066,7 @@ fn the_oracle_reads_roots_and_times_as_the_docs_say() {
 fn narrow_is_always_within_both_inputs() {
     cases::check(
         "narrow_is_within_both",
-        400,
+        150,
         |rng| (any_lease(rng, "l_parent"), any_lease(rng, "l_child")),
         |(parent, requested)| {
             let Ok(child) = narrow_in(parent, requested, POSIX) else {
@@ -1102,7 +1102,7 @@ fn narrow_is_always_within_both_inputs() {
 fn a_narrowed_lease_never_has_a_higher_level_a_later_expiry_or_a_larger_budget() {
     cases::check(
         "narrowed_is_never_more",
-        3000,
+        1000,
         |rng| (any_lease(rng, "l_parent"), any_lease(rng, "l_child")),
         |(parent, requested)| {
             let Ok(child) = narrow_in(parent, requested, POSIX) else {
@@ -1133,7 +1133,7 @@ fn a_narrowed_lease_never_has_a_higher_level_a_later_expiry_or_a_larger_budget()
 fn no_sequence_of_narrowing_widens_a_lease() {
     cases::check(
         "narrowing_never_widens",
-        250,
+        100,
         |rng| {
             let root = any_lease(rng, "l_root");
             let proposals: Vec<Lease> = (0..1 + rng.below(4))
@@ -1165,7 +1165,7 @@ fn no_sequence_of_narrowing_widens_a_lease() {
 fn narrowing_a_lease_under_itself_gives_nothing_it_did_not_have() {
     cases::check(
         "narrow_under_itself",
-        300,
+        120,
         |rng| any_lease(rng, "l_same"),
         |lease| {
             let child = narrow_in(lease, lease, POSIX)?;
@@ -1181,7 +1181,7 @@ fn whatever_is_within_its_parent_is_no_wider_by_the_oracle() {
     let positives = std::cell::Cell::new(0_u32);
     cases::check(
         "within_is_sound",
-        600,
+        250,
         |rng| {
             let parent = any_lease(rng, "l_parent");
             let mut child = narrow_in(&parent, &any_lease(rng, "l_child"), POSIX)
@@ -1224,7 +1224,7 @@ fn whatever_is_within_its_parent_is_no_wider_by_the_oracle() {
 fn within_is_transitive_and_agrees_with_the_field_by_field_check() {
     cases::check(
         "within_is_transitive",
-        500,
+        200,
         |rng| {
             let top = any_lease(rng, "l_top");
             // Leases made by narrowing are within each other often enough

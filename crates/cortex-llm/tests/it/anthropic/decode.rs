@@ -15,11 +15,11 @@
 //!
 //! - **On every pull request,** each stream is delivered one byte at a
 //!   time, which puts a boundary at every byte of it, and in pieces of
-//!   seven other sizes. It is also cut in two at every one of its first
-//!   [`EVERY_BYTE`] bytes and at about a hundred places spread over the
-//!   rest.
+//!   two other sizes. It is also cut in two at every one of its first
+//!   [`EVERY_BYTE`] bytes and at about fifty places spread over the rest.
 //! - **In the nightly run,** which sets `CORTEX_PROPERTY_SCALE` and has
-//!   time limits of its own, each stream is cut in two at every byte.
+//!   time limits of its own, each stream is cut in two at every byte, and
+//!   delivered in pieces of seven other sizes.
 
 use cortex_base::ErrorKind;
 use cortex_llm::error::Throttle;
@@ -129,9 +129,9 @@ fn cuts_in_two(len: usize) -> Vec<usize> {
     if every_cut_of_every_stream() {
         return (1..len).collect();
     }
-    // Every byte of the beginning, then about a hundred places. The step is
+    // Every byte of the beginning, then about fifty places. The step is
     // made odd so that the places are not all at even offsets.
-    let step = (len / 100).max(1) | 1;
+    let step = (len / 50).max(1) | 1;
     (1..len)
         .filter(|cut| *cut <= EVERY_BYTE || cut % step == len % step)
         .collect()
@@ -160,8 +160,13 @@ fn every_cut(name: &str) {
     }
     // One byte at a time: a boundary at every byte of the stream. Then
     // pieces of other sizes, which put the boundaries elsewhere in each
-    // event.
-    for size in [1, 2, 3, 5, 7, 13, 64, 500] {
+    // event: two of them on a pull request, seven in the nightly run.
+    let sizes: &[usize] = if every_cut_of_every_stream() {
+        &[1, 2, 3, 5, 7, 13, 64, 500]
+    } else {
+        &[1, 7, 64]
+    };
+    for &size in sizes {
         let pieces: Vec<usize> = (1..stream.len()).filter(|at| at % size == 0).collect();
         assert!(
             decode(&request, stream, &pieces).as_ref() == Ok(&whole),

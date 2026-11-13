@@ -208,9 +208,11 @@ fn the_byte_limit_stops_a_read_as_the_line_limit_does() {
 #[test]
 fn a_range_of_a_large_file_is_read_without_holding_the_file() {
     let ws = Workspace::new("read_stream");
-    // Twelve megabytes, with a line of two megabytes in the middle.
+    // Four megabytes, four times what is kept as a version, with a line of
+    // two megabytes near the end. (It was twelve: every byte is hashed twice in
+    // a build that does not optimise, and the size proved nothing more.)
     let mut content = String::new();
-    for n in 1..=100_000 {
+    for n in 1..=20_000 {
         content.push_str(&format!("{n:>8} {}\n", "padding ".repeat(12)));
     }
     content.push_str(&"long ".repeat(400_000));
@@ -221,11 +223,11 @@ fn a_range_of_a_large_file_is_read_without_holding_the_file() {
     let tool = ReadTool::new();
     let text = ok(&ws.call(
         &tool,
-        json!({"path": "huge.log", "offset": 100_000, "limit": 3}),
+        json!({"path": "huge.log", "offset": 20_000, "limit": 3}),
     ));
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines[0], "huge.log (lines 100000-100002 of 100,002)");
-    assert!(lines[1].starts_with("  100000 padding"));
+    assert_eq!(lines[0], "huge.log (lines 20000-20002 of 20,002)");
+    assert!(lines[1].starts_with("   20000 padding"));
     assert!(lines[2].starts_with("long long long"));
     assert!(
         lines[2].ends_with("characters]"),

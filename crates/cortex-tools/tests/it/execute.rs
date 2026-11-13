@@ -268,7 +268,9 @@ impl ReadGate for CancelAfter {
 #[test]
 fn a_walk_that_is_cancelled_part_way_stops_there() {
     let ws = Workspace::new("execute_cancel_walk");
-    let total = 1500;
+    // Six hundred files: making a file is what this test spends its time
+    // on, on Windows most of all, and the walk is stopped after a hundred.
+    let total = 600;
     for n in 0..total {
         ws.file(&format!("d{:02}/f{n:04}.txt", n % 30), "needle\n");
     }

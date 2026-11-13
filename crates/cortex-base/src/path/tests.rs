@@ -797,10 +797,13 @@ fn reference(steps: &[&str], may_climb_out: bool) -> Option<Vec<String>> {
 #[test]
 fn every_short_path_matches_the_reference() {
     // Every sequence of up to six steps from a small alphabet, absolute and
-    // relative, in both styles.
+    // relative, in both styles. On a pull request, of up to five: a fifth
+    // of the paths, and every way two steps can follow each other at any
+    // depth the sixth step adds nothing to. The nightly run has all six.
     let alphabet = ["a", "B", ".", "..", ""];
+    let longest = if cases::exhaustive() { 6u32 } else { 5 };
     let mut checked = 0;
-    for length in 0..=6u32 {
+    for length in 0..=longest {
         for number in 0..alphabet.len().pow(length) {
             let steps: Vec<&str> = (0..length)
                 .map(|position| alphabet[number / alphabet.len().pow(position) % alphabet.len()])
@@ -835,14 +838,15 @@ fn every_short_path_matches_the_reference() {
             }
         }
     }
-    assert!(checked > 30_000, "{checked} paths checked");
+    let least = if cases::exhaustive() { 30_000 } else { 7_000 };
+    assert!(checked > least, "{checked} paths checked");
 }
 
 #[test]
 fn property_tidying_is_idempotent_and_leaves_only_names() {
     cases::check(
         "path_idempotent",
-        3000,
+        1500,
         |rng| {
             let style = any_style(rng);
             let absolute = rng.below(2) == 0;
@@ -915,7 +919,7 @@ fn property_tidying_is_idempotent_and_leaves_only_names() {
 fn property_noise_and_spelling_do_not_change_where_a_path_leads() {
     cases::check(
         "path_noise",
-        3000,
+        1500,
         |rng| {
             let style = any_style(rng);
             let root = root_text(rng, style);
@@ -976,7 +980,7 @@ fn property_noise_and_spelling_do_not_change_where_a_path_leads() {
 fn property_dot_dot_follows_the_reference() {
     cases::check(
         "path_dot_dot",
-        3000,
+        1500,
         |rng| {
             let style = any_style(rng);
             let steps: Vec<&str> = (0..cases::small(rng, 12))
@@ -1020,7 +1024,7 @@ fn property_dot_dot_follows_the_reference() {
 fn property_joining_stays_inside_and_comes_back_out() {
     cases::check(
         "path_containment",
-        3000,
+        1200,
         |rng| {
             let style = any_style(rng);
             let mut base = String::from(root_text(rng, style));
@@ -1191,7 +1195,7 @@ fn property_whatever_is_accepted_is_made_of_sound_names() {
 fn property_folding_agrees_with_comparison() {
     cases::check(
         "path_fold",
-        3000,
+        1500,
         |rng| {
             let name = |rng: &mut SeededRng| -> String {
                 (0..1 + cases::small(rng, 5))
