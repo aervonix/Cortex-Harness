@@ -1,6 +1,8 @@
 //! `cargo xtask startup BINARY [--runs N] [--budget desktop|linux|windows]`:
 //! the start-up budgets of `docs/performance-budgets.md`, "Start-up",
-//! measured on a built binary (step 13b).
+//! measured on a built binary (step 13b). `--profile PROFILE` in place of
+//! `BINARY` builds `cortex` in that cargo profile first (`release`, `dist`)
+//! and measures that: what the `try` workflow runs.
 //!
 //! - **`--version`**, from starting the process to its exit, under both of
 //!   its names: the binary itself, and a hard link (or a copy) named `cx`
@@ -30,7 +32,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::Result;
-use crate::steps;
+use crate::{steps, workspace};
 
 /// The budgets, in milliseconds: `--version`, and a headless run to its
 /// request (`docs/performance-budgets.md`, "Start-up").
@@ -51,6 +53,7 @@ pub(crate) fn run(arguments: &[String]) -> Result<()> {
     let mut runs = 30_usize;
     let mut column = if cfg!(windows) { "windows" } else { "linux" }.to_owned();
     let mut check = false;
+    let mut profile = None;
     let mut rest = arguments.iter();
     while let Some(argument) = rest.next() {
         match argument.as_str() {
@@ -63,13 +66,29 @@ pub(crate) fn run(arguments: &[String]) -> Result<()> {
             }
             "--budget" => column = rest.next().ok_or("`--budget` takes a column")?.clone(),
             "--check" => check = true,
+            "--profile" => {
+                profile = Some(
+                    rest.next()
+                        .ok_or("`--profile` takes a cargo profile")?
+                        .clone(),
+                );
+            }
             flag if flag.starts_with('-') => return Err(format!("unknown flag `{flag}`")),
             path => binary = Some(PathBuf::from(path)),
         }
     }
-    let binary = binary.ok_or(
-        "usage: cargo xtask startup BINARY [--runs N] [--budget desktop|linux|windows] [--check]",
-    )?;
+    const USAGE: &str = "usage: cargo xtask startup BINARY|--profile PROFILE [--runs N] \
+                         [--budget desktop|linux|windows] [--check]";
+    let binary = match (binary, profile) {
+        (Some(binary), None) => binary,
+        (None, Some(profile)) => build(&profile)?,
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "give a binary or a profile to build it in, not both\n{USAGE}"
+            ));
+        }
+        (None, None) => return Err(USAGE.to_owned()),
+    };
     let binary =
         fs::canonicalize(&binary).map_err(|error| format!("{}: {error}", binary.display()))?;
     let (version_budget, headless_budget) = budget(&column)?;
@@ -109,6 +128,43 @@ pub(crate) fn run(arguments: &[String]) -> Result<()> {
         return Err(format!("over the start-up budget: {}", over.join("; ")));
     }
     Ok(())
+}
+
+/// Builds `cortex` in `profile` and returns where it is.
+fn build(profile: &str) -> Result<PathBuf> {
+    if profile.is_empty()
+        || !profile
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(format!("`{profile}` is not the name of a cargo profile"));
+    }
+    steps::cargo(&[
+        "build",
+        "--locked",
+        "--profile",
+        profile,
+        "--package",
+        "cortex-cli",
+        "--bin",
+        "cortex",
+    ])?;
+    let metadata = workspace::metadata(&workspace::root())?;
+    Ok(metadata
+        .target_directory
+        .join(profile_directory(profile))
+        .join(format!("cortex{}", std::env::consts::EXE_SUFFIX)))
+}
+
+/// The directory under `target/` that cargo builds a profile into: `dev`
+/// and `test` share `debug`, `bench` is `release`'s, and every other
+/// profile has its own name.
+fn profile_directory(profile: &str) -> &str {
+    match profile {
+        "dev" | "test" => "debug",
+        "bench" => "release",
+        other => other,
+    }
 }
 
 fn measure(binary: &Path, scratch: &Path, runs: usize) -> Result<Vec<(String, Vec<f64>)>> {
@@ -281,7 +337,34 @@ fn percentile(times: &[f64], percent: usize) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::percentile;
+    use super::{percentile, profile_directory, run};
+
+    fn strings(arguments: &[&str]) -> Vec<String> {
+        arguments
+            .iter()
+            .map(|argument| (*argument).to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_profile_builds_into_its_own_directory() {
+        assert_eq!(profile_directory("dev"), "debug");
+        assert_eq!(profile_directory("test"), "debug");
+        assert_eq!(profile_directory("bench"), "release");
+        assert_eq!(profile_directory("release"), "release");
+        assert_eq!(profile_directory("dist"), "dist");
+    }
+
+    #[test]
+    fn startup_needs_one_binary_or_one_profile() {
+        let error = run(&[]).unwrap_err();
+        assert!(error.contains("--profile PROFILE"), "{error}");
+        let error = run(&strings(&["target/cortex", "--profile", "dist"])).unwrap_err();
+        assert!(error.contains("not both"), "{error}");
+        // Nothing reaches cargo that is not a profile's name.
+        let error = run(&strings(&["--profile", "dist --config x"])).unwrap_err();
+        assert!(error.contains("not the name of a cargo profile"), "{error}");
+    }
 
     #[test]
     fn percentiles_are_by_the_nearest_rank() {

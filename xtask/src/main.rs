@@ -21,6 +21,7 @@ mod alias;
 mod checks;
 mod compare;
 mod junit;
+mod load;
 mod mutate;
 mod nonblocking;
 mod outside;
@@ -33,6 +34,7 @@ mod startup;
 mod steps;
 mod stress;
 mod tiers;
+mod try_run;
 mod workspace;
 
 /// Failures are messages for the person at the terminal.
@@ -78,21 +80,31 @@ Checks and tests
                     secret. Without terms it passes with a warning.
 
 Showing that the tests bite
-  stress -p CRATE... [--count N] [--first-seed S] [ARGS...]
+  stress -p CRATE... [--count N] [--first-seed S] [--load N] [--cores K] [ARGS...]
                     Run the crates' tests N times over (100 when not given),
                     each time under the next seed, and report the tests that
                     fail on some, with the seed that brings each failure back.
+                    --cores K pins the run to K cores, beside --load N busy
+                    loops, to make a race show.
   mutate [BREAK...] Break the code on purpose, one break of mutations/*.breaks
                     at a time, on a copy of the tree, and report which tests
                     fail. --check only checks that every break still applies
                     (`check` runs that). `mutate --help` has the rest.
 
+On the runners, without a pull request (the `try` workflow runs this)
+  try --command 'COMMAND [ARGS]' [--profile ci|release|dist] [--count N]
+      [--load N] [--cores K]
+                    One of test, stress, startup, perf or ci, as the workflow's
+                    inputs ask: `try --help` has the rules.
+
 Not blocking (the `main` and `nightly` workflows run these)
   size [--check]    Build the `dist` profile and report the binary's size and
                     the number of crates in it. --check fails over the budget.
-  startup BINARY [--runs N] [--budget desktop|linux|windows] [--check]
+  startup BINARY|--profile PROFILE [--runs N] [--budget desktop|linux|windows]
+          [--check]
                     Time `--version` under both names, and a headless run to
-                    its request, against the start-up budgets.
+                    its request, against the start-up budgets. With
+                    --profile, build `cortex` in that profile first.
   perf [--runs N] [--seconds N] [--json PATH]
                     Measure the terminal layer's demo, optimised, in a
                     pseudo-terminal: start to first frame, key to frame idle
@@ -138,29 +150,9 @@ fn main() -> ExitCode {
             print!("{USAGE}");
             Ok(())
         }
-        Some("check") => checks::check(&rest),
-        Some("test") => checks::test(&rest),
-        Some("ci") => checks::ci(&rest),
-        Some("ci-times") => runs::ci_times(&rest),
-        Some("rules") => checks::rules(),
-        Some("links") => checks::links(),
-        Some("fmt") => checks::fmt(),
-        Some("gen") => generate(),
-        Some("schema") => schema::run(&rest),
-        Some("size") => nonblocking::size(&rest),
-        Some("startup") => startup::run(&rest),
-        Some("unused") => nonblocking::unused(),
-        Some("advisories") => nonblocking::advisories(),
-        Some("alias") => alias::run(&rest),
+        // Its exit code says more than pass or fail.
         Some("mutate") => return mutate::main(&rest),
-        Some("stress") => stress::run(&rest),
-        Some("owner-guard") => owner_guard::run(&rest),
-        Some("fuzz") => outside::fuzz(&rest),
-        Some("live") => outside::live(&rest),
-        Some("record") => outside::record(&rest),
-        Some("perf") => perf::run(&rest),
-        Some("dist") => not_built("dist", 34),
-        Some(other) => Err(format!("unknown command `{other}`\n\n{USAGE}")),
+        Some(command) => run(command, &rest),
     };
 
     match outcome {
@@ -169,6 +161,35 @@ fn main() -> ExitCode {
             eprintln!("xtask: {message}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Runs one command. `try` comes back here with the command it chose.
+fn run(command: &str, rest: &[String]) -> Result<()> {
+    match command {
+        "check" => checks::check(rest),
+        "test" => checks::test(rest),
+        "ci" => checks::ci(rest),
+        "ci-times" => runs::ci_times(rest),
+        "rules" => checks::rules(),
+        "links" => checks::links(),
+        "fmt" => checks::fmt(),
+        "gen" => generate(),
+        "schema" => schema::run(rest),
+        "size" => nonblocking::size(rest),
+        "startup" => startup::run(rest),
+        "unused" => nonblocking::unused(),
+        "advisories" => nonblocking::advisories(),
+        "alias" => alias::run(rest),
+        "stress" => stress::run(rest),
+        "try" => try_run::run(rest),
+        "owner-guard" => owner_guard::run(rest),
+        "fuzz" => outside::fuzz(rest),
+        "live" => outside::live(rest),
+        "record" => outside::record(rest),
+        "perf" => perf::run(rest),
+        "dist" => not_built("dist", 34),
+        other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
     }
 }
 

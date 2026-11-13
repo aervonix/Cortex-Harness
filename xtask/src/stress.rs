@@ -22,14 +22,20 @@ use std::process::Command;
 use crate::Result;
 use crate::checks;
 use crate::junit::{self, TestCase};
+use crate::load::Squeeze;
 use crate::workspace;
 
 const USAGE: &str = "\
-usage: cargo xtask stress -p CRATE [-p CRATE]... [--count N] [--first-seed S] [NEXTEST ARGUMENT]...
+usage: cargo xtask stress -p CRATE [-p CRATE]... [--count N] [--first-seed S]
+                          [--load N] [--cores K] [NEXTEST ARGUMENT]...
 
 Runs the crates' tests N times over (100 when not given). Repeat n runs with
 seed S + n (S is 0 when not given). Anything else goes to `cargo nextest run`:
 a filter, `-E`, `--run-ignored`.
+
+--cores K pins the run to K cores and --load N runs N busy loops beside it,
+on the same cores: a race that needs the machine to be slow at the wrong
+moment shows far more often. The tests are built first, unpinned.
 
 A test that failed is run again in the same order with
     CORTEX_TEST_SEED=<seed> cargo xtask test -p <crate> -E 'test(=<name>)'";
@@ -50,6 +56,8 @@ struct Request {
     packages: Vec<String>,
     count: u32,
     first_seed: u64,
+    /// The cores to pin the run to, and the busy loops beside it.
+    squeeze: Squeeze,
     /// Arguments for nextest.
     rest: Vec<String>,
 }
@@ -60,10 +68,14 @@ impl Request {
             packages: Vec::new(),
             count: COUNT,
             first_seed: 0,
+            squeeze: Squeeze::default(),
             rest: Vec::new(),
         };
         let mut arguments = arguments.iter();
         while let Some(argument) = arguments.next() {
+            if request.squeeze.take(argument, &mut arguments)? {
+                continue;
+            }
             let mut value = |what: &str| {
                 arguments
                     .next()
@@ -155,6 +167,19 @@ pub(crate) fn run(arguments: &[String]) -> Result<()> {
     // A report left by the run before must not be read as this run's.
     workspace::forget_report(&report)?;
 
+    // Built before the squeeze, so that two pinned cores are spent on the
+    // tests and not on the compiler.
+    if request.squeeze != Squeeze::default() {
+        let mut build = request.cargo(&root);
+        build.arg("--no-run");
+        let built = build
+            .status()
+            .map_err(|error| format!("could not run cargo nextest: {error}"))?;
+        if !built.success() {
+            return Err("the tests did not build".to_owned());
+        }
+    }
+    let _load = request.squeeze.start()?;
     println!(
         "$ {FIRST_SEED}={} cargo {}",
         request.first_seed,
@@ -290,6 +315,32 @@ fn summarise(cases: &[TestCase], count: u32, first_seed: u64) -> Summary {
 mod tests {
     use super::{Request, summarise};
     use crate::junit;
+    use crate::load::Squeeze;
+
+    #[test]
+    fn a_squeeze_is_this_commands_and_not_nextests() {
+        let request = Request::parse(&strings(&[
+            "-p",
+            "cortex-testkit",
+            "--load",
+            "6",
+            "--cores",
+            "2",
+            "server::",
+        ]))
+        .unwrap();
+        assert_eq!(
+            request.squeeze,
+            Squeeze {
+                load: 6,
+                cores: Some(2)
+            }
+        );
+        assert_eq!(
+            request.command().join(" "),
+            "nextest run --profile stress --stress-count 100 -p cortex-testkit server::"
+        );
+    }
 
     fn strings(arguments: &[&str]) -> Vec<String> {
         arguments
@@ -321,6 +372,7 @@ mod tests {
                 packages: strings(&["cortex-agent", "cortex-tools"]),
                 count: 300,
                 first_seed: 1000,
+                squeeze: Squeeze::default(),
                 rest: strings(&["denials::", "--run-ignored", "only"]),
             }
         );

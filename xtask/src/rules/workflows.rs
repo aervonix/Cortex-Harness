@@ -3,7 +3,9 @@
 //! read-only by default, a workflow that runs on pull requests has no secrets
 //! but the owner's protected terms (for the owner guard) and can write
 //! nothing, and the one thing any workflow may write is an
-//! issue, from the job that reports a failure.
+//! issue, from the job that reports a failure. And no script reads a value
+//! someone typed: a workflow's inputs, and what an event carries, reach a
+//! `run:` script through the environment, never as text pasted into it.
 
 use super::Violation;
 
@@ -21,9 +23,31 @@ pub(crate) fn check(file: &str, text: &str) -> Vec<Violation> {
     let mut states_permissions = false;
     let mut in_jobs = false;
     let mut job: Option<&str> = None;
+    // The indent of the `run:` key whose script the lines are in.
+    let mut script: Option<usize> = None;
 
     for (index, raw_line) in text.lines().enumerate() {
         let line_number = Some(index + 1);
+        // A script's lines are checked whole: `#` begins a comment in YAML
+        // but not in every shell, and a typed value is no safer after one.
+        let raw_indent = raw_line.len() - raw_line.trim_start().len();
+        if script.is_some_and(|key| raw_line.trim().is_empty() || raw_indent > key) {
+            if pastes_a_typed_value(raw_line) {
+                violations.push(pasted(file, line_number));
+            }
+            if on_pull_requests && uses_a_secret_other_than_the_owners_terms(raw_line) {
+                violations.push(secret_on_pull_requests(file, line_number));
+            }
+            continue;
+        }
+        script = None;
+        if let Some((key, rest)) = run_key(raw_line) {
+            if rest.starts_with('|') || rest.starts_with('>') || rest.is_empty() {
+                script = Some(key);
+            } else if pastes_a_typed_value(rest) {
+                violations.push(pasted(file, line_number));
+            }
+        }
         // Comments are not rules.
         let line = raw_line.split(" #").next().unwrap_or(raw_line);
         if line.trim_start().starts_with('#') || line.trim().is_empty() {
@@ -55,14 +79,7 @@ pub(crate) fn check(file: &str, text: &str) -> Vec<Violation> {
         }
 
         if on_pull_requests && uses_a_secret_other_than_the_owners_terms(line) {
-            violations.push(Violation::new(
-                file,
-                line_number,
-                "a workflow that runs on pull requests uses no secret but the owner's protected \
-                 terms, as the line `OWNER_TERMS: ${{ secrets.OWNER_TERMS }}`. Its jobs run code \
-                 from the pull request, and nothing that blocks may need a paid API or a \
-                 credential (rule 9 in docs/build-plan.md).",
-            ));
+            violations.push(secret_on_pull_requests(file, line_number));
         }
 
         if let Some(permission) = written_permission(line) {
@@ -133,6 +150,48 @@ fn written_permission(line: &str) -> Option<&str> {
     }
     let (permission, level) = line.split_once(':')?;
     (level.trim() == "write").then_some(permission.trim())
+}
+
+/// The indent of a `run:` key and what follows it on its line, if the line
+/// is one: `run: cargo test`, or `- run: |` with the script below it.
+fn run_key(line: &str) -> Option<(usize, &str)> {
+    let trimmed = line.trim_start();
+    let key = trimmed.trim_start_matches("- ");
+    let rest = key.strip_prefix("run:")?;
+    let indent = line.len() - key.len();
+    Some((indent, rest.trim()))
+}
+
+/// Whether a script's text has a value someone typed pasted into it: a
+/// workflow's input, or a part of the event (a branch's name, a pull
+/// request's title). A value such as `"; curl … | sh"` would then be a
+/// command. Through `env:`, the same value is a variable's content.
+fn pastes_a_typed_value(script: &str) -> bool {
+    let compact: String = script.chars().filter(|c| !c.is_whitespace()).collect();
+    ["${{inputs.", "${{github.event.", "${{github.head_ref"]
+        .iter()
+        .any(|form| compact.contains(form))
+}
+
+fn secret_on_pull_requests(file: &str, line: Option<usize>) -> Violation {
+    Violation::new(
+        file,
+        line,
+        "a workflow that runs on pull requests uses no secret but the owner's protected \
+         terms, as the line `OWNER_TERMS: ${{ secrets.OWNER_TERMS }}`. Its jobs run code \
+         from the pull request, and nothing that blocks may need a paid API or a \
+         credential (rule 9 in docs/build-plan.md).",
+    )
+}
+
+fn pasted(file: &str, line: Option<usize>) -> Violation {
+    Violation::new(
+        file,
+        line,
+        "a `run:` script has a workflow input or a part of the event pasted into its text. \
+         Give it to the step's `env:` and read the variable: a typed value pasted into a \
+         script is code the script runs.",
+    )
 }
 
 /// The action named by a `uses:` line, if the line is one.
@@ -305,6 +364,72 @@ mod tests {
         let found = messages(".github/workflows/nightly.yml", &text);
         assert_eq!(found.len(), 1, "{found:#?}");
         assert!(found[0].contains("`all: write` is not allowed here"));
+    }
+
+    #[test]
+    fn a_typed_value_is_never_pasted_into_a_script() {
+        let dispatched = |steps: &str| {
+            format!(
+                "name: try\non:\n  workflow_dispatch:\n    inputs:\n      command:\n        default: test\npermissions:\n  contents: read\njobs:\n  test:\n    steps:\n{steps}"
+            )
+        };
+        // Through the environment: fine, and so is an input in a step's
+        // condition or in a `with:` value.
+        let through_env = dispatched(
+            "      - name: Run\n        if: ${{ inputs.command != '' }}\n        env:\n          TRY: ${{ inputs.command }}\n          BASE: ${{ github.event.pull_request.base.sha }}\n        run: |\n          cargo xtask try --command \"$TRY\"\n          echo ${{ matrix.name }}\n      - uses: ./.github/actions/x\n        with:\n          what: ${{ inputs.command }}\n",
+        );
+        assert_eq!(
+            messages(".github/workflows/try.yml", &through_env),
+            Vec::<String>::new()
+        );
+
+        for (script, line) in [
+            ("      - run: cargo xtask ${{ inputs.command }}\n", 12),
+            (
+                "      - name: Run\n        run: |\n          set -e\n          cargo xtask ${{inputs.command}}\n",
+                15,
+            ),
+            (
+                "      - run: >-\n          echo\n          ${{ github.event.inputs.command }}\n",
+                14,
+            ),
+            (
+                "      - run: |\n          git checkout ${{ github.head_ref }}\n",
+                13,
+            ),
+            (
+                "      - run: |\n          # ${{ github.event.pull_request.title }}\n",
+                13,
+            ),
+            (
+                "      - run: |\n\n          echo \"${{ github.event.pull_request.title }}\"\n",
+                14,
+            ),
+        ] {
+            let found = messages(".github/workflows/try.yml", &dispatched(script));
+            assert_eq!(found.len(), 1, "{script}: {found:?}");
+            assert!(
+                found[0].starts_with(&format!(
+                    ".github/workflows/try.yml:{line}: a `run:` script"
+                )),
+                "{script}: {found:?}"
+            );
+        }
+        // A secret in a pull request's script is still found there.
+        let secret = blocking("      - run: |\n          echo ${{ secrets.PROVIDER_KEY }}\n");
+        let found = messages(".github/workflows/ci.yml", &secret);
+        assert!(
+            found.len() == 1 && found[0].contains("uses no secret but"),
+            "{found:?}"
+        );
+        // A script ends where its block does.
+        let after = dispatched(
+            "      - run: |\n          cargo test\n        env:\n          X: ${{ inputs.command }}\n",
+        );
+        assert_eq!(
+            messages(".github/workflows/try.yml", &after),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

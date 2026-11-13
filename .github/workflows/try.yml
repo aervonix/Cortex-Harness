@@ -1,0 +1,134 @@
+# A run on the hosted runners for a branch that has no pull request yet.
+#
+# It runs one `cargo xtask` command on Linux, Windows or both, for any branch
+# that has been pushed, and blocks nothing:
+#
+#   gh workflow run try --ref <branch> -f command=startup -f profile=dist
+#   gh workflow run try --ref <branch> -f os=windows -f command="test -p cortex-tools shell::"
+#   gh workflow run try --ref <branch> -f command="stress -p cortex-testkit" -f count=200 -f load=6 -f cores=2
+#   ci-wait --workflow try                    (from the branch, for its head commit)
+#
+# The inputs reach `cargo xtask try` as arguments, through the environment,
+# and never as text in a script. `try` checks them and chooses the command:
+# docs/testing-and-ci.md, "A run on the runners without a pull request", has
+# the rules. The output is printed in the run's summary, and the JUnit
+# reports and the log are kept as artifacts. `cargo xtask rules` checks this
+# file as it does the others: actions pinned by commit hash, a read-only
+# token, and no input in a script.
+name: try
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Where to run it."
+        type: choice
+        options: [both, linux, windows]
+        default: both
+      command:
+        description: "test [-p CRATE] [FILTER], stress -p CRATE [ARGS], startup, perf [ARGS] or ci [ARGS]."
+        required: true
+        default: "test"
+      profile:
+        description: "The cargo profile: ci (the blocking jobs' build), release or dist. startup needs release or dist."
+        type: choice
+        options: [ci, release, dist]
+        default: ci
+      count:
+        description: "Repeats: a stress run's count (test becomes stress), or startup's runs. Empty: the command's own."
+        required: false
+        default: ""
+      load:
+        description: "Busy loops beside a stress run. Empty: none."
+        required: false
+        default: ""
+      cores:
+        description: "Pin a stress run to this many cores. Empty: every core."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+
+jobs:
+  # The job's id and its environment are those of the blocking test job, on
+  # purpose: the build cache's key is made of them, so a run in the `ci`
+  # profile restores the cache the main branch wrote for `test-linux` or
+  # `test-windows` and builds only what the branch changed. It never writes
+  # a cache. A release or dist build has no cache, and builds from scratch.
+  test:
+    name: try-${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    # Not a blocking check: a dist build from scratch takes most of this on
+    # Windows.
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.os == 'linux' && '[{"name":"linux","os":"ubuntu-latest"}]' || inputs.os == 'windows' && '[{"name":"windows","os":"windows-latest"}]' || '[{"name":"linux","os":"ubuntu-latest"},{"name":"windows","os":"windows-latest"}]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Keep cargo's and rustup's files off the system disk (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          "CARGO_HOME=$env:RUNNER_TEMP\cargo" >> $env:GITHUB_ENV
+          "RUSTUP_HOME=$env:RUNNER_TEMP\rustup" >> $env:GITHUB_ENV
+          # Temporary files too, as in the blocking test job.
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\tmp" | Out-Null
+          "TEMP=$env:RUNNER_TEMP\tmp" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP\tmp" >> $env:GITHUB_ENV
+      - name: Install the toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: "false"
+          cache-bin: "false"
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest@0.9.151
+      - name: Run
+        shell: bash
+        env:
+          TRY_COMMAND: ${{ inputs.command }}
+          TRY_PROFILE: ${{ inputs.profile }}
+          TRY_COUNT: ${{ inputs.count }}
+          TRY_LOAD: ${{ inputs.load }}
+          TRY_CORES: ${{ inputs.cores }}
+        run: |
+          set -o pipefail
+          mkdir -p target/try
+          cargo run --locked --quiet --package xtask -- try \
+            --command "$TRY_COMMAND" --profile "$TRY_PROFILE" \
+            --count "$TRY_COUNT" --load "$TRY_LOAD" --cores "$TRY_CORES" \
+            2>&1 | tee target/try/output.log
+      - name: Put the end of the output in the summary
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          if [ -f target/try/output.log ]; then
+            {
+              echo "### The last 80 lines of the output"
+              echo
+              echo '```text'
+              tail -n 80 target/try/output.log | sed 's/\x1b\[[0-9;]*m//g'
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Keep the reports and the log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: try-${{ matrix.name }}
+          path: |
+            target/try/output.log
+            target/nextest/ci/junit.xml
+            target/nextest/stress/junit.xml
+          if-no-files-found: ignore
+          retention-days: 14
