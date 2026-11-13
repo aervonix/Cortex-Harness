@@ -1,0 +1,17 @@
+start id=id_fixture0001 model=deepseek-v4-flash-0731
+block_start 0 Text
+text 0 "The capital with"
+text 0 " the red flag"
+text 0 " with a blue Nordic"
+text 0 " cross outlined"
+text 0 " in white is Oslo, and"
+text 0 " the largest city on"
+text 0 " the Nile is Cairo. Currently"
+text 0 " both are"
+text 0 " at"
+text 0 " 18 degrees Celsius with"
+text 0 " clear skies and"
+text 0 " light wind."
+block_end 0 {"content":"The capital with the red flag with a blue Nordic cross outlined in white is Oslo, and the largest city on the Nile is Cairo. Currently both are at 18 degrees Celsius with clear skies and light wind."}
+usage input=1282 cache_read=0 cache_write=0[] output=44 reasoning=0 speed=standard asked=-
+end stop=end raw=stop detail=- input=1282 cache_read=0 cache_write=0[] output=44 reasoning=0 speed=standard asked=-

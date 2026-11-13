@@ -1,0 +1,11 @@
+start id=chatcmpl-fixture9001lmstudio model=qwen/qwen3-8b
+block_start 0 Reasoning
+reasoning 0 "\n17 plus 23"
+reasoning 0 " is 40. A quarter is 10.\n"
+block_end 0 {"content":"<think>\n17 plus 23 is 40. A quarter is 10.\n</think>"}
+block_start 1 Text
+text 1 "\n\n30"
+text 1 " sheep are left."
+block_end 1 {"content":"\n\n30 sheep are left."}
+usage input=41 cache_read=0 cache_write=0[] output=26 reasoning=- speed=standard asked=-
+end stop=end raw=stop detail=- input=41 cache_read=0 cache_write=0[] output=26 reasoning=- speed=standard asked=-

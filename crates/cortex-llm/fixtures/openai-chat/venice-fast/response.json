@@ -1,0 +1,12 @@
+{
+  "headers": {
+    "content-type": "text/event-stream; charset=utf-8",
+    "x-ratelimit-limit-requests": "1000",
+    "x-ratelimit-limit-tokens": "1000000",
+    "x-ratelimit-remaining-requests": "990",
+    "x-ratelimit-remaining-tokens": "1000000",
+    "x-ratelimit-reset-requests": "1794560106392",
+    "x-ratelimit-reset-tokens": "1794560106393"
+  },
+  "status": 200
+}

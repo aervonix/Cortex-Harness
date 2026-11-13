@@ -1,0 +1,10 @@
+start id=id_fixture0009 model=deepseek-v4-flash-0731
+block_start 0 Text
+text 0 "1"
+text 0 "\n2\n3\n4"
+text 0 "\n5\n6\n7"
+text 0 "\n8\n9\n10"
+text 0 "\n11\n12\n"
+block_end 0 {"content":"1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n"}
+usage input=18 cache_read=0 cache_write=0[] output=24 reasoning=0 speed=standard asked=-
+end stop=max_output raw=length detail=- input=18 cache_read=0 cache_write=0[] output=24 reasoning=0 speed=standard asked=-

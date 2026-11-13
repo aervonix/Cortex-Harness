@@ -717,9 +717,14 @@ mod tests {
             let standard = model.info.prices.as_ref().unwrap();
             let prices = offer.prices.as_ref().unwrap();
             assert_eq!(offer.effect, SpeedEffect::FasterOutput, "{name}");
-            assert_eq!(offer.when_unavailable, SpeedUnavailable::Error, "{name}");
-            assert!(offer.separate_limit, "{name}");
-            assert_eq!(offer.shares_cache, Some(false), "{name}");
+            // Anthropic's fast mode refuses when it is busy, has a limit of
+            // its own and a cache of its own. The other providers' fast
+            // tiers differ in each of these, and their entries say how.
+            if model.info.provider.as_str() == "anthropic" {
+                assert_eq!(offer.when_unavailable, SpeedUnavailable::Error, "{name}");
+                assert!(offer.separate_limit, "{name}");
+                assert_eq!(offer.shares_cache, Some(false), "{name}");
+            }
             // A full card: every class standard prices, the tier prices too.
             assert!(prices.input > standard.input, "{name}");
             assert!(prices.output > standard.output, "{name}");

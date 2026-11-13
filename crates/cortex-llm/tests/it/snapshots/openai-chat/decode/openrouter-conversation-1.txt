@@ -1,0 +1,17 @@
+start id=id_fixture0010 model=z-ai/glm-5.3-flash
+block_start 0 ToolCall
+tool_call 0 id=id_fixture0011 name=get_weather
+tool_args 0 "{\"city\": \""
+tool_args 0 "Os"
+tool_args 0 "lo"
+tool_args 0 "\"}"
+block_start 1 ToolCall
+tool_call 1 id=id_fixture0012 name=get_weather
+tool_args 1 "{\"city\": \""
+tool_args 1 "C"
+tool_args 1 "airo"
+tool_args 1 "\"}"
+block_end 0 {"tool_calls":[{"id":"id_fixture0011","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"Oslo\"}"}}]}
+block_end 1 {"tool_calls":[{"id":"id_fixture0012","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"Cairo\"}"}}]}
+usage input=991 cache_read=0 cache_write=0[] output=24 reasoning=0 speed=standard asked=-
+end stop=tool_calls raw=tool_calls detail=tool_calls input=991 cache_read=0 cache_write=0[] output=24 reasoning=0 speed=standard asked=-

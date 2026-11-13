@@ -1,0 +1,22 @@
+data: {"id":"id_fixture0003","object":"chat.completion.chunk","created":1794560925,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":"Reykjavík is at","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0003","object":"chat.completion.chunk","created":1794560925,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":" 18 degrees Celsius with","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0003","object":"chat.completion.chunk","created":1794560925,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":" a clear sky and light","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0003","object":"chat.completion.chunk","created":1794560925,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":" wind. Cairo is also","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0003","object":"chat.completion.chunk","created":1794560925,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":" at 18 degrees Celsius with","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0003","object":"chat.completion.chunk","created":1794560925,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":" a clear sky and light wind. The","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0003","object":"chat.completion.chunk","created":1794560925,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":" two cities are currently","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0003","object":"chat.completion.chunk","created":1794560925,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":" the same temperature.","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0003","object":"chat.completion.chunk","created":1794560925,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop","native_finish_reason":"stop"}]}
+
+data: {"id":"id_fixture0003","object":"chat.completion.chunk","created":1794560925,"model":"z-ai/glm-5.3-flash","provider":"Modal","service_tier":null,"choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop","native_finish_reason":"stop"}],"usage":{"prompt_tokens":1177,"completion_tokens":46,"total_tokens":1223,"cost":0.00007667,"is_byok":false,"prompt_tokens_details":{"cached_tokens":1024,"cache_write_tokens":0,"audio_tokens":0,"video_tokens":0},"cost_details":{"upstream_inference_cost":0.00007667,"upstream_inference_prompt_cost":0.00005367,"upstream_inference_completions_cost":0.000023},"completion_tokens_details":{"reasoning_tokens":1,"image_tokens":0,"audio_tokens":0}}}
+
+data: [DONE]
+

@@ -1,0 +1,12 @@
+start id=id_fixture0013 model=deepseek-v4-flash-0731
+block_start 0 Text
+text 0 "In"
+text 0 " Oslo it"
+text 0 " is 18 degrees Celsius with"
+text 0 " a clear sky and light wind"
+text 0 ". In Cairo it is also"
+text 0 " 18 degrees Celsius with a"
+text 0 " clear sky and light wind."
+block_end 0 {"content":"In Oslo it is 18 degrees Celsius with a clear sky and light wind. In Cairo it is also 18 degrees Celsius with a clear sky and light wind."}
+usage input=230 cache_read=1024 cache_write=0[] output=35 reasoning=0 speed=standard asked=-
+end stop=end raw=stop detail=- input=230 cache_read=1024 cache_write=0[] output=35 reasoning=0 speed=standard asked=-

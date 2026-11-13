@@ -1,0 +1,41 @@
+POST https://api.deepseek.com/chat/completions
+content-type: application/json
+accept: text/event-stream
+
+{
+  "model": "deepseek-flash",
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  },
+  "max_tokens": 1024,
+  "reasoning_effort": "low",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the current weather in a city.",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "city": {
+              "description": "The city's name.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "type": "object"
+        }
+      }
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Paris? Use the tool."
+    }
+  ]
+}

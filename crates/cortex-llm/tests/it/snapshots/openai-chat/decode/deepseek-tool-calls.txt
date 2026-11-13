@@ -1,0 +1,55 @@
+start id=id_fixture0005 model=deepseek-flash
+block_start 0 Reasoning
+reasoning 0 "The"
+reasoning 0 " user"
+reasoning 0 " wants"
+reasoning 0 " weather"
+reasoning 0 " in"
+reasoning 0 " three"
+reasoning 0 " cities"
+reasoning 0 "."
+reasoning 0 " I"
+reasoning 0 " should"
+reasoning 0 " make"
+reasoning 0 " three"
+reasoning 0 " independent"
+reasoning 0 " tool"
+reasoning 0 " calls"
+reasoning 0 " in"
+reasoning 0 " one"
+reasoning 0 " block"
+reasoning 0 "."
+block_end 0 {"reasoning_content":"The user wants weather in three cities. I should make three independent tool calls in one block."}
+block_start 1 ToolCall
+tool_call 1 id=id_fixture0006 name=get_weather
+tool_args 1 "{\""
+tool_args 1 "city"
+tool_args 1 "\""
+tool_args 1 ": \""
+tool_args 1 "Paris"
+tool_args 1 "\""
+tool_args 1 "}"
+block_start 2 ToolCall
+tool_call 2 id=id_fixture0007 name=get_weather
+tool_args 2 "{\""
+tool_args 2 "city"
+tool_args 2 "\""
+tool_args 2 ": \""
+tool_args 2 "Tokyo"
+tool_args 2 "\""
+tool_args 2 "}"
+block_start 3 ToolCall
+tool_call 3 id=id_fixture0008 name=get_weather
+tool_args 3 "{\""
+tool_args 3 "city"
+tool_args 3 "\""
+tool_args 3 ": \""
+tool_args 3 "L"
+tool_args 3 "ima"
+tool_args 3 "\""
+tool_args 3 "}"
+block_end 1 {"tool_calls":[{"id":"id_fixture0006","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"Paris\"}"}}]}
+block_end 2 {"tool_calls":[{"id":"id_fixture0007","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"Tokyo\"}"}}]}
+block_end 3 {"tool_calls":[{"id":"id_fixture0008","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"Lima\"}"}}]}
+usage input=204 cache_read=128 cache_write=0[] output=117 reasoning=19 speed=standard asked=-
+end stop=tool_calls raw=tool_calls detail=- input=204 cache_read=128 cache_write=0[] output=117 reasoning=19 speed=standard asked=-

@@ -1,0 +1,46 @@
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"17","reasoning_details":[{"type":"reasoning.text","text":"17","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" + 23 = 40","reasoning_details":[{"type":"reasoning.text","text":" + 23 = 40","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":". Sells","reasoning_details":[{"type":"reasoning.text","text":". Sells","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" a quarter of","reasoning_details":[{"type":"reasoning.text","text":" a quarter of","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" 40 = 10.","reasoning_details":[{"type":"reasoning.text","text":" 40 = 10.","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" Left","reasoning_details":[{"type":"reasoning.text","text":" Left","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":": 30.","reasoning_details":[{"type":"reasoning.text","text":": 30.","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":"**","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":"Step by","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":" step:**\n- Starts","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":" with 17 sheep,","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":" buys 23 more","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":": 17 + 23","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":" = **40 sheep**\n-","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":" Sells a quarter of the","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":" flock: 40 ÷","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":" 4 = 10 sheep","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":" sold\n- Sheep left:","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":" 40 − 10 =","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":" **30 sheep**","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":null},"finish_reason":"stop","native_finish_reason":"stop"}]}
+
+data: {"id":"id_fixture0002","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","service_tier":null,"choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop","native_finish_reason":"stop"}],"usage":{"prompt_tokens":46,"completion_tokens":89,"total_tokens":135,"cost":0.000036118,"is_byok":false,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":0,"audio_tokens":0,"video_tokens":0},"cost_details":{"upstream_inference_cost":0.000036118,"upstream_inference_prompt_cost":0.000004968,"upstream_inference_completions_cost":0.00003115},"completion_tokens_details":{"reasoning_tokens":25,"image_tokens":0,"audio_tokens":0}}}
+
+data: [DONE]
+

@@ -4,8 +4,8 @@
 //! The design keeps three things apart. A **protocol** is a wire dialect,
 //! and is code. A **provider** is an endpoint that speaks one, and is data.
 //! A **model** is a catalog entry, and is data. This crate has the parts
-//! every protocol shares, and one module for each protocol. The first is
-//! [`anthropic`].
+//! every protocol shares, and one module for each protocol: [`anthropic`]
+//! and [`openai_chat`].
 //!
 //! | Module | What it gives |
 //! |---|---|
@@ -26,6 +26,7 @@
 //! | [`time`] | The [`Timer`] trait behind every wait. |
 //! | [`image`] | [`ImageSource`]: how an image stored as an artifact reaches a request. |
 //! | [`anthropic`] | The `anthropic-messages` protocol: Anthropic's Messages API. |
+//! | [`openai_chat`] | The `openai-chat` protocol: OpenAI's Chat Completions API and the servers that speak it, with their built-in provider entries. |
 //!
 //! # What does I/O
 //!
@@ -52,6 +53,8 @@ pub mod error;
 pub mod event;
 pub mod http;
 pub mod image;
+mod json;
+pub mod openai_chat;
 pub mod protocol;
 pub mod request;
 pub mod retry;
@@ -75,6 +78,7 @@ pub use event::{
 };
 pub use http::{BodyStream, Headers, HttpRequest, HttpResponse, Method};
 pub use image::{ImageError, ImageSource};
+pub use openai_chat::OpenAiChat;
 pub use protocol::{FlagValue, Flags, HttpFailure, Protocol, ProviderInfo, StreamDecoder};
 pub use request::{CacheHints, ModelRequest, Reasoning, ReasoningVisibility, ToolDefinition};
 pub use retry::{Decision, RetryPolicy, RetryState, SpeedPolicy};

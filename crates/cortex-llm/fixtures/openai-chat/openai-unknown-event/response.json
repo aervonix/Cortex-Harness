@@ -1,0 +1,7 @@
+{
+  "headers": {
+    "content-type": "text/event-stream",
+    "x-request-id": "req_fixture9001"
+  },
+  "status": 200
+}

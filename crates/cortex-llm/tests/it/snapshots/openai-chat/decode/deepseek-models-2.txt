@@ -1,0 +1,38 @@
+start id=id_fixture0005 model=deepseek-v4-pro
+block_start 0 Reasoning
+reasoning 0 "Need"
+reasoning 0 " Cairo"
+reasoning 0 " too"
+reasoning 0 "."
+reasoning 0 " Wait"
+reasoning 0 ","
+reasoning 0 " I"
+reasoning 0 " was"
+reasoning 0 " supposed"
+reasoning 0 " to"
+reasoning 0 " call"
+reasoning 0 " both"
+reasoning 0 " in"
+reasoning 0 " one"
+reasoning 0 " response"
+reasoning 0 "."
+reasoning 0 " Let"
+reasoning 0 " me"
+reasoning 0 " call"
+reasoning 0 " Cairo"
+reasoning 0 " now"
+reasoning 0 "."
+block_end 0 {"reasoning_content":"Need Cairo too. Wait, I was supposed to call both in one response. Let me call Cairo now."}
+block_start 1 ToolCall
+tool_call 1 id=id_fixture0006 name=get_weather
+tool_args 1 "{\""
+tool_args 1 "city"
+tool_args 1 "\""
+tool_args 1 ": \""
+tool_args 1 "C"
+tool_args 1 "airo"
+tool_args 1 "\""
+tool_args 1 "}"
+block_end 1 {"tool_calls":[{"id":"id_fixture0006","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"Cairo\"}"}}]}
+usage input=1181 cache_read=0 cache_write=0[] output=68 reasoning=22 speed=standard asked=-
+end stop=tool_calls raw=tool_calls detail=- input=1181 cache_read=0 cache_write=0[] output=68 reasoning=22 speed=standard asked=-

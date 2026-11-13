@@ -8,21 +8,10 @@
 //! cargo xtask record [SCENARIO…]      record fixtures; no name records all
 //! ```
 //!
-//! # The key
-//!
-//! `CORTEX_LIVE_ANTHROPIC_KEY_FILE` names a file that holds the API key and
-//! nothing else. The key is read from that file by this code and goes into
-//! a [`Secret`]: it is never an argument, never in the environment, and
-//! never printed. Without the variable a test says so and fails. It does
-//! not pass, and it does not skip.
-//!
-//! # What may be written
-//!
-//! Everything a test here writes or prints goes through the
-//! [`Scrubber`](cortex_testkit::fixture::Scrubber): a fixture is made of a
-//! scrubbed exchange, and a line is printed only after it was checked for
-//! the key. A recording that still holds the key, or part of it, is refused
-//! and nothing of it is written.
+//! `CORTEX_LIVE_ANTHROPIC_KEY_FILE` names the file that holds the API key.
+//! How the key is read, what may be written and how a run's spend is
+//! limited are the same for every protocol, and are in
+//! [`crate::live`].
 //!
 //! # What it costs
 //!
@@ -30,341 +19,40 @@
 //! ones that are about a dearer model: the request at fast speed, and the
 //! conversation that changes model. Each call prints what it used and what
 //! that cost at the catalog's prices, and a run stops before it has spent
-//! [`SPEND_LIMIT_NANOS`].
+//! [`SPEND_LIMIT_NANOS`](crate::live::SPEND_LIMIT_NANOS).
 
 #![allow(
     clippy::disallowed_methods,
     reason = "run by hand: reads the key file and writes fixture files on the test's thread"
 )]
-#![allow(
-    clippy::print_stdout,
-    reason = "run by hand: what a call used and cost is what the person running it reads"
-)]
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
-use cortex_base::{CancelToken, Clock as _, Secret, SystemClock};
+use cortex_base::Secret;
 use cortex_llm::anthropic::{self, AnthropicMessages};
-use cortex_llm::error::TransportError;
-use cortex_llm::usage::request_usage;
-use cortex_llm::{
-    BodyStream, BoxFuture, Catalog, Headers, HttpRequest, HttpResponse, HttpTransport, ModelClient,
-    ModelEntry, ModelEvent, ModelRequest, ProviderClient, RetryPolicy, TokioTimer, Transport,
-};
+use cortex_llm::{ModelEntry, ModelEvent};
 use cortex_protocol::model::SpeedOffer;
-use cortex_protocol::usage::Billing;
 use cortex_protocol::{ModelId, Speed};
 use cortex_testkit::fixture::Scrubber;
 
 use super::scenario::{self, SWITCH, SWITCH_LEVEL, SWITCH_PROMPT};
 use super::{HAIKU, OPUS, fixtures_directory, model, user};
+use crate::live::{Live, Target, final_usage, key, nanos_as_dollars, wanted};
 
 /// The variable that names the file the API key is in.
 const KEY_FILE: &str = "CORTEX_LIVE_ANTHROPIC_KEY_FILE";
 
-/// The variable that names the scenarios to record, separated by commas.
-/// Unset or empty records every scenario.
-const SCENARIOS: &str = "CORTEX_LIVE_SCENARIOS";
-
-/// A run stops before it has spent this much: half a US dollar.
-const SPEND_LIMIT_NANOS: u64 = 500_000_000;
-
-/// One request and its response, as the network saw them.
-#[derive(Debug, Clone, Default)]
-struct Exchange {
-    request: Vec<u8>,
-    status: u16,
-    headers: Headers,
-    body: Vec<u8>,
-}
-
-/// A transport that keeps what passes through it. It keeps the body of a
-/// request and never its headers, which is where the credential is.
-#[derive(Debug, Clone)]
-struct Recording {
-    inner: Arc<HttpTransport>,
-    exchanges: Arc<Mutex<Vec<Exchange>>>,
-}
-
-impl Transport for Recording {
-    fn send(
-        &self,
-        request: HttpRequest,
-        cancel: CancelToken,
-    ) -> BoxFuture<'_, Result<HttpResponse, TransportError>> {
-        Box::pin(async move {
-            let sent = request.body.clone();
-            let response = self.inner.send(request, cancel).await?;
-            let HttpResponse {
-                status,
-                headers,
-                mut body,
-            } = response;
-            let at = {
-                let mut exchanges = self
-                    .exchanges
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                exchanges.push(Exchange {
-                    request: sent,
-                    status,
-                    headers: headers.clone(),
-                    body: Vec::new(),
-                });
-                exchanges.len() - 1
-            };
-            let exchanges = Arc::clone(&self.exchanges);
-            let body = BodyStream::generate(move |out| async move {
-                while let Some(chunk) = body.next().await {
-                    if let Ok(bytes) = &chunk {
-                        exchanges.lock().unwrap_or_else(PoisonError::into_inner)[at]
-                            .body
-                            .extend_from_slice(bytes);
-                    }
-                    out.emit(chunk).await;
-                }
-            });
-            Ok(HttpResponse {
-                status,
-                headers,
-                body,
-            })
-        })
+/// Anthropic's own API, as a live session talks to it.
+fn target() -> Target {
+    Target {
+        protocol: Arc::new(AnthropicMessages),
+        provider: anthropic::provider(),
+        key_file: KEY_FILE,
+        auth: |key| Arc::new(anthropic::api_key(key, "a file, for a live test")),
+        scrubber: Scrubber::new,
+        fixtures: fixtures_directory(),
+        record_command: "cargo xtask record",
     }
-}
-
-/// A session with the real API.
-struct Live {
-    client: ProviderClient,
-    exchanges: Arc<Mutex<Vec<Exchange>>>,
-    scrubber: Scrubber,
-    spent_nanos: u64,
-    today: String,
-}
-
-/// Reads the key from the file the environment names. The panic messages
-/// name the variable and the reason, and never anything that was read.
-fn key() -> Secret {
-    let Some(path) = std::env::var_os(KEY_FILE) else {
-        panic!(
-            "{KEY_FILE} is not set. A live test needs it to name a file that holds the API \
-             key. Nothing was sent."
-        );
-    };
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        panic!("the file {KEY_FILE} names could not be read. Nothing was sent.");
-    };
-    let key = text.trim();
-    assert!(
-        !key.is_empty(),
-        "the file {KEY_FILE} names is empty. Nothing was sent."
-    );
-    Secret::new(key)
-}
-
-impl Live {
-    fn start() -> Self {
-        Self::with_key(key())
-    }
-
-    /// A session that sends `sent` as its key and guards the real one.
-    fn with_keys(real: Secret, sent: Secret) -> Self {
-        let exchanges = Arc::new(Mutex::new(Vec::new()));
-        let transport = Recording {
-            inner: Arc::new(HttpTransport::default()),
-            exchanges: Arc::clone(&exchanges),
-        };
-        let client = ProviderClient::builder(
-            Arc::new(AnthropicMessages),
-            anthropic::provider(),
-            Arc::new(transport),
-            Arc::new(SystemClock::new()),
-            Arc::new(TokioTimer),
-        )
-        .auth(Arc::new(anthropic::api_key(
-            sent,
-            "a file, for a live test",
-        )))
-        // One send for each request: a live test never retries by itself.
-        .policy(RetryPolicy {
-            max_attempts: 1,
-            ..RetryPolicy::default()
-        })
-        .build();
-        let today = SystemClock::new().now().to_string()[..10].to_owned();
-        Self {
-            client,
-            exchanges,
-            scrubber: Scrubber::new(real),
-            spent_nanos: 0,
-            today,
-        }
-    }
-
-    fn with_key(key: Secret) -> Self {
-        let sent = Secret::new(key.expose());
-        Self::with_keys(key, sent)
-    }
-
-    /// Prints a line, unless it holds the key.
-    fn say(&self, line: &str) {
-        match self.scrubber.printable(line) {
-            Ok(line) => println!("{line}"),
-            Err(error) => panic!("{error}"),
-        }
-    }
-
-    /// Sends one request and reads its response to the end. Returns the
-    /// events, and the exchanges the request took: more than one when a
-    /// refused speed tier was followed by a send at standard speed.
-    fn send(&mut self, request: &ModelRequest) -> (Vec<ModelEvent>, Vec<Exchange>) {
-        assert!(
-            self.spent_nanos < SPEND_LIMIT_NANOS,
-            "this run has spent its limit; nothing more is sent"
-        );
-        let before = self
-            .exchanges
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .len();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("a runtime");
-        let events: Vec<ModelEvent> = runtime.block_on(
-            self.client
-                .stream(request.clone(), CancelToken::new())
-                .collect(),
-        );
-        let exchanges = self
-            .exchanges
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)[before..]
-            .to_vec();
-        self.account(request, &events);
-        (events, exchanges)
-    }
-
-    /// Prints what a call used and cost, and adds it to the run's spend.
-    fn account(&mut self, request: &ModelRequest, events: &[ModelEvent]) {
-        let info = &request.model.info;
-        let asked = request.speed.as_str();
-        match events.last() {
-            Some(ModelEvent::End {
-                usage, raw_stop, ..
-            }) => {
-                let version = Catalog::builtin().map_or("", Catalog::version);
-                let record = request_usage(
-                    usage.clone(),
-                    info,
-                    request.role.clone(),
-                    Billing::Metered,
-                    version,
-                );
-                let cost = record.cost.as_ref().map_or(0, |cost| cost.usd_nanos);
-                self.spent_nanos += cost;
-                let tokens = &record.tokens;
-                self.say(&format!(
-                    "  {} asked={asked} served={} stop={raw_stop} input={} cache_read={} \
-                     cache_write={} output={} reasoning={:?} cost=${:.6} (run total ${:.6})",
-                    info.id,
-                    record.speed.as_str(),
-                    tokens.input,
-                    tokens.cache_read,
-                    tokens.cache_write,
-                    tokens.output,
-                    tokens.reasoning,
-                    nanos_as_dollars(cost),
-                    nanos_as_dollars(self.spent_nanos),
-                ));
-            }
-            Some(ModelEvent::Error(error)) => {
-                self.say(&format!(
-                    "  {} asked={asked} failed: kind={} code={} status={:?} retry_after={:?} \
-                     tier={:?} (no charge)",
-                    info.id, error.kind, error.code, error.status, error.retry_after, error.tier,
-                ));
-            }
-            other => panic!("the stream ended with {other:?}"),
-        }
-        for event in events {
-            match event {
-                ModelEvent::SpeedFallback(moved) => self.say(&format!(
-                    "  speed moved: asked={} served={} by={:?} reason={:?} cooldown_until={:?}",
-                    moved.requested.as_str(),
-                    moved.served.as_str(),
-                    moved.by,
-                    moved.reason,
-                    moved.cooldown_until,
-                )),
-                ModelEvent::Limits(limits) => {
-                    for limit in limits {
-                        self.say(&format!(
-                            "  limit: {} speed={:?} limit={:?} remaining={:?} resets_at={:?}",
-                            limit.measure.as_str(),
-                            limit.speed.as_ref().map(Speed::as_str),
-                            limit.limit,
-                            limit.remaining,
-                            limit.resets_at.as_ref().map(ToString::to_string),
-                        ));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// Sends a request and writes its last exchange as the fixture `name`.
-    /// An earlier exchange of the same request (a refusal that was followed
-    /// by a fallback) is written as `<name>-refused`.
-    fn record(&mut self, name: &str, shows: &str, request: &ModelRequest) -> Vec<ModelEvent> {
-        self.say(&format!("{name}:"));
-        let (events, exchanges) = self.send(request);
-        let count = exchanges.len();
-        for (at, exchange) in exchanges.iter().enumerate() {
-            let name = if at + 1 == count {
-                name.to_owned()
-            } else {
-                format!("{name}-refused")
-            };
-            let note = format!(
-                "# {name}\n\n{shows}\n\n- Recorded on {} from the real API, with `cargo xtask \
-                 record {name}`.\n- Model: `{}`. Speed asked for: `{}`.\n- Identifiers and opaque \
-                 payloads are stand-ins, and only the response headers that describe the \
-                 response are kept (`docs/testing-and-ci.md`, \"Fixtures\").\n",
-                self.today,
-                request.model.info.id,
-                request.speed.as_str(),
-            );
-            let fixture = self
-                .scrubber
-                .fixture(
-                    &exchange.request,
-                    exchange.status,
-                    &exchange.headers,
-                    &exchange.body,
-                    &note,
-                )
-                .unwrap_or_else(|error| panic!("{name}: {error}"));
-            fixture
-                .write(&fixtures_directory().join(&name))
-                .unwrap_or_else(|error| panic!("{error}"));
-            self.say(&format!(
-                "  wrote {name}: status {}, {} bytes of response",
-                fixture.status,
-                fixture.response.len()
-            ));
-        }
-        events
-    }
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "a figure for a person to read; the sums are kept in whole nano-dollars"
-)]
-fn nanos_as_dollars(nanos: u64) -> f64 {
-    nanos as f64 / 1e9
 }
 
 /// A copy of a catalog entry with something changed, for a request the
@@ -373,14 +61,6 @@ fn altered(id: &str, change: impl FnOnce(&mut ModelEntry)) -> Arc<ModelEntry> {
     let mut entry = ModelEntry::clone(&model(id));
     change(&mut entry);
     Arc::new(entry)
-}
-
-/// The final usage of a response that completed.
-fn final_usage(events: &[ModelEvent]) -> &cortex_llm::Usage {
-    match events.last() {
-        Some(ModelEvent::End { usage, .. }) => usage,
-        other => panic!("the response did not complete: {other:?}"),
-    }
 }
 
 /// Runs a conversation with the weather desk on the models given, one
@@ -411,7 +91,7 @@ fn converse(
 #[test]
 #[ignore = "tier 5: sends requests to the real API; run it with `cargo xtask live`"]
 fn live_smoke() {
-    let mut live = Live::start();
+    let mut live = Live::start(target());
 
     // A request, a streamed answer, a usage with tokens in it.
     live.say("smoke: a plain request");
@@ -466,14 +146,6 @@ fn live_smoke() {
 #[test]
 #[ignore = "tier 5: records fixtures from the real API; run it with `cargo xtask record`"]
 fn live_record() {
-    let wanted: Vec<String> = std::env::var(SCENARIOS)
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
-        .collect();
-    let wants = |name: &str| wanted.is_empty() || wanted.iter().any(|wanted| wanted == name);
     let known = [
         "text",
         "reasoning",
@@ -487,15 +159,10 @@ fn live_record() {
         "errors",
         "speed-not-offered",
     ];
-    for name in &wanted {
-        assert!(
-            known.contains(&name.as_str()),
-            "there is no scenario `{name}`. The scenarios are: {}",
-            known.join(", ")
-        );
-    }
+    let wanted = wanted(&known);
+    let wants = |name: &str| wanted.is_empty() || wanted.iter().any(|wanted| wanted == name);
 
-    let mut live = Live::start();
+    let mut live = Live::start(target());
     if wants("text") {
         live.record("text", "A plain text answer.", &scenario::text());
     }
@@ -593,7 +260,11 @@ fn live_record() {
             &request,
         );
         // A key that is not one: 401. The real key is still what is guarded.
-        let mut wrong = Live::with_keys(key(), Secret::new("sk-ant-api03-this-is-not-a-key"));
+        let mut wrong = Live::with_keys(
+            target(),
+            key(KEY_FILE),
+            Secret::new("sk-ant-api03-this-is-not-a-key"),
+        );
         wrong.record(
             "error-authentication",
             "A request with a key that is not one: a failed response.",

@@ -1,0 +1,1 @@
+{"model":"deepseek-v4-flash-0731","stream":true,"stream_options":{"include_usage":true},"max_completion_tokens":512,"reasoning_effort":"none","venice_parameters":{"include_venice_system_prompt":false},"messages":[{"role":"system","content":"You answer in one short sentence."},{"role":"user","content":"Say hello to the test suite."}]}

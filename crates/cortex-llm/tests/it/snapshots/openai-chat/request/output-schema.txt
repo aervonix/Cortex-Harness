@@ -1,0 +1,45 @@
+POST https://api.venice.ai/api/v1/chat/completions
+content-type: application/json
+accept: text/event-stream
+
+{
+  "model": "deepseek-v4-flash-0731",
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  },
+  "max_completion_tokens": 512,
+  "reasoning_effort": "none",
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "output",
+      "strict": true,
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "venice_parameters": {
+    "include_venice_system_prompt": false
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "You answer in one short sentence."
+    },
+    {
+      "role": "user",
+      "content": "Say hello to the test suite."
+    }
+  ]
+}

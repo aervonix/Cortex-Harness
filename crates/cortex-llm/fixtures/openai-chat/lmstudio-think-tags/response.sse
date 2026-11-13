@@ -1,0 +1,18 @@
+data: {"id":"chatcmpl-fixture9001lmstudio","object":"chat.completion.chunk","created":1794500000,"model":"qwen/qwen3-8b","system_fingerprint":"qwen/qwen3-8b","choices":[{"index":0,"delta":{"role":"assistant","content":"<th"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture9001lmstudio","object":"chat.completion.chunk","created":1794500000,"model":"qwen/qwen3-8b","system_fingerprint":"qwen/qwen3-8b","choices":[{"index":0,"delta":{"content":"ink>"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture9001lmstudio","object":"chat.completion.chunk","created":1794500000,"model":"qwen/qwen3-8b","system_fingerprint":"qwen/qwen3-8b","choices":[{"index":0,"delta":{"content":"\n17 plus 23"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture9001lmstudio","object":"chat.completion.chunk","created":1794500000,"model":"qwen/qwen3-8b","system_fingerprint":"qwen/qwen3-8b","choices":[{"index":0,"delta":{"content":" is 40. A quarter is 10.\n</"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture9001lmstudio","object":"chat.completion.chunk","created":1794500000,"model":"qwen/qwen3-8b","system_fingerprint":"qwen/qwen3-8b","choices":[{"index":0,"delta":{"content":"think>\n\n30"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture9001lmstudio","object":"chat.completion.chunk","created":1794500000,"model":"qwen/qwen3-8b","system_fingerprint":"qwen/qwen3-8b","choices":[{"index":0,"delta":{"content":" sheep are left."},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture9001lmstudio","object":"chat.completion.chunk","created":1794500000,"model":"qwen/qwen3-8b","system_fingerprint":"qwen/qwen3-8b","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-fixture9001lmstudio","object":"chat.completion.chunk","created":1794500000,"model":"qwen/qwen3-8b","system_fingerprint":"qwen/qwen3-8b","choices":[],"usage":{"prompt_tokens":41,"completion_tokens":26,"total_tokens":67}}
+
+data: [DONE]
+

@@ -1,0 +1,7 @@
+start id=id_fixture0003 model=z-ai/glm-5.3-flash
+block_start 0 ToolCall
+tool_call 0 id=id_fixture0004 name=get_weather
+tool_args 0 "{\"city\": \"Paris\"}"
+block_end 0 {"tool_calls":[{"id":"id_fixture0004","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"Paris\"}"}}]}
+usage input=181 cache_read=0 cache_write=0[] output=12 reasoning=1 speed=standard asked=-
+end stop=tool_calls raw=tool_calls detail=tool_calls input=181 cache_read=0 cache_write=0[] output=12 reasoning=1 speed=standard asked=-

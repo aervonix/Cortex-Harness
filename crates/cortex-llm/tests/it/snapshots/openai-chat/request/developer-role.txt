@@ -1,0 +1,24 @@
+POST https://api.openai.com/v1/chat/completions
+content-type: application/json
+accept: text/event-stream
+
+{
+  "model": "gpt-6-luna",
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  },
+  "max_completion_tokens": 512,
+  "reasoning_effort": "none",
+  "service_tier": "default",
+  "messages": [
+    {
+      "role": "developer",
+      "content": "You answer in one short sentence."
+    },
+    {
+      "role": "user",
+      "content": "Say hello to the test suite."
+    }
+  ]
+}

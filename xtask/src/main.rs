@@ -55,12 +55,13 @@ Not blocking (the `main` and `nightly` workflows run these)
                     cargo-fuzz.
 
 By hand only, against a real provider (never in CI)
-  live              The live smoke test.
-  record [SCENARIO...]
+  live [PROVIDER]   The live smoke test, against anthropic (when no provider
+                    is named), openrouter, deepseek or venice.
+  record [--provider PROVIDER] [SCENARIO...]
                     Record provider fixtures, scrubbed. No name: all of them.
-                    Both need CORTEX_LIVE_ANTHROPIC_KEY_FILE set to the path
-                    of a file that holds the API key. The key is never given
-                    on a command line.
+                    Both need CORTEX_LIVE_<PROVIDER>_KEY_FILE set to the path
+                    of a file that holds that provider's API key. The key is
+                    never given on a command line.
 
 Working on the code
   fmt               Format the workspace.

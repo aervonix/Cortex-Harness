@@ -1,0 +1,7 @@
+start id=chatcmpl-fixture9001 model=gpt-6-luna
+block_start 0 Text
+text 0 "Hello"
+text 0 " to the test suite."
+block_end 0 {"content":"Hello to the test suite."}
+usage input=19 cache_read=0 cache_write=0[] output=7 reasoning=- speed=standard asked=-
+end stop=end raw=stop detail=- input=19 cache_read=0 cache_write=0[] output=7 reasoning=- speed=standard asked=-

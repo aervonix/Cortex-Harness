@@ -1,0 +1,7 @@
+start id=chatcmpl-901 model=qwen3:8b
+block_start 0 ToolCall
+tool_call 0 id=call_fx9001a name=get_weather
+tool_args 0 "{\"city\":\"Paris\"}"
+block_end 0 {"tool_calls":[{"id":"call_fx9001a","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]}
+usage input=162 cache_read=0 cache_write=0[] output=18 reasoning=- speed=standard asked=-
+end stop=tool_calls raw=tool_calls detail=- input=162 cache_read=0 cache_write=0[] output=18 reasoning=- speed=standard asked=-

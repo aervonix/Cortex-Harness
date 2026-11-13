@@ -14,6 +14,9 @@
 
 mod anthropic;
 mod client;
+#[cfg(feature = "http")]
+mod live;
+mod openai_chat;
 mod retry;
 mod speed;
 #[cfg(feature = "http")]

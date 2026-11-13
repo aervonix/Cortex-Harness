@@ -1,0 +1,18 @@
+data: {"service_tier":null,"id":"id_fixture0009","object":"chat.completion.chunk","created":1794560037,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0009","object":"chat.completion.chunk","created":1794560037,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0009","object":"chat.completion.chunk","created":1794560037,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"1","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0009","object":"chat.completion.chunk","created":1794560037,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"\n2\n3\n4","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0009","object":"chat.completion.chunk","created":1794560037,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"\n5\n6\n7","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0009","object":"chat.completion.chunk","created":1794560037,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"\n8\n9\n10","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0009","object":"chat.completion.chunk","created":1794560037,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"\n11\n12\n","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":"length"}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0009","object":"chat.completion.chunk","created":1794560037,"model":"deepseek-v4-flash-0731","choices":[],"usage":{"prompt_tokens":18,"completion_tokens":24,"total_tokens":42,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}},"cost":{"usd":0.000008580000000000001,"diem":0}}
+
+data: [DONE]
+

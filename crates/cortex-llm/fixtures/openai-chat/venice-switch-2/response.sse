@@ -1,0 +1,26 @@
+data: {"service_tier":null,"id":"id_fixture0002","object":"chat.completion.chunk","created":1794560922,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560922,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560922,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":"Both","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560922,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" are 18 degrees Celsius,","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560922,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" so neither is warmer;","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560922,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" they are","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560922,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"Os","reasoning_content":" equal.","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560922,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"lo and Cairo are both at","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560922,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" 18 degrees Celsius, so","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560922,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" neither is warmer —","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560922,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" they are tied.","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":"stop"}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560922,"model":"deepseek-v4-flash-0731","choices":[],"usage":{"prompt_tokens":1338,"completion_tokens":39,"total_tokens":1377,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":16}},"cost":{"usd":0.00018408,"diem":0}}
+
+data: [DONE]
+

@@ -1,0 +1,7 @@
+start id=chatcmpl-fixture9001 model=gpt-6-luna
+block_start 0 Text
+text 0 "I can't help"
+text 0 " with that."
+block_end 0 {"refusal":"I can't help with that."}
+usage input=24 cache_read=0 cache_write=0[] output=8 reasoning=0 speed=standard asked=-
+end stop=refusal raw=stop detail=- input=24 cache_read=0 cache_write=0[] output=8 reasoning=0 speed=standard asked=-

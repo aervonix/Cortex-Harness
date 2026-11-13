@@ -645,3 +645,154 @@ fn a_provider_can_set_its_own_time_limits() {
     run(secs(600), "first_event_timeout");
     run(secs(15), "idle_timeout");
 }
+
+/// Lets the other half of a `join` run until it can go no further: until
+/// it is waiting on the transport or on the timer again.
+async fn let_the_client_run() {
+    for _ in 0..8 {
+        let mut yielded = false;
+        std::future::poll_fn(|context| {
+            if yielded {
+                std::task::Poll::Ready(())
+            } else {
+                yielded = true;
+                context.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+    }
+}
+
+#[test]
+fn keep_alive_bytes_restart_the_wait_for_the_first_event() {
+    use cortex_testkit::Gate;
+
+    // A server that has queued the request sends a keep-alive comment now
+    // and then, and begins its answer after 100 seconds: longer than the
+    // first-event limit, and never silent for as long as it.
+    let (first, second) = (Gate::new(), Gate::new());
+    let queued = Reply::ok(": keep-alive\n\n")
+        .then_wait(&first)
+        .chunk(": keep-alive\n\n")
+        .then_wait(&second)
+        .chunk(crate::hello_text(&json!({"input": 10, "output": 2})));
+    let harness = Harness::manual([queued]);
+    let mut stream = harness
+        .client
+        .stream(fixtures::request(fixtures::model()), CancelToken::new());
+    block_on(async {
+        let (event, ()) = join(stream.next(), async {
+            harness.timer.sleeping().await;
+            assert_eq!(harness.timer.running(), [secs(60)], "the first-event limit");
+            harness.timer.advance(secs(50));
+            first.open();
+            let_the_client_run().await;
+            // 100 seconds after the request was sent, and 50 after the last
+            // sign of life: the request is still waited for.
+            harness.timer.advance(secs(50));
+            let_the_client_run().await;
+            assert!(
+                harness.timer.sleeps().is_empty(),
+                "a queue that keeps saying it is alive was given up on"
+            );
+            second.open();
+        })
+        .await;
+        assert!(matches!(event, Some(ModelEvent::Start { .. })), "{event:?}");
+    });
+    assert_eq!(harness.now(), at("2026-11-12T10:01:40Z"));
+    assert_eq!(
+        harness.transport.requests().len(),
+        1,
+        "nothing was sent again"
+    );
+}
+
+#[test]
+fn a_connection_that_goes_dead_after_a_keep_alive_fails_at_the_ordinary_limit() {
+    use cortex_testkit::Gate;
+
+    let gate = Gate::new();
+    let dead = Reply::ok(": keep-alive\n\n")
+        .then_wait(&gate)
+        .chunk(": keep-alive\n\n")
+        .then_stall();
+    let harness = Harness::manual([dead, hello()]);
+    let mut stream = harness
+        .client
+        .stream(fixtures::request(fixtures::model()), CancelToken::new());
+    block_on(async {
+        let (retry, ()) = join(stream.next(), async {
+            harness.timer.sleeping().await;
+            harness.timer.advance(secs(50));
+            gate.open();
+            let_the_client_run().await;
+            // The limit runs from the last bytes that arrived: one second
+            // short of it nothing has happened, and at it the request is
+            // given up. A dead connection is never waited on for longer
+            // than the first-event limit.
+            harness.timer.advance(secs(59));
+            let_the_client_run().await;
+            assert!(harness.timer.sleeps().is_empty());
+            harness.timer.advance(secs(1));
+        })
+        .await;
+        let Some(ModelEvent::Retry(retry)) = retry else {
+            panic!("{retry:?}");
+        };
+        assert_kind(&retry.error, ErrorKind::Transient, "first_event_timeout");
+    });
+    assert_eq!(harness.now(), at("2026-11-12T10:01:50Z"));
+}
+
+#[test]
+fn a_server_that_only_ever_says_it_is_alive_is_given_up_on() {
+    use cortex_testkit::Gate;
+
+    // A keep-alive comment every 59 seconds, for ever, and never an
+    // event: each one restarts the wait, and the wait still ends, ten
+    // first-event limits after the request was sent.
+    let gates: Vec<Gate> = (0..14).map(|_| Gate::new()).collect();
+    let mut trickle = Reply::ok(": keep-alive\n\n");
+    for gate in &gates {
+        trickle = trickle.then_wait(gate).chunk(": keep-alive\n\n");
+    }
+    let harness = Harness::manual([trickle.then_stall(), hello()]);
+    let mut stream = harness
+        .client
+        .stream(fixtures::request(fixtures::model()), CancelToken::new());
+    block_on(async {
+        let mut rounds = 0;
+        let (retry, ()) = join(stream.next(), async {
+            harness.timer.sleeping().await;
+            for gate in &gates {
+                harness.timer.advance(secs(59));
+                let_the_client_run().await;
+                if !harness.timer.sleeps().is_empty() {
+                    break;
+                }
+                rounds += 1;
+                gate.open();
+                let_the_client_run().await;
+            }
+            // Had every comment been waited through, the connection now
+            // stalls, and the ordinary limit ends the wait: the test fails
+            // on what the error says, and does not hang.
+            harness.timer.advance(secs(120));
+        })
+        .await;
+        let Some(ModelEvent::Retry(retry)) = retry else {
+            panic!("the request was never given up on: {retry:?}");
+        };
+        assert_kind(&retry.error, ErrorKind::Transient, "first_event_timeout");
+        assert!(
+            retry.error.message.contains("600 seconds"),
+            "{:?}",
+            retry.error
+        );
+        // Ten comments were waited through (590 seconds), and the wait
+        // after the tenth was the ten seconds that were left.
+        assert_eq!(rounds, 10);
+    });
+}

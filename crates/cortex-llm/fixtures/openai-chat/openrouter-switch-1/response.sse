@@ -1,0 +1,40 @@
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":"The","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":" red","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":" field with a blue Nordic cross outlined","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":" in white is Iceland's","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":" flag, so its","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":" capital is Rey","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":"kjav","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":"í","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":"k — I","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":"'ll fetch","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":" that one","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":" properly","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":". The","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":" largest city on the Nile is Cairo.","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"id":"id_fixture0002","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":""}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":"{\"city\": \"Reykjavík\"}"}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"tool_calls","native_finish_reason":"tool_calls"}]}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560924,"model":"z-ai/glm-5.3-flash","provider":"Modal","service_tier":null,"choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"tool_calls","native_finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1098,"completion_tokens":58,"total_tokens":1156,"cost":0.0001937,"is_byok":false,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":0,"audio_tokens":0,"video_tokens":0},"cost_details":{"upstream_inference_cost":0.0001937,"upstream_inference_prompt_cost":0.0001647,"upstream_inference_completions_cost":0.000029},"completion_tokens_details":{"reasoning_tokens":1,"image_tokens":0,"audio_tokens":0}}}
+
+data: [DONE]
+

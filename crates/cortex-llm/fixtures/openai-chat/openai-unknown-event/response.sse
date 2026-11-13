@@ -1,0 +1,19 @@
+: a comment
+
+data: {"id":"chatcmpl-fixture9001","object":"chat.completion.chunk","created":1794500000,"model":"gpt-6-luna","service_tier":"default","system_fingerprint":"fp_fixture9001","choices":[{"index":0,"delta":{"role":"assistant","content":"","refusal":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+event: response.note
+data: {"type":"response.note","text":"not for us"}
+
+data: {"id":"chatcmpl-fixture9001","object":"chat.completion.chunk","created":1794500000,"model":"gpt-6-luna","service_tier":"default","system_fingerprint":"fp_fixture9001","choices":[{"index":0,"delta":{"content":"Hello","annotations":[{"type":"new_kind","n":1}]},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"object":"chat.completion.something_new","payload":[1,2,3]}
+
+data: {"id":"chatcmpl-fixture9001","object":"chat.completion.chunk","created":1794500000,"model":"gpt-6-luna","service_tier":"default","system_fingerprint":"fp_fixture9001","choices":[{"index":0,"delta":{"content":" to the test suite."},"logprobs":null,"finish_reason":null}],"usage":null,"moderation":null,"new_member":{"a":1}}
+
+data: {"id":"chatcmpl-fixture9001","object":"chat.completion.chunk","created":1794500000,"model":"gpt-6-luna","service_tier":"default","system_fingerprint":"fp_fixture9001","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}],"usage":null}
+
+data: {"id":"chatcmpl-fixture9001","object":"chat.completion.chunk","created":1794500000,"model":"gpt-6-luna","service_tier":"default","system_fingerprint":"fp_fixture9001","choices":[],"usage":{"prompt_tokens":19,"completion_tokens":7,"total_tokens":26}}
+
+data: [DONE]
+

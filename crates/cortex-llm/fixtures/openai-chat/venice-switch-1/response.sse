@@ -1,0 +1,32 @@
+data: {"service_tier":null,"id":"id_fixture0001","object":"chat.completion.chunk","created":1794560921,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794560921,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794560921,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"The capital with","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794560921,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" the red flag","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794560921,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" with a blue Nordic","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794560921,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" cross outlined","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794560921,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" in white is Oslo, and","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794560921,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" the largest city on","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794560921,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" the Nile is Cairo. Currently","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794560921,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" both are","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794560921,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" at","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794560921,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" 18 degrees Celsius with","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794560921,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" clear skies and","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794560921,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" light wind.","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":"stop"}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794560921,"model":"deepseek-v4-flash-0731","choices":[],"usage":{"prompt_tokens":1282,"completion_tokens":44,"total_tokens":1326,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}},"cost":{"usd":0.00017810000000000002,"diem":0}}
+
+data: [DONE]
+

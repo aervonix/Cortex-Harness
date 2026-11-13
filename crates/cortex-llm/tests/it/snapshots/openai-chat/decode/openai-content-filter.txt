@@ -1,0 +1,6 @@
+start id=chatcmpl-fixture9001 model=gpt-6-luna
+block_start 0 Text
+text 0 "The first"
+block_end 0 {"content":"The first"}
+usage input=31 cache_read=0 cache_write=0[] output=2 reasoning=0 speed=standard asked=-
+end stop=content_filter raw=content_filter detail=- input=31 cache_read=0 cache_write=0[] output=2 reasoning=0 speed=standard asked=-

@@ -1,0 +1,23 @@
+start id=id_fixture0001 model=z-ai/glm-5.3-flash
+block_start 0 Text
+text 0 "The"
+text 0 " red"
+text 0 " field with a blue Nordic cross outlined"
+text 0 " in white is Iceland's"
+text 0 " flag, so its"
+text 0 " capital is Rey"
+text 0 "kjav"
+text 0 "í"
+text 0 "k — I"
+text 0 "'ll fetch"
+text 0 " that one"
+text 0 " properly"
+text 0 ". The"
+text 0 " largest city on the Nile is Cairo."
+block_end 0 {"content":"The red field with a blue Nordic cross outlined in white is Iceland's flag, so its capital is Reykjavík — I'll fetch that one properly. The largest city on the Nile is Cairo."}
+block_start 1 ToolCall
+tool_call 1 id=id_fixture0002 name=get_weather
+tool_args 1 "{\"city\": \"Reykjavík\"}"
+block_end 1 {"tool_calls":[{"id":"id_fixture0002","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"Reykjavík\"}"}}]}
+usage input=1098 cache_read=0 cache_write=0[] output=58 reasoning=1 speed=standard asked=-
+end stop=tool_calls raw=tool_calls detail=tool_calls input=1098 cache_read=0 cache_write=0[] output=58 reasoning=1 speed=standard asked=-

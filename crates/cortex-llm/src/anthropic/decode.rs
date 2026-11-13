@@ -85,10 +85,10 @@ use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
 use super::classify;
-use super::json::{self, Array, Object};
 use super::request::INVALID_INPUT_KEY;
 use crate::error::DecodeError;
 use crate::event::{BlockKind, EventSink, ReportedUsage};
+use crate::json::{self, Array, Object, ordered_members};
 use crate::protocol::StreamDecoder;
 use crate::request::ModelRequest;
 use crate::sse::SseEvent;
@@ -646,46 +646,6 @@ pub(crate) fn stop_reason(raw: &str) -> StopReason {
         "refusal" => StopReason::Refusal,
         other => StopReason::Unknown(format!("anthropic:{other}")),
     }
-}
-
-/// The members of a JSON object in the order they were written, each as
-/// its own text.
-fn ordered_members(raw: &RawValue) -> Result<Vec<(String, Box<RawValue>)>, serde_json::Error> {
-    struct Ordered(Vec<(String, Box<RawValue>)>);
-
-    impl<'de> Deserialize<'de> for Ordered {
-        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-            struct Visitor;
-
-            impl<'de> serde::de::Visitor<'de> for Visitor {
-                type Value = Ordered;
-
-                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    f.write_str("a JSON object")
-                }
-
-                fn visit_map<A: serde::de::MapAccess<'de>>(
-                    self,
-                    mut map: A,
-                ) -> Result<Ordered, A::Error> {
-                    let mut members: Vec<(String, Box<RawValue>)> = Vec::new();
-                    while let Some((key, value)) = map.next_entry::<String, Box<RawValue>>()? {
-                        // A key written twice keeps its last value, as a
-                        // JSON reader would.
-                        match members.iter_mut().find(|(known, _)| *known == key) {
-                            Some(member) => member.1 = value,
-                            None => members.push((key, value)),
-                        }
-                    }
-                    Ok(Ordered(members))
-                }
-            }
-
-            deserializer.deserialize_map(Visitor)
-        }
-    }
-
-    serde_json::from_str::<Ordered>(raw.get()).map(|ordered| ordered.0)
 }
 
 impl Block {

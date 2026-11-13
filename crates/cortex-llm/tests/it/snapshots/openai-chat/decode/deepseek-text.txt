@@ -1,0 +1,11 @@
+start id=id_fixture0001 model=deepseek-flash
+block_start 0 Text
+text 0 "Hello"
+text 0 " to"
+text 0 " the"
+text 0 " test"
+text 0 " suite"
+text 0 "!"
+block_end 0 {"content":"Hello to the test suite!"}
+usage input=19 cache_read=0 cache_write=0[] output=6 reasoning=- speed=standard asked=-
+end stop=end raw=stop detail=- input=19 cache_read=0 cache_write=0[] output=6 reasoning=- speed=standard asked=-

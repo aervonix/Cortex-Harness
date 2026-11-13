@@ -1,0 +1,4 @@
+start id=gen-fixture9001 model=z-ai/glm-5.3-flash
+block_start 0 Text
+text 0 "The weather"
+error kind=transient code=unknown_error status=Some(502) throttle=None tier=- retry_after=None id=- message="Provider disconnected unexpectedly"

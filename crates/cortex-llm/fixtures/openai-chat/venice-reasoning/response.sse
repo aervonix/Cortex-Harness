@@ -1,0 +1,68 @@
+data: {"service_tier":null,"id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":"We","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" need answer. Need be","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" careful.","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" Farmer","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" has 17 sheep buys","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" 23 more = 40","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":". Sells a quarter of","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" the","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" flock = 10. Left","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" 30. Need","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" \"Think it","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" through briefly\" maybe","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" include brief","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":". Ensure","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" no trap","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":"? \"quarter","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" of the flock\" after","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" buys","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":"? Usually","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" flock is","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" 40. Left","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"","reasoning_content":" 30. Final concise.","tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"17","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" + 23 = 40","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" sheep.\n\nA quarter of ","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"40 is 10,","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" so the","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" farmer sells 10 sheep","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":".\n\n40 - 10 =","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" 30 sheep left.","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":"stop"}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0002","object":"chat.completion.chunk","created":1794560032,"model":"deepseek-v4-flash-0731","choices":[],"usage":{"prompt_tokens":117,"completion_tokens":111,"total_tokens":228,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":73}},"cost":{"usd":0.00004407,"diem":0}}
+
+data: [DONE]
+

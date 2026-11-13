@@ -1,0 +1,19 @@
+start id=id_fixture0025 model=anthropic/claude-haiku-5.5
+block_start 0 Text
+text 0 "Oslo is 18 "
+text 0 "degrees Celsius with"
+text 0 " a clear sky and light w"
+text 0 "ind.\n\nC"
+text 0 "airo could ref"
+text 0 "er to more"
+text 0 " than one place, so"
+text 0 " which"
+text 0 " one do"
+text 0 " you mean? For"
+text 0 " example, Cairo,"
+text 0 " Egypt, or Cair"
+text 0 "o, Illinois, US"
+text 0 "A."
+block_end 0 {"content":"Oslo is 18 degrees Celsius with a clear sky and light wind.\n\nCairo could refer to more than one place, so which one do you mean? For example, Cairo, Egypt, or Cairo, Illinois, USA."}
+usage input=2 cache_read=1496 cache_write=427[] output=77 reasoning=0 speed=standard asked=-
+end stop=end raw=stop detail=end_turn input=2 cache_read=1496 cache_write=427[] output=77 reasoning=0 speed=standard asked=-
