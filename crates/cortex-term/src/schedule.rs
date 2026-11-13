@@ -106,8 +106,19 @@ impl Scheduler {
     }
 
     /// A frame was drawn at `now`: everything waiting went into it.
+    ///
+    /// A frame drawn for streamed content a little after it was due keeps
+    /// the cadence: the next is due one interval after this one was, not
+    /// after it was drawn, so that the loop's own wake-up delay does not
+    /// stretch every interval.
     pub fn drawn(&mut self, now: Instant) {
-        self.last = Some(now);
+        let due = self.last.map(|last| last + self.interval);
+        self.last = Some(match due {
+            Some(due) if self.stream && !self.input && now >= due && now < due + self.interval => {
+                due
+            }
+            _ => now,
+        });
         self.input = false;
         self.stream = false;
         if let Some((every, next)) = &mut self.tick {
@@ -169,6 +180,39 @@ mod tests {
         assert_eq!(scheduler.wake(start + STREAM_INTERVAL), Wake::Now);
         scheduler.drawn(start + ms(20));
         assert_eq!(scheduler.wake(start + ms(21)), Wake::Idle);
+    }
+
+    #[test]
+    fn a_late_streamed_frame_keeps_the_cadence() {
+        let start = Instant::now();
+        let mut scheduler = Scheduler::new();
+        scheduler.stream();
+        scheduler.drawn(start);
+        // Drawn a millisecond late: the next is still due one interval
+        // after this one was.
+        scheduler.stream();
+        scheduler.drawn(start + STREAM_INTERVAL + ms(1));
+        scheduler.stream();
+        assert_eq!(
+            scheduler.wake(start + STREAM_INTERVAL + ms(2)),
+            Wake::At(start + STREAM_INTERVAL * 2)
+        );
+        // A key resets it: the next streamed frame is an interval after the
+        // key's.
+        scheduler.input();
+        scheduler.drawn(start + STREAM_INTERVAL * 2 + ms(5));
+        scheduler.stream();
+        assert_eq!(
+            scheduler.wake(start + STREAM_INTERVAL * 2 + ms(6)),
+            Wake::At(start + STREAM_INTERVAL * 3 + ms(5))
+        );
+        // Very late: the cadence starts again from now.
+        scheduler.drawn(start + ms(500));
+        scheduler.stream();
+        assert_eq!(
+            scheduler.wake(start + ms(501)),
+            Wake::At(start + ms(500) + STREAM_INTERVAL)
+        );
     }
 
     #[test]

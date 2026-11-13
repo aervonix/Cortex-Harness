@@ -331,3 +331,12 @@ find: .find(|&n| rest.len() >= n && rest.ends_with(&PASTE_END[..n]))
 replace: .find(|_| false)
 caught-by:
     input::tests::every_split_decodes_the_same
+
+[break] streamed-frames-drift
+rule: A streamed frame drawn a little late keeps the 60-a-second cadence.
+file: crates/cortex-term/src/schedule.rs
+in: Scheduler::drawn
+find: now < due + self.interval =>
+replace: now < due + self.interval && false =>
+caught-by:
+    schedule::tests::a_late_streamed_frame_keeps_the_cadence
