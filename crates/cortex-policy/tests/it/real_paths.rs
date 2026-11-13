@@ -11,7 +11,8 @@ use std::sync::Arc;
 use cortex_base::{PathOptions, PathResolver};
 use cortex_policy::command::ShellSyntax;
 use cortex_policy::{
-    Access, Engine, Outcome, Parts, Protected, Request, SandboxState, SourcedRule, default_sandbox,
+    Access, Engine, Locate, Outcome, Parts, Protected, Request, SandboxState, SourcedRule,
+    default_sandbox,
 };
 use cortex_protocol::ids::LeaseId;
 use cortex_protocol::lease::{Budget, HardLimits, Level, RuleAction};
@@ -385,6 +386,13 @@ mod unix {
         symlink(".github/x", ws.join("l")).unwrap();
         symlink(".github", ws.join("ci")).unwrap();
         let (supervised, resolver) = real_engine(&ws, ShellSyntax::Posix, Vec::new());
+        // `~\x` is a name of its own outside Windows, found from where the
+        // command runs.
+        let github = resolver.root().join(".github").unwrap();
+        assert_eq!(
+            resolver.locate(&github, "~\\x/k"),
+            Some(github.join("~\\x").unwrap().join("k").unwrap())
+        );
         for command in [
             "cd ./.github && echo evil > '~\\x/../workflows/evil.yml'",
             "cd ./l/../workflows && echo evil > ci.yml",
