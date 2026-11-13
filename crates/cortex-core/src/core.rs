@@ -52,7 +52,7 @@ use cortex_protocol::{ErrorData, ErrorKind, Item, ItemId, LeaseId, SessionId};
 use cortex_session::entry::{LeaseEvent, LeaseRecord};
 use cortex_session::{Body, Git, Restore, SessionsRoot, SystemGit};
 use cortex_tools::PlanBoard;
-use cortex_tools::process::{Launcher, Runner};
+use cortex_tools::process::Runner;
 use tokio::task::JoinHandle;
 
 use crate::assemble::{self, Assembled, EngineTemplate, Wanted, Which};
@@ -126,9 +126,16 @@ pub struct CoreOptions {
     /// `cortex_sandbox::tree::run_guard`). `None`: commands run without a
     /// guard, and can outlive a harness that is killed.
     pub guard: Option<(PathBuf, Vec<OsString>)>,
-    /// What starts a command in place of starting it directly: the sandbox
-    /// launcher, from the step that builds it. `None` until then.
-    pub launcher: Option<Arc<dyn Launcher>>,
+    /// The sandbox launcher: the program to start (the harness's own
+    /// executable) and its arguments (the hidden subcommand whose body is
+    /// `cortex_sandbox::launch::run`). Every shell command is started
+    /// through it where the sandbox enforces. `None`: nothing is confined,
+    /// and every session reports the sandbox off.
+    pub launcher: Option<(PathBuf, Vec<OsString>)>,
+    /// What the system offers the sandbox, in place of asking it
+    /// (`cortex_sandbox::support::detect`): a test's, which says the kernel
+    /// has no Landlock, or an old one.
+    pub sandbox: Option<cortex_sandbox::support::Support>,
     /// API keys given on the command line, by provider. Looked at before
     /// the environment and the credential store.
     pub api_keys: BTreeMap<String, Secret>,
@@ -197,6 +204,7 @@ impl CoreOptions {
             approval_timeout: None,
             guard: None,
             launcher: None,
+            sandbox: None,
             api_keys: BTreeMap::new(),
             key_found: None,
             connector: None,
@@ -221,6 +229,8 @@ pub(crate) struct Live {
     pub(crate) hooks: Arc<Hooks>,
     pub(crate) policy: Arc<EnginePolicy>,
     pub(crate) board: Arc<PlanBoard>,
+    /// The session's sandbox: its launcher and its temporary directory.
+    sandbox: Arc<crate::sandbox::SessionSandbox>,
     template: Mutex<EngineTemplate>,
     loaded: Arc<Loaded>,
     images: Arc<dyn ImageSource>,
@@ -254,6 +264,8 @@ pub(crate) struct Inner {
     pub(crate) probes: Mutex<Vec<std::thread::JoinHandle<()>>>,
     /// Set when [`Core::shutdown`] begins: no session starts after it.
     shutting_down: AtomicBool,
+    /// What the system offers the sandbox, asked once.
+    pub(crate) sandbox: crate::sandbox::CoreSandbox,
 }
 
 /// What a shell was looked for with: `shell.program` and `shell.args`.
@@ -338,6 +350,12 @@ impl Core {
             key_found: options.key_found.clone(),
         };
         let ids = IdGenerator::new(Arc::clone(&options.clock), Box::new(SystemRng::new()));
+        let sandbox = crate::sandbox::CoreSandbox::new(
+            options
+                .sandbox
+                .unwrap_or_else(cortex_sandbox::support::detect),
+            options.launcher.clone(),
+        );
         Ok(Self {
             inner: Arc::new(Inner {
                 options,
@@ -349,6 +367,7 @@ impl Core {
                 shells: Mutex::new(BTreeMap::new()),
                 probes: Mutex::new(Vec::new()),
                 shutting_down: AtomicBool::new(false),
+                sandbox,
             }),
         })
     }
@@ -529,6 +548,7 @@ impl Core {
             hooks,
             policy,
             board,
+            sandbox,
             template,
             loaded,
             images,
@@ -555,6 +575,7 @@ impl Core {
             hooks,
             policy,
             board,
+            sandbox,
             template: Mutex::new(template),
             loaded,
             images,
@@ -579,7 +600,11 @@ impl Core {
             let _ = task.await;
         }
         let log = Arc::clone(&live.log);
+        let sandbox = Arc::clone(&live.sandbox);
         let closed = Self::blocking(move || {
+            // Nothing of the session runs any more: what its commands left
+            // in their temporary directory goes.
+            sandbox.remove_temp();
             let mut kept = lock(&log);
             if let Some(disk) = kept.disk() {
                 // The base state, if its capture ends in time. It nearly
@@ -678,7 +703,7 @@ impl Core {
                         sessions: true,
                         mcp: false,
                         extensions: false,
-                        sandbox: SandboxStatus::Off,
+                        sandbox: self.inner.sandbox.status(),
                         experimental: Vec::new(),
                     },
                 }))
@@ -1324,6 +1349,15 @@ impl Core {
         .await?;
         lock(&live.template).parts = parts;
         live.policy.replace(engine);
+        // Nothing is confined at `unrestricted`, and everything is again
+        // below it.
+        live.sandbox.set_level(&level);
+        live.policy.set_sandboxed(live.sandbox.confines());
+        live.handle.set_sandbox(if live.sandbox.confines() {
+            SandboxStatus::Enforcing
+        } else {
+            SandboxStatus::Off
+        });
         live.handle.set_level(level, Some(lease_id));
         if let Some(message) = notice {
             live.hooks

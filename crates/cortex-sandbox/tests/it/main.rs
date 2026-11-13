@@ -81,7 +81,10 @@ fn child_entry() {
         Some((at, LAUNCH)) => {
             let rest = std::env::args_os().skip(at + 1).collect();
             let code = cortex_sandbox::launch::run(rest);
-            #[expect(clippy::exit, reason = "the launcher ends as the hidden subcommand does")]
+            #[expect(
+                clippy::exit,
+                reason = "the launcher ends as the hidden subcommand does"
+            )]
             std::process::exit(code);
         }
         #[cfg(target_os = "linux")]

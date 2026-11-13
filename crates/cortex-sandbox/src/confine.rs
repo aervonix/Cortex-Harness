@@ -83,7 +83,11 @@ fn abi(version: u8) -> Result<ABI, String> {
         7 => ABI::V7,
         8 => ABI::V8,
         9 => ABI::V9,
-        other => return Err(format!("version {other} is not one the sandbox enforces with")),
+        other => {
+            return Err(format!(
+                "version {other} is not one the sandbox enforces with"
+            ));
+        }
     })
 }
 
@@ -121,9 +125,7 @@ fn landlock(policy: &Policy) -> Result<(), String> {
     let null = (AccessFs::ReadFile | AccessFs::WriteFile | AccessFs::Truncate) & handled;
     created = grant(created, Path::new("/dev/null"), null, abi)?;
 
-    let status = created
-        .restrict_self()
-        .map_err(|error| error.to_string())?;
+    let status = created.restrict_self().map_err(|error| error.to_string())?;
     if status.ruleset != RulesetStatus::FullyEnforced {
         return Err(format!(
             "the kernel enforced the rules only as {:?}",
@@ -264,7 +266,9 @@ fn seccomp(network: Network) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     for filter in [main, clone3] {
-        let program: BpfProgram = filter.try_into().map_err(|error: seccompiler::BackendError| error.to_string())?;
+        let program: BpfProgram = filter
+            .try_into()
+            .map_err(|error: seccompiler::BackendError| error.to_string())?;
         seccompiler::apply_filter(&program).map_err(|error| error.to_string())?;
     }
     Ok(())

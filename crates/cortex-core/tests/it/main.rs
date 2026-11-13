@@ -30,6 +30,7 @@ mod gates;
 mod lifecycle;
 mod plan;
 mod provider;
+mod sandbox;
 mod secrets;
 mod settings;
 mod shell;
@@ -64,6 +65,25 @@ use serde_json::{Value, json};
 pub const MODEL: &str = "claude-opus-5-5";
 /// Another model of the built-in catalog.
 pub const OTHER_MODEL: &str = "claude-haiku-5-5";
+
+/// The argument that makes this binary the sandbox launcher, as the
+/// harness's hidden subcommand makes the real one.
+pub const LAUNCH: &str = "cx-launch";
+
+/// What the test runner runs as an ordinary test, which passes at once, and
+/// what the sandbox tests start as the launcher.
+#[test]
+fn launcher_entry() {
+    let arguments: Vec<OsString> = std::env::args_os().collect();
+    if let Some(at) = arguments.iter().position(|argument| argument == LAUNCH) {
+        let code = cortex_sandbox::launch::run(arguments[at + 1..].to_vec());
+        #[expect(
+            clippy::exit,
+            reason = "the launcher ends as the hidden subcommand does"
+        )]
+        std::process::exit(code);
+    }
+}
 
 /// Gives every provider the scripted client.
 struct Scripted(ScriptedProvider);

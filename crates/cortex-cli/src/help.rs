@@ -160,5 +160,6 @@ mod tests {
             assert!(text.contains(flag.names), "{}", flag.names);
         }
         assert!(!text.contains(crate::args::GUARD));
+        assert!(!text.contains(crate::args::SANDBOX));
     }
 }

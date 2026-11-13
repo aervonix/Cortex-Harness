@@ -21,6 +21,12 @@ use lexopt::{Arg, Parser, ValueExt};
 /// executable with it. It is not in the help.
 pub(crate) const GUARD: &str = "__tree-guard";
 
+/// The hidden subcommand whose body is the sandbox launcher
+/// (`cortex_sandbox::launch::run`). The core starts the harness's own
+/// executable with it, the policy on its standard input and the command
+/// after `--`. It is not in the help.
+pub(crate) const SANDBOX: &str = "__sandbox";
+
 /// A flag of a run, as the help shows it.
 pub(crate) struct Flag {
     /// The names: `-p, --print`.
