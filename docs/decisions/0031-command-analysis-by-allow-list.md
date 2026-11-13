@@ -51,6 +51,12 @@ What the 43 lines showed of `brush-parser`, the only serious parser candidate:
 - **Lines a parser would have read are asked about:** `echo $HOME`, `find . -name \*.rs`, `for f in *.rs; do …; done`, `VAR=1 make`. Where that proves too often, the subset can grow one form at a time, each with its cases in the comparison against the real shells.
 - **Upkeep is ours.** A new shell feature that changes what the subset means would be ours to notice. The comparison test runs against the shells the CI runners have, so a change in bash, dash or PowerShell that matters shows there.
 
+## Amended in the fixes to step 12, on 2026-11-13
+
+- **A redirection's file may be a pattern** (`> *.txt`). It was refused; it is now kept and flagged, as an argument's pattern is, and the engine judges what it matches ([architecture/06-permissions-and-sandbox.md](../architecture/06-permissions-and-sandbox.md), "Command analysis as built", rule 3). The part is on no safe list.
+- **PowerShell's subset is narrower:** a quoted text that is empty, holds a `"`, ends with `\`, or holds `& | < > ^ %` is not modelled, because Windows PowerShell and `cmd.exe` pass it on as other words than the parser read.
+- **What an unmodelled line names is checked:** its raw words go through the same checks of protected paths, secrets and the harness's own files as a modelled command's arguments.
+
 ## Revisit when
 
 - Statistics from real sessions show a form outside the subset being asked about often enough to matter.

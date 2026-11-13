@@ -9,7 +9,7 @@
 //! - **A command is on the table with its options, never as a whole.** Each
 //!   entry lists the options that are safe, by their exact names. An option
 //!   that is not listed takes the command off the table: `sort -o out`,
-//!   `find -delete`, `git diff --output=x`, `rg --pre cmd`. So does an
+//!   `find -delete`, `git diff --output=x`, `fd -x cmd`. So does an
 //!   abbreviation of a long option, which GNU programs accept and this
 //!   table does not.
 //! - **Programs that are languages are not on it**, in any form but one:

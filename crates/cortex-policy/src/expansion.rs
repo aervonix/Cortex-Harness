@@ -201,7 +201,11 @@ mod tests {
             ("[A-_]EAD", "HEAD", true),
             (".gi[!t]", ".git", true),
             (".gi[a]t]", ".git", true),
-            (".pre[a-z]commit-config.yaml", ".pre-commit-config.yaml", true),
+            (
+                ".pre[a-z]commit-config.yaml",
+                ".pre-commit-config.yaml",
+                true,
+            ),
             ("x[", "x", true),
             // A hidden name needs a `.` written out, or a set.
             ("*", ".git", false),
