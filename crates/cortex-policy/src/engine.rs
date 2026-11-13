@@ -1719,8 +1719,10 @@ impl Engine {
     /// A `~` is the home directory only where the shell takes it as one: at
     /// the start of the word, unquoted. Anywhere else it is a name, and the
     /// text is tried as one too (`"~/../.github/workflows/ci.yml"` is under
-    /// a folder named `~` in the workspace). In PowerShell, whose own
-    /// commands read a quoted `~` as home, both are tried.
+    /// a folder named `~` in the workspace). In PowerShell both are tried,
+    /// quoted or not: its own commands read a quoted `~` as home, PowerShell
+    /// 7 passes a bare one to a native program as home, and Windows
+    /// PowerShell passes a bare one on as it is.
     fn judge_named(
         &self,
         rules: &RuleSet,
@@ -1735,7 +1737,9 @@ impl Engine {
             let pattern_word = !word.is_fixed() || self.shell == ShellSyntax::PowerShell;
             let found = may_name(&word.text).into_iter().find_map(|text| {
                 let home_written = word.home && text.len() == word.text.len();
-                let as_name = (text.starts_with('~') && !home_written).then(|| format!("./{text}"));
+                let as_name = (text.starts_with('~')
+                    && (!home_written || self.shell == ShellSyntax::PowerShell))
+                    .then(|| format!("./{text}"));
                 let mut texts: Vec<&str> = Vec::new();
                 if let Some(as_name) = &as_name {
                     texts.push(as_name);
@@ -2270,10 +2274,11 @@ impl Engine {
     }
 
     /// The texts a word gives a path by: a `~` the shell does not take as
-    /// the home directory is a name, in a folder named `~` (and in
-    /// PowerShell, whose own commands read a quoted `~` as home, both).
+    /// the home directory is a name, in a folder named `~`. In PowerShell
+    /// a word that begins with `~` is both, quoted or not (see
+    /// [`judge_named`](Self::judge_named)).
     fn texts_of(&self, word: &crate::command::Word) -> Vec<String> {
-        if word.text.starts_with('~') && !word.home {
+        if word.text.starts_with('~') && (!word.home || self.shell == ShellSyntax::PowerShell) {
             let mut texts = vec![format!("./{}", word.text)];
             if self.shell == ShellSyntax::PowerShell {
                 texts.push(word.text.clone());

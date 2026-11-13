@@ -617,11 +617,30 @@ fn sys_a_program_receives_the_words_the_analysis_gives_from_every_powershell() {
         );
         let got = echoed(&text);
         assert_eq!(got.len(), lines.len(), "{shell} {mode}: {text}");
+        // PowerShell 7 passes a bare `~` at the start of a word to a native
+        // program as the home directory, and Windows PowerShell does not:
+        // the engine judges such a word both ways (06, "Command analysis as
+        // built", rule 6).
+        let home = std::env::var("USERPROFILE").unwrap_or_default();
+        let same_word = |expected: &String, got: &String| {
+            expected == got
+                || (!home.is_empty()
+                    && expected.starts_with('~')
+                    && got.strip_prefix(home.as_str()).is_some_and(|rest| {
+                        rest.replace('/', "\\") == expected[1..].replace('/', "\\")
+                    }))
+        };
         let differences: Vec<String> = lines
             .iter()
             .zip(&expected)
             .zip(&got)
-            .filter(|((_, expected), got)| expected != got)
+            .filter(|((_, expected), got)| {
+                expected.len() != got.len()
+                    || !expected
+                        .iter()
+                        .zip(got.iter())
+                        .all(|(e, g)| same_word(e, g))
+            })
             .map(|((line, expected), got)| {
                 format!("{line:?}\n  the program received: {got:?}\n  the analysis: {expected:?}")
             })
