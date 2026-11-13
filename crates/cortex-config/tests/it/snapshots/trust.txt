@@ -10,13 +10,13 @@ model.judge                        preference
 model.effort                       preference
 model.reasoning                    preference
 model.max_output                   preference
-model.speed                        preference
+model.speed                        by value: `standard` is a preference, any other tier raises cost
 model.speed_fallback               preference
 model.speed_wait                   preference
 model.speed_cooldown               preference
 model.roles.*.provider             preference
 model.roles.*.effort               preference
-model.roles.*.speed                preference
+model.roles.*.speed                by value: `standard` is a preference, any other tier raises cost
 providers.*.enabled                user only
 providers.*.protocol               user only
 providers.*.base_url               user only

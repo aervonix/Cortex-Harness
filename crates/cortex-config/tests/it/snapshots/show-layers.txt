@@ -62,7 +62,7 @@ retry.max_wait = "5m"  # project-local: ~/work/app/.cortex/config.local.toml:2
 
 ## profile
 model.effort = "high"           # profile review (user: ~/cortex/config.toml:32)
-model.speed = "fast"            # profile review (project: ~/work/app/.cortex/config.toml:10)
+model.reasoning = "none"        # profile review (project: ~/work/app/.cortex/config.toml:10)
 permissions.mode = "read-only"  # profile review (user: ~/cortex/config.toml:33)
 
 ## environment

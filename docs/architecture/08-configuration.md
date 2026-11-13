@@ -178,14 +178,16 @@ A repository must not be able to take over the harness by containing a configura
 
 | Class of key | Examples | Project layer |
 |---|---|---|
-| Harmless preferences | default model, reasoning level, speed tier, retry settings, a `deny` or `ask` permission rule, a protected path | Applied always. |
+| Harmless preferences | default model, reasoning level, the `standard` speed tier, retry settings, a `deny` or `ask` permission rule, a protected path | Applied always. |
 | Can run code | hooks, extensions, MCP servers, verification commands, custom commands with shell steps | Applied only after the user trusts the project, and pinned by hash ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)). |
 | Can widen access | permission `allow` rules, sandbox `write` paths, network on, a permission mode above the one in effect (up to `supervised`) | Applied only after trust. Shown to the user at that time. |
+| Can raise cost | a speed tier other than `standard`, for the session or for a role | Applied only after trust. Shown to the user at that time. |
 | User-only | credentials, everything about a provider (base URL, headers, protocol, key variable), permission modes above `supervised`, sandbox off, a higher limit, the selected profile, usage sources, the data directory, proxy and CA settings, the log level, the compatibility readers, anything under `[managed]` | Ignored in project layers, with a warning. Trust does not change this. |
 
-- **Some keys are classed by their value.** A permission rule that denies or asks is a preference, and one that allows widens access. `sandbox.network = "off"` is a preference and `"full"` widens access. A permission mode at or below the one already in effect is a preference; above it, up to `supervised`, it widens access; above `supervised` it is the user's alone.
+- **Some keys are classed by their value.** A permission rule that denies or asks is a preference, and one that allows widens access. `sandbox.network = "off"` is a preference and `"full"` widens access. A speed of `standard` is a preference, and any other tier raises cost: a fast tier costs about twice as much per token, and an untrusted repository must not be able to raise what its user spends (the owner's decision, 2026-11-13). A project can always bring the speed down. A permission mode at or below the one already in effect is a preference; above it, up to `supervised`, it widens access; above `supervised` it is the user's alone.
 - **A limit can be tightened by anyone and loosened by the user alone.** A project's limit applies when it is lower than the one in effect, or when there was none. A higher one is ignored, trusted or not: a budget is the user's.
-- **What is held back is listed.** A load returns every project setting that is waiting for trust, with its value and the line it is on, so a front end can show exactly what trusting the project would turn on.
+- **Joining a list is not a way in.** The entries a project adds to a joined list are judged one by one: its `allow` rules and its writable paths wait for trust, and the user's entries stay.
+- **What is held back is listed.** A load returns every project setting that is waiting for trust, with its class, its value and the line it is on, so a front end can show exactly what trusting the project would turn on.
 - **Trust is an input.** `cortex-config` is told whether the project is trusted. The trust store, and the hashes that pin what was trusted, are `cortex-policy`'s.
 - **The rules apply to both project files and to a profile a project defines.** The user's own layers, the environment and the command line are not subject to them.
 
@@ -251,7 +253,7 @@ On Linux the keychain is not the default because it depends on a desktop session
 **The file store.**
 
 - `credentials.toml` is written owner-only on every write: mode `0600` on Linux, and on Windows an access list with the user alone ([decision 0029](../decisions/0029-owner-only-files-on-windows.md)). The file is private from the moment its temporary file is created.
-- A file someone made by hand with wider permissions is still read, and reported as not private. The next write makes it private. Its directory, if it was already there, is left as it is.
+- A file someone made by hand with wider permissions is still read, and reported as not private: the status of a provider's credential carries the warning, for `cortex auth status` and the diagnostics to show. The next write makes it private. Its directory, if it was already there, is left as it is. Refusing to read it would stop people working on single-user machines for little gain.
 - Access to the credentials file is guarded by a lock file, so two processes cannot interleave writes. The lock is the operating system's, held on an open file across the read, the change and the write: it goes when its holder exits, however it exits, so there is no stale lock to clear. A reader needs no lock, because the file is replaced in one step.
 - A file with a newer format version, or one that is not TOML, is an error and is left untouched. Entries this version does not know are kept when the file is rewritten.
 

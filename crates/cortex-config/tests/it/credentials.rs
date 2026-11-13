@@ -150,6 +150,24 @@ fn a_file_made_by_hand_is_read_reported_and_made_private_by_the_next_write() {
 
     assert_eq!(store.is_private().unwrap(), Some(false), "reported");
     assert_eq!(store.get("example").unwrap().unwrap().expose(), KEY_ONE);
+    // `cortex auth status` gets the same fact in words, with the key's
+    // source, and never the key.
+    let env = Env::empty(Platform::CURRENT);
+    let lookup = Lookup {
+        provider: "example",
+        flag: None,
+        variable: None,
+        env: &env,
+        store: &store,
+    };
+    let status = credentials::status(lookup).unwrap();
+    let warning = status.store_warning.clone().expect("a warning");
+    assert!(
+        warning.contains("can be opened by other users"),
+        "{warning}"
+    );
+    assert!(warning.contains("credentials.toml"), "{warning}");
+    assert!(!format!("{status:?}").contains(KEY_ONE));
 
     store.set("second", &Secret::new(KEY_TWO)).unwrap();
     assert_eq!(
@@ -158,6 +176,7 @@ fn a_file_made_by_hand_is_read_reported_and_made_private_by_the_next_write() {
         "closed by the write"
     );
     assert_eq!(store.get("example").unwrap().unwrap().expose(), KEY_ONE);
+    assert_eq!(credentials::status(lookup).unwrap().store_warning, None);
     assert_eq!(
         private::is_private(&directory).unwrap(),
         directory_before,

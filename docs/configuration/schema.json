@@ -320,10 +320,10 @@
                 "x-cortex-trust": "preference"
               },
               "speed": {
-                "description": "The role's speed tier. For `main` it overrides `model.speed`.",
+                "description": "The role's speed tier. For `main` it overrides `model.speed`. From a project's file, a tier other than `standard` waits for trust.",
                 "type": "string",
                 "x-cortex-effect": "at once",
-                "x-cortex-trust": "preference"
+                "x-cortex-trust": "by value: `standard` is a preference, any other tier raises cost"
               }
             },
             "type": "object"
@@ -333,10 +333,10 @@
         },
         "speed": {
           "default": "standard",
-          "description": "The session's speed tier, which the main role runs at: `standard`, `fast` where the model offers it, or a provider's own tier name. The utility roles do not follow it: they run at `standard` unless `model.roles.<role>.speed` says otherwise.",
+          "description": "The session's speed tier, which the main role runs at: `standard`, `fast` where the model offers it, or a provider's own tier name. The utility roles do not follow it: they run at `standard` unless `model.roles.<role>.speed` says otherwise. A project's file may set `standard`; any other tier costs more, and waits for the user to trust the project.",
           "type": "string",
           "x-cortex-effect": "at once",
-          "x-cortex-trust": "preference"
+          "x-cortex-trust": "by value: `standard` is a preference, any other tier raises cost"
         },
         "speed_cooldown": {
           "default": "10m",
