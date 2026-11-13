@@ -25,7 +25,10 @@
 )]
 
 mod approvals;
+mod events;
+mod gates;
 mod plan;
+mod provider;
 mod secrets;
 mod settings;
 mod shell;
