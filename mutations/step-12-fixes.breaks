@@ -459,7 +459,7 @@ in: Engine::judge_pattern
 find: could(pattern, ".git")
 replace: could(pattern, ".git-never")
 caught-by:
-    bypasses::a_pattern_names_every_path_it_could_match
+    bypasses::the_final_review_of_the_fixes_holds
 
 [break] secret-names-not-matched-by-a-pattern
 rule: A pattern that could match a file that looks like a secret is asked about.

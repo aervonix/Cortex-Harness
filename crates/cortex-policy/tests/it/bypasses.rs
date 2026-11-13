@@ -1696,8 +1696,12 @@ fn the_final_review_of_the_fixes_holds() {
         // A `cd` inside a line the analysis does not model.
         "cd .github && cp /tmp/evil.yml workflows/ci.yml #",
         "cd ./x; cd ../.github; cp /tmp/evil.yml workflows/ci.yml #",
-        // A word with a space in it, after a `cd` that was not followed.
+        // A word with a space in it, after a `cd` that was not followed:
+        // tried from every place, not the first only.
         "cd .github/workflows; sh -c 'cp /tmp/evil.yml ci.yml'",
+        "cd sub; sh -c 'cp /tmp/x ../.github/workflows/ci.yml'",
+        // A pattern that could match `.git` below the root.
+        "cp evil sub/.gi?/config",
         // zsh reads `**` as any depth.
         "cat **/*.pem",
         // The first `cd -` of a line goes where `OLDPWD` says.
@@ -1737,6 +1741,19 @@ fn the_final_review_of_the_fixes_holds() {
         assert_ne!(said(&outcome), Allow, "{command:?}");
         assert_ne!(said(&outcome), ReadOnly, "{command:?}");
     }
+    // A quoted `~` is a name, in a folder named `~`: a rule on such a
+    // folder meets it, where the home directory would not.
+    let tilde_folder = engine_with(|parts| {
+        parts.level = Level::Unrestricted;
+        parts.rules = vec![
+            user(Effect::Write, "**/~/**", RuleAction::Deny),
+            user(Effect::Read, "**/~/**", RuleAction::Deny),
+        ];
+    });
+    assert_eq!(said(&shell(&tilde_folder, "echo x > \"~/notes\"")), Deny);
+    let outcome = shell(&tilde_folder, "cat \"~/notes\"");
+    assert_ne!(said(&outcome), ReadOnly, "{}", reason(&outcome));
+    assert_eq!(said(&shell(&tilde_folder, "echo x > ~/notes")), Allow);
     // What runs as before.
     for command in [
         "rm *.o",
