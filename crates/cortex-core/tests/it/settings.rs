@@ -16,7 +16,10 @@ use crate::{Front, MODEL, OTHER_MODEL, World, calls, says};
 
 const UNCACHED: &str = "without the provider's cached prefix";
 
-async fn set(front: &Front, settings: SessionSettings) -> Result<SessionState, cortex_core::OpError> {
+async fn set(
+    front: &Front,
+    settings: SessionSettings,
+) -> Result<SessionState, cortex_core::OpError> {
     let result = front
         .op(Op::SessionSet(SessionSetParams {
             session_id: front.session.clone(),
@@ -64,7 +67,10 @@ fn a_session_can_be_started_at_a_speed_from_its_settings_or_from_the_command_lin
         .unwrap();
         assert_eq!(front.state.speed, Speed::Fast);
         let main = &front.state.roles[&ModelRole::Main];
-        assert_eq!((&main.speed, &main.speed_in_effect), (&Speed::Fast, &Speed::Fast));
+        assert_eq!(
+            (&main.speed, &main.speed_in_effect),
+            (&Speed::Fast, &Speed::Fast)
+        );
         front.turn("go").await;
         assert_eq!(world.provider.requests()[0].speed, Speed::Fast);
         front.close().await;
@@ -172,7 +178,11 @@ fn the_speed_can_be_changed_and_the_state_says_what_is_set_and_what_is_in_effect
 fn a_roles_model_and_reasoning_level_can_be_changed_in_a_running_session() {
     let world = World::new(
         "model_set",
-        [says("From the first."), says("From the second."), says("Third.")],
+        [
+            says("From the first."),
+            says("From the second."),
+            says("Third."),
+        ],
     );
     let core = world.core();
     world.run(async {
@@ -197,7 +207,11 @@ fn a_roles_model_and_reasoning_level_can_be_changed_in_a_running_session() {
         assert_eq!(main.effort.as_deref(), Some("minimal"));
         // Mapped onto the model's own scale, whose weakest level is `low`.
         assert_eq!(main.effort_in_effect.as_deref(), Some("low"));
-        assert_eq!(warned(&front), 1, "the change re-sends the context uncached");
+        assert_eq!(
+            warned(&front),
+            1,
+            "the change re-sends the context uncached"
+        );
 
         front.turn("two").await;
         let request = &world.provider.requests()[1];
@@ -208,7 +222,10 @@ fn a_roles_model_and_reasoning_level_can_be_changed_in_a_running_session() {
         // provider layer's rule.
         assert_eq!(request.messages.len(), 3);
         assert_eq!(
-            request.messages[1].origin.as_ref().map(|origin| origin.model.as_str()),
+            request.messages[1]
+                .origin
+                .as_ref()
+                .map(|origin| origin.model.as_str()),
             Some(MODEL)
         );
 
@@ -226,7 +243,10 @@ fn a_roles_model_and_reasoning_level_can_be_changed_in_a_running_session() {
         assert_eq!(main.model.as_str(), OTHER_MODEL);
         assert_eq!(main.effort_in_effect.as_deref(), Some("max"));
         front.turn("three").await;
-        assert_eq!(world.provider.requests()[2].reasoning.level.as_deref(), Some("max"));
+        assert_eq!(
+            world.provider.requests()[2].reasoning.level.as_deref(),
+            Some("max")
+        );
         front.close().await;
     });
 }
@@ -300,7 +320,9 @@ fn the_level_can_be_lowered_by_whoever_drives_and_raised_only_by_a_user() {
         assert_eq!(world.read("a.txt"), None);
 
         // It may not raise it again.
-        let refused = set(&supervisor, level(Level::Supervised)).await.unwrap_err();
+        let refused = set(&supervisor, level(Level::Supervised))
+            .await
+            .unwrap_err();
         assert_eq!(refused.code, "role_not_allowed");
         assert_eq!(refused.kind, cortex_protocol::ErrorKind::Permission);
         // A user may, and the edit then goes through.
@@ -314,7 +336,9 @@ fn the_level_can_be_lowered_by_whoever_drives_and_raised_only_by_a_user() {
         // there is no sandbox to confine an autonomous session.
         let refused = set(&front, level(Level::Autonomous)).await.unwrap_err();
         assert_eq!(refused.code, "sandbox_required");
-        let refused = set(&front, level(Level::from_wire("godlike"))).await.unwrap_err();
+        let refused = set(&front, level(Level::from_wire("godlike")))
+            .await
+            .unwrap_err();
         assert_eq!(refused.code, "unknown_value");
 
         // Each standing lease is in the log: granted, ended, granted, …

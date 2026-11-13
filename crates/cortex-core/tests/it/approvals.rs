@@ -80,7 +80,10 @@ fn a_call_that_needs_an_answer_is_put_to_the_user_and_runs_when_allowed() {
 
 #[test]
 fn a_denial_with_a_note_reaches_the_model_and_the_run_goes_on() {
-    let world = World::new("deny_note", [protected_write("c1"), says("I will not, then.")]);
+    let world = World::new(
+        "deny_note",
+        [protected_write("c1"), says("I will not, then.")],
+    );
     let core = world.core();
     world.run(async {
         let front = Front::start(&world, &core).await;
@@ -103,7 +106,11 @@ fn a_denial_with_a_note_reaches_the_model_and_the_run_goes_on() {
         assert_eq!(world.read(PROTECTED), None);
         let results = front.results();
         assert_eq!(results[0].1, "denied");
-        assert!(results[0].2.contains("not in this repository"), "{}", results[0].2);
+        assert!(
+            results[0].2.contains("not in this repository"),
+            "{}",
+            results[0].2
+        );
         assert_eq!(front.last_text(), "I will not, then.");
         front.close().await;
     });
@@ -192,7 +199,10 @@ fn the_first_answer_wins_and_the_other_client_is_told() {
 
 #[test]
 fn with_nobody_to_ask_the_call_is_refused_recorded_and_the_run_goes_on() {
-    let world = World::new("nobody", [protected_write("c1"), says("I could not write it.")]);
+    let world = World::new(
+        "nobody",
+        [protected_write("c1"), says("I could not write it.")],
+    );
     let core = world.core();
     world.run(async {
         let front = Front::start_as(
@@ -223,7 +233,10 @@ fn with_nobody_to_ask_the_call_is_refused_recorded_and_the_run_goes_on() {
 
 #[test]
 fn with_fail_on_denial_a_call_nobody_can_answer_ends_the_turn_as_denied() {
-    let world = World::new("fail_on_denial", [protected_write("c1"), says("never sent")]);
+    let world = World::new(
+        "fail_on_denial",
+        [protected_write("c1"), says("never sent")],
+    );
     let core = world.core_with(|options| options.fail_on_denial = true);
     world.run(async {
         let front = Front::start_as(
@@ -240,7 +253,11 @@ fn with_fail_on_denial_a_call_nobody_can_answer_ends_the_turn_as_denied() {
         assert_eq!(error.code, "permission_denied");
         assert_eq!(error.kind, cortex_protocol::ErrorKind::Permission);
         // The turn stopped there: the model was not asked again.
-        assert_eq!(world.provider.remaining(), 1, "the run went on after the denial");
+        assert_eq!(
+            world.provider.remaining(),
+            1,
+            "the run went on after the denial"
+        );
         assert_eq!(world.read(PROTECTED), None);
         assert_eq!(core.permission_denials(&front.session).len(), 1);
         front.close().await;
@@ -267,8 +284,7 @@ fn fail_on_denial_changes_nothing_when_somebody_can_answer() {
 #[test]
 fn an_approval_nobody_answers_in_time_is_a_denial() {
     let world = World::new("timeout", [protected_write("c1"), says("Nobody answered.")]);
-    let core =
-        world.core_with(|options| options.approval_timeout = Some(Duration::from_secs(30)));
+    let core = world.core_with(|options| options.approval_timeout = Some(Duration::from_secs(30)));
     world.run(async {
         let front = Front::start(&world, &core).await;
         front.prompt("set up CI").await;
@@ -303,7 +319,10 @@ fn an_interrupt_withdraws_an_open_question() {
         assert_eq!(front.ends()[0].outcome, TurnOutcome::Interrupted);
         assert_eq!(resolutions(&front), [Resolution::Cancelled]);
         assert_eq!(
-            front.answer(&id, ApprovalChoice::AllowOnce).unwrap_err().code,
+            front
+                .answer(&id, ApprovalChoice::AllowOnce)
+                .unwrap_err()
+                .code,
             "request_not_open"
         );
         assert_eq!(world.read(PROTECTED), None);

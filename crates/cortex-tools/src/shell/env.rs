@@ -290,7 +290,7 @@ mod tests {
         let built = build(
             env(&[
                 ("CDPATH", "/somewhere/else"),
-                ("RIPGREP_CONFIG_PATH", "/home/dev/.ripgreprc"),
+                ("RIPGREP_CONFIG_PATH", "/etc/ripgreprc"),
                 ("CDPATHS", "kept: another name"),
                 ("PATH", "/usr/bin"),
             ]),

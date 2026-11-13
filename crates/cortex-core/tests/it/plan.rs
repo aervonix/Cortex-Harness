@@ -72,7 +72,13 @@ fn the_models_plan_and_the_users_edits_reach_each_other_and_every_front_end() {
     let world = World::new(
         "plan",
         [
-            plan_call("c1", &[("a", "Read the code", "active"), ("b", "Fix the bug", "pending")]),
+            plan_call(
+                "c1",
+                &[
+                    ("a", "Read the code", "active"),
+                    ("b", "Fix the bug", "pending"),
+                ],
+            ),
             says("Planned."),
             // After the user's edit: the model, which has been shown the
             // edit, writes the plan again.
@@ -143,7 +149,11 @@ fn the_models_plan_and_the_users_edits_reach_each_other_and_every_front_end() {
             })
             .map(|payload| payload["replaced"] == true)
             .collect::<Vec<_>>();
-        assert_eq!(replaced, [true, true], "the notice was recorded, so the call went through");
+        assert_eq!(
+            replaced,
+            [true, true],
+            "the notice was recorded, so the call went through"
+        );
         assert_eq!(updates(&front), [Actor::Agent, Actor::User, Actor::Agent]);
         assert_eq!(get(&front).await.items[0].status, PlanStatus::Done);
 
@@ -240,7 +250,10 @@ fn a_rewind_goes_back_to_the_plan_of_that_point() {
         [
             plan_call("c1", &[("a", "First plan", "active")]),
             says("Planned."),
-            plan_call("c2", &[("a", "Second plan", "active"), ("b", "More", "pending")]),
+            plan_call(
+                "c2",
+                &[("a", "Second plan", "active"), ("b", "More", "pending")],
+            ),
             says("Planned again."),
         ],
     );

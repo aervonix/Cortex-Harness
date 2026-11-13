@@ -211,7 +211,9 @@ struct Shared {
     /// The stderr sink's level, readable without its lock: 0 is off, and
     /// 1 to 5 are `error` to `trace`.
     stderr_level: AtomicU64,
-    secrets: Arc<SecretFilter>,
+    /// Replaced whole when a key is added, so that a line being written
+    /// never waits for more than the swap.
+    secrets: RwLock<Arc<SecretFilter>>,
     clock: SharedClock,
     spans: Mutex<HashMap<u64, OpenSpan>>,
     next_id: AtomicU64,
@@ -273,7 +275,7 @@ pub fn start(options: LogOptions) -> io::Result<(LogSubscriber, LogHandle)> {
         file,
         stderr: Mutex::new(options.stderr.map(|(level, out)| Stderr { level, out })),
         stderr_level: AtomicU64::new(stderr_level),
-        secrets: options.secrets,
+        secrets: RwLock::new(options.secrets),
         clock: options.clock,
         spans: Mutex::new(HashMap::new()),
         next_id: AtomicU64::new(1),
@@ -323,6 +325,23 @@ impl LogHandle {
         tracing::callsite::rebuild_interest_cache();
     }
 
+    /// Also masks `secret` by value in everything logged from now on. The
+    /// credentials are found after logging starts (a session finds its
+    /// provider's key when it is put together), so whoever finds one
+    /// hands it over here.
+    pub fn add_secret(&self, secret: &crate::Secret) {
+        let mut secrets = self
+            .shared
+            .secrets
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !secrets.knows(secret) {
+            let mut wider = SecretFilter::clone(&secrets);
+            wider.add_value(secret);
+            *secrets = Arc::new(wider);
+        }
+    }
+
     /// The spans that have closed.
     #[must_use]
     pub fn timings(&self) -> Timings {
@@ -359,6 +378,15 @@ impl Drop for LogHandle {
 }
 
 impl Shared {
+    fn secrets(&self) -> Arc<SecretFilter> {
+        Arc::clone(
+            &self
+                .secrets
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
     fn wanted(&self, level: &Level, target: &str) -> bool {
         self.wanted_by_file(level, target) || self.wanted_by_stderr(level)
     }
@@ -569,8 +597,9 @@ impl tracing::Subscriber for LogSubscriber {
             attributes.parent().map(Id::into_u64)
         };
         let mut fields = Map::new();
+        let secrets = shared.secrets();
         attributes.record(&mut Fields {
-            secrets: &shared.secrets,
+            secrets: &secrets,
             message: None,
             fields: &mut fields,
         });
@@ -591,8 +620,9 @@ impl tracing::Subscriber for LogSubscriber {
 
     fn record(&self, span: &Id, values: &Record<'_>) {
         let mut fields = Map::new();
+        let secrets = self.shared.secrets();
         values.record(&mut Fields {
-            secrets: &self.shared.secrets,
+            secrets: &secrets,
             message: None,
             fields: &mut fields,
         });
@@ -607,8 +637,9 @@ impl tracing::Subscriber for LogSubscriber {
         let shared = &self.shared;
         let metadata = event.metadata();
         let mut fields = Map::new();
+        let secrets = shared.secrets();
         let mut visitor = Fields {
-            secrets: &shared.secrets,
+            secrets: &secrets,
             message: None,
             fields: &mut fields,
         };

@@ -50,9 +50,12 @@ fn an_invalid_entry_of_the_users_catalog_stops_the_core_and_says_where_and_what(
     assert_eq!(error.code, "invalid_catalog");
     let message = &error.message;
     // The file and the line, the entry, and what is wrong with it.
-    assert!(message.contains("~/.config/cortex-harness/config.toml:")
-        || message.contains("cortex-harness/config.toml:")
-        || message.contains("cortex-harness\\config.toml:"), "{message}");
+    assert!(
+        message.contains("~/.config/cortex-harness/config.toml:")
+            || message.contains("cortex-harness/config.toml:")
+            || message.contains("cortex-harness\\config.toml:"),
+        "{message}"
+    );
     assert!(message.contains("[models.local]"), "{message}");
     assert!(message.contains("local/house-model"), "{message}");
     assert!(message.contains("max_output"), "{message}");
@@ -63,13 +66,21 @@ fn an_invalid_entry_of_the_users_catalog_stops_the_core_and_says_where_and_what(
     let error = start_error(&world);
     assert_eq!(error.code, "invalid_catalog");
     assert!(error.message.contains("inputs"), "{}", error.message);
-    assert!(error.message.contains("[models.local]"), "{}", error.message);
+    assert!(
+        error.message.contains("[models.local]"),
+        "{}",
+        error.message
+    );
 
     // Something that is not an entry at all.
     world.user_config("[models]\nlocal = \"house-model\"\n");
     let error = start_error(&world);
     assert_eq!(error.code, "invalid_catalog");
-    assert!(error.message.contains("[models.local]"), "{}", error.message);
+    assert!(
+        error.message.contains("[models.local]"),
+        "{}",
+        error.message
+    );
 }
 
 #[test]
@@ -86,12 +97,22 @@ fn a_valid_entry_of_the_users_catalog_is_a_model_like_any_other() {
         let request = &world.provider.requests()[0];
         assert_eq!(request.model.info.context_window, 100_000);
         // It is listed with the built-in ones.
-        let listed = front.op(Op::ModelsList(cortex_protocol::methods::Empty {})).await.unwrap();
+        let listed = front
+            .op(Op::ModelsList(cortex_protocol::methods::Empty {}))
+            .await
+            .unwrap();
         let OpResult::ModelsList(listed) = listed else {
             panic!("not models");
         };
-        let ids: Vec<&str> = listed.models.iter().map(|model| model.id.as_str()).collect();
-        assert!(ids.contains(&"house-model") && ids.contains(&MODEL), "{ids:?}");
+        let ids: Vec<&str> = listed
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect();
+        assert!(
+            ids.contains(&"house-model") && ids.contains(&MODEL),
+            "{ids:?}"
+        );
         front.close().await;
     });
 }
@@ -106,7 +127,11 @@ fn a_session_is_refused_when_a_protected_path_cannot_be_placed() {
         let error = session_error(&world, &core).await;
         assert_eq!(error.kind, ErrorKind::Config);
         assert!(error.message.contains("secrets"), "{}", error.message);
-        assert!(error.message.contains("sandbox.protect"), "{}", error.message);
+        assert!(
+            error.message.contains("sandbox.protect"),
+            "{}",
+            error.message
+        );
     });
     assert!(world.logs().is_empty());
 }
@@ -150,7 +175,10 @@ fn a_session_needs_a_model_and_a_key() {
     let core = world.core();
     world.run(async {
         let error = session_error(&world, &core).await;
-        assert_eq!((error.kind.clone(), error.code.as_str()), (ErrorKind::Config, "no_model"));
+        assert_eq!(
+            (error.kind.clone(), error.code.as_str()),
+            (ErrorKind::Config, "no_model")
+        );
     });
 
     // With a model and the real provider layer, and no key anywhere.
@@ -160,7 +188,11 @@ fn a_session_needs_a_model_and_a_key() {
         let error = session_error(&world, &core).await;
         assert_eq!(error.kind, ErrorKind::Auth);
         assert_eq!(error.code, "no_credentials");
-        assert!(error.message.contains("ANTHROPIC_API_KEY"), "{}", error.message);
+        assert!(
+            error.message.contains("ANTHROPIC_API_KEY"),
+            "{}",
+            error.message
+        );
     });
 
     // A provider whose protocol this build does not speak.
@@ -257,7 +289,11 @@ fn a_configuration_directory_behind_a_link_is_protected_where_it_really_is() {
         assert_eq!(front.state.roles[&ModelRole::Main].model.as_str(), MODEL);
         front.turn("read the real file").await;
         let result = &front.results()[0];
-        assert_ne!(result.1, "success", "read through its real path: {}", result.2);
+        assert_ne!(
+            result.1, "success",
+            "read through its real path: {}",
+            result.2
+        );
         assert!(!result.2.contains(MODEL), "{}", result.2);
         front.close().await;
     });

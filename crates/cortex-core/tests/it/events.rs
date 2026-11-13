@@ -11,7 +11,12 @@ use cortex_testkit::{Gate, Response};
 
 use crate::{Front, World, settle};
 
-async fn read(front: &Front, item: Option<ItemId>, limit: Option<u32>, cursor: Option<String>) -> cortex_protocol::methods::SessionReadResult {
+async fn read(
+    front: &Front,
+    item: Option<ItemId>,
+    limit: Option<u32>,
+    cursor: Option<String>,
+) -> cortex_protocol::methods::SessionReadResult {
     let result = front
         .op(Op::SessionRead(SessionReadParams {
             session_id: front.session.clone(),
@@ -91,7 +96,7 @@ fn an_item_in_progress_can_be_read_with_what_it_has_so_far() {
             panic!("not an assistant message");
         };
         assert_eq!(partial.stop_reason, None);
-        assert_eq!(result.incomplete, [partial.id.clone()]);
+        assert_eq!(result.incomplete, std::slice::from_ref(&partial.id));
         assert!(result.seq > 0);
         // That one item, by its id.
         let one = read(&late, Some(partial.id.clone()), None, None).await;

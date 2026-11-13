@@ -65,7 +65,7 @@ fn sys_a_command_is_given_the_environment_the_command_analysis_relies_on() {
     let core = world.core_with(|options| {
         let mut env = world.shell_env(&[
             ("CDPATH", "/somewhere/else"),
-            ("RIPGREP_CONFIG_PATH", "/home/dev/.ripgreprc"),
+            ("RIPGREP_CONFIG_PATH", "/etc/ripgreprc"),
             // The user already gives git a setting through its environment.
             ("GIT_CONFIG_COUNT", "1"),
             ("GIT_CONFIG_KEY_0", "user.name"),
@@ -97,13 +97,22 @@ fn sys_a_command_is_given_the_environment_the_command_analysis_relies_on() {
 
         // Git's monitor is off, after the setting the user already gives.
         assert_eq!(env.get("GIT_CONFIG_COUNT").map(String::as_str), Some("2"));
-        assert_eq!(env.get("GIT_CONFIG_KEY_0").map(String::as_str), Some("user.name"));
-        assert_eq!(env.get("GIT_CONFIG_VALUE_0").map(String::as_str), Some("Dev"));
+        assert_eq!(
+            env.get("GIT_CONFIG_KEY_0").map(String::as_str),
+            Some("user.name")
+        );
+        assert_eq!(
+            env.get("GIT_CONFIG_VALUE_0").map(String::as_str),
+            Some("Dev")
+        );
         assert_eq!(
             env.get("GIT_CONFIG_KEY_1").map(String::as_str),
             Some("core.fsmonitor")
         );
-        assert_eq!(env.get("GIT_CONFIG_VALUE_1").map(String::as_str), Some("false"));
+        assert_eq!(
+            env.get("GIT_CONFIG_VALUE_1").map(String::as_str),
+            Some("false")
+        );
 
         // No provider's key: the built-in one's, a configured one's, and
         // what configuration lists.
@@ -254,7 +263,10 @@ fn sys_undo_puts_back_what_a_command_changed_where_git_still_has_it() {
             })
             .unwrap();
         front.turn_allowing("change things").await;
-        assert_ne!(std::fs::read(world.workspace.join("tracked.txt")).unwrap(), committed);
+        assert_ne!(
+            std::fs::read(world.workspace.join("tracked.txt")).unwrap(),
+            committed
+        );
         assert!(world.workspace.join("created.txt").exists());
 
         // The round's checkpoint: the tracked file with the content git

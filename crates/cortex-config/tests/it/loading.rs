@@ -481,6 +481,7 @@ fn the_settings_later_steps_read_are_typed() {
         speed_fallback = false
         speed_wait = "0s"
         speed_cooldown = "30m"
+        speed_cooldown_min = "2m"
 
         [model.roles.fast]
         speed = "fast"
@@ -506,6 +507,7 @@ fn the_settings_later_steps_read_are_typed() {
     assert!(!settings.model.speed_fallback);
     assert_eq!(settings.model.speed_wait, Duration::ZERO);
     assert_eq!(settings.model.speed_cooldown, Duration::from_secs(1800));
+    assert_eq!(settings.model.speed_cooldown_min, Duration::from_secs(120));
     assert_eq!(
         settings.retry_for("local").first_event_timeout,
         Duration::from_secs(300)

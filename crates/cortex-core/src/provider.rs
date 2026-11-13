@@ -51,6 +51,9 @@ fn config_error(code: &str, message: impl Into<String>) -> Box<ErrorData> {
     Box::new(ErrorData::new(ErrorKind::Config, code, message))
 }
 
+/// What is told each provider key the core finds.
+pub type KeyFound = Arc<dyn Fn(&Secret) + Send + Sync>;
+
 /// Makes the client of a provider, in place of the built-in way. A test
 /// gives the core one that answers from a script; the harness gives none.
 pub trait Connector: Send + Sync {
@@ -401,6 +404,8 @@ pub(crate) struct Providers {
     pub(crate) flags: BTreeMap<String, Secret>,
     /// Every key that was found, so that the secret filter masks it.
     pub(crate) found: Mutex<Vec<Secret>>,
+    /// Told each key the first time it is found.
+    pub(crate) key_found: Option<KeyFound>,
 }
 
 impl std::fmt::Debug for Providers {
@@ -461,10 +466,18 @@ impl Providers {
                 ),
             ));
         };
-        self.found
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(credential.secret.clone());
+        {
+            let mut found = self.found.lock().unwrap_or_else(PoisonError::into_inner);
+            let known = found
+                .iter()
+                .any(|known| known.expose() == credential.secret.expose());
+            if !known {
+                found.push(credential.secret.clone());
+                if let Some(tell) = &self.key_found {
+                    tell(&credential.secret);
+                }
+            }
+        }
         let source = credential.source.to_string();
         let auth: ApiKeyAuth = if provider.protocol == anthropic::NAME {
             anthropic::api_key(credential.secret, source)
@@ -652,6 +665,147 @@ mod tests {
             assert!(error.contains(level.as_str()), "{error}");
         }
         assert!(error.contains("minimal"), "{error}");
+    }
+
+    /// Settings as a configuration file gives them.
+    fn settings(text: &str) -> (Settings, Env) {
+        #![allow(
+            clippy::disallowed_methods,
+            reason = "a test writes its own configuration file"
+        )]
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "cortex-core-provider-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.toml");
+        std::fs::write(&file, text).unwrap();
+        let env = Env::empty(cortex_config::Platform::CURRENT)
+            .with("CORTEX_CONFIG", file.to_str().unwrap())
+            .with("GATEWAY_TOKEN", "gateway-token-value-1234");
+        let mut options = cortex_config::LoadOptions::new(env.clone());
+        options.dirs.managed_config = Some(dir.join("managed.toml"));
+        let loaded = cortex_config::load(&options).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        (loaded.settings.clone(), env)
+    }
+
+    #[test]
+    fn the_retry_and_speed_settings_become_the_provider_layers_policy() {
+        let (settings, _) = settings(
+            r#"
+[model]
+speed_fallback = false
+speed_wait = "5s"
+speed_cooldown = "30m"
+speed_cooldown_min = "2m"
+
+[retry]
+attempts = 3
+max_wait = "1m"
+
+[providers.local]
+protocol = "anthropic-messages"
+base_url = "http://127.0.0.1:9"
+idle_timeout = "7m"
+"#,
+        );
+        let policy = retry_policy(&settings, "anthropic");
+        assert_eq!(policy.max_attempts, 3);
+        assert_eq!(policy.max_wait, std::time::Duration::from_secs(60));
+        assert!(!policy.speed.fallback);
+        assert_eq!(policy.speed.short_wait, std::time::Duration::from_secs(5));
+        assert_eq!(policy.speed.cooldown, std::time::Duration::from_secs(1800));
+        // The key this step adds: the shortest cooldown.
+        assert_eq!(
+            policy.speed.min_cooldown,
+            std::time::Duration::from_secs(120)
+        );
+        // A provider's own stream limit is its policy's.
+        let local = retry_policy(&settings, "local");
+        assert_eq!(local.idle_timeout, std::time::Duration::from_secs(420));
+        assert_ne!(policy.idle_timeout, local.idle_timeout);
+        // With nothing set, the shortest cooldown is the default minute.
+        let (defaults, _) = self::settings("");
+        assert_eq!(
+            retry_policy(&defaults, "anthropic").speed.min_cooldown,
+            std::time::Duration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn only_a_provider_that_says_so_is_replayed_every_reasoning_block() {
+        let (settings, env) = settings(
+            r#"
+[providers.lookalike]
+protocol = "anthropic-messages"
+base_url = "https://llm.example.invalid/"
+key_env = "LOOKALIKE_KEY"
+
+[providers.lookalike.headers]
+x-gateway = { env = "GATEWAY_TOKEN" }
+
+[providers.faithful]
+protocol = "anthropic-messages"
+base_url = "https://other.example.invalid"
+
+[providers.faithful.capabilities]
+replay_reasoning = "all"
+eager_tool_streaming = false
+
+[providers.off]
+enabled = false
+protocol = "anthropic-messages"
+base_url = "https://off.example.invalid"
+"#,
+        );
+        let replay = |name: &str| {
+            provider_info(&settings, &env, name)
+                .unwrap()
+                .flags
+                .text(anthropic::flag::REPLAY_REASONING)
+                .map(str::to_owned)
+        };
+        // Anthropic's own API, built in, leaves out what a model cannot
+        // read: it is sent every block.
+        assert_eq!(replay("anthropic").as_deref(), Some("all"));
+        // A server that only speaks the same protocol gets the stricter
+        // rule, unless its entry says it does the same.
+        assert_eq!(replay("lookalike"), None);
+        assert_eq!(replay("faithful").as_deref(), Some("all"));
+
+        let lookalike = provider_info(&settings, &env, "lookalike").unwrap();
+        assert_eq!(lookalike.protocol, anthropic::NAME);
+        assert_eq!(lookalike.base_url, "https://llm.example.invalid");
+        assert_eq!(
+            lookalike.headers.get("x-gateway"),
+            Some("gateway-token-value-1234")
+        );
+        assert!(lookalike.headers.is_sensitive("x-gateway"));
+        let faithful = provider_info(&settings, &env, "faithful").unwrap();
+        assert_eq!(
+            faithful.flags.bool(anthropic::flag::EAGER_TOOL_STREAMING),
+            Some(false)
+        );
+
+        // A provider that is turned off, or that nothing defines.
+        assert_eq!(
+            provider_info(&settings, &env, "off").unwrap_err().code,
+            "provider_disabled"
+        );
+        assert_eq!(
+            provider_info(&settings, &env, "nobody").unwrap_err().code,
+            "unknown_provider"
+        );
+
+        // Every provider's key variable is kept from shell commands, and so
+        // is a variable a header reads.
+        let variables = key_variables(&settings);
+        for variable in [ANTHROPIC_KEY_ENV, "LOOKALIKE_KEY", "GATEWAY_TOKEN"] {
+            assert!(variables.contains(&variable.to_owned()), "{variables:?}");
+        }
     }
 
     #[test]
