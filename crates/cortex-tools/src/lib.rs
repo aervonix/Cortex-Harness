@@ -12,6 +12,8 @@
 //! | [`schema`] | Validation of arguments against a tool's JSON Schema. |
 //! | [`blocking`] | [`run_blocking`]: blocking work on the blocking pool, with a cancellation token. |
 //! | [`read`], [`list`], [`search`] | The tools [`ReadTool`], [`ListTool`] and [`SearchTool`]. |
+//! | [`process`] | The process runner: one command from its start to the end of its process tree, with a bounded buffer for what it writes, an artifact for the rest, and staged stopping. |
+//! | [`shell`] | [`ShellTool`], and what it needs: which [`Shell`] there is and how each kind is spoken to, the environment a command gets, and which files it changed. |
 //! | [`registry`] | [`ToolRegistry`], where MCP and extension tools register, and the tools [`ToolSearch`] and [`ToolCall`] that reach them. |
 //! | [`toolbox`] | [`Toolbox`]: the tools a session declares to the model. |
 //!
@@ -29,11 +31,13 @@ pub mod contract;
 pub mod files;
 pub mod list;
 pub mod output;
+pub mod process;
 pub mod read;
 pub mod registry;
 pub mod result;
 pub mod schema;
 pub mod search;
+pub mod shell;
 pub mod store;
 pub mod toolbox;
 
@@ -58,6 +62,7 @@ pub use read::ReadTool;
 pub use registry::{FoundTool, RegistryError, SourceSummary, ToolCall, ToolRegistry, ToolSearch};
 pub use result::{ToolError, ToolResult};
 pub use search::SearchTool;
+pub use shell::{Shell, ShellConfig, ShellKind, ShellSearch, ShellTool};
 pub use store::{ArtifactWriter, ContentStore, MemoryStore, StoreError};
 pub use toolbox::Toolbox;
 

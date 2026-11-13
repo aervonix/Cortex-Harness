@@ -65,6 +65,7 @@ The tiers are defined in [docs/testing-and-ci.md](docs/testing-and-ci.md). Where
 - **Property tests** are written with the small helper described in [docs/testing-and-ci.md](docs/testing-and-ci.md) ("Property tests"), not with a property-testing crate. Every run is the same, a failure prints the seed of the failing case, `CORTEX_PROPERTY_SEED=<seed>` runs that case alone, and `CORTEX_PROPERTY_SCALE=<n>` multiplies the number of cases.
 - **No retries**, with one exception: a test inside a module named `timing_sensitive` gets one retry, and nextest reports it as flaky when the retry was needed.
 - **A test that starts a process** is a system test and is named `sys_…`, wherever it lives. That name puts it in nextest's `process` group (two at a time), gives it tier 3's time limit, and keeps it out of the `fast` profile.
+- **A process test's children are the test binary itself,** run again (`cortex_testkit::children`): a child that stays until it is killed, a grandchild, a child that ignores the polite interrupt. Each reports to the test over a loopback socket and keeps the connection until it dies, so the test sees it start and sees it go. No helper program is built, and no test uses `sleep`.
 - **Every test has a time limit.** In tiers 1 and 2 a test is reported as slow at 2 s and stopped, as a failure, at 10 s. In tier 3 the marks are 10 s and 60 s. A test that is slow needs a reason or belongs in a non-blocking tier.
 - **Every tier has a budget** for the time its tests take together: 20 s for tier 1, 40 s for tier 2, and 60 s on Linux or 90 s on Windows for tier 3. `cargo xtask ci` prints the totals after the run. A tier over its budget is a warning on the pull request, and a tier more than one and a half times over fails the job.
 
@@ -85,7 +86,7 @@ The lint levels are in the root `Cargo.toml` under `[workspace.lints]`, the list
   #![allow(clippy::disallowed_methods, clippy::disallowed_types, reason = "runs on the blocking pool")]
   ```
 
-- **`unsafe` is denied**, and allowed per module only in `cortex-sandbox` and `cortex-term`, and in one Windows-only module of `cortex-base` (`private::windows`, which sets access lists; [decision 0029](docs/decisions/0029-owner-only-files-on-windows.md)). Every block has a `// SAFETY:` comment. A private file is written with `write_atomic` and `owner_only`, or created with `cortex_base::private::create_new`: no other crate needs `unsafe` for it.
+- **`unsafe` is denied**, and allowed per module only in `cortex-sandbox` (process trees are there for that reason, [decision 0030](docs/decisions/0030-process-tree-control-in-cortex-sandbox.md)) and `cortex-term`, and in one Windows-only module of `cortex-base` (`private::windows`, which sets access lists; [decision 0029](docs/decisions/0029-owner-only-files-on-windows.md)). Every block has a `// SAFETY:` comment. A private file is written with `write_atomic` and `owner_only`, or created with `cortex_base::private::create_new`: no other crate needs `unsafe` for it.
 - **An `allow` or `expect` always carries a `reason`.**
 - **Public items are documented.**
 - **No `todo!`, `unimplemented!` or `dbg!`** on the main branch, and no `std::process::exit`: return an exit code, so the terminal is always restored.

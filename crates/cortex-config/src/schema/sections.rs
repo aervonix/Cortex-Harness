@@ -82,9 +82,10 @@ settings! {
         /// Enabled tools, output limits and per-tool settings.
         [reserved UserOnly]
         pub tools: Reserved,
-        /// The shell that runs commands: program, arguments, time limits.
-        [reserved UserOnly]
-        pub shell: Reserved,
+        /// The shell that runs commands, the time a command may take, and
+        /// the environment variables it is not given.
+        [nested]
+        pub shell: ShellSettings,
         /// The compaction trigger and settings, and instruction file names.
         [reserved UserOnly]
         pub context: Reserved,
@@ -386,6 +387,40 @@ settings! {
         /// Agent Skills folders: `.agents/skills` and `.claude/skills`.
         [UserOnly, NextEpoch]
         pub skills: bool = true,
+    }
+}
+
+settings! {
+    /// The shell that runs commands, the time a command may take, and the
+    /// environment variables it is not given.
+    pub struct ShellSettings {
+        /// The shell: a program's name on `PATH`, or its path. How it is
+        /// spoken to follows its name: `bash`, `pwsh`, `powershell` and
+        /// `cmd` each by their own rules, and any other as a POSIX shell.
+        /// Unset, it is bash and then sh on Linux, and on Windows
+        /// PowerShell 7, then Windows PowerShell, then cmd.exe. A
+        /// project's file may not choose the program that runs every
+        /// command.
+        [UserOnly, NextEpoch]
+        pub program: Option<String>,
+        /// The arguments before the command, in place of the shell's own:
+        /// `["-l", "-c"]` for a login bash. The command is always passed
+        /// after them, last.
+        [UserOnly, NextEpoch]
+        pub args: Option<Vec<String>>,
+        /// The time limit of a command that asks for none.
+        [Preference, NextEpoch]
+        pub timeout: Duration = Duration::from_secs(120),
+        /// The longest time limit a command may ask for. A project's file
+        /// may lower it and may not raise it.
+        [TightenOnly, NextEpoch]
+        pub max_timeout: Duration = Duration::from_secs(30 * 60),
+        /// Environment variables that commands are not given, besides
+        /// the key variables of the providers, which are always removed.
+        /// A name may end with `*` for every variable that starts so.
+        /// Every layer adds to the list.
+        [Preference, NextEpoch, joined]
+        pub env_remove: Vec<String>,
     }
 }
 

@@ -670,10 +670,53 @@
       "type": "object"
     },
     "shell": {
-      "description": "The shell that runs commands: program, arguments, time limits.",
-      "type": "object",
-      "x-cortex-reserved": true,
-      "x-cortex-trust": "user only"
+      "additionalProperties": true,
+      "description": "The shell that runs commands, the time a command may take, and the environment variables it is not given.",
+      "properties": {
+        "args": {
+          "description": "The arguments before the command, in place of the shell's own: `[\"-l\", \"-c\"]` for a login bash. The command is always passed after them, last.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "user only"
+        },
+        "env_remove": {
+          "default": [],
+          "description": "Environment variables that commands are not given, besides the key variables of the providers, which are always removed. A name may end with `*` for every variable that starts so. Every layer adds to the list.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-joined": true,
+          "x-cortex-trust": "preference"
+        },
+        "max_timeout": {
+          "default": "30m",
+          "description": "The longest time limit a command may ask for. A project's file may lower it and may not raise it.",
+          "pattern": "^([0-9]+(ms|s|m|h|d))+$",
+          "type": "string",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "tighten only: a lower limit is a preference, a higher one user only"
+        },
+        "program": {
+          "description": "The shell: a program's name on `PATH`, or its path. How it is spoken to follows its name: `bash`, `pwsh`, `powershell` and `cmd` each by their own rules, and any other as a POSIX shell. Unset, it is bash and then sh on Linux, and on Windows PowerShell 7, then Windows PowerShell, then cmd.exe. A project's file may not choose the program that runs every command.",
+          "type": "string",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "user only"
+        },
+        "timeout": {
+          "default": "2m",
+          "description": "The time limit of a command that asks for none.",
+          "pattern": "^([0-9]+(ms|s|m|h|d))+$",
+          "type": "string",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "preference"
+        }
+      },
+      "type": "object"
     },
     "skills": {
       "description": "Where skills are looked for.",

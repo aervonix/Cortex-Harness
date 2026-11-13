@@ -18,6 +18,8 @@
     reason = "an integration test prepares real files, fails by panicking, and says what it measured"
 )]
 
+mod bench;
+mod changes;
 mod execute;
 mod list;
 #[cfg(unix)]
@@ -25,9 +27,12 @@ mod paths_unix;
 #[cfg(windows)]
 mod paths_windows;
 mod perf;
+mod process;
 mod read;
 mod registry;
 mod search;
+mod shell;
+mod shell_search;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,6 +43,44 @@ use cortex_tools::{
     FileTable, Json, MemoryStore, NoOutput, Plan, RunCx, Tool, ToolError, ToolResult, bound,
     execute,
 };
+
+/// The test that a child process enters by (`cortex_testkit::children`).
+const ENTRY: &str = "child_entry";
+
+/// The argument that makes this binary the guard of process trees.
+const GUARD: &str = "cx-guard";
+
+/// The argument that makes this binary a harness that runs one command
+/// through the `shell` tool and never finishes.
+const HARNESS: &str = "cx-harness";
+
+/// How long a process test lets something take before it calls it a
+/// failure. It bounds a mistake; no test that passes waits it out.
+const LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What the test runner runs as an ordinary test, which passes at once, and
+/// what a process test runs again: as a child, as the guard, or as a
+/// harness to be killed.
+#[test]
+fn child_entry() {
+    let arguments: Vec<String> = std::env::args().collect();
+    if arguments.iter().any(|argument| argument == GUARD) {
+        cortex_sandbox::tree::run_guard();
+        return;
+    }
+    if let Some(at) = arguments.iter().position(|argument| argument == HARNESS) {
+        process::be_a_harness(&arguments[at + 1..]);
+    }
+    cortex_testkit::children::run_if_child();
+}
+
+/// The guard: this binary, entered by the same test.
+fn guard() -> cortex_tools::process::Guard {
+    cortex_tools::process::Guard::new(
+        std::env::current_exe().expect("the test binary has a path"),
+        ["--exact", ENTRY, "--nocapture", GUARD],
+    )
+}
 
 /// A workspace that belongs to one test and is removed with it.
 struct Workspace {

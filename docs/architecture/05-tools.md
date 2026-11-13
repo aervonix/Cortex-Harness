@@ -45,7 +45,7 @@ The two phases exist so the permission engine, the sandbox and the scheduler can
 | `Read` | A resolved path: one file, or the names in one directory | `read`, `list` of one level, `search` of one file |
 | `ReadTree` | A resolved path: the tree under a directory | `search` of a directory, `list` with a glob or a depth |
 | `Write` | A resolved path | `write`, `edit` |
-| `Exec` | The command line and its working directory | `shell` |
+| `Exec` | The command line and its working directory | `shell`, beside a `Write` of the workspace root |
 | `Network` | A host, or any | `fetch`, MCP over HTTP |
 | `Ext` | The full name of an extension or MCP tool | `tool_call`, beside whatever effects the tool itself declares |
 
@@ -207,13 +207,13 @@ Replaces exact pieces of text in a file.
 
 ## `shell`
 
-Runs a command in the platform shell and returns its output.
+Runs a command in the platform shell and returns its output. Built in step 11: the tool and the runner in `cortex-tools`, and the operating-system calls for process trees in `cortex-sandbox` ([decision 0030](../decisions/0030-process-tree-control-in-cortex-sandbox.md)).
 
 | Argument | Type | Meaning |
 |---|---|---|
 | `command` | string | The command line. |
-| `cwd` | string, optional | Working directory. Defaults to the workspace root. |
-| `timeout_ms` | integer, optional | Default 120,000. Capped by configuration (default cap 30 minutes). |
+| `cwd` | string, optional | Working directory. Defaults to the workspace root. It goes through the path resolver like every other path, and must be a directory that exists. |
+| `timeout_ms` | integer, optional | Default 120,000. At most the configured maximum (default 30 minutes), which the argument's schema states, so a larger value is refused when the call is planned. |
 
 **Which shell.** The model is told, in the tool description, which shell and version it is writing for.
 
@@ -222,29 +222,78 @@ Runs a command in the platform shell and returns its output.
 | Linux | `bash` with no profile or rc files | `sh` | `shell.program`, `shell.args` |
 | Windows | PowerShell 7 (`pwsh`) with no profile | Windows PowerShell 5.1, then `cmd.exe` | The same. `cmd.exe` and Git Bash can be chosen. |
 
+- A configured program is the one used, and nothing else: one that is not found is an error, not a reason to use another.
+- How a shell is spoken to follows its program's name: `bash`, `pwsh`, `powershell` and `cmd` each by their own rules, and any other name as a POSIX shell that reads `-c <command>`.
+- Finding the shell looks at `PATH` and starts nothing. Asking it for its version starts it once: about a millisecond for bash, and longer for PowerShell 7, so a harness does that off its start-up path. Windows PowerShell is 5.1, and is not asked.
+
 All three Windows shells are supported and tested: each has its own quoting, its own way to merge the output streams, and its own exit-status rules, and the tool handles each explicitly. Nothing requires a Unix-style shell on Windows.
 
-**Environment.** Inherited from the harness, with a deny-list of variables that are removed (provider credentials by default; the list is configurable), plus settings that make tools non-interactive: no pager, no colour unless asked, a dumb terminal type. Standard input is closed. There is no pseudo-terminal: output comes through pipes, with stdout and stderr merged in arrival order.
+| Shell | Started as | Around the command | Exit status |
+|---|---|---|---|
+| `bash` | `bash --noprofile --norc -c <command>` | nothing | The shell's own. |
+| A POSIX shell | `sh -c <command>` | nothing | The shell's own. |
+| PowerShell 7, Windows PowerShell | `-NoLogo -NoProfile -NonInteractive -OutputFormat Text -Command <script>` | A first line that sets the output to UTF-8 and turns progress bars off, and after an empty line a last line that sets the exit code. | PowerShell exits with 0 or 1 whatever a program it ran exited with. The last line makes it what a POSIX shell's would be: 0 when the last statement succeeded, else the exit code of the last program run, else 1. |
+| `cmd.exe` | `cmd /d /e:on /v:off /s /c "<command>"` | The two quotes, which `/s` takes off again. | The shell's own: the last command's. |
+
+**The command reaches the shell as it was written.** A permission rule is matched against the command the model wrote, and a person approves that text, so the text the shell reads must be that text.
+
+- On Linux a process is given its arguments one by one, and the command is one of them.
+- `pwsh` and `powershell` read their command line by the C runtime's rules. The script is one argument, quoted by the standard library by those same rules, so it arrives whole whatever quotes and backslashes it holds.
+- `cmd.exe` reads its command line by rules of its own. The command is put on the command line as it is, between two quotes. Nothing in it is escaped, because `cmd.exe` would read an escape as part of the command.
+- **A command that cannot arrive as written is refused when the call is planned,** before anyone is asked to approve it: one with a NUL character; one with a line break for `cmd.exe`, which reads one line and would drop the rest; and one too long for the system to pass (about 120,000 bytes on Linux, 32,000 characters on Windows, 8,000 for `cmd.exe`).
+- **Quoting one argument** (`Shell::quote`, for the harness's own use and for later steps): single quotes for the POSIX shells and for PowerShell, where the four typographic quote characters PowerShell also reads as a single quote are doubled like the plain one; double quotes for `cmd.exe`, which refuses a text with a `"`, a `%` or a line break, because `cmd.exe` has no way to carry those that every program reads back.
+
+- **A command cannot make the harness's last line part of itself.** A back-tick at the end of a PowerShell command joins the next line to it, and the next line is the empty one. Anything else that runs on (an open quote, an open bracket, a `|` at the end) is a script that does not parse, and PowerShell then runs none of it.
+
+Three things on Windows are left as they are, and stated:
+
+- **A PowerShell command that begins with a `using` statement fails,** because PowerShell wants those before everything else and the harness's first line comes first. Such a command belongs in a script file.
+- **Windows PowerShell 5.1 drops a double quote and an empty text on their way to a program,** whatever the quoting. That is PowerShell's own doing, between its parser and the program, and PowerShell 7 does not do it. Texts with either reach PowerShell's own commands whole.
+
+- **PowerShell's first line changes the console's output code page to UTF-8,** for the console the harness shares with the command. Without it PowerShell writes to a pipe in the console's code page and turns every character outside it into `?`. The harness itself does not depend on the code page.
+- **`cmd.exe` is not told to write UTF-8.** Its built-in commands write in the console's code page, and text outside ASCII from them is shown with replacement characters. Programs that write UTF-8 are not affected.
+
+**Environment.** Inherited from the harness, with a deny-list of variables that are removed (the key variables of the providers always; configuration adds to the list, `shell.env_remove`, and a name may end with `*`), plus settings that make tools non-interactive: no pager (`PAGER` and `GIT_PAGER` are `cat`), no colour unless asked (`NO_COLOR`), a dumb terminal type (`TERM`), and no prompt from git (`GIT_TERMINAL_PROMPT`). On Windows a variable's name is matched in any case. Standard input is closed: a command that reads it sees its end at once. There is no pseudo-terminal: output comes through one pipe, which is both the standard output and the standard error, so the two arrive in the order they were written.
 
 **Process tree.**
 
 | | Linux | Windows |
 |---|---|---|
-| Start | New session and process group. The child is told to die if the harness dies. | New process group inside a Job Object set to kill its members when closed. |
-| Polite interrupt | SIGINT to the group | Ctrl-Break event to the group |
+| Start | New session and process group, so no controlling terminal. The child is told to die if the harness dies, and the guard process is told the group. | New process group inside a Job Object set to kill its members when closed. The process is started suspended and let run once it is in the job, so that nothing it starts can be outside it. |
+| Polite interrupt | SIGINT to the group | Ctrl-Break event to the group, while the command itself is alive |
 | Terminate after grace (default 2 s) | SIGTERM to the group | n/a |
 | Hard kill after a second grace | SIGKILL to the group | Terminate the Job Object |
 
-The whole tree is cleaned up on timeout, on cancellation, and when the harness exits for any reason, including a crash.
+- The whole tree is cleaned up on timeout, on cancellation, when the call is given up, and when the harness exits for any reason, including a crash.
+- **When the harness dies:** on Windows the Job Object's handle closes with the process. On Linux the kernel signals the command itself, and a guard process, which the harness keeps for this, kills the rest of the group ([decision 0030](../decisions/0030-process-tree-control-in-cortex-sandbox.md)).
+- A stage that cannot be sent is passed over without its grace: there is no console to send a Ctrl-Break through when the harness has none.
+- **A signal never reaches a stranger.** On Linux a group's id is the command's process id, which the system may give away once the command has been reaped. So the command is waited for without being reaped, and reaped only after the last signal.
+- **The whole tree is killed when the call ends,** whatever way it ends. Long-lived background processes are not in the first release, and a process left running would be one that nothing could manage.
 
 **Output.**
 
 - Streamed to front ends as it arrives, coalesced to one update per frame.
-- Held in a bounded buffer: the first 8 KiB and the last 24 KiB. Once output passes the buffer, all of it is also written to an artifact file.
-- The result contains the kept head and tail with a marker between them, the exit code, the duration, and flags for timeout and interruption. An exit by signal is reported as such.
-- A command that exits while background children keep the pipes open is detected: the tool stops waiting after a short grace and says what happened.
+- Held in a bounded buffer: the first 8 KiB and the last 24 KiB. Once output passes the buffer, all of it is also written to an artifact, from its first byte, piece by piece as it arrives.
+- The result contains the kept head and tail with a marker between them, the exit code, the duration, and flags for timeout and interruption. An exit by signal is reported as such. What is kept is whole lines, and the marker says how many are missing.
+- The tool shapes its own result with the output policy's shaping: compressed, then cut to the limits with the beginning and the end kept, or the lines that report a problem first for a command the project profile knows as a build or a test run. The notice counts what the buffer dropped as well as what the limits cut.
+- **A command that exits and leaves processes behind is detected,** whether they hold the pipe or have an output of their own. The tool waits a short grace (half a second) for them to finish, then stops them, and the result says that they were stopped and that background processes are not supported yet, so that the model does not go on trying.
+- **A process that left the tree cannot be stopped** (Linux: one that started a session of its own). When one still holds the output, the tool stops listening after a second more, and the result says that a process is still running and could not be stopped.
+- **Output that could not be collected is said to be lost,** not shown as a command that printed nothing: when the content store fails under the reader, the reader goes on reading, so that the command is not left writing into a pipe nobody reads, and the result says that what was printed could not be collected.
 
-**Sandbox.** The command is started through the sandbox launcher with the session's policy (see [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)). When the sandbox blocks something, the result says which rule blocked it, so the model does not retry blindly.
+**Changed files.** The harness looks for what a command changed, once before it and once after it, and puts what it found in the result's payload, where the session takes it for undo ([07-sessions-and-context.md](07-sessions-and-context.md)). The model is not told: it knows what it ran.
+
+- In a git repository: two answers of `git status`, compared, with the size and modification time of every file git named. When the command moved `HEAD`, git is also asked which files differ between the two commits.
+- Anywhere else: one walk of the workspace afterwards, for files modified since the command started. That cannot tell a new file from a changed one and cannot see a deleted one.
+- The payload says which files' earlier content can still be read from git, and from which commit: those the command found as committed. A file that had already been changed before the command is reported as changed and not restorable.
+- Each look has a time cap (half a second) and a cap on the number of files, and says when it did not finish. Files that ignore rules leave out are left out.
+- **Asking git runs nothing of the repository's.** A repository's own configuration can name a program for git to run when it is asked what has changed (`core.fsmonitor`), and nobody approved that program. The harness asks with it turned off, with no hooks directory, and with `GIT_OPTIONAL_LOCKS=0`, so that asking writes nothing either.
+- A call the permission engine has marked read-only is not looked at.
+
+**The result's payload,** for front ends: the shell, the exit code or the signal, the duration, whether the command timed out or was interrupted and the last stage that stopping needed, whether background processes were stopped, the size of the output, and the changed files.
+
+**Sandbox.** The command is started through the sandbox launcher with the session's policy (see [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)). When the sandbox blocks something, the result says which rule blocked it, so the model does not retry blindly. Step 11 built the hook, `Launcher`: it is given the shell's command line and returns the one to start, with bytes for its standard input (the policy), and may add a line to the result. Until step 26 fills it, a command is started as it is.
+
+**Effects.** An `exec` effect with the command as the model wrote it and its working directory, and a `write` effect on the workspace root, because a command may change anything there. A working directory outside the workspace is a second `write` effect.
 
 Concurrency: exclusive, unless the policy engine has classified the command as read-only.
 
@@ -382,8 +431,9 @@ Tools that are not built in (MCP tools and extension tools) are not declared to 
 | Path separators | `/` and `\` accepted. `/` shown. |
 | Case | Comparisons are case-insensitive. The on-disk case is kept. |
 | Line endings | Detected and preserved per file. New files use LF unless configuration says otherwise. |
-| Shell | PowerShell by default, with `cmd.exe` supported. The model is told which. |
-| Process tree | Job Objects. |
+| Shell | PowerShell by default, with `cmd.exe` supported. The model is told which. A command with a line break is refused for `cmd.exe`. |
+| Process tree | Job Objects, with a suspended start. Ctrl-Break as the polite interrupt. |
+| Command output | PowerShell is told to write UTF-8. `cmd.exe` writes in the console's code page. |
 | Locked files | Replace is retried briefly, then fails with the reason. |
 | Long paths | Handled internally with extended-length paths. Not shown to the model. |
 | Reserved names and device paths | Rejected. |

@@ -60,7 +60,11 @@ compat.mcp                         user only
 compat.skills                      user only
 log.level                          user only
 tools.*                            user only
-shell.*                            user only
+shell.program                      user only
+shell.args                         user only
+shell.timeout                      preference
+shell.max_timeout                  tighten only: a lower limit is a preference, a higher one user only
+shell.env_remove                   preference
 context.*                          user only
 verify.*                           runs code
 adapt.*                            user only

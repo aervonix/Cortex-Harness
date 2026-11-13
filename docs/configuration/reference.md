@@ -126,6 +126,16 @@ Every key a Cortex-Harness configuration file may hold. The design is in [archit
 |---|---|---|---|---|---|
 | `log.level` | text | not set | user only | at once | The level (`error`, `warn`, `info`, `debug` or `trace`), optionally followed by levels for target prefixes: `"info,cortex_llm=debug"`. The `CORTEX_LOG` variable and `--log-level` override it. |
 
+## `[shell]`
+
+| Key | Type | Default | From a project | Takes effect | What it is |
+|---|---|---|---|---|---|
+| `shell.program` | text | not set | user only | next epoch | The shell: a program's name on `PATH`, or its path. How it is spoken to follows its name: `bash`, `pwsh`, `powershell` and `cmd` each by their own rules, and any other as a POSIX shell. Unset, it is bash and then sh on Linux, and on Windows PowerShell 7, then Windows PowerShell, then cmd.exe. A project's file may not choose the program that runs every command. |
+| `shell.args` | list of text | not set | user only | next epoch | The arguments before the command, in place of the shell's own: `["-l", "-c"]` for a login bash. The command is always passed after them, last. |
+| `shell.timeout` | length of time | `"2m"` | preference | next epoch | The time limit of a command that asks for none. |
+| `shell.max_timeout` | length of time | `"30m"` | tighten only: a lower limit is a preference, a higher one user only | next epoch | The longest time limit a command may ask for. A project's file may lower it and may not raise it. |
+| `shell.env_remove` | list of text, joined | `[]` | preference | next epoch | Environment variables that commands are not given, besides the key variables of the providers, which are always removed. A name may end with `*` for every variable that starts so. Every layer adds to the list. |
+
 ## Reserved sections
 
 These sections belong to parts of the harness that are not built yet. A file may already hold them: what is in them is kept and not checked. The build step that owns a section declares its keys, and they then move into the tables above. Until then a project's file cannot set anything in a section marked *user only*, and a section marked *runs code* waits for trust.
@@ -136,7 +146,6 @@ These sections belong to parts of the harness that are not built yet. A file may
 | `[models]` | user only | Catalog overrides and additions by model name: limits, prices, reasoning control, capability flags. |
 | `[http]` | user only | The HTTP client: the connect timeout, a proxy, and extra certificate authorities. |
 | `[tools]` | user only | Enabled tools, output limits and per-tool settings. |
-| `[shell]` | user only | The shell that runs commands: program, arguments, time limits. |
 | `[context]` | user only | The compaction trigger and settings, and instruction file names. |
 | `[verify]` | runs code | The verification mode, commands and time limits. |
 | `[adapt]` | user only | Variant overrides per model, and the map and profile budgets. |
