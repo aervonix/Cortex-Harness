@@ -181,24 +181,31 @@ fn sys_keys_arrive_with_their_modifiers() {
         Session::start(&this_binary(), &child_arguments(DEMO, "rate=400"), 100, 30).answering();
     session.wait_for(LIMIT, "the first frame", |t| t.shows(STATUS_MARK));
 
-    // A lone Escape is the Escape key once nothing follows it; with a key
-    // right after it, Alt with that key.
+    // A lone Escape is the Escape key once nothing follows it.
     session.send(b"\x1b");
     last_key(&mut session, "Esc");
-    session.send(b"\x1bx");
-    last_key(&mut session, "Alt+x");
-    session.send(b"\x1b[1;5A");
-    last_key(&mut session, "Ctrl+Up");
-
-    // Windows Terminal's win32 input mode, which the demo turns on when the
-    // terminal says it has it (this driver says so, as Windows Terminal
-    // does). Each key is told apart from the one plain bytes merge it with.
+    // With a key right after it, Alt with that key; and a sequence with
+    // modifiers. Windows Terminal never sends these to a ConPTY, which
+    // asks it for win32 input records (below) and misreads plain
+    // sequences that follow an Escape: there they are checked by
+    // sequence only, in the decoder's unit tests.
     if cfg!(unix) {
+        session.send(b"\x1bx");
+        last_key(&mut session, "Alt+x");
+        session.send(b"\x1b[1;5A");
+        last_key(&mut session, "Ctrl+Up");
+        // The demo turns the win32 input mode on when the terminal says it
+        // has it, as this driver does, playing Windows Terminal.
         session.wait_for(LIMIT, "the win32 input mode", |t| t.modes().win32_input);
     }
+
+    // Keys as Windows Terminal sends them: win32 input records. Each is told
+    // apart from the key plain bytes would merge it with. On Windows they
+    // go through ConPTY to the demo, which asked for the mode itself.
     const SHIFT: u32 = 0x10;
     const LEFT_CTRL: u32 = 0x08;
     const LEFT_ALT: u32 = 0x02;
+    const ENHANCED: u32 = 0x100;
     for (bytes, name) in [
         (record(0x0d, 13, SHIFT), "Shift+Enter"),
         (record(0x0d, 13, LEFT_CTRL), "Ctrl+Enter"),
@@ -206,6 +213,8 @@ fn sys_keys_arrive_with_their_modifiers() {
         (record(0x41, 1, LEFT_CTRL | SHIFT), "Ctrl+Shift+a"),
         (record(0x58, u32::from('x'), LEFT_ALT), "Alt+x"),
         (record(0x20, 0, LEFT_CTRL), "Ctrl+Space"),
+        (record(0x26, 0, LEFT_CTRL | ENHANCED), "Ctrl+Up"),
+        (record(0x1b, 27, 0), "Esc"),
     ] {
         session.send(&bytes);
         last_key(&mut session, name);
