@@ -30,6 +30,12 @@
 //!     `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_VALUE_<n>`), after whatever the
 //!     user's environment already counts, so it wins over theirs and over
 //!     the repository's, and theirs stay in force.
+//! - **`PATH` keeps only absolute directories.** An empty entry and a
+//!   relative one (`.`, `bin`) both mean "look in the directory the
+//!   command runs in", which is the workspace: a file the model wrote
+//!   there and named `ls` would run in place of the real one, as a command
+//!   the engine had passed as `ls`. Such entries are dropped, and the rest
+//!   keep their order.
 
 use std::ffi::OsString;
 
@@ -118,7 +124,48 @@ pub(crate) fn build(
             .map(|(name, value)| (OsString::from(name), OsString::from(value))),
     );
     no_fsmonitor(&mut env, &same);
+    for (name, value) in &mut env {
+        if name.to_str().is_some_and(|name| same(name, PATH)) {
+            *value = absolute_entries(value, windows);
+        }
+    }
     env
+}
+
+/// The variable programs are looked up through.
+const PATH: &str = "PATH";
+
+/// `path` without its empty and its relative entries, which both name the
+/// directory a command runs in.
+fn absolute_entries(path: &std::ffi::OsStr, windows: bool) -> OsString {
+    let Some(text) = path.to_str() else {
+        // Not Unicode: the system's own reading of it, which is what the
+        // command would be given anyway.
+        let kept = std::env::split_paths(path).filter(|entry| entry.is_absolute());
+        return std::env::join_paths(kept).unwrap_or_default();
+    };
+    let separator = if windows { ';' } else { ':' };
+    let absolute = |entry: &str| {
+        let bytes = entry.as_bytes();
+        if windows {
+            // A drive and a root (`C:\`), or a share (`\\server\…`).
+            // `C:bin` and `\bin` are relative to where the command is.
+            let slash = |byte: &u8| *byte == b'\\' || *byte == b'/';
+            (bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && slash(&bytes[2]))
+                || (bytes.len() >= 2 && slash(&bytes[0]) && slash(&bytes[1]))
+        } else {
+            bytes.first() == Some(&b'/')
+        }
+    };
+    let kept: Vec<&str> = text
+        .split(separator)
+        // Windows allows an entry in quotes, for one with a semicolon.
+        .filter(|entry| absolute(entry.trim_matches('"')))
+        .collect();
+    OsString::from(kept.join(&separator.to_string()))
 }
 
 /// Adds `core.fsmonitor=false` to the settings git reads from its
@@ -262,6 +309,45 @@ mod tests {
         );
         assert!(get(&on_windows, "CdPath").is_empty());
         assert!(get(&on_windows, "Ripgrep_Config_Path").is_empty());
+    }
+
+    #[test]
+    fn path_keeps_only_its_absolute_directories() {
+        let built = build(
+            env(&[(
+                "PATH",
+                ".:/usr/local/bin::/usr/bin:bin:./tools:../up:/opt/my tools/bin:",
+            )]),
+            &defaults(),
+            false,
+        );
+        assert_eq!(
+            get(&built, "PATH"),
+            ["/usr/local/bin:/usr/bin:/opt/my tools/bin"]
+        );
+        // Nothing but entries that name where the command runs: nothing is
+        // left, and the variable stays, empty.
+        let built = build(env(&[("PATH", ".::bin")]), &defaults(), false);
+        assert_eq!(get(&built, "PATH"), [""]);
+        // Another variable that holds a list is left alone.
+        let built = build(env(&[("MANPATH", ".:/usr/share/man")]), &defaults(), false);
+        assert_eq!(get(&built, "MANPATH"), [".:/usr/share/man"]);
+    }
+
+    #[test]
+    fn on_windows_path_is_found_under_any_spelling_and_read_as_windows_reads_it() {
+        let built = build(
+            env(&[(
+                "Path",
+                r#".;C:\Windows\System32;;bin;C:tools;\rooted;"C:\Program Files\Git\cmd";\\server\share\bin;D:/msys/bin"#,
+            )]),
+            &defaults(),
+            true,
+        );
+        assert_eq!(
+            get(&built, "Path"),
+            [r#"C:\Windows\System32;"C:\Program Files\Git\cmd";\\server\share\bin;D:/msys/bin"#]
+        );
     }
 
     #[test]

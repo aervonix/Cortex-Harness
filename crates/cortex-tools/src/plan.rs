@@ -151,6 +151,18 @@ impl PlanBoard {
         }
     }
 
+    /// Puts the plan of another point of the session in place: the one a
+    /// rewind went back to. What the user had changed and the model had
+    /// not been shown is forgotten with the plan it was changed in. The
+    /// revision never goes back, so that a front end can tell the plan it
+    /// holds is older.
+    pub fn restore(&self, mut plan: SessionPlan) {
+        let mut state = self.lock();
+        plan.revision = plan.revision.max(state.plan.revision + 1);
+        state.plan = plan;
+        state.unseen.clear();
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         // Every change is made on a copy and put in place in one step.
         self.state.lock().unwrap_or_else(PoisonError::into_inner)

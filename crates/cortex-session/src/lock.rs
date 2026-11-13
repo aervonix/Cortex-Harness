@@ -15,13 +15,25 @@ use cortex_base::private;
 
 use crate::error::{Result, SessionError};
 
+/// What became of an attempt to lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Held {
+    /// The lock is held.
+    Locked,
+    /// The file system cannot lock: nothing is held, and the work goes on.
+    NoLocks,
+    /// Another process holds it.
+    Busy,
+}
+
 /// Takes the lock at `path` if no other process holds it: `None` when one
 /// does. The file is created private if it is missing, and the lock is held
-/// until it is closed.
-pub(crate) fn try_take(path: &Path) -> Result<Option<File>> {
+/// until it is closed. The answer says whether a lock is really held, or
+/// the file system has none to give.
+pub(crate) fn try_take(path: &Path) -> Result<Option<(File, Held)>> {
     let file = open(path)?;
     let held = settle(|| file.try_lock()).map_err(SessionError::io("lock", path))?;
-    Ok(held.then_some(file))
+    Ok((held != Held::Busy).then_some((file, held)))
 }
 
 /// Takes the lock at `path`, waiting while another process holds it. The
@@ -51,14 +63,15 @@ fn open(path: &Path) -> Result<File> {
     }
 }
 
-/// Makes a lock attempt and says what it means: `true` held (or no locks to
-/// hold), `false` busy.
-fn settle(attempt: impl FnOnce() -> Result<(), TryLockError>) -> io::Result<bool> {
+/// Makes a lock attempt and says what it means.
+fn settle(attempt: impl FnOnce() -> Result<(), TryLockError>) -> io::Result<Held> {
     match attempt() {
-        Ok(()) => Ok(true),
-        Err(TryLockError::WouldBlock) => Ok(false),
+        Ok(()) => Ok(Held::Locked),
+        Err(TryLockError::WouldBlock) => Ok(Held::Busy),
         // A file system that cannot lock: no lock, and no reason to stop.
-        Err(TryLockError::Error(error)) if error.kind() == io::ErrorKind::Unsupported => Ok(true),
+        Err(TryLockError::Error(error)) if error.kind() == io::ErrorKind::Unsupported => {
+            Ok(Held::NoLocks)
+        }
         Err(TryLockError::Error(error)) => Err(error),
     }
 }
@@ -75,9 +88,16 @@ mod tests {
 
     #[test]
     fn a_file_system_without_locks_is_no_lock() {
-        assert!(settle(failing(io::ErrorKind::Unsupported)).unwrap());
+        assert_eq!(
+            settle(failing(io::ErrorKind::Unsupported)).unwrap(),
+            Held::NoLocks
+        );
         assert!(settle(failing(io::ErrorKind::PermissionDenied)).is_err());
-        assert!(!settle(|| Err(TryLockError::WouldBlock)).unwrap());
+        assert_eq!(
+            settle(|| Err(TryLockError::WouldBlock)).unwrap(),
+            Held::Busy
+        );
+        assert_eq!(settle(|| Ok(())).unwrap(), Held::Locked);
     }
 
     /// A lock file in the temporary directory, removed with it.

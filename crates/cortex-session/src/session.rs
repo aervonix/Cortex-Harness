@@ -106,6 +106,9 @@ enum State {
             reason = "held for its lock, which is released when it drops"
         )]
         lock: File,
+        /// Whether the lock is really held. `false` on a file system that
+        /// cannot lock, where the session is written all the same.
+        locked: bool,
     },
 }
 
@@ -221,7 +224,7 @@ impl Session {
                 session: id.to_string(),
             });
         }
-        let lock = take_lock(&dir)?;
+        let (lock, locked) = take_lock(&dir)?;
         let (log, mut report) = Log::open(&dir)?;
         log.writable()?;
         let path = dir.log();
@@ -263,6 +266,7 @@ impl Session {
             state: State::Live {
                 writer: Writer::new(Box::new(DiskFile(file)), path, end, options.durability),
                 lock,
+                locked,
             },
             store,
             warnings: Vec::new(),
@@ -294,6 +298,16 @@ impl Session {
     #[must_use]
     pub fn is_born(&self) -> bool {
         matches!(self.state, State::Live { .. })
+    }
+
+    /// Whether the session is being written without its lock: its log
+    /// exists, and the file system it is on cannot lock. Nothing then keeps
+    /// a second process from writing the same session, which is the user's
+    /// to avoid; whoever opened the session should say so. `false` until
+    /// the log exists.
+    #[must_use]
+    pub fn is_unlocked(&self) -> bool {
+        matches!(self.state, State::Live { locked: false, .. })
     }
 
     /// Files and directories of the session that other users can open.
@@ -503,7 +517,7 @@ impl Session {
             "create the session's directory",
             dir.path().to_path_buf(),
         ))?;
-        let lock = take_lock(&dir)?;
+        let (lock, locked) = take_lock(&dir)?;
         let content: Vec<u8> = pending.iter().flat_map(|(_, line)| line.clone()).collect();
         let path = dir.log();
         let options = AtomicWriteOptions {
@@ -548,6 +562,7 @@ impl Session {
                     self.options.durability,
                 ),
                 lock,
+                locked,
             },
         ) else {
             return Ok(());
@@ -973,10 +988,13 @@ fn is_lease(body: &Body) -> bool {
 }
 
 /// Takes the session's lock, creating the lock file if it is missing.
-fn take_lock(dir: &SessionDir) -> Result<File> {
-    lock::try_take(&dir.lock())?.ok_or_else(|| SessionError::Busy {
+/// The session's lock, and whether it is really held: `false` on a file
+/// system that cannot lock.
+fn take_lock(dir: &SessionDir) -> Result<(File, bool)> {
+    let (file, held) = lock::try_take(&dir.lock())?.ok_or_else(|| SessionError::Busy {
         session: dir.id().to_string(),
-    })
+    })?;
+    Ok((file, held == lock::Held::Locked))
 }
 
 /// Keeps the bytes of a cut last line in a private file of their own,
@@ -1176,6 +1194,7 @@ mod tests {
         session.state = State::Live {
             writer,
             lock: File::open(&stand_in).unwrap(),
+            locked: true,
         };
         session.append(None, user("first")).unwrap();
         (session, disk)
