@@ -133,7 +133,7 @@ The Manager cannot approve what its own grant does not cover: step 2 checks the 
 
 ## Two records
 
-Both are entries in the Manager's session log ([07-sessions-and-context.md](07-sessions-and-context.md)), so they are stored, replayable and visible to every client.
+Both are entries in the Manager's session log ([07-sessions-and-context.md](07-sessions-and-context.md)), so they are stored, replayable and visible to every client. In the log, the field this page calls `kind` is stored as `category`, because `kind` is the name of every entry's own kind, and an answer is a later `escalation` record that names the one it `answers`: the log is never edited.
 
 **The escalation queue.** What is waiting for the user.
 
