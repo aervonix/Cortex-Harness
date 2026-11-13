@@ -1,0 +1,295 @@
+# The fixes for the independent review of step 13a (R1 to R7), and the
+# owner's choices from its lower-confidence notes: the turn/start check
+# under the session's lock, `PATH` quotes on Linux, a resumed session's
+# first change of model, and the `diff` detail of an approval.
+#
+# Each finding had a test that failed on main; each break puts the defect
+# back, or one like it, and names the test that sees it.
+
+# ------------------------------------------------------- R4: the shell
+
+[break] shell-search-looks-in-relative-entries
+rule: The shell is looked for in the absolute directories of PATH only: a relative entry names a directory of wherever the harness was started.
+file: crates/cortex-tools/src/shell/kind.rs
+in: ShellSearch::on_path
+find: .filter(|directory| directory.is_absolute())
+replace: .filter(|directory| !directory.as_os_str().is_empty())
+caught-by:
+    cortex-tools::it shell_search::a_relative_path_entry_does_not_make_a_file_there_the_shell
+
+[break] configured-relative-shell-taken
+rule: A configured shell given as a relative path is refused.
+file: crates/cortex-tools/src/shell/kind.rs
+in: ShellSearch::find
+find:
+    if !Path::new(program).is_absolute() {
+        return Err(ShellError::NotAbsolute(program.to_owned()));
+    }
+replace:
+caught-by:
+    cortex-tools::it shell_search::a_configured_shell_given_as_a_relative_path_is_refused
+
+[break] relative-comspec-believed
+rule: %ComSpec% is believed only when it is absolute.
+file: crates/cortex-tools/src/shell/kind.rs
+in: ShellSearch::find_windows
+find: path.is_absolute() && is_program(path, true)
+replace: is_program(path, true)
+caught-by:
+    cortex-tools::it shell_search::a_relative_comspec_or_system_root_is_not_believed
+
+[break] relative-system-root-believed
+rule: %SystemRoot% is believed only when it is absolute.
+file: crates/cortex-tools/src/shell/kind.rs
+in: ShellSearch::find_windows
+find: self.system_root.clone().filter(|root| root.is_absolute())?
+replace: self.system_root.clone()?
+caught-by:
+    cortex-tools::it shell_search::a_relative_comspec_or_system_root_is_not_believed
+
+[break] shell-cache-keyed-by-the-path-as-found
+rule: The shells' versions are kept under the resolved path of the program.
+file: crates/cortex-core/src/shell_cache.rs
+in: resolved
+find:
+    Ok(real) => cortex_base::AbsPath::from_os(&real)
+        .map_or(real, |path| PathBuf::from(path.to_native_string())),
+replace: Ok(_) => program.to_path_buf(),
+caught-by:
+    cortex-core shell_cache::tests::a_shell_is_kept_under_its_resolved_path
+
+[break] shell-cache-keyed-by-a-relative-path
+rule: A relative program has no stamp: it names another file from another directory.
+file: crates/cortex-core/src/shell_cache.rs
+in: resolved
+find:
+    if !program.is_absolute() {
+        return None;
+    }
+replace:
+caught-by:
+    cortex-core shell_cache::tests::a_shell_is_kept_under_its_resolved_path
+
+[break] linux-path-quotes-trimmed
+rule: On Linux a quote in a PATH entry is part of a name, and `"/x"` is relative.
+file: crates/cortex-tools/src/shell/env.rs
+in: absolute_entries
+find: absolute(entry)
+replace: absolute(entry.trim_matches('"'))
+caught-by:
+    cortex-tools shell::env::tests::path_keeps_only_its_absolute_directories
+
+# ------------------------------------------------- R7: the stored keys
+
+[break] credentials-file-left-readable
+rule: The credentials file is closed to reading wherever it is kept.
+file: crates/cortex-core/src/assemble.rs
+in: engine_parts
+find: protected = protected.closed(file);
+replace:
+caught-by:
+    cortex-core::it start::the_stored_keys_are_closed_to_the_tools_in_each_systems_layout
+
+[break] credentials-lock-left-readable
+rule: The credentials file's lock is closed with it.
+file: crates/cortex-core/src/assemble.rs
+in: credential_files
+find: vec![file, PathBuf::from(lock)]
+replace: vec![file]
+caught-by:
+    cortex-core::it start::the_stored_keys_are_closed_to_the_tools_in_each_systems_layout
+
+# --------------------------------------- R1: the table of seen files
+
+[break] reload-keeps-the-seen-files-epoch
+rule: The loop starts a new epoch of the table of seen files whenever it reads the history again.
+file: crates/cortex-agent/src/turn.rs
+in: Session::reload
+find: self.env.workspace.files.begin_epoch();
+replace:
+packages: cortex-agent, cortex-core
+caught-by:
+    cortex-core::it turns::a_read_after_a_rewind_gives_the_content_the_rewind_took_away
+
+[break] restored-files-not-forgotten
+rule: The table of seen files forgets the files a rewind put back.
+file: crates/cortex-agent/src/turn.rs
+in: Session::reload
+find: self.env.workspace.files.forget(path);
+replace:
+packages: cortex-agent, cortex-core
+caught-by:
+    cortex-core::it turns::a_file_a_rewind_put_back_is_read_again_before_it_is_changed
+
+[break] rewind-does-not-say-what-it-restored
+rule: A rewind tells the loop which files it put back.
+file: crates/cortex-core/src/core.rs
+find: change.restored(restored);
+replace: let _ = restored;
+caught-by:
+    cortex-core::it turns::a_file_a_rewind_put_back_is_read_again_before_it_is_changed
+
+# ---------------------- turn/start and a rewind, under one lock
+#
+# The prompt's half is step 13a's own break, moved to where the check now
+# is: `step-13a/turn-starts-under-a-rewind`.
+
+[break] two-history-changes-at-once
+rule: A second change of history does not begin while one is under way.
+file: crates/cortex-agent/src/session.rs
+in: SessionHandle::change_history
+find:
+    if inbox.changing {
+        return Err(history_changing());
+    }
+replace:
+packages: cortex-agent, cortex-core
+caught-by:
+    cortex-agent::it sessions::a_session_can_be_told_to_read_its_history_again_but_not_under_a_turn
+    cortex-core::it turns::no_turn_starts_while_a_rewind_is_under_way
+
+# ---------------------- R6: a client that left, a shutdown that began
+
+[break] new-session-kept-for-a-client-that-left
+rule: A session put together for a client that left meanwhile is ended, not left running.
+file: crates/cortex-core/src/core.rs
+in: Core::still_wanted
+find: let gone = self.inner.clients.queue(client).is_none();
+replace: let gone = false;
+caught-by:
+    cortex-core::it lifecycle::a_session_started_for_a_client_that_left_meanwhile_does_not_run_on
+    cortex-core::it lifecycle::a_fork_for_a_client_that_left_meanwhile_does_not_run_on
+
+[break] open-does-not-look-again
+rule: Once a session is in the table, the core looks again for its client and for a shutdown.
+file: crates/cortex-core/src/core.rs
+in: Core::open
+find: self.still_wanted(client, &live).await?;
+replace:
+caught-by:
+    cortex-core::it lifecycle::a_session_started_for_a_client_that_left_meanwhile_does_not_run_on
+    cortex-core::it lifecycle::a_session_started_while_the_core_shuts_down_does_not_run_on
+
+[break] shutdown-does-not-stop-new-sessions
+rule: Once a shutdown has begun, no session starts.
+file: crates/cortex-core/src/core.rs
+in: Core::shutdown
+find: self.inner.shutting_down.store(true, Ordering::SeqCst);
+replace:
+caught-by:
+    cortex-core::it lifecycle::a_session_started_while_the_core_shuts_down_does_not_run_on
+
+# ----------------------------- R3: a client that is not a `user`
+
+[break] non-user-config-touches-what-is-enforced
+rule: A non-user client's configuration overrides may not touch permissions, the sandbox or limits.
+file: crates/cortex-core/src/core.rs
+find: not_enforced(&overrides)?;
+replace:
+caught-by:
+    cortex-core::it settings::a_supervisor_cannot_start_a_session_above_the_level_it_could_set
+
+[break] non-user-starts-above-its-level
+rule: A non-user client cannot start a session above the level it would start at.
+file: crates/cortex-core/src/core.rs
+find: no_raise: !user
+replace: no_raise: false
+caught-by:
+    cortex-core::it settings::a_supervisor_cannot_start_a_session_above_the_level_it_could_set
+
+# ----------------------------------------------- R2: the plan entry
+
+[break] plan-entry-not-before-the-result
+rule: The plan a `plan` call made is written before the call's result, so a branch that holds the result holds the plan.
+file: crates/cortex-core/src/store.rs
+in: LogStore::append
+find: let replaced = if seen == Seen::PlanReplaced {
+replace: let replaced = if seen == Seen::Nothing && seen == Seen::PlanReplaced {
+caught-by:
+    cortex-core::it plan::a_rewind_or_a_fork_at_a_plan_calls_result_keeps_the_plan_that_call_made
+
+# ------------------------------------------------ R5: `adds` informs
+
+[break] adds-refuses-an-unknown-field
+rule: A rule an approval would add is read tolerantly: a field this version does not know is ignored.
+file: crates/cortex-protocol/src/methods.rs
+find: pub struct AddedRule {
+replace:
+    #[serde(deny_unknown_fields)]
+    pub struct AddedRule {
+caught-by:
+    cortex-protocol tests::an_approval_request_whose_adds_this_version_does_not_know_is_still_read
+
+[break] adds-refuses-an-unknown-effect
+rule: A rule an approval would add keeps an effect this version does not know.
+file: crates/cortex-protocol/src/methods.rs
+in: AddedRule
+find: pub effect: Effect,
+replace:
+    #[serde(deserialize_with = "crate::open::listed")]
+    pub effect: Effect,
+caught-by:
+    cortex-protocol tests::an_approval_request_whose_adds_this_version_does_not_know_is_still_read
+
+# --------------------- a resumed session's first change of model
+
+[break] resumed-history-not-counted
+rule: A resumed session has history from its log before this process sends anything.
+file: crates/cortex-agent/src/turn.rs
+in: Session::open
+find: history: !opened.items.is_empty(),
+replace: history: false,
+packages: cortex-agent, cortex-core
+caught-by:
+    cortex-core::it settings::a_resumed_sessions_first_change_of_model_warns_that_it_is_resent_uncached
+
+[break] uncached-warning-counts-requests
+rule: The warning that a change of model re-sends the context uncached follows the conversation's history, not this process's requests.
+file: crates/cortex-core/src/core.rs
+in: Core::set
+find: let has_history = live.handle.has_history();
+replace: let has_history = live.handle.usage().totals.requests > 0;
+caught-by:
+    cortex-core::it settings::a_resumed_sessions_first_change_of_model_warns_that_it_is_resent_uncached
+
+# ------------------------------------- the `diff` detail of an approval
+
+[break] approval-for-a-change-shows-no-diff
+rule: An approval for a change to a file carries the change, as its tool would make it.
+file: crates/cortex-core/src/policy.rs
+in: detail
+find: if let Some(preview) = call.preview {
+replace: if let Some(preview) = call.preview.filter(|_| false) {
+caught-by:
+    cortex-core::it approvals::a_call_that_needs_an_answer_is_put_to_the_user_and_runs_when_allowed
+    cortex-core::it approvals::an_approval_for_a_change_to_a_file_shows_the_change_within_a_bound
+
+[break] loop-asks-without-the-preview
+rule: The loop works out what a call would change before it asks, and gives it to the policy.
+file: crates/cortex-agent/src/round.rs
+in: Round::ask
+find: preview: preview.as_ref()
+replace: preview: None
+packages: cortex-agent, cortex-core
+caught-by:
+    cortex-core::it approvals::an_approval_for_a_change_to_a_file_shows_the_change_within_a_bound
+
+[break] preview-not-bounded
+rule: A diff larger than a request carries is left out, and the detail says so.
+file: crates/cortex-tools/src/change.rs
+in: preview
+find: diff.text.len() > MAX_PAYLOAD_DIFF
+replace: diff.text.len() > usize::MAX
+packages: cortex-tools, cortex-core
+caught-by:
+    cortex-core::it approvals::an_approval_for_a_change_to_a_file_shows_the_change_within_a_bound
+
+[break] edit-preview-not-as-the-edit
+rule: An edit's preview finds the text as the edit will, and says why when it cannot.
+file: crates/cortex-tools/src/edit.rs
+in: EditTool::preview
+find: Ok(matching::apply(old, &places))
+replace: Ok(old.to_owned())
+packages: cortex-tools, cortex-core
+caught-by:
+    cortex-core::it approvals::an_approval_for_a_change_to_a_file_shows_the_change_within_a_bound

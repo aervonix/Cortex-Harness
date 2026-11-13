@@ -251,6 +251,70 @@ fn a_roles_model_and_reasoning_level_can_be_changed_in_a_running_session() {
     });
 }
 
+/// A resumed session has history from its log before this process sends
+/// anything, so its first change of model warns that the context goes out
+/// again uncached. A new session with nothing in it does not warn: there
+/// is nothing to re-send.
+#[test]
+fn a_resumed_sessions_first_change_of_model_warns_that_it_is_resent_uncached() {
+    let world = World::new("model_set_resumed", [says("Before.")]);
+    let core = world.core();
+    world.run(async {
+        let first = Front::start(&world, &core).await;
+        // Nothing in it yet: no warning.
+        set(
+            &first,
+            role(RoleSettings {
+                model: Some(ModelId::new(OTHER_MODEL)),
+                ..RoleSettings::default()
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(warned(&first), 0, "an empty session has nothing to re-send");
+        first.turn("one").await;
+        first.close().await;
+
+        let client = core.connect(ClientInfo::user());
+        let opened = core
+            .handle(
+                client.id,
+                Op::SessionOpen(cortex_protocol::methods::SessionRef {
+                    session_id: first.session.clone(),
+                }),
+            )
+            .await
+            .unwrap();
+        let OpResult::SessionOpen(opened) = opened else {
+            panic!("not the result of session/open");
+        };
+        let resumed = Front {
+            session: first.session.clone(),
+            state: opened.session,
+            seen: std::cell::RefCell::default(),
+            answered: std::cell::RefCell::default(),
+            core: core.clone(),
+            client,
+        };
+        assert_eq!(resumed.state.roles[&ModelRole::Main].model.as_str(), MODEL);
+        set(
+            &resumed,
+            role(RoleSettings {
+                model: Some(ModelId::new(OTHER_MODEL)),
+                ..RoleSettings::default()
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            warned(&resumed),
+            1,
+            "the resumed conversation is re-sent uncached"
+        );
+        resumed.close().await;
+    });
+}
+
 #[test]
 fn a_model_or_a_level_that_does_not_exist_is_refused_and_changes_nothing() {
     let world = World::new("model_bad", [says("Still the first.")]);
@@ -365,6 +429,110 @@ fn the_level_can_be_lowered_by_whoever_drives_and_raised_only_by_a_user() {
         .collect();
         assert_eq!(leases, expected);
         front.close().await;
+    });
+}
+
+/// `session/set`'s rule holds from the start. A client that is not a
+/// `user` cannot start a session above the level it would start at,
+/// whether through its settings or its configuration overrides, which rank
+/// as the user's own command line; and its overrides cannot touch
+/// permissions, the sandbox or limits at all, in a profile either. It may
+/// start one lower, and set what the harness does not enforce. Found by the
+/// review of step 13a.
+#[test]
+fn a_supervisor_cannot_start_a_session_above_the_level_it_could_set() {
+    let world = World::new("supervisor_new", []);
+    let core = world.core();
+    let supervisor = ClientInfo {
+        role: ClientRole::Supervisor,
+        ..ClientInfo::user()
+    };
+    let at = |level: Level| SessionSettings {
+        level: Some(level),
+        ..SessionSettings::default()
+    };
+    let (for_start, workspace) = (core.clone(), world.workspace.clone());
+    let start = move |info: ClientInfo, settings: SessionSettings, config: serde_json::Value| {
+        let core = for_start.clone();
+        let workspace = workspace.clone();
+        async move {
+            let client = core.connect(info);
+            let started = core
+                .handle(
+                    client.id,
+                    Op::SessionNew(cortex_protocol::methods::SessionNewParams {
+                        workspace: workspace.to_str().unwrap().to_owned(),
+                        settings,
+                        title: None,
+                        config: config.as_object().unwrap().clone(),
+                        ephemeral: true,
+                    }),
+                )
+                .await;
+            core.disconnect(client.id).await;
+            match started {
+                Ok(OpResult::SessionNew(result)) => Ok(result.session.level),
+                Ok(_) => panic!("not the result of session/new"),
+                Err(refused) => Err(refused),
+            }
+        }
+    };
+    world.run(async {
+        // Above the level it would start at, by either way.
+        for (settings, config) in [
+            (at(Level::Unrestricted), json!({})),
+            (
+                SessionSettings::default(),
+                json!({"permissions": {"mode": "unrestricted"}}),
+            ),
+        ] {
+            let refused = start(supervisor.clone(), settings, config.clone())
+                .await
+                .expect_err("a supervisor started a session above its level");
+            assert_eq!(refused.code, "role_not_allowed", "{config}");
+            assert_eq!(refused.kind, cortex_protocol::ErrorKind::Permission);
+        }
+        // Nothing the harness enforces, whatever its value, nor a profile.
+        for config in [
+            json!({"permissions": {"mode": "read-only"}}),
+            json!({"permissions": {"rules": [{"effect": "read", "match": "**", "action": "allow"}]}}),
+            json!({"sandbox": {"write": ["/"]}}),
+            json!({"limits": {"session": {"requests": 1}}}),
+            json!({"profiles": {"mine": {"permissions": {"mode": "unrestricted"}}}}),
+        ] {
+            let refused = start(supervisor.clone(), SessionSettings::default(), config.clone())
+                .await
+                .expect_err("a supervisor touched what the harness enforces");
+            assert_eq!(refused.code, "role_not_allowed", "{config}");
+        }
+        assert_eq!(core.open_sessions(), Vec::new());
+
+        // Lower, and what the harness does not enforce, it may.
+        let level = start(
+            supervisor.clone(),
+            at(Level::ReadOnly),
+            json!({"shell": {"timeout": "1m"}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(level, Level::ReadOnly);
+        // And at the level it would start at anyway.
+        let level = start(supervisor.clone(), at(Level::Supervised), json!({}))
+            .await
+            .unwrap();
+        assert_eq!(level, Level::Supervised);
+
+        // A user starts where it likes, by either way.
+        for (settings, config) in [
+            (at(Level::Unrestricted), json!({})),
+            (
+                SessionSettings::default(),
+                json!({"permissions": {"mode": "unrestricted"}}),
+            ),
+        ] {
+            let level = start(ClientInfo::user(), settings, config).await.unwrap();
+            assert_eq!(level, Level::Unrestricted);
+        }
     });
 }
 

@@ -457,13 +457,23 @@ fn a_session_can_be_told_to_read_its_history_again_but_not_under_a_turn() {
     world.run(async {
         rig.prompt("go");
         rig.events.seen("delta:text", 1).await;
-        let refused = rig.handle.reload().unwrap_err();
+        let refused = rig.handle.change_history().unwrap_err();
         assert_eq!(refused.code, code::TURN_RUNNING);
         let _ = rig.handle.interrupt();
         rig.events.turns(1).await;
     });
     assert_eq!(*lock(&store.opens), 1);
-    rig.handle.reload().expect("the session is idle");
+    let change = rig.handle.change_history().expect("the session is idle");
+    // While the change is under way no turn starts, and no other change
+    // begins: both are decided under the session's one lock.
+    let refused = rig
+        .handle
+        .prompt(vec![Part::text("too soon")], None)
+        .unwrap_err();
+    assert_eq!(refused.code, code::HISTORY_CHANGING);
+    let again = rig.handle.change_history().unwrap_err();
+    assert_eq!(again.code, code::HISTORY_CHANGING);
+    drop(change);
     world.run(async {
         rig.prompt("after a rewind");
         rig.events.turns(2).await;

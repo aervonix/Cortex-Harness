@@ -394,27 +394,160 @@ fn an_operation_on_a_session_that_is_not_open_is_refused() {
     });
 }
 
+/// The text of the last result of `tool`.
+fn last_result_of(front: &Front, tool: &str) -> String {
+    front
+        .results()
+        .into_iter()
+        .rev()
+        .find(|(name, _, _)| name == tool)
+        .map(|(_, _, text)| text)
+        .expect("a result of the tool")
+}
+
+/// The id of the last assistant message.
+fn last_answer(front: &Front) -> cortex_protocol::ItemId {
+    front
+        .items()
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            Item::AssistantMessage(message) => Some(message.id.clone()),
+            _ => None,
+        })
+        .expect("an answer")
+}
+
+/// A rewind takes the conversation back, so the model no longer has what
+/// it read after that point. The table of seen files forgets it too: the
+/// next read of the same file is sent in full, not answered "unchanged
+/// since you read it" about content the model was never sent on this
+/// branch. Found by the review of step 13a.
+#[test]
+fn a_read_after_a_rewind_gives_the_content_the_rewind_took_away() {
+    let world = World::new(
+        "rewind_seen",
+        [
+            says("Hello."),
+            calls(&[("c1", "read", json!({"path": "notes.txt"}))]),
+            says("Read it."),
+            // After the rewind: the same read again.
+            calls(&[("c2", "read", json!({"path": "notes.txt"}))]),
+            says("Read it again."),
+        ],
+    );
+    world.put("notes.txt", "the-secret-word-is-pumpkin\n");
+    let core = world.core();
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        front.turn("hello").await;
+        let keep = last_answer(&front);
+        front.turn("read the notes").await;
+        assert!(last_result_of(&front, "read").contains("pumpkin"));
+
+        front
+            .op(Op::SessionRewind(SessionRewindParams {
+                session_id: front.session.clone(),
+                to: keep,
+                restore_files: false,
+            }))
+            .await
+            .unwrap();
+        front.turn("read the notes").await;
+
+        // The request after the rewind does not hold the first read, and
+        // the second one is the file in full.
+        let requests = world.provider.requests();
+        let sent = serde_json::to_string(&requests.last().unwrap().messages).unwrap();
+        assert_eq!(sent.matches("pumpkin").count(), 1, "{sent}");
+        let second = last_result_of(&front, "read");
+        assert!(
+            second.contains("pumpkin"),
+            "after the rewind the model has not seen the file, and was told: {second:?}"
+        );
+        front.close().await;
+    });
+}
+
+/// A rewind that puts files back leaves them as a version the table of
+/// seen files may have recorded later, or never: what it recorded of them
+/// is forgotten. An edit made without reading such a file is refused as an
+/// edit of a file not read on this branch, and a read of it is in full,
+/// never a diff against the version the rewind took away.
+#[test]
+fn a_file_a_rewind_put_back_is_read_again_before_it_is_changed() {
+    let world = World::new(
+        "rewind_restored",
+        [
+            says("Hello."),
+            calls(&[("c1", "read", json!({"path": "notes.txt"}))]),
+            calls(&[(
+                "c2",
+                "edit",
+                json!({"path": "notes.txt", "edits": [{"old": "first", "new": "second"}]}),
+            )]),
+            calls(&[("c3", "read", json!({"path": "notes.txt"}))]),
+            says("Changed it."),
+            // After the rewind, which put the first version back.
+            calls(&[(
+                "c4",
+                "edit",
+                json!({"path": "notes.txt", "edits": [{"old": "first", "new": "third"}]}),
+            )]),
+            says("Could not."),
+            calls(&[("c5", "read", json!({"path": "notes.txt"}))]),
+            says("Read it."),
+        ],
+    );
+    world.put("notes.txt", "the first version\n");
+    let core = world.core();
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        front.turn("hello").await;
+        let keep = last_answer(&front);
+        front.turn("change the notes").await;
+        assert_eq!(world.read("notes.txt").unwrap(), "the second version\n");
+
+        front
+            .op(Op::SessionRewind(SessionRewindParams {
+                session_id: front.session.clone(),
+                to: keep,
+                restore_files: true,
+            }))
+            .await
+            .unwrap();
+        assert_eq!(world.read("notes.txt").unwrap(), "the first version\n");
+
+        front.turn("change them again").await;
+        let refused = last_result_of(&front, "edit");
+        assert!(
+            refused.contains("has not been read in this session"),
+            "an edit of a file the rewind put back, unread on this branch: {refused}"
+        );
+        assert_eq!(world.read("notes.txt").unwrap(), "the first version\n");
+
+        front.turn("read them").await;
+        let read = last_result_of(&front, "read");
+        assert!(read.contains("the first version"), "{read}");
+        front.close().await;
+    });
+}
+
 /// A rewind works on the session's files off the core's thread, and a
 /// prompt that arrives meanwhile does not start a turn under it.
 ///
-/// "Meanwhile" is made, not hoped for: the runtime has one thread for
-/// blocking work, the test holds it, and the rewind's own work waits
-/// behind the test's for as long as the test says. (Left to the machine,
-/// the rewind's work can be over before the prompt is sent, and was, on a
-/// busy runner.)
+/// "Meanwhile" is made, not hoped for: each piece of blocking work waits
+/// one turn of the runtime, and the test polls the rewind by hand, so the
+/// rewind is under way, its work not yet done, when the prompt is sent.
+/// (Left to the machine, the rewind's work can be over before the prompt
+/// is sent, and was, on a busy runner.)
 #[test]
 fn no_turn_starts_while_a_rewind_is_under_way() {
-    use std::future::Future as _;
-    use std::task::Poll;
-
     let mut world = World::new(
         "rewind_race",
         [says("First."), says("Second."), says("After the rewind.")],
     );
-    world.runtime = tokio::runtime::Builder::new_current_thread()
-        .max_blocking_threads(1)
-        .build()
-        .unwrap();
+    world.one_turn_each();
     let core = world.core();
     world.run(async {
         let front = Front::start(&world, &core).await;
@@ -430,22 +563,17 @@ fn no_turn_starts_while_a_rewind_is_under_way() {
             .unwrap();
         front.turn("two").await;
 
-        // The one thread for blocking work is taken, until the test lets
-        // it go.
-        let (let_go, held) = std::sync::mpsc::channel::<()>();
-        let holding = tokio::task::spawn_blocking(move || {
-            let _ = held.recv();
-        });
-
-        // The rewind is begun. Its work is behind the test's, so it is
-        // under way and cannot be over.
+        // The rewind is begun: its work on the log waits one turn, so it
+        // is under way and cannot be over.
         let mut rewind = std::pin::pin!(front.op(Op::SessionRewind(SessionRewindParams {
             session_id: front.session.clone(),
             to: keep,
             restore_files: false,
         })));
-        let first_look = std::future::poll_fn(|cx| Poll::Ready(rewind.as_mut().poll(cx))).await;
-        assert!(first_look.is_pending(), "the rewind was over at once");
+        assert!(
+            crate::poll_once(rewind.as_mut()).await.is_pending(),
+            "the rewind was over at once"
+        );
 
         // A prompt sent now starts no turn.
         let refused = front
@@ -468,8 +596,6 @@ fn no_turn_starts_while_a_rewind_is_under_way() {
             .expect_err("two rewinds at once");
         assert_eq!(again.code, "history_changing");
 
-        let_go.send(()).unwrap();
-        holding.await.unwrap();
         let rewound = rewind.await;
         assert!(
             matches!(rewound, Ok(OpResult::SessionRewind(_))),

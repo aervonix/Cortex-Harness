@@ -105,6 +105,12 @@ pub mod code {
     /// A prompt arrived while a turn was running and did not say whether to
     /// steer or to queue.
     pub const TURN_RUNNING: &str = "turn_running";
+    /// A prompt, or a second change of history, arrived while the session's
+    /// history was being changed (`session/rewind`). It is sent again when
+    /// that is over.
+    pub const HISTORY_CHANGING: &str = "history_changing";
+    /// The server is shutting down and starts no session.
+    pub const SHUTTING_DOWN: &str = "shutting_down";
     /// The session already has a supervisor.
     pub const SUPERVISOR_PRESENT: &str = "supervisor_present";
     /// A value named something this build does not know: a model, a level, a

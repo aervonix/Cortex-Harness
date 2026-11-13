@@ -26,7 +26,7 @@
 use std::sync::Arc;
 
 use cortex_protocol::{CallId, SessionId, TurnId};
-use cortex_tools::{BoxFuture, Json, OpenGate, Plan, ReadGate, ToolSpec};
+use cortex_tools::{BoxFuture, ChangePreview, Json, OpenGate, Plan, ReadGate, ToolSpec};
 
 /// One planned tool call, as the policy is shown it.
 #[derive(Debug, Clone, Copy)]
@@ -43,6 +43,11 @@ pub struct PlannedCall<'a> {
     pub arguments: &'a Json,
     /// What the call would do.
     pub plan: &'a Plan,
+    /// What the call would change in a file, worked out by its tool
+    /// ([`cortex_tools::Tool::preview`]): given to [`Policy::ask`] for the
+    /// question it puts, and `None` to [`Policy::decide`] and for a tool
+    /// that changes no file.
+    pub preview: Option<&'a ChangePreview>,
 }
 
 /// What the policy says of a planned call, before anybody is asked.

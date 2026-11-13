@@ -305,6 +305,20 @@ Nothing in the state directory is needed to run. Deleting it loses convenience, 
 - **A project key is one directory name.** A key that could be a path (a separator, a dot, a drive letter) has no place in the state directory.
 - **The state directory is created for the user alone.** One that already exists is not changed: if it is open to other users, that is reported as a warning and left, because its permissions may be the user's choice. So a private file in it is written private itself, and never relies on the directory.
 
+## Where each system keeps the harness's files
+
+Each folder beside what the permission engine closes in it ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md), "The built-in protection"). The layouts differ, and what is closed has to be read against both: on Windows the stored keys are in the data directory, which is otherwise closed only to writing, and nothing closed them to reading until the review of step 13a found it. `Dirs::from_env` in `cortex-config` works the folders out; a test of the core gives it each system's layout on every system (`start::the_stored_keys_are_closed_to_the_tools_in_each_systems_layout`).
+
+| What | Linux | Windows | Closed by the engine |
+|---|---|---|---|
+| The configuration directory: `config.toml` | `$XDG_CONFIG_HOME/cortex-harness`, usually `~/.config/cortex-harness` | `%APPDATA%\cortex-harness`, the roaming folder | Reading and writing, the whole directory. |
+| The stored keys: `credentials.toml` and its lock, `credentials.toml.lock` | In the configuration directory | In `%LOCALAPPDATA%\cortex-harness`, which is the data directory | Reading and writing, the two files by name, wherever they are kept. |
+| The state directory: trust, stored approvals, `shells.json`, logs | `$XDG_STATE_HOME/cortex-harness`, usually `~/.local/state/cortex-harness` | `%LOCALAPPDATA%\cortex-harness\state`, inside the data directory | Reading and writing, the whole directory. |
+| The data directory: sessions | `$XDG_DATA_HOME/cortex-harness`, usually `~/.local/share/cortex-harness`, or `session.data_dir` | `%LOCALAPPDATA%\cortex-harness`, or `session.data_dir` | Writing, the whole directory; and reading, the sessions of other projects. |
+| The managed file | `/etc/cortex-harness/config.toml` | `%ProgramData%\cortex-harness\config.toml` | Not closed: only an administrator writes it, and it holds an administrator's policy, not a key. |
+
+`session.data_dir` moves the sessions and not the stored keys: on Windows these stay in the local folder, and are closed there by name.
+
 ## Windows notes
 
 - Paths in configuration accept `/` or `\`. A leading `~` expands to the user's profile directory.

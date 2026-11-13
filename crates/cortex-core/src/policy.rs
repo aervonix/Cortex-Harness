@@ -38,7 +38,7 @@ use cortex_protocol::event::{Event, RequestResolved, Resolution};
 use cortex_protocol::jsonrpc::RequestId;
 use cortex_protocol::lease::Effect as EffectKind;
 use cortex_protocol::methods::{
-    ApprovalChoice, ApprovalDetail, ApprovalRequest, ApprovalResponse, CommandDetail,
+    ApprovalChoice, ApprovalDetail, ApprovalRequest, ApprovalResponse, CommandDetail, DiffDetail,
     ServerRequest, TargetDetail, ToolDetail,
 };
 use cortex_protocol::{CallId, TurnId};
@@ -237,6 +237,15 @@ fn detail(call: &PlannedCall<'_>, sandboxed: bool) -> ApprovalDetail {
     if let Some(command) = command {
         return command;
     }
+    // A change to a file, as its tool would make it, so that a front end
+    // shows it without the call's arguments.
+    if let Some(preview) = call.preview {
+        return ApprovalDetail::Diff(DiffDetail {
+            path: preview.path.clone(),
+            diff: preview.diff.clone(),
+            omitted: preview.omitted.clone(),
+        });
+    }
     let target = |effect: EffectKind, target: String| {
         ApprovalDetail::Target(TargetDetail { effect, target })
     };
@@ -314,7 +323,14 @@ impl Policy for EnginePolicy {
                 detail: detail(&call, self.sandboxed),
                 choices: question.choices(),
                 reasons: question.reasons.clone(),
-                adds: question.lifts.clone(),
+                adds: question
+                    .lifts
+                    .iter()
+                    .map(|rule| cortex_protocol::methods::AddedRule {
+                        effect: rule.effect.clone(),
+                        pattern: rule.pattern.clone(),
+                    })
+                    .collect(),
             };
             let (id, mut answer) = self.clients.ask(call.session, &asked, |_| {
                 ServerRequest::Approval(request.clone())

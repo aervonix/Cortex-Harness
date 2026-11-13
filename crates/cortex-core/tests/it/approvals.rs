@@ -55,12 +55,14 @@ fn a_call_that_needs_an_answer_is_put_to_the_user_and_runs_when_allowed() {
         assert_eq!(request.session_id, front.session);
         assert_eq!(request.tool, "write");
         assert_eq!(request.call_id.as_str(), "c1");
-        // Exactly what would happen, and why it asks.
-        let ApprovalDetail::Target(target) = &request.detail else {
-            panic!("not a target: {:?}", request.detail);
+        // Exactly what would happen, as a change to the file, and why it
+        // asks.
+        let ApprovalDetail::Diff(change) = &request.detail else {
+            panic!("not a change to a file: {:?}", request.detail);
         };
-        assert_eq!(target.effect, Effect::Write);
-        assert!(target.target.replace('\\', "/").ends_with(PROTECTED));
+        assert!(change.path.replace('\\', "/").ends_with(PROTECTED));
+        assert_eq!(change.diff, "@@ -0,0 +1 @@\n+on: push");
+        assert_eq!(change.omitted, None);
         assert!(!request.reasons.is_empty());
         assert!(request.choices.contains(&ApprovalChoice::AllowOnce));
         assert!(request.choices.contains(&ApprovalChoice::Deny));
@@ -74,6 +76,71 @@ fn a_call_that_needs_an_answer_is_put_to_the_user_and_runs_when_allowed() {
         assert_eq!(resolutions(&front), [Resolution::Answered]);
         // Nobody was refused for want of somebody to ask.
         assert!(core.permission_denials(&front.session).is_empty());
+        front.close().await;
+    });
+}
+
+/// A change to a file is shown as its tool would make it, an edit as much
+/// as a write, so that a front end needs none of the call's arguments to
+/// show it (`docs/architecture/11-rpc-protocol.md`, "`approval/request`").
+/// It is bounded: a change too large to carry says so and names the file,
+/// and one that cannot be worked out before the call runs says why.
+#[test]
+fn an_approval_for_a_change_to_a_file_shows_the_change_within_a_bound() {
+    let big: String = (0..10_000)
+        .map(|line| format!("line {line:05} of a file far larger than a question carries\n"))
+        .collect();
+    let edit = |id: &str, old: &str, new: &str| {
+        calls(&[(
+            id,
+            "edit",
+            json!({"path": PROTECTED, "edits": [{"old": old, "new": new}]}),
+        )])
+    };
+    let world = World::new(
+        "approve_diff",
+        [
+            edit("c1", "push", "pull_request"),
+            calls(&[("c2", "write", json!({"path": PROTECTED, "content": big}))]),
+            edit("c3", "text that is not there", "x"),
+            says("Left alone."),
+        ],
+    );
+    world.put(PROTECTED, "on: push\n");
+    let core = world.core();
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        front.prompt("change CI").await;
+        let mut details = Vec::new();
+        for _ in 0..3 {
+            let (id, request) = front.approval().await;
+            let ApprovalDetail::Diff(change) = request.detail else {
+                panic!("not a change to a file: {:?}", request.detail);
+            };
+            assert!(change.path.replace('\\', "/").ends_with(PROTECTED));
+            details.push((change.diff, change.omitted));
+            front.answer(&id, ApprovalChoice::Deny).unwrap();
+        }
+        front.turns(1).await;
+
+        // The edit, as the edit tool would make it.
+        assert_eq!(
+            details[0],
+            ("@@ -1 +1 @@\n-on: push\n+on: pull_request".to_owned(), None)
+        );
+        // Too large to carry: left out, and said.
+        let (diff, omitted) = &details[1];
+        assert!(diff.is_empty());
+        let omitted = omitted.as_deref().unwrap();
+        assert!(omitted.contains("an approval request carries"), "{omitted}");
+        // An edit that will fail: why.
+        let (diff, omitted) = &details[2];
+        assert!(diff.is_empty());
+        let omitted = omitted.as_deref().unwrap();
+        assert!(omitted.contains("cannot be worked out"), "{omitted}");
+        assert!(omitted.contains("not found"), "{omitted}");
+        // Nothing was changed by a question.
+        assert_eq!(world.read(PROTECTED).as_deref(), Some("on: push\n"));
         front.close().await;
     });
 }

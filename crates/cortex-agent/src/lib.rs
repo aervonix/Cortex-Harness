@@ -71,7 +71,7 @@ pub use events::EventSink;
 pub use guard::RepetitionLimits;
 pub use ledger::{Account, Ledger, LimitReached, Spent};
 pub use policy::{AllowAll, Decision, PlannedCall, Policy, Verdict};
-pub use session::SessionHandle;
+pub use session::{HistoryChange, SessionHandle};
 pub use speed::SpeedSettings;
 pub use state::{Observer, TRANSITIONS, TurnState};
 pub use stats::{NoStats, RequestStat, StatEvent, Stats, ToolCallStat, ToolStatOutcome, TurnStat};

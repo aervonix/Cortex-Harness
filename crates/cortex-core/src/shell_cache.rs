@@ -46,7 +46,7 @@ const LARGEST: u64 = 64 * 1024;
 /// What a shell's program file looked like when it was asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Stamp {
-    /// The program, as the search resolved it.
+    /// The program where it really is ([`resolved`]).
     program: PathBuf,
     size: u64,
     /// Nanoseconds since 1970, as text: a `u128` is not a JSON number.
@@ -55,9 +55,11 @@ pub(crate) struct Stamp {
 
 impl Stamp {
     /// The stamp of `program` now. `None` when the file cannot be looked
-    /// at, which leaves the shell to be asked.
+    /// at, or `program` is not an absolute path, which leaves the shell to
+    /// be asked.
     pub(crate) fn of(program: &Path) -> Option<Self> {
-        let metadata = std::fs::metadata(program).ok()?;
+        let program = resolved(program)?;
+        let metadata = std::fs::metadata(&program).ok()?;
         let modified = metadata
             .modified()
             .ok()?
@@ -66,7 +68,7 @@ impl Stamp {
             .as_nanos()
             .to_string();
         Some(Self {
-            program: program.to_path_buf(),
+            program,
             size: metadata.len(),
             modified,
         })
@@ -77,6 +79,24 @@ impl Stamp {
             && entry["size"].as_u64() == Some(self.size)
             && entry["modified"].as_str() == Some(self.modified.as_str())
     }
+}
+
+/// Where `program` really is: every link on its way followed, written as the
+/// system writes a path (`C:\…` on Windows, not `\\?\C:\…`). The search
+/// gives the path as found, which may be a link, and the cache is keyed by
+/// the file that runs. A program the system cannot resolve (on Windows, an
+/// app execution alias, which cannot be opened as a file) is keyed by the
+/// absolute path it was found at. A relative path is no key at all: it
+/// would name a different file from another directory.
+fn resolved(program: &Path) -> Option<PathBuf> {
+    if !program.is_absolute() {
+        return None;
+    }
+    Some(match std::fs::canonicalize(program) {
+        Ok(real) => cortex_base::AbsPath::from_os(&real)
+            .map_or(real, |path| PathBuf::from(path.to_native_string())),
+        Err(_) => program.to_path_buf(),
+    })
 }
 
 /// The version kept for the shell `stamp` describes, if the file has one.
@@ -209,6 +229,65 @@ mod tests {
         store(&place.file, &updated, "7.5.0", &clock());
         assert_eq!(lookup(&place.file, &updated), Some("7.5.0".to_owned()));
         assert_eq!(lookup(&place.file, &stamp), None);
+    }
+
+    /// The key is the file that runs, not the way to it: a shell found
+    /// through a link is kept under the link's target, and a relative path,
+    /// which names another file from another directory, is no key.
+    #[test]
+    fn a_shell_is_kept_under_its_resolved_path() {
+        let place = place("resolved");
+        let stamp = Stamp::of(&place.program).unwrap();
+        let real = std::fs::canonicalize(&place.program).unwrap();
+        assert_eq!(
+            stamp.program,
+            cortex_base::AbsPath::from_os(&real)
+                .map(|path| PathBuf::from(path.to_native_string()))
+                .unwrap()
+        );
+        #[cfg(windows)]
+        assert!(!stamp.program.to_string_lossy().starts_with(r"\\?\"));
+        #[cfg(unix)]
+        {
+            let link = place.program.with_file_name("pwsh-link");
+            std::os::unix::fs::symlink(&place.program, &link).unwrap();
+            assert_eq!(Stamp::of(&link).unwrap().program, stamp.program);
+        }
+        // The same file by a relative path, which leads to it from here.
+        if let Some(relative) = relative_to_here(&place.program) {
+            assert!(relative.is_relative() && relative.is_file());
+            assert_eq!(Stamp::of(&relative), None);
+        }
+    }
+
+    /// `target` written relative to this process's current directory, as a
+    /// relative entry of a user's `PATH` is. `None` where it cannot be (on
+    /// another drive).
+    fn relative_to_here(target: &Path) -> Option<PathBuf> {
+        use std::path::Component;
+        let here = std::env::current_dir().unwrap();
+        let anchor = |path: &Path| {
+            path.components()
+                .take_while(|part| matches!(part, Component::Prefix(_) | Component::RootDir))
+                .collect::<PathBuf>()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+        };
+        if anchor(&here) != anchor(target) {
+            return None;
+        }
+        let names = |path: &Path| {
+            path.components()
+                .filter(|part| matches!(part, Component::Normal(_)))
+                .count()
+        };
+        let mut relative: PathBuf = (0..names(&here)).map(|_| "..").collect();
+        relative.extend(
+            target
+                .components()
+                .filter(|part| matches!(part, Component::Normal(_))),
+        );
+        Some(relative)
     }
 
     #[test]

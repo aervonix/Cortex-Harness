@@ -358,6 +358,9 @@ impl Session {
                 state: TurnState::Idle,
                 usage: cortex_protocol::usage::SessionUsage::default(),
                 reload: false,
+                changing: false,
+                restored: Vec::new(),
+                history: !opened.items.is_empty(),
                 closed: false,
             }),
         });
@@ -476,9 +479,40 @@ impl Session {
     /// Reads the session again from its store: its items changed under the
     /// loop, or an append failed and memory must be brought back to what
     /// the log holds.
+    ///
+    /// **The table of seen files starts a new context epoch here**, for
+    /// every reason the history is read again: what the model was shown
+    /// may not be in the history any more (a rewind took it away), so the
+    /// next read of any file is in full and never "unchanged" or a diff
+    /// against a version the model does not have. Files a rewind put back
+    /// are forgotten whole: what the table recorded of them is a version
+    /// the rewind took away. This is the one place a change of history
+    /// reaches the table, and where compaction starts its epochs too
+    /// (`docs/architecture/07-sessions-and-context.md`, "What each part of
+    /// a session's state follows").
     async fn reload(&mut self) -> Result<(), StoreError> {
+        let restored = std::mem::take(&mut self.shared.lock().restored);
+        self.env.workspace.files.begin_epoch();
+        if !restored.is_empty() {
+            // Placing a path follows its links, which reads the file
+            // system: not on this thread.
+            let paths = Arc::clone(&self.env.workspace.paths);
+            let placed = cortex_tools::run_blocking(&CancelToken::new(), move |_| {
+                restored
+                    .iter()
+                    .filter_map(|file| paths.resolve(file).ok())
+                    .map(|path| path.abs().clone())
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default();
+            for path in &placed {
+                self.env.workspace.files.forget(path);
+            }
+        }
         let opened = self.store.open().await?;
         self.context.load(&opened.items);
+        self.shared.lock().history = !opened.items.is_empty();
         let next = self.item_ids.peek().max(opened.last_item.saturating_add(1));
         self.item_ids = IdCounter::new(ITEM_PREFIX).after(next - 1);
         Ok(())
@@ -565,7 +599,9 @@ impl Session {
             delivery: prompt.delivery,
             created_at: Some(self.clock.now().to_timestamp()),
         });
-        self.record_shown(turn, item).await
+        self.record_shown(turn, item).await?;
+        self.shared.lock().history = true;
+        Ok(())
     }
 
     // ----------------------------------------------------------- preparing

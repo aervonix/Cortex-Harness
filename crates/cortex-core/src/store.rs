@@ -300,9 +300,13 @@ impl Kept {
 ///
 /// This is the one place that says where a session's plan is kept between
 /// runs: in `plan` entries of the conversation tree, one after each change.
-/// Compaction (step 15) carries the plan in its summary; when it does, the
-/// summary's plan is read here too, as the plan of the point where the new
-/// epoch begins.
+/// A change by the model's `plan` call is written **before the call's
+/// result**, because the plan changed when the call ran: a branch that
+/// holds the result holds the plan it made, so a rewind or a fork at the
+/// result keeps it, and one at the response that made the call does not.
+/// A change by the user is written when it is made. Compaction (step 15)
+/// carries the plan in its summary; when it does, the summary's plan is
+/// read here too, as the plan of the point where the new epoch begins.
 pub(crate) fn plan_of(entries: &[Entry]) -> Option<Plan> {
     entries.iter().rev().find_map(|entry| match &entry.body {
         Body::Plan(record) => Some(record.plan.clone()),
@@ -432,6 +436,7 @@ impl LogStore {
 }
 
 /// What of an item the hooks act on, read before the item is handed over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Seen {
     Nothing,
     /// A notice of the plan was recorded.
@@ -483,38 +488,44 @@ impl SessionStore for LogStore {
     ) -> BoxFuture<'a, Result<(), StoreError>> {
         Box::pin(async move {
             let seen = seen(&record);
+            // A `plan` call changed the plan when it ran, so the plan it
+            // made is written before its result: the branch that holds the
+            // result holds the plan, and a rewind or a fork at the result
+            // keeps it (`plan_of`).
+            let replaced = if seen == Seen::PlanReplaced {
+                let plan = self.hooks.board.get();
+                let recorded = plan.clone();
+                let turn_id = turn.clone();
+                // The plan is the session's working state: a turn does not
+                // fail because it could not be written down.
+                if let Err(error) = self
+                    .blocking(move |kept| kept.record_plan(Some(&turn_id), &recorded))
+                    .await
+                {
+                    tracing::warn!(%error, "the plan could not be recorded");
+                }
+                Some(plan)
+            } else {
+                None
+            };
             let turn_id = turn.clone();
             let appended = self
                 .blocking(move |kept| kept.append(&turn_id, record))
                 .await?;
             self.hooks.after(&appended);
-            match seen {
-                Seen::Nothing => {}
-                Seen::PlanNotice => {
-                    // The model will see what the user changed with the
-                    // next request: its next `plan` call goes through.
-                    let delivered = lock(&self.hooks.handed).pop_front();
-                    if let Some(revision) = delivered {
-                        self.hooks.board.delivered(revision);
-                    }
+            if seen == Seen::PlanNotice {
+                // The model will see what the user changed with the next
+                // request: its next `plan` call goes through.
+                let delivered = lock(&self.hooks.handed).pop_front();
+                if let Some(revision) = delivered {
+                    self.hooks.board.delivered(revision);
                 }
-                Seen::PlanReplaced => {
-                    let plan = self.hooks.board.get();
-                    let recorded = plan.clone();
-                    let turn_id = turn.clone();
-                    // The plan is the session's working state: a turn does
-                    // not fail because it could not be written down.
-                    if let Err(error) = self
-                        .blocking(move |kept| kept.record_plan(Some(&turn_id), &recorded))
-                        .await
-                    {
-                        tracing::warn!(%error, "the plan could not be recorded");
-                    }
-                    self.hooks.emit(Event::PlanUpdated(PlanUpdated {
-                        plan,
-                        by: Actor::Agent,
-                    }));
-                }
+            }
+            if let Some(plan) = replaced {
+                self.hooks.emit(Event::PlanUpdated(PlanUpdated {
+                    plan,
+                    by: Actor::Agent,
+                }));
             }
             Ok(())
         })

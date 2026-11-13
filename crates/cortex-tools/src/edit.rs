@@ -17,10 +17,12 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::args;
-use crate::change::{Env, Found, Target, payload_diff};
+use crate::change::{self, Env, Found, Target, payload_diff};
 use crate::checkpoint::Editing;
 use crate::context::{PlanCx, RunCx};
-use crate::contract::{BoxFuture, ConcurrencyClass, Json, Plan, Tool, ToolOutput, ToolSpec};
+use crate::contract::{
+    BoxFuture, ConcurrencyClass, Json, Plan, Preview, Tool, ToolOutput, ToolSpec,
+};
 use crate::diff;
 use crate::matching::{self, Edit, Failure, Replacement};
 use crate::output::count;
@@ -189,6 +191,26 @@ impl Tool for EditTool {
             })
             .await
         })
+    }
+
+    fn preview(&self, plan: &Plan, cx: &PlanCx) -> Option<Preview> {
+        let call = plan.args::<Call>()?.clone();
+        let paths = std::sync::Arc::clone(&cx.paths);
+        let limit = self.editing.limit;
+        Some(Box::new(move || {
+            let shown = call.path.display();
+            change::preview(&call.path, &paths, limit, |old| {
+                let Some(old) = old else {
+                    return Err(format!(
+                        "`{shown}` does not exist, so there is nothing to edit."
+                    ));
+                };
+                // Found as the call will find it, tolerant tier and all.
+                let places = matching::locate(&Text::new(old), &call.edits, &|| false)
+                    .map_err(|failures| explain(&shown, call.edits.len(), &failures))?;
+                Ok(matching::apply(old, &places))
+            })
+        }))
     }
 }
 

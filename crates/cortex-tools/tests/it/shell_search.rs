@@ -211,6 +211,155 @@ fn a_configured_shell_is_the_one_used_and_nothing_else() {
     assert_eq!(line.arguments.len(), 3);
 }
 
+/// `target` written relative to this process's current directory, as
+/// `./node_modules/.bin` in a user's `PATH` is relative to wherever the
+/// harness is started. `None` where it cannot be (another drive).
+fn relative_to_here(target: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let here = std::env::current_dir().expect("a current directory");
+    // The drive, in any case: `D:` and `d:` are one.
+    let anchor = |path: &Path| {
+        path.components()
+            .take_while(|part| matches!(part, Component::Prefix(_) | Component::RootDir))
+            .collect::<PathBuf>()
+            .to_string_lossy()
+            .to_ascii_lowercase()
+    };
+    if anchor(&here) != anchor(target) {
+        return None;
+    }
+    let names = |path: &Path| {
+        path.components()
+            .filter(|part| matches!(part, Component::Normal(_)))
+            .count()
+    };
+    let mut relative: PathBuf = (0..names(&here)).map(|_| "..").collect();
+    relative.extend(
+        target
+            .components()
+            .filter(|part| matches!(part, Component::Normal(_))),
+    );
+    Some(relative)
+}
+
+/// A user's `PATH` often starts with a relative entry
+/// (`./node_modules/.bin`). It names a directory of wherever the harness
+/// was started, which is usually the workspace, so a file there named like
+/// the shell would run every command, and be started (for its version) as
+/// soon as a session opens. Found by the review of step 13a.
+#[test]
+fn a_relative_path_entry_does_not_make_a_file_there_the_shell() {
+    let ws = Workspace::new("search_relative_entry");
+    let planted = ws.dir.join("node_modules").join(".bin");
+    let real = ws.dir.join("real");
+    for (windows, name) in [(false, "bash"), (true, "pwsh.exe")] {
+        program(&planted, name);
+        let wanted = program(&real, name);
+        let Some(relative) = relative_to_here(&planted) else {
+            return;
+        };
+        assert!(relative.is_relative());
+        // The relative entry does lead to the planted file from here.
+        assert!(relative.join(name).is_file(), "{}", relative.display());
+
+        let search = ShellSearch {
+            windows,
+            path: vec![
+                PathBuf::new(),
+                PathBuf::from("."),
+                relative.clone(),
+                real.clone(),
+            ],
+            system_root: None,
+            comspec: None,
+        };
+        let found = search.find(None, None).expect("a shell");
+        assert_eq!(
+            found.program(),
+            wanted,
+            "the shell is a file found through a relative PATH entry"
+        );
+        // And by name, as configuration may give it.
+        let configured = search.find(Some(name), None).expect("a shell");
+        assert_eq!(configured.program(), wanted);
+        // With nothing but relative entries there is no shell.
+        let only_relative = ShellSearch {
+            path: vec![relative],
+            ..search
+        };
+        assert!(only_relative.find(None, None).is_err());
+    }
+}
+
+/// The shell configuration names may be a name on `PATH` or an absolute
+/// path. A relative path would be found from wherever the harness was
+/// started, as a relative entry of `PATH` would.
+#[test]
+fn a_configured_shell_given_as_a_relative_path_is_refused() {
+    let ws = Workspace::new("search_relative_configured");
+    let bin = ws.dir.join("bin");
+    program(&bin, "bash");
+    program(&bin, "pwsh.exe");
+    for (windows, configured) in [
+        (false, "bin/bash"),
+        (false, "./bash"),
+        (false, "~/bin/bash"),
+        (true, r".\pwsh.exe"),
+        (true, r"bin\pwsh.exe"),
+    ] {
+        assert_eq!(
+            search(windows, &[&bin]).find(Some(configured), None),
+            Err(ShellError::NotAbsolute(configured.to_owned())),
+            "{configured}"
+        );
+    }
+}
+
+/// On Windows the search is the harness's own: `.exe` and the name as
+/// given. The other extensions of `PATHEXT` (a batch file named `pwsh`)
+/// never make a shell, wherever they are on the path.
+#[test]
+fn on_windows_only_an_exe_is_taken_for_a_shell() {
+    let ws = Workspace::new("search_windows_pathext");
+    let first = ws.dir.join("first");
+    for name in ["pwsh.bat", "pwsh.cmd", "pwsh.com", "pwsh.ps1"] {
+        program(&first, name);
+    }
+    let second = ws.dir.join("second");
+    let pwsh = program(&second, "pwsh.exe");
+    let found = search(true, &[&first, &second])
+        .find(None, None)
+        .expect("a shell");
+    assert_eq!(found.program(), pwsh);
+    assert_eq!(found.kind(), ShellKind::Pwsh);
+}
+
+/// `%ComSpec%` and `%SystemRoot%` are believed only when they are
+/// absolute: a relative one names a place from wherever the harness was
+/// started.
+#[test]
+fn a_relative_comspec_or_system_root_is_not_believed() {
+    let ws = Workspace::new("search_relative_comspec");
+    let planted = ws.dir.join("planted");
+    let planted_cmd = program(&planted.join("System32"), "cmd.exe");
+    let system = ws.dir.join("system");
+    let real_cmd = program(&system.join("System32"), "cmd.exe");
+    let (Some(relative_root), Some(relative_cmd)) =
+        (relative_to_here(&planted), relative_to_here(&planted_cmd))
+    else {
+        return;
+    };
+
+    let mut found = search(true, &[&ws.dir.join("empty")]);
+    found.comspec = Some(relative_cmd);
+    found.system_root = Some(system.clone());
+    assert_eq!(found.find(None, None).expect("a shell").program(), real_cmd);
+
+    found.comspec = None;
+    found.system_root = Some(relative_root);
+    assert!(found.find(None, None).is_err(), "a relative %SystemRoot%");
+}
+
 #[test]
 fn the_real_search_finds_this_systems_shell() {
     let found = ShellSearch::from_env()

@@ -110,6 +110,10 @@ pub(crate) struct Wanted {
     pub(crate) settings: SessionSettings,
     /// Overrides for this session, over the core's own.
     pub(crate) overrides: Vec<Override>,
+    /// Whether the session may not start at a higher level than it would
+    /// without `settings` and `overrides`: they come from a client that is
+    /// not a `user`, which `session/set` would not let raise the level.
+    pub(crate) no_raise: bool,
 }
 
 /// The images of a session's store, which exists only after the clients
@@ -447,6 +451,14 @@ fn engine_parts(
     if let Some(config) = dirs.config.as_deref().and_then(resolve_dir) {
         protected = protected.closed(config);
     }
+    // The stored keys, wherever they are kept: in the configuration
+    // directory on Linux, and on Windows in the local folder, which is the
+    // data directory and so is closed only to writing. Its lock beside it.
+    for file in credential_files(dirs) {
+        if let Some(file) = resolve_dir(&file) {
+            protected = protected.closed(file);
+        }
+    }
     if let Some(state) = state.and_then(|state| resolve_dir(state.root())) {
         protected = protected.closed(state);
     }
@@ -482,6 +494,17 @@ fn engine_parts(
         store,
         clock: Arc::clone(&inner.options.clock),
     }
+}
+
+/// The credentials file and its lock (`cortex_config`'s file store), where
+/// `dirs` puts them.
+fn credential_files(dirs: &cortex_config::Dirs) -> Vec<PathBuf> {
+    let Some(file) = dirs.credentials_file() else {
+        return Vec::new();
+    };
+    let mut lock = file.clone().into_os_string();
+    lock.push(".lock");
+    vec![file, PathBuf::from(lock)]
 }
 
 /// Starts an engine, with its failure as the error a front end is shown.
@@ -688,6 +711,40 @@ pub(crate) fn assemble(
         loaded,
         problem,
     } = trust(inner, state.as_ref(), &root, &load)?;
+    if wanted.no_raise {
+        // The level the session would start at without what the client
+        // asked for, under the same answer about trust.
+        let mut without = load.clone();
+        without.overrides.clone_from(&options.overrides);
+        without.trust = if rules_trusted {
+            cortex_config::ProjectTrust::Trusted
+        } else {
+            cortex_config::ProjectTrust::Untrusted
+        };
+        let start = cortex_config::load(&without).map_err(|failure| {
+            error(
+                ErrorKind::Config,
+                "invalid_configuration",
+                failure.render(env),
+            )
+        })?;
+        let (asked, start) = (
+            &loaded.settings.permissions.mode,
+            &start.settings.permissions.mode,
+        );
+        if !cortex_policy::level::no_higher_than(asked, start) {
+            return Err(error(
+                ErrorKind::Permission,
+                cortex_protocol::error::code::ROLE_NOT_ALLOWED,
+                format!(
+                    "Only a `user` client may start a session above the level it would start \
+                     at: `{}` is above `{}`.",
+                    asked.as_str(),
+                    start.as_str()
+                ),
+            ));
+        }
+    }
     told.extend(problem);
     for diagnostic in &loaded.diagnostics {
         told.push(diagnostic.render(env));

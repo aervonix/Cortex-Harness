@@ -149,6 +149,9 @@ When the rig was seeded, every test of `cortex-agent` passed under seeds 0 to 29
 
 **Other rigs.** A crate whose tests drive the loop or the tools on a single-threaded runtime (the core's, from step 13) takes the same two lines: `cortex-tools` with `test-hooks` in its dev-dependencies, and an `InlineBlocking::seeded(cortex_testkit::seed::for_this_test())` kept for the life of the test. A test whose order is the operating system's to decide (processes, sockets, threads of its own) cannot be seeded, and is repeated instead.
 
+- **The core's own blocking work goes through the same seam** (since the review of step 13a): putting a session together, a fork's and a rewind's work on the log, the end of a session. So a core test's seed orders it with the loop's. The session store's writes and a command's process are still real threads and processes.
+- **A test that acts between two steps of an operation** uses `InlineBlocking::after(n)` in place of a seed: every piece of blocking work waits exactly `n` turns of the runtime. With `after(1)`, each piece is one `Pending` of the future waiting for it, so a test that polls the operation by hand knows what is under way when it acts. The core's rig has it as `World::one_turn_each`, and the tests of a client that leaves, and a shutdown that begins, while a session is being put together use it (`crates/cortex-core/tests/it/lifecycle.rs`). Before it, such a test held the runtime's one blocking thread itself (`max_blocking_threads(1)`), which can order the first piece of work and not the second.
+
 ### Running the tests many times over
 
 `cargo xtask stress -p <crate>… [--count N] [--first-seed S]` runs the crates' tests `N` times over (100 when not given), and reports each test that failed on some repeat:

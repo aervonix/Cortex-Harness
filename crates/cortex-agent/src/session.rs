@@ -34,6 +34,53 @@ use crate::events::Emitter;
 use crate::speed::{SpeedSettings, role_state};
 use crate::state::TurnState;
 
+fn history_changing() -> Box<ErrorData> {
+    Box::new(ErrorData::new(
+        ErrorKind::Usage,
+        code::HISTORY_CHANGING,
+        "The session's history is being changed (a rewind). Send this again when that is done.",
+    ))
+}
+
+/// A change to a session's history that is under way
+/// ([`SessionHandle::change_history`]). No turn starts while it lives.
+/// Dropping it ends the change, and the loop reads the history again before
+/// its next turn.
+#[must_use = "the change ends when this is dropped"]
+pub struct HistoryChange {
+    shared: Arc<Shared>,
+    restored: Vec<String>,
+}
+
+impl HistoryChange {
+    /// Says that the change put these files back on disk, each as the
+    /// session store names it: relative to the workspace, or absolute
+    /// outside it. The table of seen files forgets them when the history
+    /// is read again, so a file is read in full before it is changed: what
+    /// the table recorded of it is a version the change took away.
+    pub fn restored(&mut self, files: impl IntoIterator<Item = String>) {
+        self.restored.extend(files);
+    }
+}
+
+impl std::fmt::Debug for HistoryChange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistoryChange")
+            .field("session", &self.shared.info.id)
+            .field("restored", &self.restored)
+            .finish()
+    }
+}
+
+impl Drop for HistoryChange {
+    fn drop(&mut self) {
+        let mut inbox = self.shared.lock();
+        inbox.changing = false;
+        inbox.reload = true;
+        inbox.restored.append(&mut self.restored);
+    }
+}
+
 /// The turn that is running, or about to.
 #[derive(Debug, Clone)]
 pub(crate) struct Running {
@@ -97,6 +144,16 @@ pub(crate) struct Inbox {
     /// The session's items changed under the loop (a rewind): it reads them
     /// again before its next turn.
     pub(crate) reload: bool,
+    /// The session's history is being changed ([`HistoryChange`]): no turn
+    /// starts, and no second change begins.
+    pub(crate) changing: bool,
+    /// Files a change of history put back on disk, as the store names them
+    /// (relative to the workspace, or absolute outside it): the table of
+    /// seen files forgets them when the loop reads the history again.
+    pub(crate) restored: Vec<String>,
+    /// Whether the conversation has anything in it, from this process or
+    /// from the log it was opened from ([`SessionHandle::has_history`]).
+    pub(crate) history: bool,
     pub(crate) closed: bool,
 }
 
@@ -203,6 +260,9 @@ impl SessionHandle {
     /// `turn_running` when a turn is running and `delivery` is absent: the
     /// loop does not guess. `unknown_value` for a delivery this build does
     /// not know. `session_not_open` after [`close`](Self::close).
+    /// `history_changing` while the session's history is being changed
+    /// ([`change_history`](Self::change_history)): the prompt is sent again
+    /// when that is over.
     pub fn prompt(
         &self,
         input: Vec<Part>,
@@ -216,6 +276,12 @@ impl SessionHandle {
                 code::SESSION_NOT_OPEN,
                 "The session has been closed.",
             )));
+        }
+        // Looked at under the same lock as the change sets it: a prompt
+        // either starts its turn before the change begins, and the change
+        // is then refused, or is refused itself.
+        if inbox.changing {
+            return Err(history_changing());
         }
         let Some(running) = inbox.running.clone() else {
             let turn: TurnId = inbox.turn_ids.next_id();
@@ -430,6 +496,16 @@ impl SessionHandle {
         self.shared.state(&self.shared.lock())
     }
 
+    /// Whether the session's conversation has anything in it: a resumed
+    /// session's from its log, and whatever this process added. A change
+    /// of model then sends it all again without the provider's cached
+    /// prefix. ([`usage`](Self::usage) counts this process's requests only,
+    /// and starts at none on resume.)
+    #[must_use]
+    pub fn has_history(&self) -> bool {
+        self.shared.lock().history
+    }
+
     /// The session's usage, as of the last request that ended.
     #[must_use]
     pub fn usage(&self) -> SessionUsage {
@@ -442,16 +518,34 @@ impl SessionHandle {
         self.shared.lock().state
     }
 
-    /// Tells the loop that the session's items changed under it (a rewind,
-    /// a change of branch): it reads them again before its next turn. If
+    /// Begins a change to the session's items under the loop (a rewind, a
+    /// change of branch), which its owner makes in the store while the
+    /// returned [`HistoryChange`] lives. Meanwhile no turn starts
+    /// ([`prompt`](Self::prompt) is refused with `history_changing`) and no
+    /// second change begins. When it is dropped, however the change ended,
+    /// the loop reads the session's items again before its next turn: if
     /// that fails, the turn fails, and the turn after it tries again.
+    ///
+    /// Reading them again starts a new context epoch of the session's table
+    /// of seen files: the model no longer has what it was shown before, so
+    /// the next read of any file is in full
+    /// (`docs/architecture/07-sessions-and-context.md`, "What each part of
+    /// a session's state follows").
     ///
     /// # Errors
     ///
     /// `turn_running` while a turn is running: history is not changed under
-    /// a turn.
-    pub fn reload(&self) -> Result<(), Box<ErrorData>> {
+    /// a turn. `history_changing` while another change is under way.
+    /// `session_not_open` after [`close`](Self::close).
+    pub fn change_history(&self) -> Result<HistoryChange, Box<ErrorData>> {
         let mut inbox = self.shared.lock();
+        if inbox.closed {
+            return Err(Box::new(ErrorData::new(
+                ErrorKind::Usage,
+                code::SESSION_NOT_OPEN,
+                "The session has been closed.",
+            )));
+        }
         if inbox.running.is_some() {
             return Err(Box::new(ErrorData::new(
                 ErrorKind::Usage,
@@ -460,8 +554,14 @@ impl SessionHandle {
                  history.",
             )));
         }
-        inbox.reload = true;
-        Ok(())
+        if inbox.changing {
+            return Err(history_changing());
+        }
+        inbox.changing = true;
+        Ok(HistoryChange {
+            shared: Arc::clone(&self.shared),
+            restored: Vec::new(),
+        })
     }
 
     /// Closes the session: a running turn is interrupted, and the loop

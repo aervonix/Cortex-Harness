@@ -450,6 +450,14 @@ pub enum ShellError {
     /// The program configuration names is not there.
     #[error("the configured shell `{0}` was not found, as a path or on PATH")]
     Configured(String),
+    /// The program configuration names is a relative path (`bin/bash`).
+    /// It would be found from wherever the harness was started, which is
+    /// usually the workspace, whose files are not the user's to vouch for.
+    #[error(
+        "the configured shell `{0}` is a relative path: give the name of a program on PATH, or \
+         an absolute path"
+    )]
+    NotAbsolute(String),
     /// None of the shells this system should have was found.
     #[error("no shell was found: looked for {0}")]
     NoneFound(String),
@@ -464,12 +472,17 @@ pub struct ShellSearch {
     /// Whether to look for the shells of Windows, and for programs by
     /// Windows's rules (`.exe`, any case).
     pub windows: bool,
-    /// The directories of `PATH`, in order.
+    /// The directories of `PATH`, in order. Only the absolute ones are
+    /// looked in: an empty or relative entry (`.`, `bin`,
+    /// `./node_modules/.bin`) names a directory from wherever the harness
+    /// was started, which is usually the workspace, and a file there named
+    /// `bash` must not become the shell every command runs in.
     pub path: Vec<PathBuf>,
     /// `%SystemRoot%`, where Windows keeps `cmd.exe` and Windows
-    /// PowerShell.
+    /// PowerShell. Used only when it is absolute.
     pub system_root: Option<PathBuf>,
-    /// `%ComSpec%`, the system's own word for where `cmd.exe` is.
+    /// `%ComSpec%`, the system's own word for where `cmd.exe` is. Used only
+    /// when it is absolute.
     pub comspec: Option<PathBuf>,
 }
 
@@ -491,14 +504,27 @@ impl ShellSearch {
     /// Finds the shell to use.
     ///
     /// - With `program` set (configuration's `shell.program`): that
-    ///   program, as a path or a name on `PATH`, and nothing else. Its
-    ///   kind is what its name says.
+    ///   program, as an absolute path or a name on `PATH`, and nothing
+    ///   else. Its kind is what its name says. A relative path is refused
+    ///   ([`ShellError::NotAbsolute`]).
     /// - Otherwise, on Linux: `bash`, then `sh`.
     /// - Otherwise, on Windows: PowerShell 7 (`pwsh`), then Windows
     ///   PowerShell, then `cmd.exe`.
     ///
     /// `arguments` (configuration's `shell.args`) replace the kind's own
     /// arguments before the command.
+    ///
+    /// **What is found is an absolute path, as found.** Only absolute
+    /// directories are looked in, so nothing of the workspace is found. A
+    /// link is not resolved here: a program that is several programs
+    /// (`busybox`) knows which one to be from the name it is started by. The
+    /// harness keys what it keeps about the shell by the resolved path.
+    ///
+    /// **On Windows this search is the harness's own, not the system's.**
+    /// It tries a name with `.exe` and as given, and never the other
+    /// extensions of `PATHEXT` (a `pwsh.bat` is not PowerShell). It never
+    /// looks in the current directory, which the system's search for a
+    /// program, and `cmd.exe`'s for a command, look in first.
     ///
     /// It looks at the file system and blocks for as long as that takes.
     /// It starts no process: [`Shell::probe_version`] does.
@@ -510,6 +536,9 @@ impl ShellSearch {
         let shell = match program {
             Some(program) => {
                 let found = if program.contains(['/', '\\']) {
+                    if !Path::new(program).is_absolute() {
+                        return Err(ShellError::NotAbsolute(program.to_owned()));
+                    }
                     is_program(Path::new(program), self.windows).then(|| PathBuf::from(program))
                 } else {
                     self.on_path(program)
@@ -534,7 +563,7 @@ impl ShellSearch {
             return Ok(Shell::of_kind(ShellKind::Pwsh, pwsh));
         }
         let system = |tail: &[&str]| {
-            let mut path = self.system_root.clone()?;
+            let mut path = self.system_root.clone().filter(|root| root.is_absolute())?;
             path.extend(tail);
             is_program(&path, true).then_some(path)
         };
@@ -547,7 +576,11 @@ impl ShellSearch {
         let cmd = self
             .comspec
             .clone()
-            .filter(|path| is_program(path, true) && ShellKind::of(path) == ShellKind::Cmd)
+            .filter(|path| {
+                path.is_absolute()
+                    && is_program(path, true)
+                    && ShellKind::of(path) == ShellKind::Cmd
+            })
             .or_else(|| system(&["System32", "cmd.exe"]))
             .or_else(|| self.on_path("cmd"));
         cmd.map(|cmd| Shell::of_kind(ShellKind::Cmd, cmd))
@@ -560,7 +593,9 @@ impl ShellSearch {
             })
     }
 
-    /// The first program called `name` in the directories of `PATH`.
+    /// The first program called `name` in the absolute directories of
+    /// `PATH`. Whether a directory is absolute is this system's question,
+    /// as the directories are this system's.
     fn on_path(&self, name: &str) -> Option<PathBuf> {
         let mut names = vec![OsString::from(name)];
         if self.windows && Path::new(name).extension().is_none() {
@@ -568,7 +603,7 @@ impl ShellSearch {
         }
         self.path
             .iter()
-            .filter(|directory| !directory.as_os_str().is_empty())
+            .filter(|directory| directory.is_absolute())
             .flat_map(|directory| names.iter().map(move |name| directory.join(name)))
             .find(|candidate| is_program(candidate, self.windows))
     }
