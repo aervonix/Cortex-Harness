@@ -55,6 +55,13 @@ similar = { version = "3.2.1", default-features = false, features = ["std"] }
 thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
 # Each crate names the tokio features it uses; none are on here.
 tokio = { version = "1.54.1", default-features = false }
+# The logging facade (decision 0019). Without `attributes`, which is a
+# procedural macro nothing here uses. `trace` is compiled out of release
+# builds.
+tracing = { version = "0.1.44", default-features = false, features = ["std", "release_max_level_debug"] }
+# One type of it that `tracing` does not re-export: what a subscriber answers
+# when asked for the current span. `tracing` builds it anyway.
+tracing-core = { version = "0.1.36", default-features = false, features = ["std"] }
 # Reading only. A crate that also writes TOML turns `display` on itself.
 toml = { version = "1.2.1", default-features = false, features = ["parse", "serde", "std"] }
 unicode-segmentation = { version = "1.13.3", default-features = false }
