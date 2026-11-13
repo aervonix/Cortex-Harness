@@ -20,6 +20,7 @@
 //! | `commands` | The subcommands, and a project trusted through one. |
 //! | `live` | The one run against a real model, ignored: `cargo xtask live` starts it. |
 //! | `tools` | The real toolbox as a strict variant declares it. |
+//! | `sandbox` | The hidden subcommand `__sandbox` as the sandbox launcher, and what it adds to starting a command (Linux). |
 
 #![allow(
     clippy::disallowed_methods,
@@ -38,6 +39,8 @@ mod commands;
 mod live;
 mod names;
 mod runs;
+#[cfg(target_os = "linux")]
+mod sandbox;
 mod signals;
 mod tools;
 
