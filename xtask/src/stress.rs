@@ -130,6 +130,19 @@ impl Request {
     }
 
     /// The arguments of `cargo` for this request.
+    /// The build of the tests the run will use, with nothing run: the
+    /// command's arguments with `--no-run` before what goes to nextest.
+    fn build_command(&self) -> Vec<String> {
+        let mut command: Vec<String> = ["nextest", "run", "--profile", "stress", "--no-run"]
+            .map(str::to_owned)
+            .to_vec();
+        for package in &self.packages {
+            command.extend(["-p".to_owned(), package.clone()]);
+        }
+        command.extend(self.rest.iter().take_while(|word| *word != "--").cloned());
+        command
+    }
+
     fn command(&self) -> Vec<String> {
         let mut command: Vec<String> = ["nextest", "run", "--profile", "stress", "--stress-count"]
             .map(str::to_owned)
@@ -170,8 +183,8 @@ pub(crate) fn run(arguments: &[String]) -> Result<()> {
     // Built before the squeeze, so that two pinned cores are spent on the
     // tests and not on the compiler.
     if request.squeeze != Squeeze::default() {
-        let mut build = request.cargo(&root);
-        build.arg("--no-run");
+        let mut build = Command::new(workspace::cargo());
+        build.args(request.build_command()).current_dir(&root);
         let built = build
             .status()
             .map_err(|error| format!("could not run cargo nextest: {error}"))?;
@@ -339,6 +352,22 @@ mod tests {
         assert_eq!(
             request.command().join(" "),
             "nextest run --profile stress --stress-count 100 -p cortex-testkit server::"
+        );
+        // The build before the squeeze runs nothing, whatever goes after `--`.
+        let request = Request::parse(&strings(&[
+            "-p",
+            "cortex-testkit",
+            "--cores",
+            "2",
+            "server::",
+            "--",
+            "--exact",
+            "a",
+        ]))
+        .unwrap();
+        assert_eq!(
+            request.build_command().join(" "),
+            "nextest run --profile stress --no-run -p cortex-testkit server::"
         );
     }
 
