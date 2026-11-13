@@ -26,12 +26,12 @@ use cortex_base::{Secret, SecretFilter, SharedClock, SharedTimer};
 use cortex_config::credentials::Lookup;
 use cortex_config::credentials::{CredentialError, StoreKind};
 use cortex_config::{CredentialStore, Env, KeyPath, Loaded, Settings};
-use cortex_llm::anthropic;
 use cortex_llm::{
     AnthropicMessages, ApiKeyAuth, AuthMethod, Catalog, FlagValue, ImageSource, KeyPlacement,
-    ModelClient, ModelEntry, Protocol, ProviderClient, ProviderInfo, Reasoning,
+    ModelClient, ModelEntry, NoAuth, OpenAiChat, Protocol, ProviderClient, ProviderInfo, Reasoning,
     ReasoningVisibility, RetryPolicy, SpeedCooldowns, SpeedPolicy, Transport,
 };
+use cortex_llm::{anthropic, openai_chat};
 use cortex_protocol::model::{Modality, ReasoningControlKind};
 use cortex_protocol::{ErrorData, ErrorKind, ModelId, ProviderId};
 use cortex_tools::ImageSupport;
@@ -151,6 +151,24 @@ pub(crate) fn catalog(loaded: &Loaded, env: &Env) -> Result<Catalog, Box<ErrorDa
     Ok(catalog)
 }
 
+/// A provider the harness knows without being told: its endpoint and
+/// flags, and the environment variable its key is looked for in (`None`
+/// for a server that takes no key, as the local ones do by default).
+///
+/// Anthropic's own, and the ones that speak `openai-chat`. Each protocol
+/// module keeps its entries; this is the one place the core asks them.
+pub(crate) fn builtin(name: &str) -> Option<(ProviderInfo, Option<&'static str>)> {
+    if name == anthropic::PROVIDER {
+        return Some((anthropic::provider(), Some(ANTHROPIC_KEY_ENV)));
+    }
+    openai_chat::providers::builtin(name).map(|builtin| (builtin.info, builtin.key_variable))
+}
+
+/// The names of the built-in providers.
+pub(crate) fn builtin_names() -> impl Iterator<Item = &'static str> {
+    std::iter::once(anthropic::PROVIDER).chain(openai_chat::providers::ALL.iter().copied())
+}
+
 /// A provider as the provider layer knows it, from the built-in table and
 /// the user's `[providers.<name>]` entry.
 ///
@@ -170,16 +188,16 @@ pub(crate) fn provider_info(
             format!("The provider `{name}` is turned off (`providers.{name}.enabled = false`)."),
         ));
     }
-    let mut info = if name == anthropic::PROVIDER {
-        anthropic::provider()
+    let mut info = if let Some((info, _)) = builtin(name) {
+        info
     } else {
         let entry = entry.ok_or_else(|| {
             config_error(
                 "unknown_provider",
                 format!(
                     "There is no provider `{name}`. Add `[providers.{name}]` with its `protocol` \
-                     and `base_url`, or use the built-in `{}`.",
-                    anthropic::PROVIDER
+                     and `base_url`, or use a built-in one: {}.",
+                    builtin_names().collect::<Vec<_>>().join(", ")
                 ),
             )
         })?;
@@ -297,13 +315,15 @@ pub(crate) fn key_variable(settings: &Settings, provider: &str) -> Option<String
         .providers
         .get(provider)
         .and_then(|entry| entry.key_env.clone())
-        .or_else(|| (provider == anthropic::PROVIDER).then(|| ANTHROPIC_KEY_ENV.to_owned()))
+        .or_else(|| builtin(provider).and_then(|(_, variable)| variable.map(str::to_owned)))
 }
 
-/// The key variable of every provider there is: the built-in one, and each
-/// configured one's. A shell command is given none of them.
+/// The key variable of every provider there is: the built-in ones', and
+/// each configured one's. A shell command is given none of them.
 pub(crate) fn key_variables(settings: &Settings) -> Vec<String> {
-    let mut variables = vec![ANTHROPIC_KEY_ENV.to_owned()];
+    let mut variables: Vec<String> = builtin_names()
+        .filter_map(|name| key_variable(settings, name))
+        .collect();
     for (name, entry) in &settings.providers {
         if let Some(variable) = key_variable(settings, name)
             && !variables.contains(&variable)
@@ -482,6 +502,7 @@ impl std::fmt::Debug for Providers {
 pub(crate) fn builtin_protocols() -> BTreeMap<String, Arc<dyn Protocol>> {
     let mut protocols: BTreeMap<String, Arc<dyn Protocol>> = BTreeMap::new();
     protocols.insert(anthropic::NAME.to_owned(), Arc::new(AnthropicMessages));
+    protocols.insert(openai_chat::NAME.to_owned(), Arc::new(OpenAiChat));
     protocols
 }
 
@@ -532,9 +553,23 @@ impl Providers {
             variable: variable.as_deref(),
             env,
             store: self.store.as_ref(),
-        })
-        .map_err(|error| auth_error("credentials_unreadable", error.to_string()))?;
+        });
+        // A provider with no variable to look in is one that takes no key
+        // unless it is given one: a server on the user's own machine. It is
+        // asked without, and a server that wanted a key says so itself.
+        let keyless = variable.is_none();
+        let found = match found {
+            Ok(found) => found,
+            Err(error) if keyless => {
+                tracing::warn!(provider = name, %error, "the credential store could not be read");
+                None
+            }
+            Err(error) => return Err(auth_error("credentials_unreadable", error.to_string())),
+        };
         let Some(credential) = found else {
+            if keyless {
+                return Ok(Arc::new(NoAuth));
+            }
             let variable = variable.map_or_else(String::new, |variable| {
                 format!("set `{variable}` in the environment, or ")
             });

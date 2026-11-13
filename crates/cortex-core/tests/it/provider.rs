@@ -240,3 +240,91 @@ fn a_key_from_the_environment_needs_no_credential_store() {
     });
     assert_eq!(transport.requests()[0].headers.get("x-api-key"), Some(KEY));
 }
+
+/// A response in the `openai-chat` protocol's stream format: one recorded
+/// for the provider layer's own tests, which is read here and not changed.
+const OPENAI_STREAM: &str =
+    include_str!("../../../cortex-llm/fixtures/openai-chat/openai-text/response.sse");
+
+/// A built-in provider of the second protocol is asked as its entry says:
+/// its endpoint, its key as a bearer token, and what its flags say.
+#[test]
+fn a_built_in_openai_chat_provider_is_asked_as_its_entry_says() {
+    let world = World::new("openai", []);
+    world.user_config("");
+    let transport = ScriptedTransport::new([sse(OPENAI_STREAM.to_owned())]);
+    let core = world.core_with(|options| {
+        options.connector = None;
+        options.transport = Some(Arc::new(transport.clone()));
+        options.overrides.push(cortex_config::Override {
+            key: "model.main".to_owned(),
+            value: "gpt-6-luna".to_owned(),
+            flag: Some("--model".to_owned()),
+        });
+        options
+            .api_keys
+            .insert("openai".to_owned(), Secret::new(KEY));
+    });
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            ClientInfo::headless(),
+            SessionSettings::default(),
+        )
+        .await
+        .unwrap();
+        let end = front.turn("hello").await;
+        assert_eq!(end.outcome, TurnOutcome::Completed, "{:?}", end.error);
+        assert!(!front.last_text().is_empty());
+        front.close().await;
+    });
+    let request = &transport.requests()[0];
+    assert_eq!(request.url, "https://api.openai.com/v1/chat/completions");
+    let bearer = format!("Bearer {KEY}");
+    assert_eq!(request.headers.get("authorization"), Some(bearer.as_str()));
+    assert!(request.headers.is_sensitive("authorization"));
+    let body = &transport.bodies()[0];
+    assert_eq!(body["model"], "gpt-6-luna");
+    // The entry's flags reached the protocol: OpenAI's name for the
+    // system role.
+    assert_eq!(body["messages"][0]["role"], "developer");
+}
+
+/// A server on the user's own machine takes no key: it is asked without
+/// one, and no key is asked of the user.
+#[test]
+fn a_local_server_is_asked_without_a_key() {
+    let world = World::new("ollama", []);
+    world.user_config(
+        "[models.house]\nprovider = \"ollama\"\nid = \"house-model\"\nname = \"House \
+         model\"\nprotocol = \"openai-chat\"\ncontext_window = 32000\nmax_output = \
+         4000\ninput = [\"text\"]\n",
+    );
+    let transport = ScriptedTransport::new([sse(OPENAI_STREAM.to_owned())]);
+    let core = world.core_with(|options| {
+        options.connector = None;
+        options.transport = Some(Arc::new(transport.clone()));
+        options.overrides.push(cortex_config::Override {
+            key: "model.main".to_owned(),
+            value: "house-model".to_owned(),
+            flag: Some("--model".to_owned()),
+        });
+    });
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            ClientInfo::headless(),
+            SessionSettings::default(),
+        )
+        .await
+        .unwrap();
+        let end = front.turn("hello").await;
+        assert_eq!(end.outcome, TurnOutcome::Completed, "{:?}", end.error);
+        front.close().await;
+    });
+    let request = &transport.requests()[0];
+    assert_eq!(request.url, "http://localhost:11434/v1/chat/completions");
+    assert_eq!(request.headers.get("authorization"), None);
+}
