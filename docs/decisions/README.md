@@ -6,8 +6,8 @@ One record per significant choice. Each says what the options were, what was cho
 
 | # | Decision | Status |
 |---|---|---|
-| [0001](0001-tui-language.md) | The TUI is written in Rust, inside the main binary | Accepted by the owner; **provisional until the Windows Terminal checklist is run** (before step 20) |
-| [0002](0002-tui-rendering.md) | Inline rendering with our own line-based renderer, stacked panels; full screen as the alternative | Accepted by the owner; **provisional until the Windows Terminal checklist is run** |
+| [0001](0001-tui-language.md) | The TUI is written in Rust, inside the main binary | Accepted by the owner; confirmed by the Windows Terminal checklist on 2026-11-13 |
+| [0002](0002-tui-rendering.md) | Inline rendering with our own line-based renderer, stacked panels; full screen as the alternative | Accepted by the owner; confirmed by the Windows Terminal checklist on 2026-11-13 |
 | [0003](0003-async-runtime.md) | Tokio, current-thread, on a dedicated core thread | Accepted |
 | [0004](0004-http-and-tls.md) | reqwest with rustls and the ring provider | Accepted |
 | [0005](0005-extension-mechanism.md) | Extensions are JavaScript on an embedded QuickJS engine; MCP for process tools; Lua as the fallback | Accepted by the owner. One build check on Windows remains (step 28). |
