@@ -476,25 +476,33 @@ mod tests {
 
     #[test]
     fn a_wait_is_reported_while_it_lasts() {
+        // The waits alone: the process tree is asked of PowerShell on
+        // Windows, which costs a second a time, and is tested by the
+        // system test below.
+        let waits =
+            |text: &str| super::report(Duration::from_secs(8), Duration::from_secs(10), text).0;
         let waiting = doing("waiting for something made up for this test");
-        let text = report(Duration::from_secs(8), Duration::from_secs(10), "a test");
+        let text = waits("a test");
         assert!(text.contains("has run 8.0 s of the 10 s"), "{text}");
         assert!(
             text.contains("waiting for something made up for this test"),
             "{text}"
         );
         waiting.now("now doing something else");
-        let text = report(Duration::from_secs(8), Duration::from_secs(10), "a test");
+        let text = waits("a test");
         assert!(text.contains("now doing something else"), "{text}");
         assert!(!text.contains("made up for this test"), "{text}");
         drop(waiting);
-        let text = report(Duration::from_secs(8), Duration::from_secs(10), "a test");
+        let text = waits("a test");
         assert!(!text.contains("something else"), "{text}");
-        // This process is in its own tree.
-        assert!(
-            text.contains(&format!(" {} ", std::process::id())),
-            "{text}"
-        );
+        // This process is in its own tree, read from /proc on Linux.
+        if cfg!(target_os = "linux") {
+            let whole = report(Duration::from_secs(8), Duration::from_secs(10), "a test");
+            assert!(
+                whole.contains(&format!(" {} ", std::process::id())),
+                "{whole}"
+            );
+        }
     }
 
     /// The test that hangs on purpose: a gate nobody opens, a scripted
