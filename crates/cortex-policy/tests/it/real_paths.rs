@@ -35,6 +35,7 @@ fn real_engine(root: &Path, shell: ShellSyntax, rules: Vec<SourcedRule>) -> (Eng
         workspace,
         home: None,
         trusted: true,
+        repository_trusted: true,
         protected: Protected::none(),
         shell,
         locate: Arc::new(resolver.clone()),

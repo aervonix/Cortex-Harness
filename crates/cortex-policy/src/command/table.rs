@@ -990,7 +990,14 @@ fn unix_allows(spec: &Spec, arguments: &[Word], reading: &mut Reading) -> bool {
 /// asked to compare: it has `~`, `^`, `@`, `:` or `..` in it, or it is one of
 /// git's own names for a commit (`HEAD`, which no tool writes unasked), or
 /// seven to forty hexadecimal digits.
+///
+/// A word that begins with `.` or `/`, ends with `/`, or has a `/.` in it is
+/// a path whatever else is in it: `src/../docs` has a `..` and is no range
+/// (found by the second independent review of the fixes to step 12).
 fn reads_as_revision(text: &str) -> bool {
+    if text.starts_with(['.', '/']) || text.ends_with('/') || text.contains("/.") {
+        return false;
+    }
     text.contains(['~', '^', '@', ':'])
         || text.contains("..")
         || matches!(text, "HEAD" | "FETCH_HEAD" | "ORIG_HEAD" | "MERGE_HEAD")

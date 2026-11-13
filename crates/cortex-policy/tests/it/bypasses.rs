@@ -1529,3 +1529,86 @@ fn a_cd_with_options_or_a_redirection_still_says_where_it_leads() {
         assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
     }
 }
+
+/// What the second independent review of the fixes to step 12 found in the
+/// check of patterns and of a `cd` the analysis cannot follow, each a way
+/// round them, now closed.
+#[test]
+fn patterns_and_lost_directories_hold_against_the_second_review() {
+    let autonomous = at(Level::Autonomous);
+    for command in [
+        // A set read exactly was wrong: classes, folded ranges, quoted
+        // members.
+        "cp evil .gi[[:alpha:]]/config",
+        "cp evil .gi[[=t=]]/config",
+        "cp evil .gi[U-z]/config",
+        "cp evil .gi[\"!\"t]/config",
+        "cp evil .gi[a\"]\"t]/config",
+        "cp x [A-_]EAD",
+        // A `cd` that failed leaves the shell where it was, and `cd -`
+        // goes back.
+        "cd nope; cd .github/workflows; cp ../../evil.yml ci.yml",
+        "cd nope || cd .github/workflows && cp ../../evil.yml ci.yml",
+        "cd zz?; cd .github/workflows; cp ../../evil.yml ci.yml",
+        "cd ./.github/workflows && cd ../.. && cd - && cp ../../evil.yml ci.yml",
+        // A `cd` that could lead anywhere: nothing after it is placed.
+        "cd a b && make",
+        // A redirection to a pattern outside the workspace.
+        "echo key >> ~/.ssh/authorized_key?",
+        "echo key >> /etc/cron.d/*",
+        // A `~` that is not the home directory, and a value after an
+        // earlier `=`.
+        "cp evil.yml \"~/../.github/workflows/ci.yml\"",
+        "cp evil.yml x/~/../../.github/workflows/ci.yml",
+        "dd if=x of=.github/workflows/a=b.yml",
+    ] {
+        let outcome = shell(&autonomous, command);
+        assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
+    }
+    for engine in [&autonomous, &at(Level::Unrestricted)] {
+        assert_eq!(
+            said(&shell(
+                engine,
+                "cd nope; cd ../../users/dev/.config/cortex-harness; cat credentials.toml"
+            )),
+            Deny
+        );
+    }
+    // At `read-only`, a command that only reads, with a pattern, is asked
+    // about and not refused: it writes nothing. One that could read a
+    // secret is asked about at every level that asks about reading one.
+    let read_only = at(Level::ReadOnly);
+    for command in ["ls src/*", "cat docs/*", "grep -n x src/*", "wc -l *", "cat *.pem"] {
+        let outcome = shell(&read_only, command);
+        assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
+    }
+    // `*` could be a file that looks like a secret, as `ls server.pem`
+    // names one: asked about, as that is.
+    assert_eq!(said(&shell(&autonomous, "ls src/*")), Ask);
+    assert_eq!(said(&shell(&autonomous, "ls src/*.rs")), Allow);
+    assert_eq!(said(&shell(&autonomous, "cat src/*.rs")), Allow);
+    assert_eq!(said(&shell(&autonomous, "cat *.pem")), Ask);
+    assert_eq!(said(&shell(&autonomous, "cat .e*")), Ask);
+    // Outside a repository, `git diff src/../docs src/..` compares two
+    // trees: no revision has a `/.` in it.
+    assert_eq!(said(&shell(&engine(), "git diff src/../docs src/..")), Ask);
+    // In PowerShell, whose own commands expand a pattern quoted or not.
+    let powershell = engine_with(|parts| {
+        parts.level = Level::Autonomous;
+        parts.shell = ShellSyntax::PowerShell;
+    });
+    for command in [
+        r"Add-Content '.gi?\config' 'fsmonitor = x'",
+        r"Set-Content '.gi[t]\config' x",
+        r"Remove-Item '.gi?\hooks\*'",
+        r"Copy-Item evil C:\U*\x",
+    ] {
+        let outcome = shell(&powershell, command);
+        assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
+    }
+    let reading = engine_with(|parts| {
+        parts.shell = ShellSyntax::PowerShell;
+        parts.rules = vec![user(Effect::Exec, "Get-Content *", RuleAction::Allow)];
+    });
+    assert_eq!(said(&shell(&reading, "Get-Content '.en?'")), Ask);
+}

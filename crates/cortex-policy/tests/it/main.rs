@@ -111,6 +111,7 @@ pub(crate) fn parts() -> Parts {
         workspace,
         home: Some(path(HOME)),
         trusted: true,
+        repository_trusted: true,
         protected: protected(),
         shell: ShellSyntax::Posix,
         locate: Arc::new(Lexical {

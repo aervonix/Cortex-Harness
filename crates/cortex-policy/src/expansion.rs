@@ -10,77 +10,59 @@
 //! question that needs: could a pattern for one name match a name, or a
 //! name a pattern of the engine's own describes (`*.pem`)?
 //!
-//! It errs towards "yes": a set (`[…]`) is taken to hold any character
-//! where two sets meet, and names are compared without regard to case.
+//! It errs towards "yes":
+//!
+//! - **Names are compared without regard to case.**
+//! - **A `[` matches anything from there to the end of the name.** A set
+//!   has classes (`[[:alpha:]]`), ranges whose ends a fold of case would
+//!   move (`[U-z]`), and members that were quoted (`["!"t]`, `[a"]"t]`),
+//!   which the word's text no longer marks. Reading a set exactly would be
+//!   wrong in each of those; reading it as "anything" never is (found by
+//!   the second independent review of the fixes to step 12).
+//! - **A name longer than any file's** (255 bytes) could be anything.
+//!
 //! The one rule of the shells it keeps is that a name that begins with `.`
 //! is matched only by a pattern that begins with a `.` written out (or a
-//! set): `*` and `?` at the start of a name never match a hidden file in
-//! bash, dash, zsh or ksh, unless an option the user sets says otherwise.
-//! That is what lets `rm *.o` run while `rm .e*` is asked about.
+//! `[`): `*` and `?` at the start of a name never match a hidden file in
+//! bash, dash, zsh or ksh, unless an option the user sets says otherwise
+//! (`dotglob`, `GLOB_DOTS`). That is what lets `rm *.o` run while `rm .e*`
+//! is asked about.
+
+use std::collections::HashSet;
+
+/// The longest name a file system gives a file, in bytes. A pattern for a
+/// longer name is taken to match anything, which also bounds the search.
+const LONGEST_NAME: usize = 255;
 
 /// One part of a pattern for one name.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Token {
     /// That character.
     Char(char),
     /// Any one character: `?`.
     Any,
-    /// One character of a set, or of its complement: `[a-z]`, `[!.]`.
-    Set {
-        ranges: Vec<(char, char)>,
-        negated: bool,
-    },
-    /// Any run of characters, none included: `*`.
+    /// Any run of characters, none included: `*`, or a `[` and everything
+    /// after it.
     Star,
-}
-
-impl Token {
-    fn is_single(&self) -> bool {
-        !matches!(self, Self::Star)
-    }
-
-    /// Whether the set could hold `character`.
-    fn admits(&self, character: char) -> bool {
-        match self {
-            Self::Char(own) => *own == character,
-            Self::Any | Self::Star => true,
-            Self::Set { ranges, negated } => {
-                let inside = ranges
-                    .iter()
-                    .any(|(low, high)| (*low..=*high).contains(&character));
-                inside != *negated
-            }
-        }
-    }
-
-    /// Whether two single-character parts could match one character.
-    fn meets(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Char(character), other) | (other, Self::Char(character)) => {
-                other.admits(*character)
-            }
-            // Two sets, `?`, or `*`: some character could well be in both.
-            _ => true,
-        }
-    }
 }
 
 /// A pattern for one name, as a shell reads one in a word.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NamePattern {
     tokens: Vec<Token>,
+    /// Whether the pattern begins with a `[`, which may hold a `.`.
+    opens_with_set: bool,
+    /// Whether the text was longer than any name.
+    too_long: bool,
 }
 
 impl NamePattern {
     /// Reads a pattern for one name. Every text is a pattern: one with no
-    /// `*`, `?` or `[` matches itself. A `[` with no `]` after it is the
-    /// character. Letters are taken in lower case.
+    /// `*`, `?` or `[` matches itself.
     pub(crate) fn parse(text: &str) -> Self {
-        let chars: Vec<char> = text.to_lowercase().chars().collect();
         let mut tokens = Vec::new();
-        let mut at = 0;
-        while let Some(&character) = chars.get(at) {
-            at += 1;
+        let mut opens_with_set = false;
+        for character in text.chars().flat_map(char::to_lowercase) {
             match character {
                 '*' => {
                     if tokens.last() != Some(&Token::Star) {
@@ -88,39 +70,52 @@ impl NamePattern {
                     }
                 }
                 '?' => tokens.push(Token::Any),
-                '[' => match set(&chars, at) {
-                    Some((token, next)) => {
-                        tokens.push(token);
-                        at = next;
+                '[' => {
+                    opens_with_set = tokens.is_empty();
+                    if tokens.last() != Some(&Token::Star) {
+                        tokens.push(Token::Star);
                     }
-                    None => tokens.push(Token::Char('[')),
-                },
+                    break;
+                }
                 other => tokens.push(Token::Char(other)),
             }
         }
-        Self { tokens }
+        Self {
+            tokens,
+            opens_with_set,
+            too_long: text.len() > LONGEST_NAME,
+        }
     }
 
     /// Whether some one name matches both this pattern and `other`. With
     /// `hidden_rule`, a name that begins with `.` is matched by this
-    /// pattern only where it begins with a `.` written out or a set, as a
+    /// pattern only where it begins with a `.` written out or a `[`, as a
     /// shell's pattern does.
     pub(crate) fn could_match(&self, other: &Self, hidden_rule: bool) -> bool {
+        if self.too_long || other.too_long {
+            return true;
+        }
         if hidden_rule
+            && !self.opens_with_set
             && matches!(self.tokens.first(), Some(Token::Star | Token::Any))
             && other.tokens.first() == Some(&Token::Char('.'))
         {
             return false;
         }
-        let mut seen = std::collections::HashSet::new();
-        meet(&self.tokens, &other.tokens, 0, 0, &mut seen)
+        meet(&self.tokens, &other.tokens)
     }
 
     /// Whether this pattern could match the name `name`, a name and not a
     /// pattern.
     pub(crate) fn could_match_name(&self, name: &str, hidden_rule: bool) -> bool {
         let name = Self {
-            tokens: name.to_lowercase().chars().map(Token::Char).collect(),
+            tokens: name
+                .chars()
+                .flat_map(char::to_lowercase)
+                .map(Token::Char)
+                .collect(),
+            opens_with_set: false,
+            too_long: name.len() > LONGEST_NAME,
         };
         self.could_match(&name, hidden_rule)
     }
@@ -131,74 +126,47 @@ pub(crate) fn has_wildcards(text: &str) -> bool {
     text.contains(['*', '?', '['])
 }
 
-/// Reads a set, after its `[`: the token, and where the pattern goes on.
-/// `None` when there is no `]` to close it.
-fn set(chars: &[char], start: usize) -> Option<(Token, usize)> {
-    let mut at = start;
-    let negated = matches!(chars.get(at), Some('!' | '^'));
-    if negated {
-        at += 1;
-    }
-    let mut ranges = Vec::new();
-    let mut first = true;
-    loop {
-        let character = *chars.get(at)?;
-        if character == ']' && !first {
-            return Some((Token::Set { ranges, negated }, at + 1));
-        }
-        first = false;
-        if chars.get(at + 1) == Some(&'-') && chars.get(at + 2).is_some_and(|end| *end != ']') {
-            let end = chars[at + 2];
-            ranges.push((character.min(end), character.max(end)));
-            at += 3;
-        } else {
-            ranges.push((character, character));
-            at += 1;
-        }
-    }
-}
-
-/// Whether the two patterns, from the given positions on, could match one
-/// text: a search over pairs of positions, each visited once.
-fn meet(
-    first: &[Token],
-    second: &[Token],
-    i: usize,
-    j: usize,
-    seen: &mut std::collections::HashSet<(usize, usize)>,
-) -> bool {
-    if i == first.len() && j == second.len() {
-        return true;
-    }
-    if !seen.insert((i, j)) {
-        return false;
-    }
-    let one = first.get(i);
-    let two = second.get(j);
-    // A `*` matches nothing more, or one more character the other part
-    // matches.
-    if one == Some(&Token::Star) {
-        if meet(first, second, i + 1, j, seen) {
+/// Whether the two patterns could match one text: a search over pairs of
+/// positions, each visited once, kept on a list of its own rather than the
+/// stack, so that a long pattern cannot exhaust it.
+fn meet(first: &[Token], second: &[Token]) -> bool {
+    let mut seen = HashSet::new();
+    let mut to_visit = vec![(0, 0)];
+    while let Some((i, j)) = to_visit.pop() {
+        if i == first.len() && j == second.len() {
             return true;
         }
-        if two.is_some() && meet(first, second, i, j + 1, seen) {
-            return true;
+        if !seen.insert((i, j)) {
+            continue;
+        }
+        let one = first.get(i).copied();
+        let two = second.get(j).copied();
+        // A `*` matches nothing more, or one more character the other part
+        // matches.
+        if one == Some(Token::Star) {
+            to_visit.push((i + 1, j));
+            if two.is_some() {
+                to_visit.push((i, j + 1));
+            }
+        }
+        if two == Some(Token::Star) {
+            to_visit.push((i, j + 1));
+            if one.is_some() {
+                to_visit.push((i + 1, j));
+            }
+        }
+        if let (Some(one), Some(two)) = (one, two)
+            && one != Token::Star
+            && two != Token::Star
+            && match (one, two) {
+                (Token::Char(a), Token::Char(b)) => a == b,
+                _ => true,
+            }
+        {
+            to_visit.push((i + 1, j + 1));
         }
     }
-    if two == Some(&Token::Star) {
-        if meet(first, second, i, j + 1, seen) {
-            return true;
-        }
-        if one.is_some() && meet(first, second, i + 1, j, seen) {
-            return true;
-        }
-    }
-    match (one, two) {
-        (Some(one), Some(two)) if one.is_single() && two.is_single() && one.meets(two) => {
-            meet(first, second, i + 1, j + 1, seen)
-        }
-        _ => false,
-    }
+    false
 }
 
 #[cfg(test)]
@@ -216,7 +184,6 @@ mod tests {
             (".g*", ".git", true),
             ("[.]git", ".git", true),
             (".gi[a-z]", ".git", true),
-            (".gi[!t]", ".git", false),
             (".git", ".git", true),
             (".GIT", ".git", true),
             ("hook[s]", "hooks", true),
@@ -224,8 +191,19 @@ mod tests {
             ("h*", "head", true),
             ("?ead", "head", true),
             ("*.o", "head", false),
-            ("x[", "x[", true),
-            // A hidden name needs a `.` written out.
+            // A set is anything to the end of the name: classes, ranges
+            // that a fold of case would move, and members that were quoted
+            // are never misread. Found by the second independent review of
+            // the fixes to step 12.
+            (".gi[[:alpha:]]", ".git", true),
+            (".gi[[=t=]]", ".git", true),
+            (".gi[U-z]", ".git", true),
+            ("[A-_]EAD", "HEAD", true),
+            (".gi[!t]", ".git", true),
+            (".gi[a]t]", ".git", true),
+            (".pre[a-z]commit-config.yaml", ".pre-commit-config.yaml", true),
+            ("x[", "x", true),
+            // A hidden name needs a `.` written out, or a set.
             ("*", ".git", false),
             ("?git", ".git", false),
             ("*git", ".git", false),
@@ -255,14 +233,21 @@ mod tests {
             ("a?c", "*b*", true),
             ("a?c", "*d*", true),
             ("a?c", "*dd*", false),
-            ("[a-c]x", "bx", true),
-            ("[a-c]x", "dx", false),
             ("*.[pP]em", "*.pem", true),
             ("*", ".env", false),
             ("*x*y*", "*y*x*", true),
         ] {
             assert_eq!(could(pattern, other), expected, "{pattern:?} and {other:?}");
         }
+    }
+
+    #[test]
+    fn a_very_long_pattern_is_anything_and_does_not_exhaust_the_stack() {
+        let long = format!("{}*", "a".repeat(30_000));
+        assert!(could(&long, "*.pem"));
+        let deep = format!("{}*.o", "a".repeat(200));
+        assert!(!could(&deep, "*.pem"));
+        assert!(could(&format!("{}*", "a".repeat(200)), "*.pem"));
     }
 
     #[test]

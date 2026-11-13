@@ -433,7 +433,10 @@ fn a_command_run_outside_the_workspace_is_asked_about() {
 /// to run. So it is on the table only in a project the user has trusted.
 #[test]
 fn git_is_asked_about_in_a_project_that_is_not_trusted() {
-    let untrusted = engine_with(|parts| parts.trusted = false);
+    let untrusted = engine_with(|parts| {
+        parts.trusted = false;
+        parts.repository_trusted = false;
+    });
     for command in [
         "git status",
         "git diff",
@@ -444,6 +447,11 @@ fn git_is_asked_about_in_a_project_that_is_not_trusted() {
     }
     assert_eq!(said(&shell(&untrusted, "ls -la")), ReadOnly);
     assert_eq!(said(&shell(&engine(), "git status")), ReadOnly);
+    // It is the trust of the project, not of its rules, that decides.
+    let rules_changed = engine_with(|parts| parts.trusted = false);
+    assert_eq!(said(&shell(&rules_changed, "git status")), ReadOnly);
+    let repository_untrusted = engine_with(|parts| parts.repository_trusted = false);
+    assert_eq!(said(&shell(&repository_untrusted, "git status")), Ask);
 }
 
 /// A project's allow for a command applies only once the project is
