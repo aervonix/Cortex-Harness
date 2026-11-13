@@ -384,6 +384,7 @@ impl Roll {
     /// Starts listening.
     #[must_use]
     pub fn new() -> Self {
+        crate::watch::arm();
         let listener = TcpListener::bind("127.0.0.1:0").expect("listen on the loopback interface");
         let address = listener
             .local_addr()
@@ -427,6 +428,10 @@ impl Roll {
     /// a delay: a child that reports is returned at once.
     #[must_use]
     pub fn next(&self, limit: Duration) -> Present {
+        let _doing = crate::watch::doing(format!(
+            "waits for a child to report to the roll at {}, up to {limit:?}",
+            self.address
+        ));
         self.arrivals
             .recv_timeout(limit)
             .unwrap_or_else(|_| panic!("no child reported within {limit:?}"))
@@ -492,6 +497,10 @@ impl Present {
     /// by a test that passes.
     #[must_use]
     pub fn gone_within(&self, limit: Duration) -> bool {
+        let _doing = crate::watch::doing(format!(
+            "waits for the child `{}` (process {}) to be gone, up to {limit:?}",
+            self.name, self.pid
+        ));
         self.stream
             .set_read_timeout(Some(limit))
             .expect("set the socket's time limit");
@@ -514,6 +523,7 @@ impl Present {
 /// system has finished with. Where there is something to wait on (a child
 /// of a [`Roll`], a [`Gate`](crate::Gate)), wait on that instead.
 pub fn until(limit: Duration, what: &str, mut condition: impl FnMut() -> bool) {
+    let _doing = crate::watch::doing(format!("waits for {what}, up to {limit:?}"));
     let start = Instant::now();
     while !condition() {
         assert!(

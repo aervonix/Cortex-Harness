@@ -8,21 +8,33 @@
 //! waits with [`Gate::wait`], which takes a deadline so that a mistake is a
 //! failed test and not a hung one.
 
+use std::panic::Location;
 use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 /// A gate that starts closed and is opened once. Clones are the same gate.
-#[derive(Clone, Default)]
+///
+/// A gate is known by where it was made: a test that runs out of time
+/// while something waits for one says "the gate made at
+/// `crates/…/tests/it/x.rs:40:16`" ([`watch`](crate::watch)).
+#[derive(Clone)]
 pub struct Gate {
     inner: Arc<Inner>,
 }
 
-#[derive(Default)]
 struct Inner {
     state: Mutex<State>,
     opened: Condvar,
+    made_at: &'static Location<'static>,
+}
+
+impl Default for Gate {
+    #[track_caller]
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Default)]
@@ -34,8 +46,21 @@ struct State {
 impl Gate {
     /// A closed gate.
     #[must_use]
+    #[track_caller]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            inner: Arc::new(Inner {
+                state: Mutex::new(State::default()),
+                opened: Condvar::new(),
+                made_at: Location::caller(),
+            }),
+        }
+    }
+
+    /// "the gate made at <file>:<line>:<column>": how a report names it.
+    #[must_use]
+    pub fn name(&self) -> String {
+        format!("the gate made at {}", self.inner.made_at)
     }
 
     /// Opens the gate. Everything waiting for it goes on. Opening it again
@@ -70,6 +95,7 @@ impl Gate {
     /// has finished.
     #[must_use]
     pub fn wait(&self, limit: Duration) -> bool {
+        let _doing = crate::watch::doing(format!("waits for {}, up to {limit:?}", self.name()));
         let state = self.lock();
         let (state, _timed_out) = self
             .inner
@@ -91,6 +117,7 @@ impl std::fmt::Debug for Gate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Gate")
             .field("open", &self.is_open())
+            .field("made_at", &self.inner.made_at)
             .finish()
     }
 }
@@ -143,6 +170,23 @@ mod tests {
         assert_eq!(first.as_mut().poll(&mut context), Poll::Ready(()));
         assert!(gate.wait(Duration::ZERO));
         assert!(format!("{gate:?}").contains("true"));
+    }
+
+    #[test]
+    fn a_gate_is_named_by_where_it_was_made() {
+        let (line, gate) = (line!(), Gate::new());
+        let name = gate.name();
+        assert!(name.starts_with("the gate made at "), "{name}");
+        assert!(name.contains("gate.rs"), "{name}");
+        assert!(name.contains(&format!(":{line}:")), "{name}");
+        // A clone is the same gate, and so is one made by `default`.
+        assert_eq!(gate.clone().name(), name);
+        let (line, other) = (line!(), Gate::default());
+        assert!(
+            other.name().contains(&format!(":{line}:")),
+            "{}",
+            other.name()
+        );
     }
 
     #[test]
