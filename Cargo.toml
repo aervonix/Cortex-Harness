@@ -166,6 +166,16 @@ inherits = "dev"
 opt-level = 0
 debug = false
 
+# Two exceptions, each a small crate that tests spend whole seconds in when it
+# is unoptimised: the JSON reader under every decoder replay and session log
+# test, and the hash under every file a tool reads. They are third-party, so
+# they are built once and served from the cache after that.
+[profile.ci.package.serde_json]
+opt-level = 2
+
+[profile.ci.package.sha2]
+opt-level = 2
+
 [profile.release]
 opt-level = 3
 lto = "thin"
