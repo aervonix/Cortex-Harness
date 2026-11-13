@@ -215,13 +215,13 @@ fn unquoted(line: &str) -> String {
 /// holds back is matched cut it ([`ExecPattern::restricts`]): what a line
 /// the analysis does not model could name.
 pub(crate) fn raw_words(line: &str) -> Vec<String> {
-    let [mut words, unquoted] = raw_cuts(line);
-    for word in unquoted {
-        if !words.contains(&word) {
-            words.push(word);
-        }
-    }
-    words
+    let [first, unquoted] = raw_cuts(line);
+    let mut seen = std::collections::HashSet::new();
+    first
+        .into_iter()
+        .chain(unquoted)
+        .filter(|word| seen.insert(word.clone()))
+        .collect()
 }
 
 /// The words of a raw line in order, as each of the two cuts gives them.

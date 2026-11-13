@@ -1692,7 +1692,7 @@ fn the_final_review_of_the_fixes_holds() {
         "cd ./.github && echo 'on: push' > workflows/x].yml",
         // A command line in a word with no space in it.
         "bash -c 'cat</tmp/evil>.git/hooks/pre-commit'",
-        "sh -c 'cp /tmp/evil.yml .github/workflows/ci.yml;true'",
+        "sh -c 'true;cat</tmp/evil.yml>.github/workflows/ci.yml'",
         // A `cd` inside a line the analysis does not model.
         "cd .github && cp /tmp/evil.yml workflows/ci.yml #",
         "cd ./x; cd ../.github; cp /tmp/evil.yml workflows/ci.yml #",
@@ -1754,6 +1754,21 @@ fn the_final_review_of_the_fixes_holds() {
     let outcome = shell(&tilde_folder, "cat \"~/notes\"");
     assert_ne!(said(&outcome), ReadOnly, "{}", reason(&outcome));
     assert_eq!(said(&shell(&tilde_folder, "echo x > ~/notes")), Allow);
+    // Ordinary lines are not asked about for the work of checking them: a
+    // `cd` in each of several groups, and a long text whose words repeat
+    // (found by the last review of the fixes to step 12).
+    let outcome = shell(
+        &autonomous,
+        "(cd frontend && npm test) && (cd backend && cargo test) && (cd docs && make)",
+    );
+    assert_eq!(said(&outcome), Allow, "{}", reason(&outcome));
+    let unrestricted = at(Level::Unrestricted);
+    let notes = format!(
+        "cat > notes.md <<'EOF'\n{}\nEOF",
+        "lorem ipsum dolor sit amet\n".repeat(4_000)
+    );
+    let outcome = shell(&unrestricted, &notes);
+    assert_eq!(said(&outcome), Allow, "{}", reason(&outcome));
     // What runs as before.
     for command in [
         "rm *.o",
