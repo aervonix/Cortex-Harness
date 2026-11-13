@@ -135,7 +135,13 @@ impl ExecPattern {
     /// command the analysis does not model can be dodged that way.
     #[must_use]
     pub fn restricts(&self, line: &str) -> bool {
-        let unquoted: String = line
+        // A backslash, a back-tick or a caret before a line break joins the
+        // two lines in one word (`g\` then `it push`), so the pair goes
+        // first (found by the independent review of the fixes to step 12).
+        let joined = ["\\\r\n", "\\\n", "`\r\n", "`\n", "^\r\n", "^\n"]
+            .iter()
+            .fold(line.to_owned(), |line, join| line.replace(join, ""));
+        let unquoted: String = joined
             .chars()
             .filter(|character| !matches!(character, '\'' | '"' | '\\' | '`' | '^'))
             .collect();
@@ -345,6 +351,9 @@ mod tests {
             ("git push *", "g`it push", true),
             ("git push *", "g^it push", true),
             ("git push *", "git 'pu'sh", true),
+            ("git push *", "g\\\nit push origin", true),
+            ("git push *", "gi\\\r\nt push origin", true),
+            ("git push *", "g`\nit push", true),
             ("rm *", "r\\m -rf x", true),
             // Taking quotes out never loses a word the first cut has.
             ("rm *", "echo 'x'rm y", true),

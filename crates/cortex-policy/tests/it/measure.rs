@@ -83,7 +83,7 @@ fn measure_deciding() {
         }));
     });
     let (one_median, one_max) = time(RUNS, || drop(shell(&engine, "cargo test --workspace")));
-    let line = "cd crates/cortex-policy && rg -n 'fn decide' src | sort | head -20 && git status";
+    let line = "cd ./crates/cortex-policy && grep -n 'fn decide' src/engine.rs | sort | head -20 && git status";
     let (line_median, line_max) = time(RUNS, || drop(shell(&engine, line)));
     let (refused_median, refused_max) = time(RUNS, || {
         drop(shell(&engine, "cargo test $(echo --workspace)"))

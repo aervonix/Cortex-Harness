@@ -125,6 +125,13 @@ struct Spec {
     count_option: bool,
     /// What the command reads beyond the files it names.
     searches: Searches,
+    /// Whether two operands may be two paths to compare, every file under
+    /// them read: `git diff a b` outside a repository, or with one of them
+    /// outside it, is `git diff --no-index a b`, and prints hidden and
+    /// ignored files, a `.env` included (found by the independent review
+    /// of the fixes to step 12, with git 2.53). Such a command is on the
+    /// table only where its first two operands both read as revisions.
+    compares_paths: bool,
 }
 
 /// What a command reads the content of, beyond the files it names.
@@ -232,6 +239,7 @@ const fn unix(options: &'static [Opt], operands: Operands) -> Shape {
         operands,
         count_option: false,
         searches: Searches::Nothing,
+        compares_paths: false,
     })
 }
 
@@ -241,6 +249,7 @@ const fn counted(options: &'static [Opt], operands: Operands) -> Shape {
         operands,
         count_option: true,
         searches: Searches::Nothing,
+        compares_paths: false,
     })
 }
 
@@ -250,6 +259,7 @@ const fn searching(options: &'static [Opt], operands: Operands, searches: Search
         operands,
         count_option: false,
         searches,
+        compares_paths: false,
     })
 }
 
@@ -592,13 +602,20 @@ const GIT_STASH_LIST: &[Opt] = &[
 #[rustfmt::skip]
 const GIT: &[(&str, Shape)] = &[
     ("status", unix(GIT_STATUS, PATHS)),
-    ("diff", searching(GIT_DIFF, REVISIONS_OR_PATHS, Searches::Repository)),
+    ("diff", Shape::Unix(Spec {
+        options: GIT_DIFF,
+        operands: REVISIONS_OR_PATHS,
+        count_option: false,
+        searches: Searches::Repository,
+        compares_paths: true,
+    })),
     ("show", searching(GIT_LOG, REVISIONS_OR_PATHS, Searches::Repository)),
     ("log", Shape::Unix(Spec {
         options: GIT_LOG,
         operands: REVISIONS_OR_PATHS,
         count_option: true,
         searches: Searches::RepositoryWith(LOG_SHOWS_CONTENT),
+        compares_paths: false,
     })),
     ("branch", unix(GIT_BRANCH, NO_OPERANDS)),
     ("tag", unix(GIT_TAG, NO_OPERANDS)),
@@ -947,6 +964,15 @@ fn unix_allows(spec: &Spec, arguments: &[Word], reading: &mut Reading) -> bool {
     if spec.operands.most.is_some_and(|most| operands.len() > most) {
         return false;
     }
+    if spec.compares_paths
+        && operands.len() >= 2
+        && !operands
+            .iter()
+            .take(2)
+            .all(|operand| reads_as_revision(&operand.text))
+    {
+        return false;
+    }
     for operand in &operands {
         if operand.text != "-" {
             record(spec.operands.kind, &operand.text, named);
@@ -958,6 +984,17 @@ fn unix_allows(spec: &Spec, arguments: &[Word], reading: &mut Reading) -> bool {
         Searches::RepositoryWith(_) => reading.repository = content,
     }
     true
+}
+
+/// Whether a word reads as a git revision, and not as a path git could be
+/// asked to compare: it has `~`, `^`, `@`, `:` or `..` in it, or it is one of
+/// git's own names for a commit (`HEAD`, which no tool writes unasked), or
+/// seven to forty hexadecimal digits.
+fn reads_as_revision(text: &str) -> bool {
+    text.contains(['~', '^', '@', ':'])
+        || text.contains("..")
+        || matches!(text, "HEAD" | "FETCH_HEAD" | "ORIG_HEAD" | "MERGE_HEAD")
+        || ((7..=40).contains(&text.len()) && text.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
 /// The tests and actions of `find` that only look, with whether each takes

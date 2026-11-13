@@ -366,16 +366,12 @@ impl Reader<'_> {
                 }
                 self.current.words.push(word);
             }
+            // A pattern is kept, and flagged: the engine takes it to name
+            // every file it could match.
             Pending::ReadTarget => {
-                if word.glob {
-                    return refuse("a redirection from a pattern");
-                }
                 self.current.redirects.push(Redirect::Read(word));
             }
             Pending::WriteTarget { append } => {
-                if word.glob {
-                    return refuse("a redirection to a pattern");
-                }
                 self.current.redirects.push(Redirect::Write {
                     target: word,
                     append,
@@ -476,6 +472,9 @@ mod tests {
                         Redirect::Write { target, append } => {
                             let arrow = if *append { ">>" } else { ">" };
                             text.push_str(&format!(" {arrow}[{}]", target.text));
+                            if target.glob {
+                                text.push_str("(glob)");
+                            }
                         }
                         Redirect::Duplicate => text.push_str(" dup"),
                     }
@@ -571,6 +570,10 @@ mod tests {
             ["First: [ls] [src/[a-c]?.rs](glob)"]
         );
         assert_eq!(modelled("ls ~"), ["First: [ls] [~](home)"]);
+        // A pattern as a redirection's file is kept and flagged too: the
+        // engine takes it to name every file it could match.
+        assert_eq!(modelled("ls > *.txt"), ["First: [ls] >[*.txt](glob)"]);
+        assert_eq!(modelled("cat < *.txt"), ["First: [cat] <[*.txt]"]);
         assert_eq!(modelled("ls ~/notes"), ["First: [ls] [~/notes](home)"]);
         assert_eq!(
             modelled("ls ~;pwd"),
@@ -733,8 +736,6 @@ mod tests {
             "ls >",
             "ls > ; pwd",
             "> out",
-            "ls > *.txt",
-            "cat < *.txt",
             "ls > > f",
             "",
             "   ",

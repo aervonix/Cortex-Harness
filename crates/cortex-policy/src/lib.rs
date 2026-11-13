@@ -51,6 +51,7 @@
 pub mod approvals;
 pub mod command;
 pub mod engine;
+mod expansion;
 pub mod glob;
 pub mod lease;
 pub mod level;

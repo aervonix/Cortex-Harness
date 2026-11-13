@@ -1206,6 +1206,10 @@ fn whatever_is_within_its_parent_is_no_wider_by_the_oracle() {
         |(parent, child)| {
             if is_within_in(child, parent, POSIX) {
                 positives.set(positives.get() + 1);
+                // `never_wider` holds a child to "never `unrestricted`",
+                // which a parent that is itself `unrestricted` may hold; the
+                // other fields of such a child are checked by the
+                // properties above, which narrow it.
                 if child.grant.level != Level::Unrestricted {
                     never_wider(child, parent)?;
                 }
