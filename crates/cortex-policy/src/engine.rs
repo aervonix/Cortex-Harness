@@ -1004,6 +1004,18 @@ impl Engine {
             .collect()
     }
 
+    /// Takes over the session's own approvals from `earlier`, the engine
+    /// this one replaces when a session's level changes. What the user
+    /// allowed for the session stays allowed, as the session's (not as
+    /// something stored for the project), under the ids it had, and the
+    /// next approval gets an id none of them has.
+    pub fn keep_session_approvals_of(&self, earlier: &Self) {
+        let kept = earlier.read_rules().session.clone();
+        let mut rules = self.rules.write().unwrap_or_else(PoisonError::into_inner);
+        rules.session = kept;
+        self.recompile(&mut rules);
+    }
+
     fn read_rules(&self) -> std::sync::RwLockReadGuard<'_, Rules> {
         self.rules.read().unwrap_or_else(PoisonError::into_inner)
     }
