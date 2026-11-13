@@ -31,7 +31,6 @@ cortex-ext.workspace = true
 cortex-mcp = { workspace = true, optional = true }
 
 serde_json.workspace = true
-thiserror.workspace = true
 toml = { workspace = true, features = ["display"] }
 tracing.workspace = true
 # The runtime the core's tasks run on: `rt` for tasks and the blocking pool,

@@ -109,7 +109,11 @@ fn sys_the_harnesss_own_key_and_a_key_in_a_known_format_are_masked_on_disk() {
     let world = World::new(
         "mask",
         [
-            calls(&[("c1", "shell", json!({"command": format!("echo {KEY} {TOKEN}")}))]),
+            calls(&[(
+                "c1",
+                "shell",
+                json!({"command": format!("echo {KEY} {TOKEN}")}),
+            )]),
             says("I saw them."),
         ],
     );
@@ -135,11 +139,21 @@ fn sys_the_harnesss_own_key_and_a_key_in_a_known_format_are_masked_on_disk() {
         let user = log.iter().find(|line| line["kind"] == "user").unwrap();
         assert!(user.to_string().contains("my key is [redacted]"), "{user}");
         assert_eq!(user["redacted"], true);
-        let result = log.iter().find(|line| line["kind"] == "tool_result").unwrap();
+        let result = log
+            .iter()
+            .find(|line| line["kind"] == "tool_result")
+            .unwrap();
         assert_eq!(result["redacted"], true);
-        assert!(result.to_string().contains("[redacted] [redacted]"), "{result}");
+        assert!(
+            result.to_string().contains("[redacted] [redacted]"),
+            "{result}"
+        );
         // An entry with nothing to mask has no mark.
-        let last = log.iter().rev().find(|line| line["kind"] == "assistant").unwrap();
+        let last = log
+            .iter()
+            .rev()
+            .find(|line| line["kind"] == "assistant")
+            .unwrap();
         assert!(last.get("redacted").is_none(), "{last}");
         front.session.clone()
     });
@@ -191,7 +205,10 @@ fn a_provider_block_that_holds_a_secret_is_never_written_and_the_live_session_ke
         front.close().await;
         // On disk: the message without its provider blocks, marked, and
         // nothing that says a protocol may replay it.
-        let stored: Vec<&Value> = log.iter().filter(|line| line["kind"] == "assistant").collect();
+        let stored: Vec<&Value> = log
+            .iter()
+            .filter(|line| line["kind"] == "assistant")
+            .collect();
         assert_eq!(stored[0]["redacted"], true);
         assert!(!stored[0].to_string().contains("\"raw\""), "{}", stored[0]);
         assert!(stored[0]["item"].get("origin").is_none(), "{}", stored[0]);
@@ -218,7 +235,10 @@ fn a_provider_block_that_holds_a_secret_is_never_written_and_the_live_session_ke
             .collect();
         assert_eq!(assistants.len(), 2);
         for message in &assistants {
-            assert!(!has_raw(message), "a raw block was replayed after the resume");
+            assert!(
+                !has_raw(message),
+                "a raw block was replayed after the resume"
+            );
             assert!(message.origin.is_none());
         }
         // The text is all there, masked where it was masked.
@@ -262,13 +282,11 @@ impl ModelClient for Tying {
                     .or_insert_with(|| before.clone());
                 if *written != before {
                     self.refused.lock().unwrap().push(raw.as_str().to_owned());
-                    return ModelStream::from_events(vec![ModelEvent::Error(
-                        ProviderError::new(
-                            cortex_base::ErrorKind::Provider,
-                            "invalid_request_error",
-                            "a reasoning block does not match the conversation before it",
-                        ),
-                    )]);
+                    return ModelStream::from_events(vec![ModelEvent::Error(ProviderError::new(
+                        cortex_base::ErrorKind::Provider,
+                        "invalid_request_error",
+                        "a reasoning block does not match the conversation before it",
+                    ))]);
                 }
             }
         }
@@ -359,7 +377,10 @@ fn a_resumed_session_does_not_replay_reasoning_against_a_history_redaction_chang
             .iter()
             .filter(|message| message.role == Role::Assistant)
             .collect();
-        assert!(has_raw(assistants[0]), "reasoning from before the change was dropped too");
+        assert!(
+            has_raw(assistants[0]),
+            "reasoning from before the change was dropped too"
+        );
         assert!(!has_raw(assistants[1]));
         front.close().await;
     });

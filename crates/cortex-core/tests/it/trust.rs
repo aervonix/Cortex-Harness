@@ -132,7 +132,10 @@ fn observe(world: &World, change: impl FnOnce(&mut CoreOptions)) -> (Seen, Vec<S
     });
     world.run(async {
         let front = Front::start(world, &core).await;
-        let model = front.state.roles[&ModelRole::Main].model.as_str().to_owned();
+        let model = front.state.roles[&ModelRole::Main]
+            .model
+            .as_str()
+            .to_owned();
         let asked = front.turn_allowing("go").await;
         let method = front
             .items()
@@ -159,9 +162,9 @@ fn observe(world: &World, change: impl FnOnce(&mut CoreOptions)) -> (Seen, Vec<S
         let restorable = lines.iter().any(|line| {
             line["kind"] == "checkpoint"
                 && line["files"].as_array().is_some_and(|files| {
-                    files.iter().any(|file| {
-                        file["path"] == "tracked.txt" && file["before"].is_object()
-                    })
+                    files
+                        .iter()
+                        .any(|file| file["path"] == "tracked.txt" && file["before"].is_object())
                 })
         });
         let unknown = lines.iter().any(|line| {
@@ -172,7 +175,10 @@ fn observe(world: &World, change: impl FnOnce(&mut CoreOptions)) -> (Seen, Vec<S
                         .any(|file| file["path"] == "tracked.txt" && file["before"] == "unknown")
                 })
         });
-        assert!(restorable ^ unknown, "the command's change is in a checkpoint: {lines:?}");
+        assert!(
+            restorable ^ unknown,
+            "the command's change is in a checkpoint: {lines:?}"
+        );
         (
             Seen {
                 model,

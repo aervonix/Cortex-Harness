@@ -31,10 +31,12 @@ pub mod events;
 mod policy;
 mod provider;
 mod redact;
+mod rules;
 mod store;
 
 pub use crate::clients::{ClientId, ClientInfo};
 pub use crate::core::{Client, Core, CoreOptions, OpError};
 pub use crate::events::{EventQueue, Outgoing, QUEUE_CAPACITY};
 pub use crate::policy::PermissionDenial;
-pub use crate::provider::{ANTHROPIC_KEY_ENV, Connector, EFFORT_ALIASES};
+pub use crate::provider::{ANTHROPIC_KEY_ENV, Connector, EFFORT_ALIASES, KeyFound};
+pub use crate::rules::parse_rule;

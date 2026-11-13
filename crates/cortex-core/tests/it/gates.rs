@@ -35,7 +35,11 @@ fn a_rule_that_denies_is_a_refusal_with_its_reason_and_the_run_goes_on() {
     let world = World::new(
         "deny_rule",
         [
-            calls(&[("c1", "write", json!({"path": "generated/out.txt", "content": "x\n"}))]),
+            calls(&[(
+                "c1",
+                "write",
+                json!({"path": "generated/out.txt", "content": "x\n"}),
+            )]),
             says("I will leave it."),
         ],
     );
@@ -48,7 +52,11 @@ fn a_rule_that_denies_is_a_refusal_with_its_reason_and_the_run_goes_on() {
         assert_eq!(asked(&front), 0, "a denial is not a question");
         let result = &front.results()[0];
         assert_eq!(result.1, "denied");
-        assert!(result.2.contains("generated"), "the reason names the rule: {}", result.2);
+        assert!(
+            result.2.contains("generated"),
+            "the reason names the rule: {}",
+            result.2
+        );
         assert_eq!(world.read("generated/out.txt"), None);
         // A rule's refusal is not "nobody could be asked".
         assert!(core.permission_denials(&front.session).is_empty());
@@ -111,10 +119,16 @@ fn a_walk_does_not_return_what_the_read_rules_keep_from_the_agent() {
         let results = front.results();
         let (search, list) = (&results[0].2, &results[1].2);
         assert!(search.contains("open.txt"), "{search}");
-        assert!(!search.contains("key.txt"), "a denied file was searched: {search}");
+        assert!(
+            !search.contains("key.txt"),
+            "a denied file was searched: {search}"
+        );
         assert!(!search.contains("in private"), "{search}");
         assert!(list.contains("open.txt"), "{list}");
-        assert!(!list.contains("key.txt"), "a denied file was listed: {list}");
+        assert!(
+            !list.contains("key.txt"),
+            "a denied file was listed: {list}"
+        );
         front.close().await;
     });
 }
@@ -197,8 +211,14 @@ fn sys_the_base_state_keeps_only_what_the_agent_could_read_unasked() {
                 .any(|window| window == text.as_bytes())
         })
     };
-    assert!(!holds("correct-horse-battery-staple"), "the secret file was kept");
-    assert!(holds("remember the milk, plainly"), "an ordinary file was not kept");
+    assert!(
+        !holds("correct-horse-battery-staple"),
+        "the secret file was kept"
+    );
+    assert!(
+        holds("remember the milk, plainly"),
+        "an ordinary file was not kept"
+    );
 }
 
 #[test]

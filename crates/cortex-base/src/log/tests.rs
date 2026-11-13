@@ -253,6 +253,23 @@ fn a_secret_is_masked_in_a_message_a_field_and_a_span() {
 }
 
 #[test]
+fn a_key_found_after_logging_started_is_masked_from_then_on() {
+    let mut rig = Rig::new("late-secret");
+    let late = "found-later-key-0a1b2c3d";
+    let lines = rig.run(|handle| {
+        tracing::info!("before: {late}");
+        handle.add_secret(&Secret::new(late));
+        handle.add_secret(&Secret::new(late));
+        tracing::info!("after: {late}, and the first key {KEY}");
+    });
+    assert_eq!(lines[0]["msg"], format!("before: {late}"));
+    assert_eq!(
+        lines[1]["msg"],
+        "after: [redacted], and the first key [redacted]"
+    );
+}
+
+#[test]
 fn a_long_value_is_cut_and_says_by_how_much() {
     let mut rig = Rig::new("long");
     let long = "é".repeat(MAX_VALUE);

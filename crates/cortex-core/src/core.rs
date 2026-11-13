@@ -128,6 +128,11 @@ pub struct CoreOptions {
     /// API keys given on the command line, by provider. Looked at before
     /// the environment and the credential store.
     pub api_keys: BTreeMap<String, Secret>,
+    /// Told every provider key the core finds, once each: the place to
+    /// give it to the log's own filter
+    /// (`cortex_base::log::LogHandle::add_secret`), which was started
+    /// before any key was known.
+    pub key_found: Option<provider::KeyFound>,
     /// Makes model clients in place of the built-in way: a test's scripted
     /// provider.
     pub connector: Option<Arc<dyn Connector>>,
@@ -184,6 +189,7 @@ impl CoreOptions {
             guard: None,
             launcher: None,
             api_keys: BTreeMap::new(),
+            key_found: None,
             connector: None,
             transport: None,
             protocols: BTreeMap::new(),
@@ -307,6 +313,7 @@ impl Core {
             store,
             flags: options.api_keys.clone(),
             found: Mutex::new(Vec::new()),
+            key_found: options.key_found.clone(),
         };
         let ids = IdGenerator::new(Arc::clone(&options.clock), Box::new(SystemRng::new()));
         Ok(Self {
@@ -450,7 +457,9 @@ impl Core {
         for notice in notices {
             handle.emit(notice);
         }
-        let task = tokio::spawn(session.run());
+        // Everything the session's loop logs is inside its span.
+        let span = tracing::info_span!("session", session = %handle.id());
+        let task = tokio::spawn(tracing::Instrument::instrument(session.run(), span));
         let live = Arc::new(Live {
             handle,
             task: Mutex::new(Some(task)),
