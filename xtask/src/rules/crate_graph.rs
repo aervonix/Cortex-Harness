@@ -102,7 +102,11 @@ const CONFINED: &[(&[&str], &[&str], &str)] = &[
     ),
     (&["ignore"], &[TOOLS, INDEX], "the file walker"),
     (&["rquickjs", "mlua"], &[EXT], "the script engine"),
-    (&["landlock", "seccompiler"], &[SANDBOX], "the sandbox's backends"),
+    (
+        &["landlock", "seccompiler"],
+        &[SANDBOX],
+        "the sandbox's backends",
+    ),
 ];
 
 /// The feature of `cortex-sandbox` that holds its backends, and the one
@@ -214,7 +218,10 @@ fn check_sandbox_backends(package: &Package, violations: &mut Vec<Violation>) {
     for dependency in &package.dependencies {
         if dependency.name == SANDBOX
             && dependency.kind != DepKind::Dev
-            && dependency.features.iter().any(|feature| feature == BACKENDS)
+            && dependency
+                .features
+                .iter()
+                .any(|feature| feature == BACKENDS)
         {
             violations.push(Violation::new(
                 &package.manifest,
@@ -228,11 +235,9 @@ fn check_sandbox_backends(package: &Package, violations: &mut Vec<Violation>) {
     }
     for (feature, turns_on) in &package.features {
         for turned_on in turns_on {
-            let passed_on = turned_on
-                .split_once('/')
-                .is_some_and(|(krate, feature)| {
-                    krate.trim_end_matches('?') == SANDBOX && feature == BACKENDS
-                });
+            let passed_on = turned_on.split_once('/').is_some_and(|(krate, feature)| {
+                krate.trim_end_matches('?') == SANDBOX && feature == BACKENDS
+            });
             if passed_on {
                 violations.push(Violation::new(
                     &package.manifest,
