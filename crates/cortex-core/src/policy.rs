@@ -134,6 +134,15 @@ impl EnginePolicy {
             Some((u64::from(turn), reason));
     }
 
+    /// Why turn number `turn` was stopped, if it was.
+    pub(crate) fn stopped_turn(&self, turn: u32) -> Option<String> {
+        let stopped = self.stopped.lock().unwrap_or_else(PoisonError::into_inner);
+        stopped
+            .as_ref()
+            .filter(|(stopped, _)| *stopped == u64::from(turn))
+            .map(|(_, reason)| reason.clone())
+    }
+
     /// Why `call`'s turn was stopped, if it was.
     fn stopped(&self, call: &PlannedCall<'_>) -> Option<String> {
         let number = cortex_base::IdCounter::new("t_").number_of(call.turn.as_str())?;
@@ -416,6 +425,13 @@ impl Policy for EnginePolicy {
             };
             // The clients that did not answer take their prompt down.
             self.resolved(&id, Resolution::Answered);
+            // The turn may have been stopped while the question was open:
+            // a command beside this call changed protected paths. Nothing
+            // more of the turn runs, whatever the answer (found by the
+            // review of step 26).
+            if let Some(reason) = self.stopped(&call) {
+                return Verdict::Stop { reason };
+            }
 
             let engine = self.engine();
             let choice = response.choice.clone();

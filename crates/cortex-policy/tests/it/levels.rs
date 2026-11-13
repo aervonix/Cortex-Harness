@@ -204,6 +204,7 @@ fn autonomous_is_refused_where_the_sandbox_does_not_enforce() {
         NoSandbox::UnsupportedSystem,
         NoSandbox::NoLandlock,
         NoSandbox::LandlockTooOld(2),
+        NoSandbox::HarnessFilesWritable,
         NoSandbox::TurnedOff,
     ] {
         let mut wanted = parts();

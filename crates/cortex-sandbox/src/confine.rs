@@ -168,6 +168,9 @@ fn grant(
 /// What x32 system calls add to a number on x86-64.
 const X32: i64 = 0x4000_0000;
 
+/// `ioctl`'s number in the x32 table, which is not the x86-64 one.
+const X32_IOCTL: i64 = 514;
+
 /// The flag of `clone` and `unshare` that makes a user namespace.
 const NEW_USER: u64 = libc::CLONE_NEWUSER as u64;
 
@@ -221,27 +224,60 @@ fn seccomp(network: Network) -> Result<(), String> {
         );
     }
     refused.insert(libc::SYS_ioctl, terminal);
-    if network == Network::Off {
-        let netlink = u64::try_from(libc::AF_NETLINK).map_err(|error| error.to_string())?;
-        refused.insert(
-            libc::SYS_socket,
-            vec![
-                when(vec![condition(
+    let number = |value: libc::c_int| u64::try_from(value).map_err(|error| error.to_string());
+    let socket = match network {
+        // Only the kernel's own interface list: no family that reaches
+        // another machine, or another process (netlink's other protocols
+        // include one that does).
+        Network::Off => vec![
+            when(vec![condition(
+                0,
+                SeccompCmpArgLen::Dword,
+                SeccompCmpOp::Ne,
+                number(libc::AF_NETLINK)?,
+            )?])
+            .map_err(|error| error.to_string())?,
+            when(vec![
+                condition(
                     0,
                     SeccompCmpArgLen::Dword,
+                    SeccompCmpOp::Eq,
+                    number(libc::AF_NETLINK)?,
+                )?,
+                condition(
+                    2,
+                    SeccompCmpArgLen::Dword,
                     SeccompCmpOp::Ne,
-                    netlink,
-                )?])
-                .map_err(|error| error.to_string())?,
-            ],
-        );
-    }
+                    number(libc::NETLINK_ROUTE)?,
+                )?,
+            ])
+            .map_err(|error| error.to_string())?,
+        ],
+        // The network, and still no Unix socket: the user's session bus,
+        // agents and the Docker socket start or do what a confined command
+        // may not (found by the review of step 26).
+        Network::Full => vec![
+            when(vec![condition(
+                0,
+                SeccompCmpArgLen::Dword,
+                SeccompCmpOp::Eq,
+                number(libc::AF_UNIX)?,
+            )?])
+            .map_err(|error| error.to_string())?,
+        ],
+    };
+    refused.insert(libc::SYS_socket, socket);
     if arch == TargetArch::x86_64 {
         let x32: Vec<(i64, Vec<SeccompRule>)> = refused
             .iter()
+            .filter(|(call, _)| **call != libc::SYS_ioctl)
             .map(|(call, rules)| (call | X32, rules.clone()))
             .collect();
         refused.extend(x32);
+        // `ioctl` has a number of its own in the x32 table.
+        if let Some(rules) = refused.get(&libc::SYS_ioctl).cloned() {
+            refused.insert(X32_IOCTL | X32, rules);
+        }
     }
 
     let eperm = u32::try_from(libc::EPERM).map_err(|error| error.to_string())?;
@@ -265,7 +301,20 @@ fn seccomp(network: Network) -> Result<(), String> {
         arch,
     )
     .map_err(|error| error.to_string())?;
-    for filter in [main, clone3] {
+    // Leaving the command's process group, or making a session of its own,
+    // is answered as done and not done: every process stays in the tree,
+    // and dies with it, so nothing the command started can write the
+    // workspace after the look that follows the command.
+    let mut stay = BTreeMap::new();
+    for call in [libc::SYS_setsid, libc::SYS_setpgid] {
+        stay.insert(call, Vec::new());
+        if arch == TargetArch::x86_64 {
+            stay.insert(call | X32, Vec::new());
+        }
+    }
+    let stay = SeccompFilter::new(stay, SeccompAction::Allow, SeccompAction::Errno(0), arch)
+        .map_err(|error| error.to_string())?;
+    for filter in [main, clone3, stay] {
         let program: BpfProgram = filter
             .try_into()
             .map_err(|error: seccompiler::BackendError| error.to_string())?;

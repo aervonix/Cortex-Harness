@@ -21,8 +21,8 @@ caught-by:
 rule: With the network off, no socket reaches beyond the command's own processes.
 file: crates/cortex-sandbox/src/confine.rs
 in: seccomp
-find: if network == Network::Off {
-replace: if network == Network::Full {
+find: refused.insert(libc::SYS_socket, socket);
+replace: let _ = socket;
 # The backends are built only with cortex-core beside it.
 packages: cortex-sandbox, cortex-core
 caught-by:
@@ -167,7 +167,7 @@ caught-by:
 [break] protected-change-not-detected
 rule: A protected file whose content or stamp changed is reported as modified.
 file: crates/cortex-sandbox/src/protect.rs
-in: Entry::differs_from
+in: Entry::change_from
 find: self.stamp != old.stamp
 replace: false
 caught-by:
@@ -240,11 +240,11 @@ caught-by:
     cortex-core::it sandbox::sys_a_command_leaves_the_sandbox_only_once_the_user_allows_it
 
 [break] protected-paths-not-looked-at
-rule: A confined command that may write has its protected paths looked at before and after it.
+rule: Every confined command has its protected paths looked at before and after it.
 file: crates/cortex-core/src/checkpoints.rs
 in: RecordingShell::run
-find: plan.concurrency != Concurrency::ReadOnly
-replace: plan.concurrency != Concurrency::ReadOnly && false
+find: .filter(|_| !plan.effects.contains(&Effect::Unconfined))
+replace: .filter(|_| false)
 caught-by:
     cortex-core::it sandbox::sys_a_protected_path_a_command_changes_stops_the_turn_and_undo_puts_it_back
 
@@ -252,8 +252,8 @@ caught-by:
 rule: What a changed protected path held before the command is kept in the round's checkpoint, so undo puts it back.
 file: crates/cortex-core/src/checkpoints.rs
 in: RecordingShell::run
-find: rounds.record_protected(&protected);
-replace: let _ = protected;
+find: rounds.record_protected(&protected)
+replace: { let _ = protected; Vec::new() }
 caught-by:
     cortex-core::it sandbox::sys_a_protected_path_a_command_changes_stops_the_turn_and_undo_puts_it_back
 
@@ -283,3 +283,120 @@ find: if !complete {
 replace: if !complete && false {
 caught-by:
     cortex-core::it sandbox::sys_past_its_bound_the_look_at_protected_paths_warns_and_does_not_stop
+
+# What the independent review of step 26 found, each fix broken again.
+
+[break] a-process-leaves-the-tree
+rule: A confined process cannot leave the command's session or process group: it dies with the tree.
+file: crates/cortex-sandbox/src/confine.rs
+in: seccomp
+find: stay.insert(call, Vec::new());
+replace: let _ = call;
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_the_calls_that_would_undo_or_get_round_the_sandbox_are_refused
+
+[break] clone3-not-answered-as-missing
+rule: `clone3`, whose flags a filter cannot read, is answered as missing, so that a user namespace cannot be made through it.
+file: crates/cortex-sandbox/src/confine.rs
+in: seccomp
+find: clone3.insert(libc::SYS_clone3, Vec::new());
+replace: let _ = &clone3;
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_the_calls_that_would_undo_or_get_round_the_sandbox_are_refused
+
+[break] io-uring-allowed
+rule: `io_uring`, which can make a socket without the `socket` call, is refused.
+file: crates/cortex-sandbox/src/confine.rs
+in: seccomp
+find: libc::SYS_io_uring_setup,
+replace: libc::SYS_vhangup,
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_the_calls_that_would_undo_or_get_round_the_sandbox_are_refused
+
+[break] unix-sockets-with-the-network-on
+rule: With the network on, a Unix socket of anyone else's is still not reached.
+file: crates/cortex-sandbox/src/confine.rs
+in: seccomp
+find: number(libc::AF_UNIX)?
+replace: number(libc::AF_DECnet)?
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_with_the_network_off_no_socket_reaches_anything
+
+[break] any-netlink-protocol
+rule: With the network off, netlink is open for its route protocol only.
+file: crates/cortex-sandbox/src/confine.rs
+in: seccomp
+find: number(libc::NETLINK_ROUTE)?
+replace: number(libc::NETLINK_USERSOCK)?
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_with_the_network_off_no_socket_reaches_anything
+
+[break] a-linked-protected-directory-looked-through
+rule: A protected path reached through a link in the workspace is not looked through.
+file: crates/cortex-sandbox/src/protect.rs
+in: Watch::take
+find: if look.through_a_link(path) {
+replace: if false {
+caught-by:
+    cortex-sandbox protect::tests::a_linked_git_directory_is_not_looked_through
+
+[break] an-incomplete-look-reports-what-it-did-not-reach
+rule: A path one of two looks did not reach is not reported as gone.
+file: crates/cortex-sandbox/src/protect.rs
+in: Snapshot::compare
+find: None if after.covers(path) =>
+replace: None if true =>
+caught-by:
+    cortex-sandbox protect::tests::a_look_that_stops_at_its_bound_reports_nothing_beyond_it
+
+[break] a-mode-change-is-put-back-by-content
+rule: A change of mode is reported as one undo cannot put back.
+file: crates/cortex-sandbox/src/protect.rs
+in: Entry::change_from
+find: _ if self.stamp.mode != old.stamp.mode => Some(Before::Unknown),
+replace: _ if false => Some(Before::Unknown),
+caught-by:
+    cortex-sandbox protect::tests::a_change_of_mode_alone_is_found_and_cannot_be_put_back_by_content
+
+[break] undo-writes-through-a-link
+rule: Undo does not put a file back through a link: a directory on its way, or the file itself, that is a link now.
+file: crates/cortex-session/src/snapshot.rs
+in: through_a_link
+find: Ok(metadata) if metadata.file_type().is_symlink() => return Ok(true),
+replace: Ok(metadata) if metadata.file_type().is_symlink() => return Ok(false),
+packages: cortex-session, cortex-core
+caught-by:
+    cortex-session snapshot::tests::a_path_reached_through_a_link_is_not_put_back
+    cortex-core::it sandbox::sys_undo_does_not_write_through_a_link_a_command_planted
+
+[break] a-stopped-turn-runs-another-command
+rule: Once a command stopped the turn, no command of the turn runs, even one decided before the stop.
+file: crates/cortex-core/src/checkpoints.rs
+in: RecordingShell::run
+find: if let Some(reason) = self.policy.stopped_turn(cx.turn) {
+replace: if let Some(reason) = self.policy.stopped_turn(cx.turn).filter(|_| false) {
+caught-by:
+    cortex-core::it sandbox::sys_a_stopped_turn_runs_no_more_commands_of_the_same_response
+
+[break] the-harness-files-inside-a-write-root
+rule: A write root that holds the harness's own files cannot be confined: the session reports the sandbox off.
+file: crates/cortex-core/src/assemble.rs
+in: assemble
+find: && holds_harness_files(&parts.sandbox_policy, &loaded, state.as_ref())
+replace: && false
+caught-by:
+    cortex-core::it sandbox::a_workspace_that_holds_the_harness_files_is_not_confined
+
+[break] a-change-of-level-leaves-the-sandbox-behind
+rule: A change of level takes the sandbox with it: confined below `unrestricted`, not at it.
+file: crates/cortex-core/src/core.rs
+in: Core::set_level
+find: live.sandbox.set_level(&level);
+replace: let _ = &level;
+caught-by:
+    cortex-core::it sandbox::sys_a_change_of_level_takes_the_sandbox_with_it

@@ -35,7 +35,7 @@
               blocking pool, never on the core thread"
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -77,6 +77,10 @@ pub struct Watch {
 pub struct Snapshot {
     entries: BTreeMap<PathBuf, Entry>,
     complete: bool,
+    /// The paths this look asked for by name, there or not.
+    asked: BTreeSet<PathBuf>,
+    /// The directories whose every entry this look went through.
+    listed: BTreeSet<PathBuf>,
 }
 
 /// One protected entry.
@@ -180,26 +184,38 @@ impl Watch {
     #[must_use]
     pub fn take(&self) -> Snapshot {
         let mut look = Look {
+            root: self.workspace.clone(),
             limits: self.limits,
             started: Instant::now(),
             listed: 0,
             kept: 0,
             complete: true,
             entries: BTreeMap::new(),
+            asked: BTreeSet::new(),
+            through: BTreeSet::new(),
         };
         for path in &self.fixed {
+            // A protected path reached through a link in the workspace is
+            // not looked through: the link is what is recorded, wherever
+            // it leads (found by the review of step 26).
+            if look.through_a_link(path) {
+                look.asked.insert(path.clone());
+                continue;
+            }
             look.record_tree(path);
         }
         look.walk(&self.workspace);
         Snapshot {
             entries: look.entries,
             complete: look.complete,
+            asked: look.asked,
+            listed: look.through,
         }
     }
 
     /// What changed among the protected paths since `before`, from a look
-    /// taken now. A path the earlier look did not reach is not reported:
-    /// it may have been there all along.
+    /// taken now. A path one of the two looks did not reach is not
+    /// reported: it may have been there, or gone, all along.
     #[must_use]
     pub fn changes_since(&self, before: &Snapshot) -> (Vec<Changed>, Snapshot) {
         let after = self.take();
@@ -226,23 +242,30 @@ impl Snapshot {
         self.entries.is_empty()
     }
 
-    /// What differs between this look and a later one.
+    /// What differs between this look and a later one. A path that one
+    /// look holds and the other does not is reported only where the other
+    /// look reached: a look that stopped at its bound says nothing of what
+    /// lay beyond it.
     #[must_use]
     pub fn compare(&self, after: &Self) -> Vec<Changed> {
         let mut changed = Vec::new();
         for (path, old) in &self.entries {
             match after.entries.get(path) {
-                None => changed.push(Changed {
+                None if after.covers(path) => changed.push(Changed {
                     path: path.clone(),
                     change: Change::Deleted,
                     before: old.before(),
                 }),
-                Some(new) if new.differs_from(old) => changed.push(Changed {
-                    path: path.clone(),
-                    change: Change::Modified,
-                    before: old.before(),
-                }),
-                Some(_) => {}
+                None => {}
+                Some(new) => {
+                    if let Some(before) = new.change_from(old) {
+                        changed.push(Changed {
+                            path: path.clone(),
+                            change: Change::Modified,
+                            before,
+                        });
+                    }
+                }
             }
         }
         for path in after.entries.keys() {
@@ -258,36 +281,46 @@ impl Snapshot {
         changed
     }
 
-    /// Whether this look would have seen `path` had it been there: always
-    /// for a complete look; for an incomplete one, only when its parent
-    /// directory was looked at.
+    /// Whether this look would have seen `path` had it been there, or seen
+    /// it gone: always for a complete look; for an incomplete one, only
+    /// when it asked for the path by name, or went through every entry of
+    /// its directory.
     fn covers(&self, path: &Path) -> bool {
         self.complete
+            || self.asked.contains(path)
             || path
                 .parent()
-                .is_some_and(|parent| self.entries.contains_key(parent))
+                .is_some_and(|parent| self.listed.contains(parent))
     }
 }
 
 impl Entry {
-    fn differs_from(&self, old: &Self) -> bool {
+    /// How this entry changed from `old`, and what it was before: `None`
+    /// when it did not.
+    fn change_from(&self, old: &Self) -> Option<Before> {
         match (old.kind, self.kind) {
             // A directory's own times change when an entry is added or
             // removed, and those entries are compared one by one. The
             // directory itself has changed when it was replaced, or its
             // mode was.
-            (Kind::Directory, Kind::Directory) => {
-                self.stamp.inode != old.stamp.inode || self.stamp.mode != old.stamp.mode
+            (Kind::Directory, Kind::Directory) => (self.stamp.inode != old.stamp.inode
+                || self.stamp.mode != old.stamp.mode)
+                .then_some(Before::Directory),
+            (old_kind, new_kind) if old_kind != new_kind => Some(old.before()),
+            // A change of mode (a hook made executable) is not put back by
+            // writing the content again: it is put back by hand.
+            _ if self.stamp.mode != old.stamp.mode => Some(Before::Unknown),
+            // Both contents are known: they decide. The same bytes written
+            // again are no change.
+            (Kind::File, Kind::File) if self.content.is_some() && old.content.is_some() => {
+                (self.content != old.content).then(|| old.before())
             }
-            (old_kind, new_kind) if old_kind != new_kind => true,
-            _ => {
-                self.stamp != old.stamp
-                    || self.bytes != old.bytes
-                    || self.modified != old.modified
-                    || (self.content.is_some()
-                        && old.content.is_some()
-                        && self.content != old.content)
-            }
+            // Otherwise what the system sets, which a program cannot put
+            // back, and the size and the time.
+            _ => (self.stamp != old.stamp
+                || self.bytes != old.bytes
+                || self.modified != old.modified)
+                .then(|| old.before()),
         }
     }
 
@@ -302,12 +335,18 @@ impl Entry {
 
 /// One look in progress.
 struct Look {
+    /// The workspace: links below it are not looked through.
+    root: PathBuf,
     limits: Limits,
     started: Instant,
     listed: usize,
     kept: u64,
     complete: bool,
     entries: BTreeMap<PathBuf, Entry>,
+    /// The paths asked for by name, there or not.
+    asked: BTreeSet<PathBuf>,
+    /// The directories whose every entry was gone through.
+    through: BTreeSet<PathBuf>,
 }
 
 /// The names a walk looks for in every directory, and what each holds that
@@ -315,6 +354,7 @@ struct Look {
 const BUILD_FILES: &[&str] = &[".npmrc", ".yarnrc", ".yarnrc.yml", ".envrc"];
 const CARGO_FILES: &[&str] = &["config.toml", "config"];
 const GIT_PARTS: &[&str] = &["config", "config.worktree", "hooks", "info"];
+const WORKTREE_PARTS: &[&str] = &["config.worktree", "commondir", "gitdir"];
 
 impl Look {
     fn out_of_time(&mut self) -> bool {
@@ -322,6 +362,23 @@ impl Look {
             self.complete = false;
         }
         !self.complete
+    }
+
+    /// Whether a directory between the workspace and `path` is a link.
+    fn through_a_link(&self, path: &Path) -> bool {
+        let Ok(below) = path.strip_prefix(&self.root) else {
+            return false;
+        };
+        let mut walked = self.root.clone();
+        let parts: Vec<_> = below.components().collect();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            walked.push(part);
+            if fs::symlink_metadata(&walked).is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// Records `path` and, for a directory, everything under it.
@@ -332,14 +389,22 @@ impl Look {
         if kind != Kind::Directory || self.out_of_time() {
             return;
         }
-        for child in self.list(path) {
-            self.record_tree(&child);
+        let Some(children) = self.list(path) else {
+            return;
+        };
+        for (child, _) in &children {
+            self.record_tree(child);
+            if self.out_of_time() {
+                return;
+            }
         }
+        self.through.insert(path.to_owned());
     }
 
     /// Records one entry, without following a link. `None` when it is not
     /// there.
     fn record(&mut self, path: &Path) -> Option<Kind> {
+        self.asked.insert(path.to_owned());
         let metadata = fs::symlink_metadata(path).ok()?;
         let kind = if metadata.file_type().is_symlink() {
             Kind::Link
@@ -372,17 +437,28 @@ impl Look {
         Some(kind)
     }
 
-    /// The entries of a directory, counted against the limit.
-    fn list(&mut self, directory: &Path) -> Vec<PathBuf> {
+    /// The entries of a directory, counted against the limit. `None` past
+    /// the limit, or when the directory cannot be read: then what is in it
+    /// is not known.
+    ///
+    /// Each entry comes with whether it is a directory, not a link to one,
+    /// as the listing itself says: no entry is asked for again, which is
+    /// most of a walk's time.
+    fn list(&mut self, directory: &Path) -> Option<Vec<(PathBuf, bool)>> {
         if self.listed >= self.limits.directories {
             self.complete = false;
-            return Vec::new();
+            return None;
         }
         self.listed += 1;
-        match fs::read_dir(directory) {
-            Ok(entries) => entries.flatten().map(|entry| entry.path()).collect(),
-            Err(_) => Vec::new(),
-        }
+        fs::read_dir(directory).ok().map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| {
+                    let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+                    (entry.path(), is_dir)
+                })
+                .collect()
+        })
     }
 
     /// Walks the workspace for protected names at any depth.
@@ -390,10 +466,12 @@ impl Look {
         if self.out_of_time() {
             return;
         }
-        let children = self.list(directory);
+        let Some(children) = self.list(directory) else {
+            return;
+        };
         let names: Vec<&str> = children
             .iter()
-            .filter_map(|child| child.file_name().and_then(|name| name.to_str()))
+            .filter_map(|(child, _)| child.file_name().and_then(|name| name.to_str()))
             .collect();
         // A bare repository made of plain files.
         if ["HEAD", "objects", "refs"]
@@ -402,14 +480,11 @@ impl Look {
         {
             self.record_git(directory);
         }
-        for child in &children {
+        for (child, is_dir) in &children {
+            let is_dir = *is_dir;
             let Some(name) = child.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            let Ok(metadata) = fs::symlink_metadata(child) else {
-                continue;
-            };
-            let is_dir = metadata.is_dir();
             match name {
                 ".git" if is_dir => self.record_git(child),
                 ".git" => {
@@ -430,6 +505,7 @@ impl Look {
                 return;
             }
         }
+        self.through.insert(directory.to_owned());
     }
 
     /// Records the protected parts of a git directory, and of every
@@ -440,14 +516,17 @@ impl Look {
         }
         let modules = git.join("modules");
         if fs::symlink_metadata(&modules).is_ok_and(|metadata| metadata.is_dir()) {
-            for module in self.list(&modules) {
+            for (module, _) in self.list(&modules).unwrap_or_default() {
                 self.record_git(&module);
             }
         }
         let worktrees = git.join("worktrees");
         if fs::symlink_metadata(&worktrees).is_ok_and(|metadata| metadata.is_dir()) {
-            for worktree in self.list(&worktrees) {
-                self.record(&worktree.join("config.worktree"));
+            for (worktree, _) in self.list(&worktrees).unwrap_or_default() {
+                // Where the worktree's repository is, and its own settings.
+                for part in WORKTREE_PARTS {
+                    self.record(&worktree.join(part));
+                }
             }
         }
     }

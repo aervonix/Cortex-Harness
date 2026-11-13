@@ -329,6 +329,45 @@ mod why_not {
         "its earlier content is no longer in the session's store, so it cannot be put back";
     pub(super) const UNREADABLE: &str = "a checkpoint of the undone turns cannot be read, so what \
                                          they changed is not fully known, and no file is put back";
+    pub(super) const THROUGH_A_LINK: &str = "a directory on its way is now a link, or the file \
+                                             itself is, so putting it back would write somewhere \
+                                             else; it is left as it is";
+}
+
+/// Whether `name`, under `root`, is now reached through a symbolic link: a
+/// directory on its way from the root (from the top of the file system,
+/// for a name outside the root) is one, or, with `with_the_file`, the file
+/// itself is. Putting such a file back would write wherever the link
+/// leads, which a command could have pointed outside the workspace after
+/// the checkpoint was taken (found by the review of step 26). Removing a
+/// file that was not there before removes a link at its name, not what the
+/// link leads to, so that asks about the directories alone.
+pub(crate) fn through_a_link(root: &AbsPath, name: &str, with_the_file: bool) -> Result<bool> {
+    let target = locate(root, name)?.to_fs_path();
+    let top = root.to_fs_path();
+    let from = if target.starts_with(&top) {
+        top
+    } else {
+        PathBuf::new()
+    };
+    let mut walked = from.clone();
+    let below = target.strip_prefix(&from).unwrap_or(&target);
+    let parts: Vec<_> = below.components().collect();
+    let looked_at = if with_the_file {
+        parts.len()
+    } else {
+        parts.len().saturating_sub(1)
+    };
+    for part in &parts[..looked_at] {
+        walked.push(part);
+        match fs::symlink_metadata(&walked) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return Ok(true),
+            Ok(_) => {}
+            // What is not there is not a link, and nor is anything below it.
+            Err(_) => return Ok(false),
+        }
+    }
+    Ok(false)
 }
 
 /// A rewind, worked out and not yet done: what it undoes and what it would
@@ -470,8 +509,10 @@ pub(crate) fn file_status(
         _ => false,
     };
     let cannot = |why: &'static str| (FileStatus::CannotRestore, Some(why));
+    let linked = through_a_link(root, &path, !matches!(restore, Before::Absent))?;
     let (status, why_not) = match restore {
         _ if unreadable => cannot(why_not::UNREADABLE),
+        _ if linked => cannot(why_not::THROUGH_A_LINK),
         // Nothing to go back to: never removed, never overwritten.
         Before::Unknown => cannot(why_not::NOT_RECORDED),
         _ if restore.is(now.as_ref()) => (FileStatus::AlreadyRestored, None),
@@ -498,6 +539,14 @@ pub(crate) fn put_back(
     clock: &dyn cortex_base::Clock,
 ) -> Result<()> {
     let target: PathBuf = locate(root, &file.path)?.to_fs_path();
+    // Looked at again, just before the write: the plan may be old.
+    if through_a_link(root, &file.path, !matches!(file.restore, Before::Absent))? {
+        return Err(SessionError::Invalid(format!(
+            "`{}` cannot be put back: {}",
+            file.path,
+            why_not::THROUGH_A_LINK
+        )));
+    }
     match file.restore {
         Before::Unknown => Err(SessionError::Invalid(format!(
             "`{}` cannot be put back: what it held before is not known",
@@ -524,10 +573,15 @@ pub(crate) fn put_back(
                     parent.to_path_buf(),
                 ))?;
             }
+            // A link that appeared at the file since the look above is
+            // refused, never written through.
             cortex_base::write_atomic(
                 &target,
                 &content,
-                &cortex_base::AtomicWriteOptions::default(),
+                &cortex_base::AtomicWriteOptions {
+                    follow_links: false,
+                    ..cortex_base::AtomicWriteOptions::default()
+                },
                 clock,
             )
             .map_err(|error| SessionError::Io {
@@ -536,5 +590,41 @@ pub(crate) fn put_back(
                 source: io::Error::other(error.to_string()),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        clippy::unwrap_used,
+        reason = "a test prepares real directories, and fails by panicking"
+    )]
+
+    use cortex_base::{AbsPath, PathStyle};
+
+    use super::through_a_link;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_reached_through_a_link_is_not_put_back() {
+        let scratch = cortex_testkit::Scratch::outside("cortex-session-snapshot", "links");
+        let root_dir = scratch.dir("ws");
+        scratch.file("ws/real/file.txt", "x");
+        scratch.dir("elsewhere");
+        std::os::unix::fs::symlink(scratch.join("elsewhere"), root_dir.join("linked")).unwrap();
+        std::os::unix::fs::symlink(scratch.join("elsewhere"), root_dir.join("real/file-link"))
+            .unwrap();
+        let root = AbsPath::parse(root_dir.to_str().unwrap(), PathStyle::NATIVE).unwrap();
+        // Plain paths, there or not.
+        assert!(!through_a_link(&root, "real/file.txt", true).unwrap());
+        assert!(!through_a_link(&root, "real/new/deeper.txt", true).unwrap());
+        // A directory on the way is a link.
+        assert!(through_a_link(&root, "linked/config", true).unwrap());
+        assert!(through_a_link(&root, "linked/config", false).unwrap());
+        // The file itself is a link: refused for a write, not for removing
+        // the link.
+        assert!(through_a_link(&root, "real/file-link", true).unwrap());
+        assert!(!through_a_link(&root, "real/file-link", false).unwrap());
     }
 }

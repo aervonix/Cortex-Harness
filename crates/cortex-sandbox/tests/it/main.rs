@@ -20,6 +20,7 @@
 mod confined;
 #[cfg(target_os = "linux")]
 mod helpers;
+mod perf;
 mod tree;
 
 use std::process::Command;
@@ -63,6 +64,10 @@ const NET: &str = "cx-net";
 /// parent that keeps the launcher from confining itself.
 const DENY: &str = "cx-deny";
 
+/// The argument that makes this binary make one raw system call and print
+/// what came of it (`helpers::call`).
+const CALL: &str = "cx-call";
+
 /// What the test runner runs as an ordinary test, which passes at once, and
 /// what a test runs again as a child, as the guard, or as a harness.
 #[test]
@@ -76,7 +81,7 @@ fn child_entry() {
     // hold another, which is the role of the process it starts.
     let role = arguments
         .iter()
-        .position(|argument| [LAUNCH, NET, DENY].contains(&argument.as_str()));
+        .position(|argument| [LAUNCH, NET, DENY, CALL].contains(&argument.as_str()));
     match role.map(|at| (at, arguments[at].as_str())) {
         Some((at, LAUNCH)) => {
             let rest = std::env::args_os().skip(at + 1).collect();
@@ -89,6 +94,8 @@ fn child_entry() {
         }
         #[cfg(target_os = "linux")]
         Some((at, NET)) => helpers::net(&arguments[at + 1], &arguments[at + 2]),
+        #[cfg(target_os = "linux")]
+        Some((at, CALL)) => helpers::call(&arguments[at + 1]),
         #[cfg(all(target_os = "linux", feature = "backends"))]
         Some((at, DENY)) => helpers::deny(&arguments[at + 1], &arguments[at + 3..]),
         _ => {}

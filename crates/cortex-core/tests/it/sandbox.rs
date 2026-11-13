@@ -16,7 +16,10 @@ use cortex_protocol::session::{SandboxStatus, SessionSettings};
 use cortex_sandbox::support::Support;
 use serde_json::json;
 
-use crate::{Front, World, calls, says};
+use crate::{Front, World};
+// What only the tests that start a shell use, which run on Linux.
+#[cfg(target_os = "linux")]
+use crate::{calls, says};
 
 /// This test binary as the sandbox launcher: it enters [`crate::launcher_entry`].
 fn launcher() -> (PathBuf, Vec<OsString>) {
@@ -536,5 +539,196 @@ fn sys_past_its_bound_the_look_at_protected_paths_warns_and_does_not_stop() {
             cortex_protocol::event::TurnOutcome::Completed,
             "{ended:?}"
         );
+    });
+}
+
+#[test]
+fn a_workspace_that_holds_the_harness_files_is_not_confined() {
+    let world = World::new("own_files", []);
+    // A write root that holds the home directory holds the harness's
+    // configuration, state and data too.
+    world.user_config(&format!(
+        "[sandbox]\nwrite = [\"{}\"]\n",
+        world.home.display().to_string().replace('\\', "\\\\")
+    ));
+    let core = world.core_with(|options| {
+        options.launcher = Some(launcher());
+        options.sandbox = Some(Support::Landlock(8));
+    });
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        assert_eq!(front.state.sandbox, SandboxStatus::Off);
+        notices_until(&front, |notice| notice.contains("own configuration")).await;
+        let refused = Front::start_as(
+            &world,
+            &core,
+            cortex_core::ClientInfo::user(),
+            at(Level::Autonomous),
+        )
+        .await
+        .err()
+        .expect("autonomous is refused");
+        assert_eq!(refused.code, "sandbox_required");
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sys_with_no_landlock_a_command_runs_unconfined() {
+    let world = World::new("unconfined_no_landlock", []);
+    let outside = world.dir.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    world.provider.push(calls(&[(
+        "c1",
+        "shell",
+        json!({"command": writes(&outside)}),
+    )]));
+    world.provider.push(says("Done."));
+    let core = world.core_with(|options| {
+        options.launcher = Some(launcher());
+        options.sandbox = Some(Support::NoLandlock);
+    });
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        front.turn_allowing("write three files").await;
+        assert_eq!(
+            std::fs::read_to_string(outside.join("f")).ok().as_deref(),
+            Some("x\n"),
+            "{:?}",
+            front.results()
+        );
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sys_a_change_of_level_takes_the_sandbox_with_it() {
+    if !enforcing_here() {
+        return;
+    }
+    let world = World::new("level_change", []);
+    let outside = world.dir.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    world.provider.push(calls(&[(
+        "c1",
+        "shell",
+        json!({"command": writes(&outside)}),
+    )]));
+    world.provider.push(says("Done."));
+    let core = world.core_with(|options| options.launcher = Some(launcher()));
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            cortex_core::ClientInfo::user(),
+            at(Level::Unrestricted),
+        )
+        .await
+        .expect("the session starts");
+        assert_eq!(front.state.sandbox, SandboxStatus::Off);
+        let result = front
+            .op(Op::SessionSet(cortex_protocol::methods::SessionSetParams {
+                session_id: front.session.clone(),
+                settings: at(Level::Autonomous),
+            }))
+            .await
+            .expect("the level is raised");
+        let OpResult::SessionSet(result) = result else {
+            panic!("not the result of session/set");
+        };
+        assert_eq!(result.session.sandbox, SandboxStatus::Enforcing);
+        front.turn_allowing("write three files").await;
+        // Confined now: the write outside is refused.
+        assert!(!outside.join("f").exists(), "{:?}", front.results());
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sys_a_stopped_turn_runs_no_more_commands_of_the_same_response() {
+    if !enforcing_here() {
+        return;
+    }
+    let world = World::new("stopped_in_one_response", []);
+    world.put(".git/config", "[core]\n");
+    world.put(".git/hooks/pre-commit.sample", "#!/bin/sh\n");
+    world.put("fix.sh", "echo evil > .git/hooks/pre-commit\n");
+    // Both calls in one response: the second is decided before the first
+    // runs.
+    world.provider.push(calls(&[
+        ("c1", "shell", json!({"command": "sh fix.sh"})),
+        ("c2", "shell", json!({"command": "echo after > after.txt"})),
+    ]));
+    world.provider.push(says("Done."));
+    let core = world.core_with(|options| options.launcher = Some(launcher()));
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            cortex_core::ClientInfo::user(),
+            at(Level::Autonomous),
+        )
+        .await
+        .expect("the session starts");
+        front.turn("fix it").await;
+        assert!(world.read(".git/hooks/pre-commit").is_some());
+        assert!(world.read("after.txt").is_none(), "{:?}", front.results());
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sys_undo_does_not_write_through_a_link_a_command_planted() {
+    if !enforcing_here() {
+        return;
+    }
+    let world = World::new("undo_through_link", []);
+    world.put(".git/config", "[core]\n");
+    world.put(".git/hooks/pre-commit.sample", "#!/bin/sh\n");
+    let elsewhere = world.dir.join("elsewhere");
+    std::fs::create_dir_all(elsewhere.join("hooks")).unwrap();
+    std::fs::write(elsewhere.join("config"), "theirs\n").unwrap();
+    // The command swaps the repository's directory for a link to a
+    // directory outside the workspace.
+    world.put(
+        "swap.sh",
+        format!("mv .git .git.old && ln -s '{}' .git\n", elsewhere.display()),
+    );
+    world.provider.push(says("Ready."));
+    world
+        .provider
+        .push(calls(&[("c1", "shell", json!({"command": "sh swap.sh"}))]));
+    world.provider.push(says("Done."));
+    let core = world.core_with(|options| options.launcher = Some(launcher()));
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            cortex_core::ClientInfo::user(),
+            at(Level::Autonomous),
+        )
+        .await
+        .expect("the session starts");
+        front.turn("get ready").await;
+        let keep = first_message(&front);
+        front.turn("swap it").await;
+        let results = front.results();
+        assert!(results[0].2.contains("`.git` (created)"), "{results:?}");
+        let _ = front
+            .op(Op::SessionRewind(
+                cortex_protocol::methods::SessionRewindParams {
+                    session_id: front.session.clone(),
+                    to: keep,
+                    restore_files: true,
+                },
+            ))
+            .await;
+        // Nothing outside the workspace was written by the undo.
+        assert_eq!(
+            std::fs::read_to_string(elsewhere.join("config")).unwrap(),
+            "theirs\n"
+        );
+        assert!(!elsewhere.join("hooks/pre-commit.sample").exists());
+        front.close().await;
     });
 }

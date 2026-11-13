@@ -32,7 +32,7 @@ use cortex_protocol::lease::{Level, NetworkAccess, SandboxPolicy};
 use cortex_protocol::session::SandboxStatus;
 use cortex_sandbox::launch::Launcher as SandboxLauncher;
 use cortex_sandbox::policy::{Network, Policy, Reach};
-use cortex_sandbox::protect::{Before as Was, Changed, Limits, Watch};
+use cortex_sandbox::protect::{Changed, Limits, Watch};
 use cortex_sandbox::support::{Assessment, Support, Unconfined};
 use cortex_tools::process::{Argument, CommandLine, Direct, Exit, Launch, LaunchCx, Launcher};
 
@@ -238,38 +238,43 @@ pub(crate) fn protected_note(
     changed: &[Changed],
     complete: bool,
     root: &Path,
-    restorable: bool,
+    by_hand: &[PathBuf],
 ) -> Option<String> {
-    let mut lines = Vec::new();
-    if !changed.is_empty() {
-        let shown: Vec<String> = changed
-            .iter()
+    let shown = |paths: &mut dyn Iterator<Item = &Changed>| -> Vec<String> {
+        paths
             .map(|changed| {
                 let path = changed.path.strip_prefix(root).unwrap_or(&changed.path);
                 format!("`{}` ({})", path.display(), changed.change.as_str())
             })
-            .collect();
-        let lost = changed.iter().any(|changed| changed.before == Was::Unknown);
+            .collect()
+    };
+    let mut lines = Vec::new();
+    if !changed.is_empty() {
+        let all = shown(&mut changed.iter());
+        let not_undone = shown(&mut changed.iter().filter(|one| by_hand.contains(&one.path)));
+        let undo = if not_undone.is_empty() {
+            "Undoing this turn puts them back.".to_owned()
+        } else if not_undone.len() == all.len() {
+            "Undoing this turn does not put them back: what they were is not kept (a link, a \
+             file too large, a change of mode, a directory, a path outside the workspace, or a \
+             session that keeps no checkpoints), so they must be put back by hand."
+                .to_owned()
+        } else {
+            format!(
+                "Undoing this turn puts back the others; these must be put back by hand: {}.",
+                not_undone.join(", ")
+            )
+        };
         lines.push(format!(
             "[The command changed protected paths, which decide what runs later outside the \
-             sandbox: {}. The turn stops here, so that the user can look at the change. {}]",
-            shown.join(", "),
-            match (restorable, lost) {
-                (true, false) => "Undoing this turn puts them back.",
-                (true, true) => {
-                    "Undoing this turn puts back those whose earlier content was kept; the rest \
-                     (a link, or a file too large to keep) must be put back by hand."
-                }
-                (false, _) =>
-                    "This session keeps no checkpoints, so they cannot be put back from here.",
-            }
+             sandbox: {}. The turn stops here, so that the user can look at the change. {undo}]",
+            all.join(", "),
         ));
     }
     if !complete {
         lines.push(
-            "[Protected paths were looked at only in part: the look stopped at its bound (20,000 \
-             directories, or a quarter of a second). A change to one further down the \
-             workspace would not have been seen.]"
+            "[Protected paths were looked at only in part: the look stopped at its bound. A \
+             change to one further down the workspace would not have been seen.]"
                 .to_owned(),
         );
     }
