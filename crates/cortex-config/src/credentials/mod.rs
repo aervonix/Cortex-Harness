@@ -207,6 +207,22 @@ pub fn check_provider(name: &str) -> Result<(), CredentialError> {
     }
 }
 
+/// Whether text read from a store can be a credential: printable ASCII,
+/// which every API key and token is. Text that is not was damaged, or was
+/// put there by another program. Windows Credential Manager keeps text as
+/// UTF-16, and a key another program stored as UTF-8 bytes reads back as
+/// letters of other scripts, which would be sent to the provider as a key.
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "the rule is tested on every OS")
+)]
+pub(crate) fn plausible_credential(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|character| character.is_ascii() && !character.is_ascii_control())
+}
+
 /// Opens the store the configuration asks for.
 ///
 /// `auto` is Windows Credential Manager on Windows and the owner-only file
@@ -350,19 +366,33 @@ pub fn resolve(lookup: Lookup<'_>) -> Result<Option<Credential>, CredentialError
 /// Says which source a provider's credential would come from, and whether
 /// the store holds one that is passed over.
 ///
+/// When the flag or the environment gives the key, a store that cannot be
+/// read does not fail the status: the key in use is known, and the store's
+/// error is the status's [`store_warning`](CredentialStatus::store_warning).
+///
 /// # Errors
 ///
-/// When the store fails.
+/// When the store fails and no earlier source gives a key.
 pub fn status(lookup: Lookup<'_>) -> Result<CredentialStatus, CredentialError> {
     check_provider(lookup.provider)?;
     let earlier = before_the_store(lookup).map(|found| found.source);
-    let stored = lookup.store.get(lookup.provider)?.is_some();
+    let (stored, unreadable) = match lookup.store.get(lookup.provider) {
+        Ok(found) => (found.is_some(), None),
+        Err(error) if earlier.is_some() => (
+            false,
+            Some(format!(
+                "the {} could not be read: {error}",
+                lookup.store.kind()
+            )),
+        ),
+        Err(error) => return Err(error),
+    };
     Ok(CredentialStatus {
         provider: lookup.provider.to_owned(),
         stored_but_unused: stored && earlier.is_some(),
         active: earlier.or_else(|| stored.then(|| CredentialSource::Store(lookup.store.kind()))),
         stored,
-        store_warning: lookup.store.warning(lookup.env),
+        store_warning: unreadable.or_else(|| lookup.store.warning(lookup.env)),
     })
 }
 
@@ -518,6 +548,54 @@ mod tests {
         );
     }
 
+    /// Before, `auth status` failed on a broken store even for a provider
+    /// whose key came from the environment.
+    #[test]
+    fn a_broken_store_does_not_fail_the_status_of_a_key_from_the_environment() {
+        let store = MemoryStore {
+            broken: true,
+            ..MemoryStore::default()
+        };
+        let env = Env::empty(Platform::Unix).with("EXAMPLE_API_KEY", FROM_ENV);
+        let shown = status(lookup(&env, &store, None)).unwrap();
+        assert_eq!(
+            shown.active,
+            Some(CredentialSource::Environment {
+                variable: "EXAMPLE_API_KEY".to_owned()
+            })
+        );
+        assert!(!shown.stored && !shown.stored_but_unused);
+        assert_eq!(
+            shown.store_warning.as_deref(),
+            Some(
+                "the credentials file could not be read: credentials file failed to read the \
+                 key: it is broken"
+            )
+        );
+        // With nothing before the store, its failure is the answer.
+        let flag = Secret::new(FROM_FLAG);
+        assert!(status(lookup(&Env::empty(Platform::Unix), &store, Some(&flag))).is_ok());
+        assert!(status(lookup(&Env::empty(Platform::Unix), &store, None)).is_err());
+    }
+
+    #[test]
+    fn a_credential_is_printable_ascii() {
+        assert!(plausible_credential("sk-ant-api03-AbC_d-1234.x~"));
+        // A key another program stored as UTF-8 bytes, read back as UTF-16
+        // the way Credential Manager keeps text: an even number of bytes,
+        // and valid UTF-16, and nothing like a key.
+        let bytes = "sk-test-0001-alpha".as_bytes();
+        let units: Vec<u16> = bytes
+            .chunks(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        let garbled = String::from_utf16(&units).unwrap();
+        assert!(!plausible_credential(&garbled), "{garbled}");
+        for wrong in ["", "key\n", "ключ", "a\u{0}b", "\u{feff}sk-x", "tab\there"] {
+            assert!(!plausible_credential(wrong), "{wrong:?}");
+        }
+    }
+
     #[test]
     fn status_says_which_source_is_used_and_what_is_passed_over() {
         let store = MemoryStore::default();
@@ -639,7 +717,9 @@ mod tests {
         let error = open_store(StoreChoice::File, &nowhere, clock()).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Config);
         assert!(
-            error.to_string().contains("no directory to keep the credentials file in"),
+            error
+                .to_string()
+                .contains("no directory to keep the credentials file in"),
             "{error}"
         );
 

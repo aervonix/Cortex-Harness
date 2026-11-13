@@ -382,6 +382,10 @@ const CASES: &[Case] = &[
 fn every_merge_rule_layer_and_profile() {
     for case in CASES {
         let mut machine = Machine::new("layers_table");
+        // The order of the layers and the merge, with the project trusted,
+        // so that its files take part as a layer like any other. What a
+        // project may set before trust is the subject of `trust.rs`.
+        machine.trusted();
         machine
             .layer(LayerKind::Managed, case.managed)
             .layer(LayerKind::User, case.user)
@@ -527,10 +531,7 @@ fn the_profile_flag_cannot_pass_a_lock_on_the_profile() {
     );
 
     // A lock with no profile chosen keeps every profile off.
-    machine.layer(
-        LayerKind::Managed,
-        "[managed]\nlocked = [\"profile\"]\n",
-    );
+    machine.layer(LayerKind::Managed, "[managed]\nlocked = [\"profile\"]\n");
     let loaded = machine.load();
     assert_eq!(loaded.profile, None);
     assert_eq!(value(&loaded, "sandbox.network"), "\"off\"");
@@ -557,9 +558,14 @@ fn a_value_cannot_replace_a_table_that_holds_a_locked_key() {
             "[mcp]\nservers = \"none\"\n[hooks]\naudit = false\n\
              [providers.corp]\nheaders = { X-Other = \"1\" }\n",
         ),
-        (LayerKind::Project, "[mcp]\nservers = []\n[hooks]\naudit = 0\n"),
+        (
+            LayerKind::Project,
+            "[mcp]\nservers = []\n[hooks]\naudit = 0\n",
+        ),
     ] {
-        machine.layer(LayerKind::User, "").layer(LayerKind::Project, "");
+        machine
+            .layer(LayerKind::User, "")
+            .layer(LayerKind::Project, "");
         machine.layer(layer, text);
         machine.trusted();
         let loaded = machine.load();
@@ -569,9 +575,17 @@ fn a_value_cannot_replace_a_table_that_holds_a_locked_key() {
             "\"corp-proxy\"",
             "{layer}"
         );
-        assert_eq!(value(&loaded, "hooks.audit.command"), "\"audit-log\"", "{layer}");
         assert_eq!(
-            loaded.settings.providers["corp"].headers.0.keys().collect::<Vec<_>>(),
+            value(&loaded, "hooks.audit.command"),
+            "\"audit-log\"",
+            "{layer}"
+        );
+        assert_eq!(
+            loaded.settings.providers["corp"]
+                .headers
+                .0
+                .keys()
+                .collect::<Vec<_>>(),
             ["X-Audit"],
             "{layer}"
         );
@@ -580,7 +594,11 @@ fn a_value_cannot_replace_a_table_that_holds_a_locked_key() {
             .into_iter()
             .filter(|line| line.contains("locked by the managed configuration"))
             .count();
-        assert_eq!(notes, if layer == LayerKind::User { 3 } else { 2 }, "{layer}");
+        assert_eq!(
+            notes,
+            if layer == LayerKind::User { 3 } else { 2 },
+            "{layer}"
+        );
     }
 
     // A table merges key by key, so one that leaves the locked key alone

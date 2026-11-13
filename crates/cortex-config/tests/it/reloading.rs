@@ -176,25 +176,22 @@ fn a_valid_change_is_applied_and_says_when_each_part_takes_effect() {
 fn a_file_that_appears_or_goes_is_a_change() {
     let machine = Machine::new("reload_appear");
     let (mut live, _clock) = start(&machine);
-    assert_eq!(live.current().settings.model.main, None);
+    assert_eq!(value(&live.current(), "model.reasoning"), "\"summary\"");
     assert!(live.current().files.iter().all(|(_, _, present)| !present));
 
     // The project's file is created after start-up.
     write_at(
         &machine,
         LayerKind::Project,
-        "[model]\nmain = \"theirs\"\n",
+        "[model]\nreasoning = \"none\"\n",
         30,
     );
     assert!(matches!(live.check(), Some(Reload::Applied { .. })));
-    assert_eq!(
-        live.current().settings.model.main.as_deref(),
-        Some("theirs")
-    );
+    assert_eq!(value(&live.current(), "model.reasoning"), "\"none\"");
 
     fs::remove_file(machine.file(LayerKind::Project)).unwrap();
     assert!(matches!(live.check(), Some(Reload::Applied { .. })));
-    assert_eq!(live.current().settings.model.main, None);
+    assert_eq!(value(&live.current(), "model.reasoning"), "\"summary\"");
 }
 
 #[test]
@@ -315,7 +312,11 @@ fn a_change_of_options_that_does_not_load_is_undone_and_refused_every_time() {
         assert_eq!(live.options().profile, None);
     }
     assert!(Arc::ptr_eq(&live.current(), &before));
-    assert_eq!(live.current().withheld.len(), 1, "the network stays held back");
+    assert_eq!(
+        live.current().withheld.len(),
+        1,
+        "the network stays held back"
+    );
 
     // The file is still watched under the options that stayed: fixing it
     // is noticed, and then the change goes through.
@@ -349,7 +350,11 @@ fn lowering_trust_takes_effect_while_a_file_is_broken() {
         write_at(&machine, LayerKind::User, USER, 60);
         write_at(&machine, LayerKind::Project, PROJECT, 60);
         let (mut live, _clock) = start(&machine);
-        assert_eq!(live.current().rules().len(), 1, "trusted: the allow rule applies");
+        assert_eq!(
+            live.current().rules().len(),
+            1,
+            "trusted: the allow rule applies"
+        );
 
         write_at(&machine, broken, "[retry]\nattempts = 0\n", 50);
         assert!(matches!(live.check(), Some(Reload::Rejected(_))));
@@ -371,7 +376,11 @@ fn lowering_trust_takes_effect_while_a_file_is_broken() {
         );
         assert_eq!(previous.rules().len(), 1);
         let changed: Vec<String> = changes.iter().map(|c| c.key.to_string()).collect();
-        assert_eq!(changed, ["permissions.rules", "sandbox.protect"], "{broken}");
+        assert_eq!(
+            changed,
+            ["permissions.rules", "sandbox.protect"],
+            "{broken}"
+        );
 
         // Trust is lowered, nothing of the project is in force, and the
         // user's own configuration, as it was in force, stays.
@@ -380,12 +389,7 @@ fn lowering_trust_takes_effect_while_a_file_is_broken() {
         assert!(current.rules().is_empty(), "{broken}");
         assert_eq!(value(&current, "sandbox.protect"), "[]", "{broken}");
         assert_eq!(value(&current, "model.main"), "\"big\"", "{broken}");
-        assert!(
-            current
-                .files
-                .iter()
-                .all(|(kind, ..)| !kind.is_project())
-        );
+        assert!(current.files.iter().all(|(kind, ..)| !kind.is_project()));
 
         // The same error is not reported again until a file changes.
         assert!(live.check().is_none());
@@ -421,7 +425,10 @@ fn lowering_trust_drops_a_profile_only_the_project_defines() {
 
     write_at(&machine, LayerKind::Project, "[retry\n", 50);
     let reload = live.update(|options| options.trust = ProjectTrust::Untrusted);
-    assert!(matches!(reload, Reload::ProjectDropped { .. }), "{reload:?}");
+    assert!(
+        matches!(reload, Reload::ProjectDropped { .. }),
+        "{reload:?}"
+    );
     let current = live.current();
     assert_eq!(current.profile, None);
     assert_eq!(value(&current, "sandbox.network"), "\"off\"");
@@ -526,7 +533,11 @@ fn a_link_that_appears_in_the_project_is_found_before_it_is_followed() {
 
     // The same on the check on a key press.
     fs::remove_dir_all(&folder).unwrap();
-    assert!(crate::make_link(&machine.home().join("nowhere"), &folder, true));
+    assert!(crate::make_link(
+        &machine.home().join("nowhere"),
+        &folder,
+        true
+    ));
     clock.advance(Duration::from_secs(2));
     assert!(matches!(
         live.check_at_most_every(Duration::from_secs(1)),

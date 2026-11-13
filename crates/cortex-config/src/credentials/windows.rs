@@ -13,6 +13,11 @@
 //! - **Nothing of a stored value reaches an error.** The wrapper's errors
 //!   can carry the bytes that were read. They are mapped to messages by
 //!   kind, and such a payload is dropped unread.
+//! - **Only a key is read back.** Windows keeps the text as UTF-16. The
+//!   wrapper refuses bytes that are not UTF-16; bytes that are and do not
+//!   make printable ASCII (a key another program stored as UTF-8, read back
+//!   as letters of other scripts) are refused here, so that nothing of the
+//!   kind is sent to a provider as a key.
 
 use std::collections::HashMap;
 
@@ -20,11 +25,16 @@ use cortex_base::Secret;
 use keyring_core::api::CredentialStoreApi;
 use windows_native_keyring_store::Store;
 
-use super::{CredentialError, CredentialStore, StoreKind, check_provider};
+use super::{CredentialError, CredentialStore, StoreKind, check_provider, plausible_credential};
 use crate::env::Env;
 
 /// What every credential's name starts with.
 const PREFIX: &str = "cortex-harness:";
+
+/// Why an entry that does not hold a key is refused.
+const NOT_A_KEY: &str = "what is stored under that name is not a key Cortex-Harness wrote: it is \
+                         not printable text. Remove it with `cortex auth logout` and store the \
+                         key again";
 
 /// The credential store in Windows Credential Manager.
 #[derive(Debug, Clone)]
@@ -119,6 +129,13 @@ impl CredentialStore for CredentialManagerStore {
         const ACTION: &str = "read the key";
         match self.entry(provider, ACTION)?.get_password() {
             Ok(key) if key.is_empty() => Ok(None),
+            // The wrapper refuses bytes that are not UTF-16. Bytes that are,
+            // and are not a key, are refused here: a key is printable ASCII.
+            Ok(key) if !plausible_credential(&key) => Err(CredentialError::Store {
+                store: StoreKind::CredentialManager,
+                action: ACTION,
+                reason: NOT_A_KEY.to_owned(),
+            }),
             Ok(key) => Ok(Some(Secret::new(key))),
             Err(keyring_core::Error::NoEntry) => Ok(None),
             Err(error) => Err(failure(ACTION, &error)),
@@ -127,6 +144,14 @@ impl CredentialStore for CredentialManagerStore {
 
     fn set(&self, provider: &str, credential: &Secret) -> Result<(), CredentialError> {
         const ACTION: &str = "store the key";
+        // What could not be read back is not stored.
+        if !plausible_credential(credential.expose()) {
+            return Err(CredentialError::Store {
+                store: StoreKind::CredentialManager,
+                action: ACTION,
+                reason: "a key is printable text with no line break, and this is not".to_owned(),
+            });
+        }
         self.entry(provider, ACTION)?
             .set_password(credential.expose())
             .map_err(|error| failure(ACTION, &error))

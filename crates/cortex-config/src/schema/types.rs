@@ -334,12 +334,9 @@ pub(crate) fn redact_kind(kind: &Kind, value: &Value) -> Value {
                 .map(|(name, entry)| (name.clone(), redact_kind(inner, entry)))
                 .collect(),
         ),
-        (Kind::List(inner), Value::Array(items)) => Value::Array(
-            items
-                .iter()
-                .map(|item| redact_kind(inner, item))
-                .collect(),
-        ),
+        (Kind::List(inner), Value::Array(items)) => {
+            Value::Array(items.iter().map(|item| redact_kind(inner, item)).collect())
+        }
         _ => value.clone(),
     }
 }
@@ -682,7 +679,10 @@ mod tests {
         let kind = Kind::Map(Box::new(Kind::EnvText));
         assert!(may_hold_secret(&kind) && !may_hold_secret(&Kind::Text));
         assert_eq!(
-            redact_kind(&kind, &toml("{ api-key = \"k\", X-Two = { env = \"TWO\" } }")),
+            redact_kind(
+                &kind,
+                &toml("{ api-key = \"k\", X-Two = { env = \"TWO\" } }")
+            ),
             toml("{ api-key = \"[redacted]\", X-Two = { env = \"TWO\" } }")
         );
         assert_eq!(

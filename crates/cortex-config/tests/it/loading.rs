@@ -168,10 +168,7 @@ fn a_projects_files_are_found_through_the_path_resolver() {
     let loaded = machine.load();
     assert_eq!(value(&loaded, "model.reasoning"), "\"none\"");
     // Named as the project's file, wherever it was read from.
-    assert_eq!(
-        crate::layer_of(&loaded, "model.reasoning"),
-        "project"
-    );
+    assert_eq!(crate::layer_of(&loaded, "model.reasoning"), "project");
 
     assert!(crate::make_link(
         &machine.home().join("gone.toml"),
@@ -238,29 +235,48 @@ fn a_link_in_a_project_to_a_network_share_is_refused_unopened() {
 fn a_parse_error_never_repeats_the_file() {
     const KEY: &str = "sk-test-leak-0001";
     for (name, text) in [
-        ("environ", format!("ANTHROPIC_API_KEY={KEY}\0PATH=/usr/bin\0")),
+        (
+            "environ",
+            format!("ANTHROPIC_API_KEY={KEY}\0PATH=/usr/bin\0"),
+        ),
         (
             "aws",
-            format!("[default]\naws_access_key_id = AKIATESTLEAK0001\naws_secret_access_key = {KEY}\n"),
+            format!(
+                "[default]\naws_access_key_id = AKIATESTLEAK0001\naws_secret_access_key = {KEY}\n"
+            ),
         ),
         (
             "pem",
-            format!("-----BEGIN OPENSSH PRIVATE KEY-----\n{KEY}\n-----END OPENSSH PRIVATE KEY-----\n"),
+            format!(
+                "-----BEGIN OPENSSH PRIVATE KEY-----\n{KEY}\n-----END OPENSSH PRIVATE KEY-----\n"
+            ),
         ),
-        ("netrc", format!("machine example.com login me password {KEY}\n")),
+        (
+            "netrc",
+            format!("machine example.com login me password {KEY}\n"),
+        ),
         ("number", format!("key = 1{KEY}\n")),
         ("string", format!("key = \"{KEY}\nnext = 1\n")),
         ("dotted", format!("{KEY} = = 1\n")),
         ("duplicate", format!("a = \"{KEY}\"\na = \"{KEY}\"\n")),
         ("large", format!("a = 99999999999999999999999 # {KEY}\n")),
-        ("larger", "a = 1234567890123456789012345678901234567890\n".to_owned()),
+        (
+            "larger",
+            "a = 1234567890123456789012345678901234567890\n".to_owned(),
+        ),
     ] {
         let machine = Machine::new(&format!("load_parse_{name}"));
         machine.layer(LayerKind::Project, &text);
         let failure = machine.try_load().expect_err("not TOML");
-        let shown = format!("{} / {failure} / {failure:?}", failure.render(machine.env()));
+        let shown = format!(
+            "{} / {failure} / {failure:?}",
+            failure.render(machine.env())
+        );
         for secret in [KEY, "AKIATESTLEAK", "1234567890123", "99999999"] {
-            assert!(!shown.contains(secret), "{name}: the error repeats the file: {shown}");
+            assert!(
+                !shown.contains(secret),
+                "{name}: the error repeats the file: {shown}"
+            );
         }
         assert!(shown.contains("is not valid TOML"), "{name}: {shown}");
     }
@@ -425,8 +441,10 @@ fn the_data_directory_variable_cannot_move_a_locked_data_directory() {
     assert_eq!(loaded.data_dir(), before);
     assert_eq!(
         machine.said(&loaded),
-        ["note: environment: session.data_dir: locked by the managed configuration; this value \
-          is not used"]
+        [
+            "note: environment: session.data_dir: locked by the managed configuration; this value \
+          is not used"
+        ]
     );
 
     // Without the lock the variable moves it.

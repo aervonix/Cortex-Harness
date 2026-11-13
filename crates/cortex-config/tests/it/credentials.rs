@@ -461,6 +461,20 @@ mod windows {
         }
     }
 
+    /// The credential stored under `target`, reached past the store, to read
+    /// back what Windows keeps and to write what the store would not.
+    fn raw_entry(target: &str) -> keyring_core::Entry {
+        use keyring_core::api::CredentialStoreApi;
+        windows_native_keyring_store::Store::new()
+            .unwrap()
+            .build(
+                "cortex-harness-test",
+                "raw",
+                Some(&std::collections::HashMap::from([("target", target)])),
+            )
+            .unwrap()
+    }
+
     #[test]
     fn a_key_round_trips_through_credential_manager() {
         // A prefix no real entry has: the harness's own entries start with
@@ -487,6 +501,16 @@ mod windows {
             store.get("other.provider-2").unwrap().unwrap().expose(),
             KEY_TWO
         );
+
+        // What Windows keeps, read from the credential's own attributes: it
+        // is under the name the store gives, where the control panel shows
+        // it, and for this machine only, not copied to the user's other
+        // domain machines (decision 0018).
+        let attributes = raw_entry(&store.target("example"))
+            .get_attributes()
+            .expect("a credential under the store's name");
+        assert_eq!(attributes["target_name"], store.target("example"));
+        assert_eq!(attributes["persistence"], "Local");
 
         // Replaced in place, read through a second store as a second
         // process would, then removed.
@@ -521,5 +545,26 @@ mod windows {
         assert!(!printed.contains("sk-test"), "{printed}");
         let invalid = store.set("no/slash", &Secret::new(KEY_ONE)).unwrap_err();
         assert_eq!(invalid.kind(), ErrorKind::Usage);
+
+        // A key another program stored as UTF-8 bytes: an even number of
+        // them, which read back as UTF-16 make letters of other scripts.
+        // Before, that text was returned as the key.
+        raw_entry(&store.target("other.provider-2"))
+            .set_secret(KEY_TWO.as_bytes())
+            .unwrap();
+        let corrupt = store.get("other.provider-2").unwrap_err();
+        assert_eq!(corrupt.kind(), ErrorKind::Auth);
+        assert!(
+            corrupt
+                .to_string()
+                .contains("not a key Cortex-Harness wrote"),
+            "{corrupt}"
+        );
+        assert!(!format!("{corrupt} {corrupt:?}").contains("sk-test"));
+        // And the store does not write what it could not read back.
+        let refused = store
+            .set("other.provider-2", &Secret::new("sk-test-0004-\u{0441}"))
+            .unwrap_err();
+        assert!(refused.to_string().contains("printable text"), "{refused}");
     }
 }

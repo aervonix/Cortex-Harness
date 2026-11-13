@@ -28,7 +28,7 @@ On Linux almost all of that is the D-Bus client stack. On Windows the backend is
 
 ## Decision
 
-- **Windows:** Windows Credential Manager by default. A file as the alternative.
+- **Windows:** Windows Credential Manager by default. A file as the alternative, in the local application data folder, which does not roam (amended below).
 - **Linux:** a `credentials.toml` file in the configuration directory, created with owner-only permissions, by default. The Secret Service keychain is available with the `keychain` build feature and `credentials.store = "keychain"`.
 - Lookup order: command-line flag, environment variable, the store.
 - Credentials are `Secret` values in memory: not printable, not serialisable, never logged.
@@ -42,6 +42,14 @@ Specified in [architecture/08-configuration.md](../architecture/08-configuration
 - **A stored key stays on its machine.** It is written with local-machine persistence. The wrapper's default lets Windows copy a credential to the user's other domain machines.
 - **The Linux keychain is not built yet.** The `keychain` feature and the `credentials.store = "keychain"` value exist, and on Linux the value gives an error that says the backend is not in any build so far and to use the file. The Secret Service backend could not be run in the blocking CI (the runners have no keyring daemon), and a credential backend that no test has run is not shipped. It is listed in the build plan as outstanding, to be built with a non-blocking job that runs it against a real keyring daemon.
 - **The file.** `credentials.toml` is written owner-only every time, so a file someone made by hand with wider permissions is private after the next key is stored. Until then it is read as it is, and reported. A lock file beside it, held with the operating system's own file lock, keeps two writers apart.
+
+## Amended after the review of step 9, on 2026-11-13
+
+An independent review of step 9 found that two parts of the store did not keep this record's promises. Both are fixed, each with a test.
+
+- **On Windows the file is in the local application data folder.** Step 9 put it in `%APPDATA%`, beside the configuration. That is the roaming profile, which Windows copies to every machine the user signs in to, so "a stored key stays on its machine" held for Credential Manager and not for the file. The file is now `%LOCALAPPDATA%\cortex-harness\credentials.toml`. On Linux it stays in the configuration directory.
+- **The file and its lock are never written through a link.** The atomic write follows a link to the file it names, so a link at `credentials.toml` (to a file in a repository of dotfiles, say) put the key in that file. A link at either path is now refused with an error that says so, before anything is created. The check is made just before each use; until `cortex-base` has an open that does not follow links (step 10), a link put there in the moment between the check and the use is followed.
+- **A Credential Manager entry is read back as a key or not at all.** An entry that decodes to anything but printable ASCII (another program's key stored as UTF-8 bytes reads back as letters of other scripts) is an error, and is never sent to a provider. The test reads the stored credential's own attributes back from Windows: its name, and its local-machine persistence.
 
 ## Why
 

@@ -32,7 +32,7 @@ Lowest priority first. Later layers override earlier ones.
 | Variable | Sets |
 |---|---|
 | `CORTEX_LOG` | `log.level` |
-| `CORTEX_DATA_DIR` | `session.data_dir`. An absolute path. |
+| `CORTEX_DATA_DIR` | `session.data_dir`. An absolute path. It is read here and nowhere else, so a managed lock on the key holds against it. |
 | `CORTEX_CONFIG` | Not a key: the path of the user's configuration file (layer 3). |
 | A provider's key variable (`ANTHROPIC_API_KEY` and so on) | Not a key: a credential ("Credentials", below). |
 
@@ -40,7 +40,14 @@ Colour is the fifth item of the list. Its key is in the `[terminal]` section, wh
 
 **On the command line** `-c model.main=some-model` needs no quotes: the value is read as TOML where the key takes that (`-c retry.attempts=3`, `-c sandbox.protect=["a"]`) and as plain text otherwise.
 
-The workspace root is the nearest ancestor of the working directory that contains `.cortex/` or `.git`, or the working directory itself.
+The workspace root is the nearest ancestor of the working directory that contains a `.cortex/` folder or a `.git` **that the user owns**, or the working directory itself. Anyone can make a folder in `C:\` or in a shared temporary directory, and without the check a `.git` or `.cortex` that another account put there would make every directory below it one workspace, whose project files that account writes (the class of git's CVE-2022-24765). Whose a candidate is:
+
+- **Linux:** owned by the process's effective user. The entry itself is asked, so a link at `.git` counts by its own owner, not its target's. The user is read from `/proc/self/status`, because the standard library has no safe way to ask; where that cannot be read, no candidate counts and the root is the working directory.
+- **Windows:** owned by the current user, or by the Administrators group (`S-1-5-32-544`). An elevated process, and on Windows Server any administrator's, creates objects that the group owns, not the user. Accepting the group is safe: only an administrator can create an object it owns, and an administrator can already change the user's own files. A link or a junction at `.git` or `.cortex` is passed over: its owner cannot be read without following it, and following a link can reach a network share.
+
+A worktree's or a submodule's `.git` is a plain file, and counts like a folder.
+
+**A project's files are found without following a planted link.** A repository can put a link where its own configuration file goes, or where another tool's file is looked for. On Windows a link to a network share makes the system send the account's credentials to the server it names as soon as it is followed, by opening the file or merely asking about it ([security.md](../security.md), section 7). So the project's two files, and what discovery looks for in the workspace, are found through `cortex-base`'s path resolver, which follows each link itself and refuses a share before the network is asked. A project file whose way is refused, or that is a link to nothing, is an error, not a layer to skip. A workspace that is itself on a share is where the user chose to work: its own share is allowed, and a link to any other share is refused.
 
 **Nothing is read behind the caller's back.** The loader is given the environment and the workspace as values. It does not read the process's environment or its working directory, so a test loads configuration from a folder of its own and cannot see the real home directory.
 
@@ -50,7 +57,8 @@ The workspace root is the nearest ancestor of the working directory that contain
 - **Scalars and arrays replace.** There is no syntax for appending to or removing from an inherited array. A layer that sets an array sets all of it.
 - **Named collections are tables keyed by name**, so layers can add or override one entry without restating the rest: `[providers.<name>]`, `[models.<name>]`, `[mcp.servers.<name>]`, `[extensions.<name>]`, `[hooks.<name>]`, `[keys.<mode>]`. An entry is removed by setting `enabled = false`.
 - **Three lists are joined, not replaced:** `[[permissions.rules]]`, `sandbox.write` and `sandbox.protect`. Each layer adds its entries to those of the layers below. Their meaning does not depend on order ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)), and a layer must not be able to drop a restriction by restating the list without it: if `sandbox.protect` were replaced, a project's `protect = []` would unprotect what the user protected.
-- **Locks.** The managed layer can list keys under `[managed] locked = [...]`. A locked key ignores every higher layer, the command line included, and `cortex config show` says so. Naming a table locks every key in it. A lock on a key this version does not know is kept and warned about, not dropped. `[managed]` in any other file is ignored, with a warning.
+- **Locks.** The managed layer can list keys under `[managed] locked = [...]`. A locked key ignores every higher layer, the command line included, and `cortex config show` says so. Naming a table locks every key in it. A lock on a key this version does not know is kept and warned about, not dropped. `[managed]` in any other file is ignored, with a warning; inside a profile it is an error (see "Profiles").
+  - **A lock cannot be passed by another way in.** `--profile` does not move a lock on `profile`: the managed file's profile stays, or none when it chose none. A value set where it would replace a table that holds a locked key (`servers = "none"` over a table in which `mcp.servers.corp` is locked) counts as locked, since setting it would remove the locked entry. And `CORTEX_DATA_DIR` sets `session.data_dir` in the environment layer only, where a lock holds against it.
 
 ## Profiles
 
@@ -67,7 +75,7 @@ model.main = "claude-haiku-5-5"
 verify.mode = "off"
 ```
 
-- Any key may appear in a profile except the four that describe a file (`config_version`, `profile`, `profiles`, `managed`), with the same trust rules as the layer the profile is defined in.
+- Any key may appear in a profile except the four that describe a file (`config_version`, `profile`, `profiles`, `managed`), with the same trust rules as the layer the profile is defined in. One of the four in a profile is an error that refuses the file, the managed file included.
 - A profile defined in several layers merges like any other table, higher layer last.
 - `cortex --profile review` selects one for a run. `/profile <name>` switches in a session; settings that affect the prompt or the tool list take effect at the next context epoch, and the UI says so. A profile that does not exist is an error that lists the ones that do.
 - **A project may define a profile and may not select one.** `profile = "<name>"` is the user's key. A profile the user wrote is applied with the user's rights, so a repository that could select it could switch on whatever the user's loosest profile allows.
@@ -88,6 +96,7 @@ The check is a handful of `stat` calls, well under a millisecond. It compares ea
 
 - **The stamp is taken before the file is read.** A change that lands while a file is being read and parsed is then seen by the next check.
 - **A file written in the last two seconds is not trusted yet.** File systems record times in steps as coarse as two seconds, so a second write can leave the time as it was. Such a file is reported as changed until it has settled. The cost is a few reloads of a file that did not change again, so a reload that produces the same configuration is not announced.
+- **The project's files are found again before they are looked at.** Asking the file system about a file follows links, and a link to a network share that a repository adds at `.cortex` after the load would otherwise be followed by the next check. So each check first finds the project's two files again through the path resolver, which looks at each name on the way without following a link it has not checked, and compares where they are with where they were. If any is somewhere else, or is refused now, the check reloads through the resolver instead of looking. That is a few more `lstat` calls a check, tens of microseconds. A link swapped in during the moment between that look and the check's own is still followed: a residual risk, listed for the whole-repo review.
 
 **What happens to a change.** Each key says when a change to it takes effect, in the [reference](../configuration/reference.md), and a reload returns the changed keys with that.
 
@@ -99,9 +108,14 @@ The check is a handful of `stat` calls, well under a millisecond. It compares ea
 | The data directory, the credential store | When the harness is next started. |
 | An extension's script or manifest | The extension is reloaded. If its hash no longer matches what was approved, it is disabled and the user is asked to review the change ([12-extensions.md](12-extensions.md)). |
 | An MCP server entry | That server is restarted. A changed command needs approval again. |
-| An invalid file | The old configuration stays in force and the error is shown. A reload never leaves the harness without a valid configuration. |
+| An invalid file | The old configuration stays in force and the error is shown. A reload never leaves the harness without a valid configuration. The one exception is lowering trust, below. |
 
 **An invalid file never takes the configuration away.** There is no partly loaded configuration: a load either gives a whole one or lists what is wrong, in every layer, in one go. The same broken file is reported once, not on every check.
+
+**Changing what is loaded from** (another profile, the project trusted, the project's trust taken away) reloads at once, with two rules:
+
+- **Lowering trust always takes effect, even when a file is broken.** Otherwise a trusted repository could commit a broken file and make taking its trust away do nothing. The configuration in force becomes the one that was, without the project's two files and the profiles they define, merged again from what was read without reading any file, and the error is reported. Once the file is fixed, the next check loads everything, the project held to the trust rules. A profile that only the project defined is then not applied, with a warning.
+- **Any other change that does not load is undone.** The options stay as they were, the configuration in force stays, and the change is refused with the error every time it is tried, even when a check has reported that error already.
 
 ## Reading other tools' set-up
 
@@ -138,7 +152,7 @@ Headless mode never runs this. It reports what is missing and how to provide it.
 
 ## Provenance
 
-Every effective value remembers its layer, its file and its line.
+Every effective value remembers its layer, its file and its line. In this example the project is trusted, so its choice of model applies.
 
 ```
 $ cortex config show --origin
@@ -178,13 +192,15 @@ A repository must not be able to take over the harness by containing a configura
 
 | Class of key | Examples | Project layer |
 |---|---|---|
-| Harmless preferences | default model, reasoning level, the `standard` speed tier, retry settings, a `deny` or `ask` permission rule, a protected path | Applied always. |
+| Harmless preferences | how much reasoning is shown, the `standard` speed tier, what happens when a tier is refused, retry waits and stream timeouts, a command's time limit, a `deny` or `ask` permission rule, a protected path | Applied always. |
 | Can run code | hooks, extensions, MCP servers, verification commands, custom commands with shell steps | Applied only after the user trusts the project, and pinned by hash ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)). |
 | Can widen access | permission `allow` rules, sandbox `write` paths, network on, a permission mode above the one in effect (up to `supervised`) | Applied only after trust. Shown to the user at that time. |
-| Can raise cost | a speed tier other than `standard`, for the session or for a role | Applied only after trust. Shown to the user at that time. |
-| User-only | credentials, everything about a provider (base URL, headers, protocol, key variable), permission modes above `supervised`, sandbox off, a higher limit, the selected profile, usage sources, the data directory, proxy and CA settings, the log level, the compatibility readers, anything under `[managed]` | Ignored in project layers, with a warning. Trust does not change this. |
+| Can raise cost | a speed tier other than `standard`, for the session or for a role; the model, for the main role and each other role (`model.main`, `fast`, `judge`), and a role's `provider`; the reasoning level (`model.effort`, a role's `effort`); `model.max_output`; `retry.attempts` | Applied only after trust; until then the user's own value applies. Shown to the user at that time. |
+| User-only | credentials, everything about a provider (base URL, headers, protocol, key variable), permission modes above `supervised`, the sandbox switch (`sandbox.enabled`, on or off), a higher limit, the selected profile, usage sources, the data directory, proxy and CA settings, the log level, the compatibility readers, anything under `[managed]` | Ignored in project layers, with a warning. Trust does not change this. |
 
 - **Some keys are classed by their value.** A permission rule that denies or asks is a preference, and one that allows widens access. `sandbox.network = "off"` is a preference and `"full"` widens access. A speed of `standard` is a preference, and any other tier raises cost: a fast tier costs about twice as much per token, and an untrusted repository must not be able to raise what its user spends (the owner's decision, 2026-11-13). A project can always bring the speed down. A permission mode at or below the one already in effect is a preference; above it, up to `supervised`, it widens access; above `supervised` it is the user's alone.
+- **The other keys that raise cost wait for trust whatever their value** (the owner's decision, 2026-11-13): the model and a role's provider, the reasoning level, `model.max_output` and `retry.attempts`. Whether one model or level costs more than another depends on the model catalog, which `cortex-config` does not have, so a project's value of any of them waits, and the user's own applies until the project is trusted. A trusted project may set them like any other key.
+- **The sandbox switch is the user's either way.** A project's `sandbox.enabled` is ignored with a warning whether it is `false` or `true`: a user who turned the sandbox off did so on purpose, and the key keeps one rule.
 - **A limit can be tightened by anyone and loosened by the user alone.** A project's limit applies when it is lower than the one in effect, or when there was none. A higher one is ignored, trusted or not: a budget is the user's.
 - **Joining a list is not a way in.** The entries a project adds to a joined list are judged one by one: its `allow` rules and its writable paths wait for trust, and the user's entries stay.
 - **What is held back is listed.** A load returns every project setting that is waiting for trust, with its class, its value and the line it is on, so a front end can show exactly what trusting the project would turn on.
@@ -230,24 +246,25 @@ The schema, in outline. The full list, generated from the declarations, is the [
 | `[hooks.<name>]`, `[extensions.<name>]`, `[skills]` | [12-extensions.md](12-extensions.md) | Reserved. |
 | `[mcp.servers.<name>]`, `[mcp]` | [13-mcp.md](13-mcp.md) | Reserved. |
 
-**Values from elsewhere.** A value can be written as `{ env = "NAME" }` to read an environment variable when it is used, where the reference says a key takes "text, or `{ env = "NAME" }`": today a provider's extra headers. A value read this way is a `Secret`. There is no general interpolation syntax and no "run this command to get a value" form in the first release: a configuration file that runs commands is a larger attack surface than the feature is worth.
+**Values from elsewhere.** A value can be written as `{ env = "NAME" }` to read an environment variable when it is used, where the reference says a key takes "text, or `{ env = "NAME" }`": today a provider's extra headers. A value read this way is a `Secret`, and so is literal text in such a key (see "Credentials"). There is no general interpolation syntax and no "run this command to get a value" form in the first release: a configuration file that runs commands is a larger attack surface than the feature is worth.
 
 ## Credentials
 
-- **Never in `config.toml`.** The schema has no key that takes a secret as a literal. A provider entry names where its key comes from: an environment variable (`key_env`) or the credential store.
+- **Never in `config.toml`, by design.** No key is meant for a credential. A provider entry names where its key comes from: an environment variable (`key_env`) or the credential store.
+- **One key can hold one anyway: a provider's extra headers.** Some gateways take their key in a header (Azure's `api-key`), and a header's value may be written as text. So literal text there is held as a `Secret` from the moment it is read, and `cortex config show`, `--layer`, the configuration's `Debug` form and what a load lists as held back for trust all print it as `[redacted]`. A variable's name, `{ env = "NAME" }`, is shown, and is the better way to write such a header. A later step that declares a key that can hold a secret gives it the same kind, text or `{ env = "NAME" }`, so that it is redacted the same way.
 - **Lookup order:** command-line flag, then the provider's environment variable, then the credential store. A flag or a variable that is empty counts as not given. The store is not asked when an earlier source answers, so a broken store does not get in the way of a key from the environment.
 - **The store.**
 
 | OS | Default | Alternative |
 |---|---|---|
-| Windows | Windows Credential Manager | A file. |
+| Windows | Windows Credential Manager | A file, `credentials.toml` in `%LOCALAPPDATA%\cortex-harness`: the local folder, not the roaming one beside the configuration, so that a stored key stays on its machine. Windows copies a roaming profile to every machine the user signs in to. |
 | Linux | A file, `credentials.toml` in the configuration directory, with owner-only permissions | The Secret Service keychain, with the `keychain` build feature and `credentials.store = "keychain"`. **Not built yet:** the value gives an error that says so and names the file store. |
 
 On Linux the keychain is not the default because it depends on a desktop session service that is absent on servers, in containers and over SSH, and because the client library for it is a large dependency. See [decision 0018](../decisions/0018-credential-storage.md).
 
 - **`credentials.store`** is `auto` (the OS default), `file` or `keychain`. It is the user's alone.
 - **Commands.** `cortex auth login <provider>` reads a key without echo and stores it. `cortex auth status` shows which source is active for each provider, never the value. `cortex auth logout <provider>` removes it.
-- When both an environment variable and a stored key exist, the environment variable is used and `auth status` says so.
+- When both an environment variable and a stored key exist, the environment variable is used and `auth status` says so. A store that cannot be read does not fail `auth status` for a key that comes from a flag or the environment: the store's error is shown beside it.
 - **In memory** a credential is a `Secret`: not printable, not serialisable, never logged. No error from a store carries one, and an error about a malformed credentials file names a line number and never the line.
 
 **The file store.**
@@ -256,8 +273,9 @@ On Linux the keychain is not the default because it depends on a desktop session
 - A file someone made by hand with wider permissions is still read, and reported as not private: the status of a provider's credential carries the warning, for `cortex auth status` and the diagnostics to show. The next write makes it private. Its directory, if it was already there, is left as it is. Refusing to read it would stop people working on single-user machines for little gain.
 - Access to the credentials file is guarded by a lock file, so two processes cannot interleave writes. The lock is the operating system's, held on an open file across the read, the change and the write: it goes when its holder exits, however it exits, so there is no stale lock to clear. A reader needs no lock, because the file is replaced in one step.
 - A file with a newer format version, or one that is not TOML, is an error and is left untouched. Entries this version does not know are kept when the file is rewritten.
+- **The file and its lock are files of their own, never a link.** A link at either path is refused with an error that says so, before anything is created, and `cortex auth status` reports it: an atomic write follows a link to the file it names, which could be a file in a repository of dotfiles, and the key would leave with it. The check is made just before each use. A link put there in the moment between the check and the use, by a process of the same user, is followed until `cortex-base` has an open that does not follow links (step 10), when the check moves into the open itself. A directory on the way that is a link is followed, as the user's own choice.
 
-**Windows Credential Manager.** One generic credential per provider, named `cortex-harness:<provider>`, visible and removable in the Windows "Credential Manager" control panel. It is stored for this machine only, not copied to the user's other domain machines.
+**Windows Credential Manager.** One generic credential per provider, named `cortex-harness:<provider>`, visible and removable in the Windows "Credential Manager" control panel. It is stored for this machine only, not copied to the user's other domain machines. A key is printable ASCII: an entry that reads back as anything else (another program's key stored as UTF-8 bytes reads back as letters of other scripts) is an error, never sent to a provider, and such a key is not stored.
 
 **Where `cortex-config` ends.** The `AuthMethod` trait, which puts a credential on a request ([04-providers.md](04-providers.md)), is in `cortex-llm`, and `cortex-config` may not depend on that crate. `cortex-config` owns the stores and the lookup order, and returns the key with a description of where it came from. `cortex-core` hands both to the provider layer's API-key `AuthMethod`. A sign-in flow added later stores its tokens through the same store.
 
@@ -288,4 +306,6 @@ Nothing in the state directory is needed to run. Deleting it loses convenience, 
 - Files are read as UTF-8, with or without a byte-order mark, and with either line ending. A line number in an error is the same either way.
 - Owner-only permissions are applied through access-control lists ([decision 0029](../decisions/0029-owner-only-files-on-windows.md)).
 - The names of environment variables ignore case, as they do on Windows.
+- A project's files are reached through the path resolver, which refuses a link to a network share before the network is asked; the workspace's own share is allowed when the workspace is on one ("Layers").
+- The workspace root counts a `.git` or `.cortex` owned by the user or by the Administrators group, and passes over a link or a junction there ("Layers").
 - The managed file's folder is read from `%ProgramData%`. A user who changes that variable can make the harness miss the managed file: locks are an administrator's policy for a shared machine, not a boundary against the person running the program.

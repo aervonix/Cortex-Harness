@@ -54,7 +54,7 @@
     },
     "credentials": {
       "additionalProperties": true,
-      "description": "Where stored credentials are kept. Never the credentials themselves: no key of this file takes a secret.",
+      "description": "Where stored credentials are kept. Never the credentials themselves: no key of this file is meant for a key, and a provider's literal header, which may hold one, is redacted.",
       "properties": {
         "store": {
           "default": "auto",
@@ -262,36 +262,36 @@
       "description": "Models by role, the reasoning level and the speed tier.",
       "properties": {
         "effort": {
-          "description": "The reasoning level of the main role: one of the model's own levels, or `minimal`, `low`, `medium`, `high` or `max`.",
+          "description": "The reasoning level of the main role: one of the model's own levels, or `minimal`, `low`, `medium`, `high` or `max`. From a project, after trust: more reasoning is more output.",
           "type": "string",
           "x-cortex-effect": "next epoch",
-          "x-cortex-trust": "preference"
+          "x-cortex-trust": "raises cost"
         },
         "fast": {
-          "description": "The model for utility calls: summaries, titles. Without one, the main model is used.",
+          "description": "The model for utility calls: summaries, titles. Without one, the main model is used. From a project, after trust.",
           "type": "string",
           "x-cortex-effect": "next epoch",
-          "x-cortex-trust": "preference"
+          "x-cortex-trust": "raises cost"
         },
         "judge": {
-          "description": "The model for model-graded comparisons. Without one, the main model is used.",
+          "description": "The model for model-graded comparisons. Without one, the main model is used. From a project, after trust.",
           "type": "string",
           "x-cortex-effect": "next epoch",
-          "x-cortex-trust": "preference"
+          "x-cortex-trust": "raises cost"
         },
         "main": {
-          "description": "The model for the agent's own turns. Needed to run a turn.",
+          "description": "The model for the agent's own turns. Needed to run a turn. A project's file may choose one once the project is trusted: a model can cost more than the user's.",
           "type": "string",
           "x-cortex-effect": "next epoch",
-          "x-cortex-trust": "preference"
+          "x-cortex-trust": "raises cost"
         },
         "max_output": {
-          "description": "The most output tokens one response may have. Without it, the model's own limit applies.",
+          "description": "The most output tokens one response may have. Without it, the model's own limit applies. From a project, after trust.",
           "maximum": 10000000,
           "minimum": 1,
           "type": "integer",
           "x-cortex-effect": "next epoch",
-          "x-cortex-trust": "preference"
+          "x-cortex-trust": "raises cost"
         },
         "reasoning": {
           "default": "summary",
@@ -308,16 +308,16 @@
             "additionalProperties": true,
             "properties": {
               "effort": {
-                "description": "The role's reasoning level. For `main` it overrides `model.effort`.",
+                "description": "The role's reasoning level. For `main` it overrides `model.effort`. From a project, after trust.",
                 "type": "string",
                 "x-cortex-effect": "next epoch",
-                "x-cortex-trust": "preference"
+                "x-cortex-trust": "raises cost"
               },
               "provider": {
-                "description": "The provider that serves the role's model. Needed only when two providers have a model with the same name.",
+                "description": "The provider that serves the role's model. Needed only when two providers have a model with the same name. From a project, after trust: it chooses the model as much as the name does.",
                 "type": "string",
                 "x-cortex-effect": "next epoch",
-                "x-cortex-trust": "preference"
+                "x-cortex-trust": "raises cost"
               },
               "speed": {
                 "description": "The role's speed tier. For `main` it overrides `model.speed`. From a project's file, a tier other than `standard` waits for trust.",
@@ -492,7 +492,7 @@
                 }
               ]
             },
-            "description": "Extra headers for every request. A value is text, or `{ env = \"NAME\" }` to read an environment variable when used.",
+            "description": "Extra headers for every request. A value is text, or `{ env = \"NAME\" }` to read an environment variable when used. Text may be a key (some gateways take one in a header), so it is held as a secret and `cortex config show` prints it as `[redacted]`; a variable's name is shown.",
             "type": "object",
             "x-cortex-effect": "at once",
             "x-cortex-trust": "user only"
@@ -528,12 +528,12 @@
       "properties": {
         "attempts": {
           "default": 5,
-          "description": "The most attempts for one request, the first included.",
+          "description": "The most attempts for one request, the first included. From a project, after trust: each attempt can be paid for.",
           "maximum": 20,
           "minimum": 1,
           "type": "integer",
           "x-cortex-effect": "at once",
-          "x-cortex-trust": "preference"
+          "x-cortex-trust": "raises cost"
         },
         "backoff_base": {
           "default": "1s",

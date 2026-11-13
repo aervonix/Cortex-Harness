@@ -202,7 +202,7 @@ mod tests {
             (&attempts["minimum"], &attempts["maximum"]),
             (&json!(1), &json!(20))
         );
-        assert_eq!(attempts["x-cortex-trust"], "preference");
+        assert_eq!(attempts["x-cortex-trust"], "raises cost");
         assert_eq!(attempts["x-cortex-effect"], "at once");
         assert!(
             attempts["description"]

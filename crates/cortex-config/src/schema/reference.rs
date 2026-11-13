@@ -27,10 +27,10 @@ pub fn reference_page() -> String {
          `ms`, `s`, `m`, `h`, `d`). A list marked *joined* is added to by every layer; any other \
          list, like any other value, is replaced by a higher layer.\n\
          - **From a project.** What happens to the key in a project's `.cortex/config.toml` or \
-         `.cortex/config.local.toml`. *preference*: applied always. *runs code* and *widens \
-         access*: applied only after the user has trusted the project, and listed for the user \
-         until then. *user only*: ignored, with a warning. A few keys depend on the value, and \
-         say how.\n\
+         `.cortex/config.local.toml`. *preference*: applied always. *runs code*, *widens \
+         access* and *raises cost*: applied only after the user has trusted the project, and \
+         listed for the user until then; until then the user's own value applies. *user only*: \
+         ignored, with a warning. A few keys depend on the value, and say how.\n\
          - **Takes effect.** When a change to the key reaches a running harness: *at once*, at \
          the *next epoch* (it shapes the prompt, the tool list or the model), or after a \
          *restart*.\n\
@@ -173,8 +173,9 @@ mod tests {
         };
         assert_eq!(
             line("retry.attempts"),
-            "| `retry.attempts` | whole number, 1 to 20 | `5` | preference | at once | The most \
-             attempts for one request, the first included. |"
+            "| `retry.attempts` | whole number, 1 to 20 | `5` | raises cost | at once | The most \
+             attempts for one request, the first included. From a project, after trust: each \
+             attempt can be paid for. |"
         );
         let rules = line("permissions.rules");
         assert!(
@@ -182,7 +183,8 @@ mod tests {
             "{rules}"
         );
         assert!(rules.ends_with("Enforced. |"), "{rules}");
-        assert!(line("model.main").contains("| not set | preference | next epoch |"));
+        assert!(line("model.main").contains("| not set | raises cost | next epoch |"));
+        assert!(line("model.reasoning").contains("| preference | next epoch |"));
         assert!(line("providers.*.base_url").contains("| user only |"));
         assert!(line("model.speed").contains("| `\"standard\"` |"));
         assert!(line("credentials.store").contains("`\"auto\"`, `\"file\"`, `\"keychain\"`"));

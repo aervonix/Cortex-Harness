@@ -72,6 +72,13 @@ pub enum Trust {
     RunsCode,
     /// It can widen access. A project's value applies only after trust.
     WidensAccess,
+    /// It can raise what the user spends, whatever its value: the model, a
+    /// reasoning level, the most output, the number of attempts. Whether
+    /// one value costs more than another depends on the model catalog,
+    /// which this crate does not have. A project's value applies only
+    /// after trust; until then the user's own applies (the owner's
+    /// decision, 2026-11-13).
+    RaisesCost,
     /// The user's alone. A project's value is ignored, with a warning.
     UserOnly,
     /// A permission rule: `deny` and `ask` are preferences, `allow` widens
@@ -140,6 +147,7 @@ impl Trust {
             Self::Preference => TrustClass::Preference,
             Self::RunsCode => TrustClass::RunsCode,
             Self::WidensAccess => TrustClass::WidensAccess,
+            Self::RaisesCost => TrustClass::RaisesCost,
             Self::UserOnly => TrustClass::UserOnly,
             Self::ByRuleAction => {
                 // Anything but a plain `deny` or `ask` is treated as an
@@ -192,6 +200,7 @@ impl Trust {
             Self::Preference => "preference",
             Self::RunsCode => "runs code",
             Self::WidensAccess => "widens access",
+            Self::RaisesCost => "raises cost",
             Self::UserOnly => "user only",
             Self::ByRuleAction => {
                 "by action: `deny` and `ask` are preferences, `allow` widens access"
