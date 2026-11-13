@@ -265,6 +265,7 @@ Three things on Windows are left as they are, and stated:
 | Hard kill after a second grace | SIGKILL to the group | Terminate the Job Object |
 
 - The whole tree is cleaned up on timeout, on cancellation, when the call is given up, and when the harness exits for any reason, including a crash.
+- **A cancelled call ends within bounds.** The loop waits for the result of every call it started, so a tool that is slow to see its cancellation holds up an interrupt. A call cancelled before its turn starts nothing. One cancelled while its command runs sends the interrupt at once and ends when the tree is gone: at once for a command that listens, and after two graces at most for one that ignores everything short of a kill. The look for changed files that follows has its own cap.
 - **When the harness dies:** on Windows the Job Object's handle closes with the process. On Linux the kernel signals the command itself, and a guard process, which the harness keeps for this, kills the rest of the group ([decision 0030](../decisions/0030-process-tree-control-in-cortex-sandbox.md)).
 - A stage that cannot be sent is passed over without its grace: there is no console to send a Ctrl-Break through when the harness has none.
 - **A signal never reaches a stranger.** On Linux a group's id is the command's process id, which the system may give away once the command has been reaped. So the command is waited for without being reaped, and reaped only after the last signal.
@@ -282,11 +283,11 @@ Three things on Windows are left as they are, and stated:
 
 **Changed files.** The harness looks for what a command changed, once before it and once after it, and puts what it found in the result's payload, where the session takes it for undo ([07-sessions-and-context.md](07-sessions-and-context.md)). The model is not told: it knows what it ran.
 
-- In a git repository: two answers of `git status`, compared, with the size and modification time of every file git named. When the command moved `HEAD`, git is also asked which files differ between the two commits.
-- Anywhere else: one walk of the workspace afterwards, for files modified since the command started. That cannot tell a new file from a changed one and cannot see a deleted one.
+- In a git repository of a project the user trusts: two answers of `git status`, compared, with the size and modification time of every file git named. When the command moved `HEAD`, git is also asked which files differ between the two commits.
+- Anywhere else, and in a project that is not trusted: one walk of the workspace afterwards, for files modified since the command started. That cannot tell a new file from a changed one and cannot see a deleted one.
 - The payload says which files' earlier content can still be read from git, and from which commit: those the command found as committed. A file that had already been changed before the command is reported as changed and not restorable.
 - Each look has a time cap (half a second) and a cap on the number of files, and says when it did not finish. Files that ignore rules leave out are left out.
-- **Asking git runs nothing of the repository's.** A repository's own configuration can name a program for git to run when it is asked what has changed (`core.fsmonitor`), and nobody approved that program. The harness asks with it turned off, with no hooks directory, and with `GIT_OPTIONAL_LOCKS=0`, so that asking writes nothing either.
+- **Asking git runs nothing of the repository's that the user has not accepted.** A repository's own configuration can name programs for git to run when it is asked what has changed. One is a file-system monitor (`core.fsmonitor`), which the harness turns off, with no hooks directory and no optional locks, so that asking writes nothing either: the same hardening the session store's own git commands have. The other is a filter for a kind of file, which git runs to see whether such a file changed, and which no flag turns off. So git is asked only about a project the user trusts ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md), "Project trust"), and any other is looked at by modification times, which starts nothing.
 - A call the permission engine has marked read-only is not looked at.
 
 **The result's payload,** for front ends: the shell, the exit code or the signal, the duration, whether the command timed out or was interrupted and the last stage that stopping needed, whether background processes were stopped, the size of the output, and the changed files.
