@@ -1,0 +1,5 @@
+# Build output, and what the fuzzer writes while it runs.
+/target/
+/corpus/
+/artifacts/
+/coverage/

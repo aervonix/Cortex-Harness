@@ -1,0 +1,44 @@
+# Coverage-guided fuzzing of the stream decoders (docs/testing-and-ci.md,
+# "Not blocking"). Run by the nightly workflow, and by hand:
+#
+#   cargo xtask fuzz [--seconds N] [TARGET…]
+#
+# It is not a member of the workspace. The fuzzer needs a nightly compiler
+# and a C++ compiler for its runtime, and neither belongs in the blocking
+# checks or in what ships. The package has its own lockfile.
+[package]
+name = "cortex-fuzz"
+description = "Fuzz targets for the stream decoders of Cortex-Harness. Not shipped."
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[lib]
+doctest = false
+
+[dependencies]
+cortex-llm = { path = "../crates/cortex-llm", default-features = false }
+cortex-protocol = { path = "../crates/cortex-protocol" }
+libfuzzer-sys = "0.4.13"
+serde_json = { version = "1.0.145", default-features = false, features = ["std"] }
+
+[[bin]]
+name = "sse_parser"
+path = "fuzz_targets/sse_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "anthropic_decoder"
+path = "fuzz_targets/anthropic_decoder.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace: the repository's is not to grow a nightly-only member.
+[workspace]

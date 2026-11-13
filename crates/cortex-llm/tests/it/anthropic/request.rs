@@ -24,7 +24,9 @@ use cortex_testkit::fixture::pretty;
 use serde_json::{Value, json};
 
 use super::scenario::{self, SWITCH, SWITCH_LEVEL, SWITCH_PROMPT};
-use super::{FABLE, HAIKU, OPUS, SONNET, assert_snapshot, decode_whole, load, model, provider, user};
+use super::{
+    FABLE, HAIKU, OPUS, SONNET, assert_snapshot, decode_whole, load, model, provider, user,
+};
 
 fn build(request: &ModelRequest) -> HttpRequest {
     build_for(request, &provider())
@@ -58,12 +60,17 @@ fn shown(http: &HttpRequest) -> String {
         out.push_str(&format!("{name}: {value}\n"));
     }
     out.push('\n');
-    out.push_str(&pretty(std::str::from_utf8(&http.body).expect("a body is text")));
+    out.push_str(&pretty(
+        std::str::from_utf8(&http.body).expect("a body is text"),
+    ));
     out
 }
 
 fn snapshot(name: &str, request: &ModelRequest) {
-    assert_snapshot(&format!("anthropic/request/{name}.txt"), &shown(&build(request)));
+    assert_snapshot(
+        &format!("anthropic/request/{name}.txt"),
+        &shown(&build(request)),
+    );
 }
 
 /// A copy of a catalog entry with something changed.
@@ -102,7 +109,9 @@ fn reasoned(protocol: &str, provider: &str, model: &str) -> Message {
         parts: vec![
             Part::Reasoning(ReasoningPart {
                 text: "The user wants Oslo.".to_owned(),
-                raw: raw(r#"{"type":"thinking","thinking":"The user wants Oslo.","signature":"c2lnbmF0dXJl"}"#),
+                raw: raw(
+                    r#"{"type":"thinking","thinking":"The user wants Oslo.","signature":"c2lnbmF0dXJl"}"#,
+                ),
             }),
             Part::Text(TextPart {
                 text: "Let me check.".to_owned(),
@@ -110,13 +119,17 @@ fn reasoned(protocol: &str, provider: &str, model: &str) -> Message {
             }),
             Part::ProviderBlock(ProviderBlockPart {
                 block_type: Some("server_tool_use".to_owned()),
-                raw: RawJson::new(r#"{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"oslo"}}"#),
+                raw: RawJson::new(
+                    r#"{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"oslo"}}"#,
+                ),
             }),
             Part::ToolCall(ToolCallPart {
                 id: CallId::new("toolu_1"),
                 name: "get_weather".to_owned(),
                 arguments: json!({"city": "Oslo"}),
-                raw: raw(r#"{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"city": "Oslo"},"caller":{"type":"direct"}}"#),
+                raw: raw(
+                    r#"{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"city": "Oslo"},"caller":{"type":"direct"}}"#,
+                ),
             }),
         ],
         origin: origin(protocol, provider, model),
@@ -180,7 +193,14 @@ fn plain_text() {
     // Sampling parameters were removed from the API and are never sent, and
     // no tool is ever forced.
     let body = body(&request);
-    for absent in ["temperature", "top_p", "top_k", "tool_choice", "speed", "tools"] {
+    for absent in [
+        "temperature",
+        "top_p",
+        "top_k",
+        "tool_choice",
+        "speed",
+        "tools",
+    ] {
         assert!(body.get(absent).is_none(), "{absent}");
     }
     assert_eq!(body["stream"], true);
@@ -201,8 +221,14 @@ fn tools() {
     assert_eq!(body["tools"][0]["name"], "get_weather");
     assert_eq!(body["tools"][1]["name"], "list_cities");
     for tool in body["tools"].as_array().unwrap() {
-        assert_eq!(tool["strict"], true, "the model's variant is strict schemas");
-        assert_eq!(tool["eager_input_streaming"], true, "arguments stream as they are written");
+        assert_eq!(
+            tool["strict"], true,
+            "the model's variant is strict schemas"
+        );
+        assert_eq!(
+            tool["eager_input_streaming"], true,
+            "arguments stream as they are written"
+        );
         assert!(tool.get("cache_control").is_none());
     }
     assert_eq!(body["tools"][0]["input_schema"], request.tools[0].schema);
@@ -210,7 +236,9 @@ fn tools() {
     // The loose variant, and a server that does not know the streaming field.
     request.variants.tool_schema = ToolSchemaStyle::Loose;
     let mut plain = provider();
-    plain.flags.set(flag::EAGER_TOOL_STREAMING, FlagValue::Bool(false));
+    plain
+        .flags
+        .set(flag::EAGER_TOOL_STREAMING, FlagValue::Bool(false));
     let body: Value = serde_json::from_slice(&build_for(&request, &plain).body).unwrap();
     for tool in body["tools"].as_array().unwrap() {
         assert!(tool.get("strict").is_none());
@@ -229,7 +257,10 @@ fn reasoning() {
     request.speed = Speed::Standard;
     snapshot("reasoning-level", &request);
     let body = body(&request);
-    assert_eq!(body["thinking"], json!({"type": "adaptive", "display": "summarized"}));
+    assert_eq!(
+        body["thinking"],
+        json!({"type": "adaptive", "display": "summarized"})
+    );
     assert_eq!(body["output_config"], json!({"effort": "xhigh"}));
 
     // Visibility is a separate setting, and is always sent.
@@ -373,7 +404,10 @@ fn a_multi_round_tool_conversation() {
         .collect();
     // The results of a round are one user message, right after the calls.
     assert_eq!(roles, ["user", "assistant", "user", "assistant", "user"]);
-    assert_eq!(content_types(&body, 1), ["thinking", "tool_use", "tool_use"]);
+    assert_eq!(
+        content_types(&body, 1),
+        ["thinking", "tool_use", "tool_use"]
+    );
     assert_eq!(content_types(&body, 2), ["tool_result", "tool_result"]);
     // Each result names its call, in call order.
     for at in 0..2 {
@@ -451,17 +485,29 @@ fn a_model_switch_that_drops_reasoning() {
         ])
     );
     let text = body_text(&request);
-    for gone in ["signature", "thinking\":\"The user", "server_tool_use", "citations", "caller"] {
+    for gone in [
+        "signature",
+        "thinking\":\"The user",
+        "server_tool_use",
+        "citations",
+        "caller",
+    ] {
         assert!(!text.contains(gone), "{gone}");
     }
 
     // The same protocol on another provider is still another producer.
     let request = after_switch(SONNET, anthropic::NAME, "some-proxy", SONNET);
-    assert_eq!(content_types(&self::body(&request), 1), ["text", "tool_use"]);
+    assert_eq!(
+        content_types(&self::body(&request), 1),
+        ["text", "tool_use"]
+    );
     // And so is a message with no origin at all.
     let mut request = after_switch(SONNET, anthropic::NAME, anthropic::PROVIDER, SONNET);
     request.messages[1].origin = None;
-    assert_eq!(content_types(&self::body(&request), 1), ["text", "tool_use"]);
+    assert_eq!(
+        content_types(&self::body(&request), 1),
+        ["text", "tool_use"]
+    );
 }
 
 #[test]
@@ -471,7 +517,12 @@ fn the_same_provider_gets_every_block_back_whatever_the_model() {
     // same, and leaves out what the model cannot read.
     let request = after_switch(HAIKU, anthropic::NAME, anthropic::PROVIDER, SONNET);
     assert!(
-        !request.model.info.reads_reasoning_from.iter().any(|id| id.as_str() == SONNET),
+        !request
+            .model
+            .info
+            .reads_reasoning_from
+            .iter()
+            .any(|id| id.as_str() == SONNET),
         "the case needs a model that cannot read the other's reasoning"
     );
     snapshot("switch-same-provider", &request);
@@ -500,20 +551,32 @@ fn the_same_provider_gets_every_block_back_whatever_the_model() {
 fn a_server_that_does_not_drop_blocks_gets_only_what_the_model_can_read() {
     // The stricter rule, for an Anthropic-shaped server that does not leave
     // out what a model cannot read: its entry lacks `replay_reasoning`.
-    let strict = ProviderInfo::new(anthropic::PROVIDER, anthropic::NAME, "https://example.invalid");
+    let strict = ProviderInfo::new(
+        anthropic::PROVIDER,
+        anthropic::NAME,
+        "https://example.invalid",
+    );
     assert_eq!(strict.flags.text(flag::REPLAY_REASONING), None);
 
     // To a model that cannot read the producer's reasoning: the projection.
     let request = after_switch(HAIKU, anthropic::NAME, anthropic::PROVIDER, SONNET);
     let http = build_for(&request, &strict);
-    assert_snapshot("anthropic/request/switch-strict-unreadable.txt", &shown(&http));
+    assert_snapshot(
+        "anthropic/request/switch-strict-unreadable.txt",
+        &shown(&http),
+    );
     let body: Value = serde_json::from_slice(&http.body).unwrap();
     assert_eq!(content_types(&body, 1), ["text", "tool_use"]);
     assert!(!String::from_utf8_lossy(&http.body).contains("signature"));
 
     // To the model that produced it, and to one whose entry lists the
     // producer: the stored blocks.
-    for (to, from) in [(SONNET, SONNET), (SONNET, HAIKU), (FABLE, OPUS), (OPUS, HAIKU)] {
+    for (to, from) in [
+        (SONNET, SONNET),
+        (SONNET, HAIKU),
+        (FABLE, OPUS),
+        (OPUS, HAIKU),
+    ] {
         let request = after_switch(to, anthropic::NAME, anthropic::PROVIDER, from);
         let body: Value = serde_json::from_slice(&build_for(&request, &strict).body).unwrap();
         assert_eq!(
@@ -526,7 +589,11 @@ fn a_server_that_does_not_drop_blocks_gets_only_what_the_model_can_read() {
     for (to, from) in [(HAIKU, OPUS), (SONNET, OPUS), (OPUS, FABLE), (HAIKU, FABLE)] {
         let request = after_switch(to, anthropic::NAME, anthropic::PROVIDER, from);
         let body: Value = serde_json::from_slice(&build_for(&request, &strict).body).unwrap();
-        assert_eq!(content_types(&body, 1), ["text", "tool_use"], "{from} to {to}");
+        assert_eq!(
+            content_types(&body, 1),
+            ["text", "tool_use"],
+            "{from} to {to}"
+        );
     }
     let request = after_switch(SONNET, anthropic::NAME, anthropic::PROVIDER, HAIKU);
     assert_snapshot(
@@ -550,8 +617,12 @@ fn a_round_trip_through_another_model_changes_nothing_that_was_sent() {
         }
     }
     snapshot("switch-round-trip", &requests[2]);
-    let first = AnthropicMessages.stable_prefix(&requests[0], &provider()).unwrap();
-    let back = AnthropicMessages.stable_prefix(&requests[2], &provider()).unwrap();
+    let first = AnthropicMessages
+        .stable_prefix(&requests[0], &provider())
+        .unwrap();
+    let back = AnthropicMessages
+        .stable_prefix(&requests[2], &provider())
+        .unwrap();
     assert!(back.starts_with(&first));
     let body = body(&requests[2]);
     assert_eq!(content_types(&body, 1)[0], "thinking", "A's reasoning");
@@ -579,7 +650,10 @@ fn a_request_at_fast_speed() {
     assert!(none.model.info.speeds.is_empty());
     assert!(body(&none).get("speed").is_none());
     let refusal = String::from_utf8(load("error-speed-not-offered").response).unwrap();
-    assert!(refusal.contains("does not support the `speed` parameter"), "{refusal}");
+    assert!(
+        refusal.contains("does not support the `speed` parameter"),
+        "{refusal}"
+    );
 
     // A speed the model does not offer never reaches the provider. (The
     // client moves such a request to standard before it is built.)
@@ -595,7 +669,10 @@ fn a_request_at_fast_speed() {
 fn the_beta_header_is_sent_where_a_model_needs_it_for_a_speed() {
     // A model whose fast mode is a preview: any speed needs the beta name.
     let preview = altered(OPUS, |entry| {
-        entry.flags.set(flag::SPEED_BETA, FlagValue::Text("fast-mode-2026-02-01".to_owned()));
+        entry.flags.set(
+            flag::SPEED_BETA,
+            FlagValue::Text("fast-mode-2026-02-01".to_owned()),
+        );
     });
     for speed in [Speed::Fast, Speed::Standard] {
         let mut request = scenario::fast();
@@ -609,7 +686,10 @@ fn the_beta_header_is_sent_where_a_model_needs_it_for_a_speed() {
     // The flag on a model with no tier asks for nothing: no speed is sent.
     let mut request = scenario::text();
     request.model = altered(HAIKU, |entry| {
-        entry.flags.set(flag::SPEED_BETA, FlagValue::Text("fast-mode-2026-02-01".to_owned()));
+        entry.flags.set(
+            flag::SPEED_BETA,
+            FlagValue::Text("fast-mode-2026-02-01".to_owned()),
+        );
     });
     assert_eq!(build(&request).headers.get("anthropic-beta"), None);
 
@@ -622,12 +702,16 @@ fn the_beta_header_is_sent_where_a_model_needs_it_for_a_speed() {
     let mut request = scenario::fast();
     request.model = preview;
     assert_eq!(
-        build_for(&request, &with_betas).headers.get("anthropic-beta"),
+        build_for(&request, &with_betas)
+            .headers
+            .get("anthropic-beta"),
         Some("one-2026-01-01,fast-mode-2026-02-01,two-2026-02-02")
     );
     // A provider's entry can name another API version and base URL.
     let mut other = ProviderInfo::new("proxy", anthropic::NAME, "http://localhost:8080/");
-    other.flags.set(flag::API_VERSION, FlagValue::Text("2023-06-01".to_owned()));
+    other
+        .flags
+        .set(flag::API_VERSION, FlagValue::Text("2023-06-01".to_owned()));
     let http = build_for(&scenario::text(), &other);
     assert_eq!(http.url, "http://localhost:8080/v1/messages");
     assert_eq!(http.headers.get("anthropic-version"), Some("2023-06-01"));
@@ -693,7 +777,11 @@ fn a_round_longer_than_the_lookback_gets_one_more_marker() {
     // most the provider looks back.
     let within = long_round(9);
     assert!(markers(&body(&within)).is_empty());
-    assert!(!body(&within)["messages"].to_string().contains("cache_control"));
+    assert!(
+        !body(&within)["messages"]
+            .to_string()
+            .contains("cache_control")
+    );
 
     // One pair more, and the entry the request before wrote would be
     // missed. It is marked, where that request ended, and nowhere else.
@@ -734,7 +822,9 @@ fn a_round_longer_than_the_lookback_gets_one_more_marker() {
 
     // The marker is not content. Without it the body is the stable prefix,
     // and the stable prefix of the request before is its beginning.
-    let unmarked = AnthropicMessages.stable_prefix(&beyond, &provider()).unwrap();
+    let unmarked = AnthropicMessages
+        .stable_prefix(&beyond, &provider())
+        .unwrap();
     assert!(!String::from_utf8_lossy(&unmarked).contains(r#"here.","cache_control""#));
     let mut stripped = marked.clone();
     stripped["messages"][2]["content"][0]
@@ -746,7 +836,9 @@ fn a_round_longer_than_the_lookback_gets_one_more_marker() {
     assert_eq!(serde_json::from_slice::<Value>(&closed).unwrap(), stripped);
     let mut before = beyond.clone();
     before.messages.truncate(3);
-    let earlier = AnthropicMessages.stable_prefix(&before, &provider()).unwrap();
+    let earlier = AnthropicMessages
+        .stable_prefix(&before, &provider())
+        .unwrap();
     assert!(unmarked.starts_with(&earlier));
 
     // It carries the request's lifetime, and needs the history hint.
@@ -827,7 +919,10 @@ fn an_output_schema_is_the_providers_structured_output() {
     let body = body(&request);
     assert_eq!(body["output_config"]["effort"], "low");
     assert_eq!(body["output_config"]["format"]["type"], "json_schema");
-    assert_eq!(&body["output_config"]["format"]["schema"], request.output_schema.as_ref().unwrap());
+    assert_eq!(
+        &body["output_config"]["format"]["schema"],
+        request.output_schema.as_ref().unwrap()
+    );
 
     let cannot = custom(json!({
         "provider": "anthropic", "id": "claude-plain-test", "name": "Plain",
@@ -846,7 +941,11 @@ fn the_output_limit_is_the_requests_or_the_models() {
     request.max_output = Some(500);
     assert_eq!(body(&request)["max_tokens"], 500);
     request.max_output = Some(10_000_000);
-    assert_eq!(body(&request)["max_tokens"], 128_000, "never more than the model has");
+    assert_eq!(
+        body(&request)["max_tokens"],
+        128_000,
+        "never more than the model has"
+    );
 }
 
 #[test]
@@ -884,7 +983,10 @@ fn a_stored_block_that_is_not_one_object_is_never_written_into_a_body() {
     }
     let body = self::body(&request);
     assert_eq!(content_types(&body, 1), ["text", "tool_use"]);
-    assert_eq!(body["messages"][1]["content"][1]["input"], json!({"city": "Oslo"}));
+    assert_eq!(
+        body["messages"][1]["content"][1]["input"],
+        json!({"city": "Oslo"})
+    );
     assert_eq!(body["messages"].as_array().unwrap().len(), 3);
 }
 
@@ -922,7 +1024,10 @@ fn text_from_anyone_stays_inside_its_string() {
     assert_eq!(body["messages"][1]["content"][1]["id"], hostile);
     assert_eq!(body["messages"][1]["content"][1]["input"]["city"], hostile);
     assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], hostile);
-    assert_eq!(body["messages"][2]["content"][0]["content"][0]["text"], hostile);
+    assert_eq!(
+        body["messages"][2]["content"][0]["content"][0]["text"],
+        hostile
+    );
 }
 
 #[test]

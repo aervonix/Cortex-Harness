@@ -92,7 +92,10 @@ mod flags {
     }
 
     pub(super) fn eager_tool_streaming(provider: &ProviderInfo) -> bool {
-        provider.flags.bool(flag::EAGER_TOOL_STREAMING).unwrap_or(true)
+        provider
+            .flags
+            .bool(flag::EAGER_TOOL_STREAMING)
+            .unwrap_or(true)
     }
 }
 
@@ -124,10 +127,9 @@ impl AnthropicMessages {
 #[must_use]
 pub fn provider() -> ProviderInfo {
     let mut provider = ProviderInfo::new(PROVIDER, NAME, BASE_URL);
-    provider.flags.set(
-        flag::REPLAY_REASONING,
-        FlagValue::Text("all".to_owned()),
-    );
+    provider
+        .flags
+        .set(flag::REPLAY_REASONING, FlagValue::Text("all".to_owned()));
     provider
 }
 
@@ -157,7 +159,10 @@ impl Protocol for AnthropicMessages {
         http.headers.insert("accept", "text/event-stream");
         http.headers.insert(
             "anthropic-version",
-            provider.flags.text(flag::API_VERSION).unwrap_or(API_VERSION),
+            provider
+                .flags
+                .text(flag::API_VERSION)
+                .unwrap_or(API_VERSION),
         );
         // The beta names: the provider's own, and the one a model needs
         // before it takes a speed.

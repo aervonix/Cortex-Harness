@@ -42,8 +42,8 @@
 //! model** is the provider's flag `replay_reasoning` (see the
 //! [module](super)).
 
-use cortex_protocol::model::{Modality, ReasoningControlKind};
 use cortex_protocol::message::ImagePart;
+use cortex_protocol::model::{Modality, ReasoningControlKind};
 use cortex_protocol::{Message, Part, RawJson, Role};
 
 use super::json::{self, Array, Object};
@@ -196,13 +196,11 @@ impl Body {
         // counting both ends.
         let mut positions = 0;
         let mut last_kind = None;
-        let after = self.messages[message_at].blocks[block_at..]
-            .iter()
-            .chain(
-                self.messages[message_at + 1..]
-                    .iter()
-                    .flat_map(|message| &message.blocks),
-            );
+        let after = self.messages[message_at].blocks[block_at..].iter().chain(
+            self.messages[message_at + 1..]
+                .iter()
+                .flat_map(|message| &message.blocks),
+        );
         for block in after {
             let same_run = block.kind != BlockKind::Other && last_kind == Some(block.kind);
             if !same_run {
@@ -423,8 +421,8 @@ fn tools(
     let eager = flags::eager_tool_streaming(provider);
     // With no system prompt to carry it, the marker for the stable prefix
     // goes on the last tool.
-    let marked = (request.cache.stable_prefix && request.system.is_empty())
-        .then(|| request.tools.len() - 1);
+    let marked =
+        (request.cache.stable_prefix && request.system.is_empty()).then(|| request.tools.len() - 1);
     let mut list = Array::open(body.key("tools"));
     for (at, tool) in request.tools.iter().enumerate() {
         if !is_valid_tool_name(&tool.name) {

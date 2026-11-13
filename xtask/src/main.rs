@@ -20,6 +20,7 @@ use std::process::ExitCode;
 mod alias;
 mod checks;
 mod nonblocking;
+mod outside;
 mod rules;
 mod schema;
 mod steps;
@@ -48,6 +49,18 @@ Not blocking (the `main` and `nightly` workflows run these)
                     the number of crates in it. --check fails over the budget.
   unused            Look for dependencies that no code uses (cargo-machete).
   advisories        Check the lockfile against the advisory database.
+  fuzz [--seconds N] [TARGET...]
+                    Fuzz the stream decoders, each target for N seconds
+                    (60 when not given). Needs a nightly toolchain and
+                    cargo-fuzz.
+
+By hand only, against a real provider (never in CI)
+  live              The live smoke test.
+  record [SCENARIO...]
+                    Record provider fixtures, scrubbed. No name: all of them.
+                    Both need CORTEX_LIVE_ANTHROPIC_KEY_FILE set to the path
+                    of a file that holds the API key. The key is never given
+                    on a command line.
 
 Working on the code
   fmt               Format the workspace.
@@ -59,7 +72,6 @@ Working on the code
   alias [--release] Build `cortex` and put its alias `cx` beside it.
 
 Not built yet
-  record            Record provider fixtures by hand (step 14).
   perf              Measure the performance budgets (step 20).
   dist              Package release binaries (step 34).
 ";
@@ -85,7 +97,9 @@ fn main() -> ExitCode {
         Some("unused") => nonblocking::unused(),
         Some("advisories") => nonblocking::advisories(),
         Some("alias") => alias::run(&rest),
-        Some("record") => not_built("record", 14),
+        Some("fuzz") => outside::fuzz(&rest),
+        Some("live") => outside::live(&rest),
+        Some("record") => outside::record(&rest),
         Some("perf") => not_built("perf", 20),
         Some("dist") => not_built("dist", 34),
         Some(other) => Err(format!("unknown command `{other}`\n\n{USAGE}")),

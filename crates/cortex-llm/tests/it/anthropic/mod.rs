@@ -32,8 +32,8 @@ use cortex_llm::anthropic::{self, AnthropicMessages};
 use cortex_llm::{
     Catalog, EventSink, ModelEntry, ModelEvent, ModelRequest, Protocol, ProviderInfo, SseParser,
 };
-use cortex_protocol::message::{Origin, ReasoningPart, TextPart, ToolCallPart, ToolResultPart};
 use cortex_protocol::message::ProviderBlockPart;
+use cortex_protocol::message::{Origin, ReasoningPart, TextPart, ToolCallPart, ToolResultPart};
 use cortex_protocol::{CallId, Message, ModelId, Part, ProviderId, Role};
 use cortex_testkit::fixture::{self, Fixture};
 use serde_json::Value;
@@ -128,7 +128,9 @@ pub(crate) fn decode(
             match parser.next_event() {
                 None => break,
                 Some(Err(error)) => return Err(error.to_string()),
-                Some(Ok(event)) => decoder.feed(event, &mut sink).map_err(|error| error.message)?,
+                Some(Ok(event)) => decoder
+                    .feed(event, &mut sink)
+                    .map_err(|error| error.message)?,
             }
         }
     }
@@ -189,8 +191,7 @@ pub(crate) fn assistant(events: &[ModelEvent], request: &ModelRequest) -> Messag
                 let arguments = if block.arguments.is_empty() {
                     Value::Object(serde_json::Map::new())
                 } else {
-                    serde_json::from_str(&block.arguments)
-                        .unwrap_or(Value::String(block.arguments))
+                    serde_json::from_str(&block.arguments).unwrap_or(Value::String(block.arguments))
                 };
                 Part::ToolCall(ToolCallPart {
                     id: CallId::new(id),

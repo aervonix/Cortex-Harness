@@ -197,7 +197,9 @@ enum Shape {
     },
     /// A tool call, the harness's own or a server-side tool's: the
     /// arguments arrive as fragments of JSON text.
-    Call { input: String },
+    Call {
+        input: String,
+    },
     /// A block that arrives whole.
     Whole,
 }
@@ -322,7 +324,9 @@ impl Decoder {
             ));
         }
         let message: MessageStart<'_> = serde_json::from_str(raw.get()).map_err(|error| {
-            DecodeError::new(format!("the `message_start` event could not be read: {error}"))
+            DecodeError::new(format!(
+                "the `message_start` event could not be read: {error}"
+            ))
         })?;
         self.started = true;
         out.start(
@@ -346,9 +350,7 @@ impl Decoder {
             DecodeError::new(format!("the block {index} could not be read: {error}"))
         };
         if self.blocks.contains_key(&index) {
-            return Err(DecodeError::new(format!(
-                "the block {index} started twice"
-            )));
+            return Err(DecodeError::new(format!("the block {index} started twice")));
         }
         let members = ordered_members(raw).map_err(bad)?;
         let text = |name: &str| -> Result<String, DecodeError> {
@@ -421,7 +423,9 @@ impl Decoder {
             )));
         };
         let delta: BlockDelta<'_> = serde_json::from_str(raw.get()).map_err(|error| {
-            DecodeError::new(format!("an addition to the block {index} could not be read: {error}"))
+            DecodeError::new(format!(
+                "an addition to the block {index} could not be read: {error}"
+            ))
         })?;
         let tool_call = block
             .members
@@ -485,7 +489,9 @@ impl Decoder {
     ) -> Result<(), DecodeError> {
         if let Some(delta) = delta.filter(|delta| delta.get() != "null") {
             let delta: MessageDelta<'_> = serde_json::from_str(delta.get()).map_err(|error| {
-                DecodeError::new(format!("the `message_delta` event could not be read: {error}"))
+                DecodeError::new(format!(
+                    "the `message_delta` event could not be read: {error}"
+                ))
             })?;
             if let Some(reason) = delta.stop_reason {
                 let detail = delta
@@ -515,7 +521,12 @@ impl Decoder {
             out.block_end(index, RawJson::new(block.whole()));
         }
         self.ended = true;
-        out.end(stop_reason(&raw_stop), raw_stop, detail, self.usage.reported());
+        out.end(
+            stop_reason(&raw_stop),
+            raw_stop,
+            detail,
+            self.usage.reported(),
+        );
         Ok(())
     }
 }

@@ -20,6 +20,9 @@ use cortex_protocol::{Message, Part};
 use super::scenario::{self, SWITCH, SWITCH_LEVEL, SWITCH_PROMPT};
 use super::{HAIKU, SONNET, decode_whole, load, provider, user};
 
+/// A change to a request that was already sent, with what it changes.
+type Edit = (&'static str, Box<dyn Fn(&mut ModelRequest)>);
+
 /// One request of a rebuilt conversation, with what was recorded for it.
 struct Round {
     request: ModelRequest,
@@ -64,7 +67,11 @@ fn rebuild(name: &str, models: &[&str], level: &str, first: &str) -> Vec<Round> 
             None => break,
         }
     }
-    assert_eq!(rounds.len(), models.len(), "{name}: the conversation ended early");
+    assert_eq!(
+        rounds.len(),
+        models.len(),
+        "{name}: the conversation ended early"
+    );
     rounds
 }
 
@@ -87,7 +94,8 @@ fn text(bytes: &[u8]) -> &str {
 
 /// A body without the two brackets that close its messages and itself.
 fn open(body: &[u8]) -> &[u8] {
-    body.strip_suffix(b"]}").expect("a body ends by closing its messages")
+    body.strip_suffix(b"]}")
+        .expect("a body ends by closing its messages")
 }
 
 /// Where two byte strings first differ, with what is around it, for a
@@ -140,10 +148,17 @@ fn each_request_begins_with_the_one_before_it_byte_for_byte() {
         assert_begins_with(&pair[1].recorded, open(&pair[0].recorded), "as recorded");
         assert_begins_with(&pair[1].built, open(&pair[0].built), "as built");
         // And the part the adapter names as stable.
-        let earlier = AnthropicMessages.stable_prefix(&pair[0].request, &provider()).unwrap();
-        let later = AnthropicMessages.stable_prefix(&pair[1].request, &provider()).unwrap();
+        let earlier = AnthropicMessages
+            .stable_prefix(&pair[0].request, &provider())
+            .unwrap();
+        let later = AnthropicMessages
+            .stable_prefix(&pair[1].request, &provider())
+            .unwrap();
         assert_begins_with(&later, &earlier, "the stable prefix");
-        assert!(later.len() > earlier.len(), "a later request adds to the earlier one");
+        assert!(
+            later.len() > earlier.len(),
+            "a later request adds to the earlier one"
+        );
         // In an ordinary round the stable prefix is the body without its
         // closing brackets: no marker is inside the messages.
         assert_eq!(earlier, open(&pair[0].built));
@@ -163,10 +178,12 @@ fn each_request_begins_with_the_one_before_it_byte_for_byte() {
 #[test]
 fn a_change_to_earlier_content_breaks_the_prefix_and_the_check_sees_it() {
     let rounds = conversation();
-    let earlier = AnthropicMessages.stable_prefix(&rounds[1].request, &provider()).unwrap();
+    let earlier = AnthropicMessages
+        .stable_prefix(&rounds[1].request, &provider())
+        .unwrap();
 
     // Each of these changes something that was already sent.
-    let edits: Vec<(&str, Box<dyn Fn(&mut ModelRequest)>)> = vec![
+    let edits: Vec<Edit> = vec![
         (
             "the system prompt",
             Box::new(|request| request.system.push_str(" Today is Friday.")),
@@ -189,8 +206,13 @@ fn a_change_to_earlier_content_breaks_the_prefix_and_the_check_sees_it() {
             "a reasoning block left out",
             Box::new(|request| {
                 let before = request.messages[1].parts.len();
-                request.messages[1].parts.retain(|part| !matches!(part, Part::Reasoning(_)));
-                assert!(request.messages[1].parts.len() < before, "there was one to leave out");
+                request.messages[1]
+                    .parts
+                    .retain(|part| !matches!(part, Part::Reasoning(_)));
+                assert!(
+                    request.messages[1].parts.len() < before,
+                    "there was one to leave out"
+                );
             }),
         ),
         (
@@ -216,7 +238,9 @@ fn a_change_to_earlier_content_breaks_the_prefix_and_the_check_sees_it() {
     for (what, edit) in edits {
         let mut request = rounds[2].request.clone();
         edit(&mut request);
-        let later = AnthropicMessages.stable_prefix(&request, &provider()).unwrap();
+        let later = AnthropicMessages
+            .stable_prefix(&request, &provider())
+            .unwrap();
         assert!(
             !later.starts_with(&earlier),
             "{what} changed, and the later request still begins with the earlier one"
@@ -225,7 +249,9 @@ fn a_change_to_earlier_content_breaks_the_prefix_and_the_check_sees_it() {
     // Adding at the end changes nothing that was sent.
     let mut request = rounds[2].request.clone();
     request.messages.push(user("One more thing."));
-    let later = AnthropicMessages.stable_prefix(&request, &provider()).unwrap();
+    let later = AnthropicMessages
+        .stable_prefix(&request, &provider())
+        .unwrap();
     assert!(later.starts_with(&earlier));
 }
 
@@ -233,7 +259,10 @@ fn a_change_to_earlier_content_breaks_the_prefix_and_the_check_sees_it() {
 fn the_responses_say_the_cache_was_read() {
     let rounds = conversation();
     let first = rounds[0].tokens();
-    assert!(first.cache_write > 0, "the first request wrote the prefix: {first:?}");
+    assert!(
+        first.cache_write > 0,
+        "the first request wrote the prefix: {first:?}"
+    );
     assert_eq!(first.cache_read, 0);
     for pair in rounds.windows(2) {
         let (before, after) = (pair[0].tokens(), pair[1].tokens());
@@ -244,7 +273,10 @@ fn the_responses_say_the_cache_was_read() {
             before.cache_read + before.cache_write,
             "{before:?} then {after:?}"
         );
-        assert!(after.input < 10, "nearly nothing is paid for at the full price");
+        assert!(
+            after.input < 10,
+            "nearly nothing is paid for at the full price"
+        );
     }
 }
 
@@ -254,7 +286,9 @@ fn reasoning_blocks(message: &Message) -> Vec<&str> {
         .parts
         .iter()
         .filter_map(|part| match part {
-            Part::Reasoning(reasoning) => reasoning.raw.as_ref().map(cortex_protocol::RawJson::as_str),
+            Part::Reasoning(reasoning) => {
+                reasoning.raw.as_ref().map(cortex_protocol::RawJson::as_str)
+            }
             _ => None,
         })
         .collect()
@@ -276,15 +310,32 @@ fn a_change_of_model_and_back_sends_every_reasoning_block_unchanged() {
     let from_first = reasoning_blocks(&last.messages[1]);
     let from_second = reasoning_blocks(&last.messages[3]);
     assert!(!from_first.is_empty(), "the first model wrote no reasoning");
-    assert!(!from_second.is_empty(), "the second model wrote no reasoning");
-    assert_eq!(last.messages[1].origin.as_ref().unwrap().model.as_str(), SONNET);
-    assert_eq!(last.messages[3].origin.as_ref().unwrap().model.as_str(), HAIKU);
+    assert!(
+        !from_second.is_empty(),
+        "the second model wrote no reasoning"
+    );
+    assert_eq!(
+        last.messages[1].origin.as_ref().unwrap().model.as_str(),
+        SONNET
+    );
+    assert_eq!(
+        last.messages[3].origin.as_ref().unwrap().model.as_str(),
+        HAIKU
+    );
     // The second model cannot read the first one's reasoning, by the
     // catalog. It is sent to it all the same.
     let haiku = &rounds[1].request.model.info;
-    assert!(!haiku.reads_reasoning_from.iter().any(|id| id.as_str() == SONNET));
+    assert!(
+        !haiku
+            .reads_reasoning_from
+            .iter()
+            .any(|id| id.as_str() == SONNET)
+    );
     for block in &from_first {
-        assert!(text(&rounds[1].built).contains(block), "to the second model");
+        assert!(
+            text(&rounds[1].built).contains(block),
+            "to the second model"
+        );
     }
     // Back on the first model, both models' blocks are there, each as the
     // text the decoder stored, in the order they were produced.
