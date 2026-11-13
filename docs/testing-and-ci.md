@@ -411,6 +411,32 @@ Step 7 filled `cortex-agent` (about 6,700 lines of source and 6,000 of integrati
 - **The Windows job ran nothing of this step that Linux did not.** `cortex-agent` has no code of its own for one OS. It was linted for the Windows target on the desktop before the first push.
 - **The clean build of `cortex-agent` alone,** on the desktop pinned to 4 cores: 19.0 to 19.5 s in the `dev` profile and 12.4 to 12.7 s in `release` (two runs each), with 71 packages in the build, against 13.7 to 13.8 s and 8.4 s for `cortex-tools` alone after step 6. The difference is `cortex-llm` without its `http` feature, which `cortex-tools` does not build, and the crate itself.
 
+#### After step 11: the process runner and the shell tool
+
+Step 11 added process trees to `cortex-sandbox` (about 1,600 lines), the runner and the `shell` tool to `cortex-tools` (about 4,700 lines with their unit tests, and 2,400 of integration and system tests), and child processes for tests to `cortex-testkit`. It adds no third-party package to the workspace: `libc` becomes a direct dependency and was in every build already, and `windows-sys` gains API families. It is the first step whose tests are mostly real processes: about fifty system tests on each OS are its own (52 on Linux and 48 on Windows as merged). Measured on the step's pull request on 2026-11-13. Its first run was on the base that step 8 left:
+
+| Job | Step 5, first run | Step 7, first run | Step 11, first run |
+|---|---|---|---|
+| `lint-linux` | 62 s | 26 s | 32 s |
+| `test-linux` | 51 s | 45 s | 52 s |
+| `lint-windows` | 115 s | 58 s | 55 s |
+| `test-windows` | 99 s | 93 s | 105 s |
+| **Wall time, Linux** | 62 s | 45 s | 52 s |
+| **Wall time, Windows** | 115 s | 93 s | 105 s |
+
+| | `lint-linux` | `test-linux` | `lint-windows` | `test-windows` |
+|---|---|---|---|---|
+| The job's command once `xtask` runs | 11.2 s (clippy 9.5 s) | 26.0 s (build tests 21.3 s, run 4.6 s) | 17.9 s (clippy) | 61.1 s (build tests 40.3 s, run 20.8 s) |
+| Test time against the tier budgets | | tier 1: 7.6 s of 20 s. Tier 2: 6.4 s of 40 s. Tier 3: 2.4 s of 60 s | | tier 1: 11.2 s of 20 s. Tier 2: 11.4 s of 40 s. Tier 3: 33.0 s of 90 s |
+
+- **The system tier is where this step shows, and only on Windows:** 33 s of its 90 s, where it was under 3 s. On Linux the same tests take 2.4 s together. The difference is what a shell costs to start: bash starts in a millisecond, and PowerShell 7 and Windows PowerShell in a few hundred, so a test that runs four commands in PowerShell takes one to two seconds. No test passed its 10 s mark. The set for `cmd.exe` takes under a second in all.
+- **Every Windows test passed on the first run, and one failed on the second,** which was the fault of the test's own helper and is the lesson of the step: a child that reported to its test and exited at once could lose its report, because Windows may throw away what a process has sent, and the other side has not yet read, when the process ends. The child now waits for the test to answer before it goes on. The run that failed took its whole limit, 30 s, which is what the limit is for.
+- **The Windows code ran here for the first time anywhere.** It had only been checked for the Windows target on the desktop. Job Objects with a suspended start, the Ctrl-Break event, cancelling a read, and the three shells' quoting all worked as written. Two things about the hosted runner were open until then, and both hold: a test process has a console to send a Ctrl-Break through, and PowerShell 7 (7.6.9), Windows PowerShell 5.1, `cmd.exe` and Git Bash are all there. A test that finds a shell missing fails in CI, so a green job means every shell ran.
+- **Nothing waits.** The time limit of a command, the grace between two stages of stopping and the grace for what a command left running are waits on the runner's timer, which a test ends by hand. A child process is seen to start and to die through a loopback connection. The system tier, of which the step's tests are nearly all, takes 0.9 s on the desktop.
+- **Breaking the code fails the tests.** Thirty-eight rules of the step were each broken on purpose, one at a time, and the tests run: every one failed at least one test. The list is in the step's report.
+- **What the hosted runners measured of starting a command,** in the unoptimised `ci` build, 30 runs: on Windows, `cmd.exe` alone 6.7 ms, and 16.1 ms through the runner; on Linux, bash alone 1.5 ms, and 5.6 ms through the runner. The Linux figure is what led to reading less of the process table ([performance-budgets.md](performance-budgets.md)): the desktop, with thirty processes, had hidden what a machine with a few hundred shows.
+- **The clean build of `cortex-tools` alone,** on the desktop pinned to 4 cores: 14.1 s in the `dev` profile and 8.1 s in `release`, with 54 packages, against 13.7 to 13.8 s and 8.4 s after step 6. `cortex-sandbox` alone: 8.6 s and 5.0 s, with 27 packages, nearly all of it `cortex-base` and what that needs. No other session's run was active: the desktop's test lock lets one run at a time.
+
 #### The planned third-party set
 
 The skeleton cannot show what a cold cache will cost once the dependencies arrive, which is the risk this page was written around. So step 2 also built a throwaway program that depends on the whole third-party set planned for the first release (the async runtime, the HTTP and TLS stack, serde, the terminal library, the search libraries, the MCP SDK, the highlighter, the script engine, the test-kit libraries, and the Windows-only and Linux-only crates: 283 packages in its lockfile) on both runners. The program was on a scratch branch and is not in the repository. It uses each library enough to link it.
