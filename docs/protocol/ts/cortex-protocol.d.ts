@@ -108,12 +108,16 @@ export type ApprovalId = string;
 
 /** `approval/request`: may this tool call run? */
 export interface ApprovalRequest {
+  /** The rules that `allow_session` or `allow_project` would add, so that a front end can show exactly what such an answer allows from then on. Empty when only this one call can be allowed. */
+  adds?: Array<Rule>;
   /** The tool call. */
   call_id: CallId;
   /** The answers on offer. */
   choices: Array<ApprovalChoice>;
   /** Exactly what would happen. */
   detail: ApprovalDetail;
+  /** Why the call needs an answer, a reason an entry: the rule that asks, the part of a command that is not on a safe list, a protected path. */
+  reasons?: Array<string>;
   /** The session. */
   session_id: SessionId;
   /** The call in one line. */

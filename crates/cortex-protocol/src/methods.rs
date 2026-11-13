@@ -707,6 +707,15 @@ pub struct ApprovalRequest {
     pub detail: ApprovalDetail,
     /// The answers on offer.
     pub choices: Vec<ApprovalChoice>,
+    /// Why the call needs an answer, a reason an entry: the rule that asks,
+    /// the part of a command that is not on a safe list, a protected path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
+    /// The rules that `allow_session` or `allow_project` would add, so that
+    /// a front end can show exactly what such an answer allows from then
+    /// on. Empty when only this one call can be allowed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adds: Vec<Rule>,
 }
 
 /// The answer to `approval/request`.
