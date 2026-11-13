@@ -587,6 +587,12 @@ const PATHS: [&str; 12] = [
     "/srv/other/src/main.rs",
 ];
 
+// The properties below run a few hundred cases each on a pull request, and
+// fifty times that every night (`CORTEX_PROPERTY_SCALE`). Each case compiles
+// rule sets, which is where the time goes in CI's unoptimised build: at
+// three thousand cases each, this crate's properties took a third of the
+// unit tier's budget on Windows.
+
 fn any_rule(rng: &mut SeededRng) -> SourcedRule {
     let sources = [
         RuleSource::Managed,
@@ -612,7 +618,7 @@ fn any_rule(rng: &mut SeededRng) -> SourcedRule {
 fn adding_an_allow_never_changes_a_deny() {
     cases::check(
         "adding_an_allow_never_changes_a_deny",
-        3000,
+        400,
         |rng| {
             let rules: Vec<SourcedRule> = (0..rng.below(6)).map(|_| any_rule(rng)).collect();
             let mut added = any_rule(rng);
@@ -653,7 +659,7 @@ fn adding_an_allow_never_changes_a_deny() {
 fn the_order_of_the_rules_never_changes_an_answer() {
     cases::check(
         "rule_order_does_not_matter",
-        2000,
+        300,
         |rng| {
             let rules: Vec<SourcedRule> = (0..rng.below(7)).map(|_| any_rule(rng)).collect();
             let mut shuffled = rules.clone();
@@ -685,7 +691,7 @@ fn the_order_of_the_rules_never_changes_an_answer() {
 fn a_projects_rules_never_loosen_before_trust() {
     cases::check(
         "project_rules_never_loosen_before_trust",
-        3000,
+        400,
         |rng| {
             let users: Vec<SourcedRule> = (0..rng.below(4))
                 .map(|_| {
