@@ -326,6 +326,8 @@ pub(crate) fn tables(runs: &[Measured]) -> String {
             }
         }
     }
+    // Linux's jobs, then Windows', as the steps' pages list them.
+    names.sort_by_key(|name| (name.contains("windows"), *name));
     for name in names {
         let _ = write!(text, "| `{name}` |");
         for measured in runs {
@@ -502,8 +504,8 @@ Run 4242 at `0123456`: pull_request on `step-x`, 2026-11-13.
 |---|---|---|
 | `lint-linux` | 52 s | 48 s |
 | `test-linux` | 68 s | 56 s |
-| `test-windows` | — | 138 s |
 | `lint-windows` | — | — |
+| `test-windows` | — | 138 s |
 
 | Time above process start, against the budget | Linux, run 4000 (10 ms) | Linux, run 4242 (20 ms) | Windows, run 4242 (200 ms) |
 |---|---|---|---|
