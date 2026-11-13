@@ -309,7 +309,7 @@ fn sys_a_file_swapped_for_a_fifo_or_a_link_is_neither_waited_on_nor_followed() {
     // And for a link to a file outside the workspace: nothing of the
     // outside file reaches the store.
     fs::remove_file(&path).unwrap();
-    let outside = world.scratch.dir.join("outside-secret");
+    let outside = world.scratch.join("outside-secret");
     fs::write(&outside, b"not the workspace's").unwrap();
     std::os::unix::fs::symlink(&outside, &path).unwrap();
     assert!(matches!(

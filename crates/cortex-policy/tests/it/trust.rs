@@ -11,7 +11,7 @@ use crate::Said::{Allow, Ask};
 use crate::{Scratch, clock, engine_with, project, rule, said, shell};
 
 fn store(scratch: &Scratch) -> TrustStore {
-    TrustStore::new(scratch.dir.join("state").join("trust.toml"), clock())
+    TrustStore::new(scratch.join("state").join("trust.toml"), clock())
 }
 
 fn hook(name: &str, command: &[&str]) -> Definition {
@@ -20,7 +20,7 @@ fn hook(name: &str, command: &[&str]) -> Definition {
 
 #[test]
 fn a_project_is_untrusted_until_the_user_trusts_it() {
-    let scratch = Scratch::new("trust_first");
+    let scratch = cortex_testkit::scratch!("trust_first");
     let store = store(&scratch);
     let key = ProjectKey::new("aaaa1111");
     let format = hook("format", &["cargo", "fmt"]);
@@ -75,7 +75,7 @@ fn a_project_is_untrusted_until_the_user_trusts_it() {
 /// user approved it, and was changed afterwards.
 #[test]
 fn a_changed_definition_is_disabled_until_it_is_approved_again() {
-    let scratch = Scratch::new("trust_changed");
+    let scratch = cortex_testkit::scratch!("trust_changed");
     let store = store(&scratch);
     let key = ProjectKey::new("aaaa1111");
     let format = hook("format", &["cargo", "fmt"]);
@@ -137,7 +137,7 @@ fn a_changed_definition_is_disabled_until_it_is_approved_again() {
 /// and disabled when they change.
 #[test]
 fn a_projects_allow_rules_are_disabled_when_they_change_after_trust() {
-    let scratch = Scratch::new("trust_rules");
+    let scratch = cortex_testkit::scratch!("trust_rules");
     let store = store(&scratch);
     let key = ProjectKey::new("aaaa1111");
     let seen = vec![
@@ -236,7 +236,7 @@ fn a_trust_store_that_is_not_understood_trusts_nothing() {
     ];
     let key = ProjectKey::new("aaaa1111");
     for (name, contents, mentions) in cases {
-        let scratch = Scratch::new("trust_strict");
+        let scratch = cortex_testkit::scratch!("trust_strict");
         let file = scratch.file("state/trust.toml", &contents);
         let store = store(&scratch);
         let error = store.project(&key).unwrap_err();
@@ -256,10 +256,10 @@ fn a_trust_store_that_is_not_understood_trusts_nothing() {
     }
 
     // The same file without the fault trusts the project.
-    let scratch = Scratch::new("trust_strict_ok");
+    let scratch = cortex_testkit::scratch!("trust_strict_ok");
     scratch.file(
         "state/trust.toml",
-        &format!("\u{feff}version = 1\r\n{pinned}"),
+        format!("\u{feff}version = 1\r\n{pinned}"),
     );
     assert!(store(&scratch).project(&key).unwrap().is_trusted());
     // A key in another case is another project.

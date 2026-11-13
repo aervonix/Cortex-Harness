@@ -373,22 +373,7 @@ fn a_workspace_outside_git_is_listed_with_hashes() {
 
 /// Runs a real git command in `dir`, for setting up a repository.
 fn git(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_AUTHOR_NAME", "Test")
-        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
-        .env("GIT_COMMITTER_NAME", "Test")
-        .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    cortex_testkit::scratch::git(dir, args)
 }
 
 fn has_git() -> bool {
@@ -458,9 +443,9 @@ fn sys_a_git_workspace_records_what_replay_needs() {
     // applied, has the tracked files as they were (but the secret).
     let mut patch = Vec::new();
     assert!(cortex_session::base::write_patch(&store, &state, &mut patch).unwrap());
-    let replay = world.scratch.dir.join("replay");
+    let replay = world.scratch.join("replay");
     git(
-        &world.scratch.dir,
+        world.scratch.path(),
         &[
             "clone",
             "--quiet",
@@ -471,7 +456,7 @@ fn sys_a_git_workspace_records_what_replay_needs() {
         ],
     );
     git(&replay, &["checkout", "--quiet", &commit]);
-    let patch_file = world.scratch.dir.join("base.patch");
+    let patch_file = world.scratch.join("base.patch");
     std::fs::write(&patch_file, &patch).unwrap();
     git(
         &replay,
@@ -746,7 +731,7 @@ fn sys_an_untracked_link_is_recorded_as_a_link_and_never_followed() {
     world.write("src/lib.rs", b"pub fn one() {}\n");
     git(&dir, &["add", "."]);
     git(&dir, &["commit", "--quiet", "-m", "start"]);
-    let outside = world.scratch.dir.join("outside");
+    let outside = world.scratch.join("outside");
     std::fs::create_dir_all(&outside).unwrap();
     let token = outside.join("token.json");
     std::fs::write(&token, b"{\"token\":\"s3cr3t-from-outside\"}").unwrap();

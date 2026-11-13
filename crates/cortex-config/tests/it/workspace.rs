@@ -11,11 +11,11 @@ use std::fs;
 
 use cortex_config::{find_workspace_root, workspace_root};
 
-use crate::{Scratch, make_link, write};
+use crate::{make_link, write};
 
 #[test]
 fn the_nearest_folder_with_a_cortex_folder_or_a_git_entry_is_the_root() {
-    let scratch = Scratch::new("root_found");
+    let scratch = cortex_testkit::scratch!("root_found");
 
     fs::create_dir_all(scratch.join("repo/.git")).unwrap();
     fs::create_dir_all(scratch.join("repo/src/deep")).unwrap();
@@ -58,7 +58,7 @@ fn the_nearest_folder_with_a_cortex_folder_or_a_git_entry_is_the_root() {
 #[cfg(unix)]
 #[test]
 fn on_unix_a_link_at_git_counts_by_its_own_owner() {
-    let scratch = Scratch::new("root_link_unix");
+    let scratch = cortex_testkit::scratch!("root_link_unix");
     fs::create_dir_all(scratch.join("ws/sub")).unwrap();
     // A link to nothing: an owner read through it would find nothing to
     // read, so only the link's own owner can make it count.
@@ -97,7 +97,7 @@ mod windows {
     /// reach a network share.
     #[test]
     fn a_link_at_git_is_passed_over() {
-        let scratch = Scratch::new("root_link_windows");
+        let scratch = cortex_testkit::scratch!("root_link_windows");
         fs::create_dir_all(scratch.join("elsewhere")).unwrap();
         fs::create_dir_all(scratch.join("ws/sub")).unwrap();
         if !make_link(&scratch.join("elsewhere"), &scratch.join("ws/.git"), true) {
@@ -131,7 +131,7 @@ mod windows {
     /// standing in for any other account, it does not.
     #[test]
     fn sys_a_candidate_owned_by_another_account_is_passed_over() {
-        let scratch = Scratch::new("root_owner_windows");
+        let scratch = cortex_testkit::scratch!("root_owner_windows");
         for (name, owner, counts) in [
             ("made", None, true),
             ("administrators", Some("*S-1-5-32-544"), true),

@@ -35,31 +35,8 @@ use cortex_protocol::item::{
 };
 use cortex_protocol::message::{Part, ToolCallPart};
 use cortex_session::{Body, Durability, ProjectSessions, Session, SessionOptions};
+pub(crate) use cortex_testkit::Scratch;
 use serde_json::json;
-
-/// A directory that belongs to one test and is removed with it.
-pub(crate) struct Scratch {
-    pub(crate) dir: PathBuf,
-}
-
-impl Scratch {
-    pub(crate) fn new(test: &str) -> Self {
-        let base = std::env::var_os("CORTEX_TEST_TMPDIR")
-            .map_or_else(|| PathBuf::from(env!("CARGO_TARGET_TMPDIR")), PathBuf::from);
-        let dir = base.join("cortex-session-it").join(test);
-        if dir.exists() {
-            let _ = fs::remove_dir_all(&dir);
-        }
-        fs::create_dir_all(&dir).expect("create the test's directory");
-        Self { dir }
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
-    }
-}
 
 /// A workspace and a sessions directory for one test.
 pub(crate) struct World {
@@ -72,16 +49,12 @@ pub(crate) struct World {
 
 impl World {
     pub(crate) fn new(test: &str) -> Self {
-        let scratch = Scratch::new(test);
-        let workspace = scratch.dir.join("workspace");
+        let scratch = cortex_testkit::scratch!(test);
+        let workspace = scratch.join("workspace");
         fs::create_dir_all(&workspace).unwrap();
         let root = AbsPath::from_os(&fs::canonicalize(&workspace).unwrap()).unwrap();
-        let project = ProjectSessions::at(
-            scratch
-                .dir
-                .join("sessions")
-                .join(root.project_key().as_str()),
-        );
+        let project =
+            ProjectSessions::at(scratch.join("sessions").join(root.project_key().as_str()));
         Self {
             scratch,
             project,

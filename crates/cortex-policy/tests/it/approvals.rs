@@ -11,7 +11,7 @@ use crate::Said::{Allow, Ask, Deny};
 use crate::{Scratch, clock, engine, engine_with, question, rule, said, shell, user};
 
 fn store(scratch: &Scratch) -> ApprovalStore {
-    ApprovalStore::new(scratch.dir.join("approvals").join("aaaa1111.toml"), clock())
+    ApprovalStore::new(scratch.join("approvals").join("aaaa1111.toml"), clock())
 }
 
 fn with_store(scratch: &Scratch) -> Engine {
@@ -121,7 +121,7 @@ fn an_approval_never_lifts_a_rule_that_holds_back() {
 
 #[test]
 fn an_approval_for_the_project_is_stored_owner_only_and_read_back() {
-    let scratch = Scratch::new("approvals_project");
+    let scratch = cortex_testkit::scratch!("approvals_project");
     let engine = with_store(&scratch);
     let asked = question(shell(&engine, "npm run build && npm test"));
     let recorded = engine
@@ -180,7 +180,7 @@ fn an_approval_for_the_project_is_stored_owner_only_and_read_back() {
 
 #[test]
 fn approvals_are_listed_and_taken_back_by_id() {
-    let scratch = Scratch::new("approvals_revoke");
+    let scratch = cortex_testkit::scratch!("approvals_revoke");
     let engine = with_store(&scratch);
     let project = question(shell(&engine, "make -j4"));
     engine
@@ -286,7 +286,7 @@ fn a_stored_file_that_is_not_understood_grants_nothing() {
         ("not TOML", "this is not = = toml [[[", ""),
     ];
     for (name, contents, mentions) in cases {
-        let scratch = Scratch::new("approvals_strict");
+        let scratch = cortex_testkit::scratch!("approvals_strict");
         let file = scratch.file("approvals/aaaa1111.toml", contents);
         let store = store(&scratch);
         let error = store.load().unwrap_err();
@@ -305,7 +305,7 @@ fn a_stored_file_that_is_not_understood_grants_nothing() {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), *contents, "{name}");
     }
     // A file with nothing wrong reads, with or without a byte-order mark.
-    let scratch = Scratch::new("approvals_strict_ok");
+    let scratch = cortex_testkit::scratch!("approvals_strict_ok");
     scratch.file(
         "approvals/aaaa1111.toml",
         "\u{feff}version = 1\r\n[[approval]]\r\nid = \"ap_7\"\r\ncreated_at = \"2026-11-13T10:00:00Z\"\r\n\
@@ -316,7 +316,7 @@ fn a_stored_file_that_is_not_understood_grants_nothing() {
     assert_eq!(loaded[0].id, ApprovalId::new("ap_7"));
     // A missing file holds none.
     assert!(
-        store(&Scratch::new("approvals_missing"))
+        store(&cortex_testkit::scratch!("approvals_missing"))
             .load()
             .unwrap()
             .is_empty()
@@ -325,7 +325,7 @@ fn a_stored_file_that_is_not_understood_grants_nothing() {
 
 #[test]
 fn the_store_refuses_to_store_anything_but_an_allow() {
-    let scratch = Scratch::new("approvals_only_allow");
+    let scratch = cortex_testkit::scratch!("approvals_only_allow");
     let store = store(&scratch);
     let error = store
         .add(&[

@@ -14,7 +14,7 @@ use cortex_base::{PathOptions, PathResolver};
 use cortex_policy::{Access, Engine, Request, default_sandbox};
 use cortex_protocol::lease::{Effect, RuleAction};
 
-use crate::{Scratch, engine_with, parts, path, shell, user};
+use crate::{engine_with, parts, path, shell, user};
 
 fn median(mut samples: Vec<Duration>) -> Duration {
     samples.sort();
@@ -90,9 +90,9 @@ fn measure_deciding() {
     });
 
     // The same line with what it names followed on a real file system.
-    let scratch = Scratch::new("measure_deciding");
+    let scratch = cortex_testkit::scratch!("measure_deciding");
     scratch.file("crates/cortex-policy/src/engine.rs", "fn decide() {}");
-    let resolver = PathResolver::new(&scratch.dir, PathOptions::new()).unwrap();
+    let resolver = PathResolver::new(scratch.path(), PathOptions::new()).unwrap();
     let workspace = resolver.root().clone();
     let mut real = parts();
     real.rules = rules();

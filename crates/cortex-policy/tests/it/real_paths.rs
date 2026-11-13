@@ -16,7 +16,7 @@ use cortex_policy::{
 use cortex_protocol::ids::LeaseId;
 use cortex_protocol::lease::{Budget, HardLimits, Level, RuleAction};
 
-use crate::{Scratch, clock};
+use crate::clock;
 
 /// An engine for the real workspace at `root`, with the real resolver.
 fn real_engine(root: &Path, shell: ShellSyntax, rules: Vec<SourcedRule>) -> (Engine, PathResolver) {
@@ -76,12 +76,12 @@ mod unix {
     /// judged where it leads, not where it is written.
     #[test]
     fn a_link_out_of_the_workspace_is_judged_where_it_leads() {
-        let scratch = Scratch::new("real_links");
+        let scratch = cortex_testkit::scratch!("real_links");
         scratch.file("ws/src/main.rs", "fn main() {}");
         scratch.file("ws/.env", "TOKEN=1");
         scratch.file("outside/secret.txt", "secret");
         scratch.dir("ws/sub");
-        let ws = scratch.dir.join("ws");
+        let ws = scratch.join("ws");
         symlink("../outside/secret.txt", ws.join("link.txt")).unwrap();
         symlink("../outside", ws.join("dirlink")).unwrap();
         symlink(".env", ws.join("settings")).unwrap();
@@ -192,11 +192,11 @@ mod unix {
     /// location, so its own files are inside it.
     #[test]
     fn a_workspace_opened_through_a_link_is_its_real_location() {
-        let scratch = Scratch::new("real_workspace_link");
+        let scratch = cortex_testkit::scratch!("real_workspace_link");
         scratch.file("real/src/main.rs", "fn main() {}");
-        symlink("real", scratch.dir.join("alias")).unwrap();
+        symlink("real", scratch.join("alias")).unwrap();
         let (engine, resolver) =
-            real_engine(&scratch.dir.join("alias"), ShellSyntax::Posix, Vec::new());
+            real_engine(&scratch.join("alias"), ShellSyntax::Posix, Vec::new());
         assert!(resolver.root().as_str().ends_with("/real"));
         assert_eq!(said(&run(&engine, &resolver, "cat src/main.rs")), ReadOnly);
         assert_eq!(said(&run(&engine, &resolver, "ls ..")), Ask);
@@ -228,14 +228,14 @@ mod windows {
 
     #[test]
     fn powershell_commands_are_judged_on_the_real_file_system() {
-        let scratch = Scratch::new("win_powershell");
+        let scratch = cortex_testkit::scratch!("win_powershell");
         scratch.file("ws/Src/Main.rs", "fn main() {}");
         scratch.file("ws/README.md", "# hello");
         scratch.file("ws/.env", "TOKEN=1");
         scratch.file("ws/Private/notes.txt", "private");
         scratch.file("outside/Secret.txt", "secret");
-        let ws = scratch.dir.join("ws");
-        let outside = scratch.dir.join("outside").join("Secret.txt");
+        let ws = scratch.join("ws");
+        let outside = scratch.join("outside").join("Secret.txt");
         let outside = outside.to_str().unwrap();
 
         let (engine, resolver) = real_engine(
@@ -328,9 +328,9 @@ mod windows {
 
     #[test]
     fn cmd_commands_are_never_analysed() {
-        let scratch = Scratch::new("win_cmd");
+        let scratch = cortex_testkit::scratch!("win_cmd");
         scratch.file("ws/README.md", "# hello");
-        let ws = scratch.dir.join("ws");
+        let ws = scratch.join("ws");
         let (engine, resolver) = real_engine(
             &ws,
             ShellSyntax::of_program(r"C:\Windows\System32\cmd.exe"),
@@ -384,13 +384,13 @@ mod windows {
     /// stored name differs.
     #[test]
     fn an_allow_matches_the_stored_spelling_of_what_was_asked_for() {
-        let scratch = Scratch::new("win_allow_case");
+        let scratch = cortex_testkit::scratch!("win_allow_case");
         scratch.file("ws/README.md", "# hello");
         scratch.file("Notes/Todo.md", "todo");
-        let ws = scratch.dir.join("ws");
+        let ws = scratch.join("ws");
         // The folder as the file system spells it, whatever spelling the
         // test's own directory came in.
-        let notes = PathResolver::new(&scratch.dir.join("Notes"), PathOptions::new())
+        let notes = PathResolver::new(&scratch.join("Notes"), PathOptions::new())
             .unwrap()
             .root()
             .to_native_string();
@@ -431,7 +431,7 @@ mod windows {
     /// unasked, and an allow for one must not grant the other.
     #[test]
     fn sys_a_folder_that_differs_only_in_case_is_outside_the_scope() {
-        let scratch = Scratch::new("win_case_sensitive_scope");
+        let scratch = cortex_testkit::scratch!("win_case_sensitive_scope");
         let parent = scratch.dir("sensitive");
         let made = std::process::Command::new("fsutil.exe")
             .args(["file", "setCaseSensitiveInfo"])

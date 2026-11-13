@@ -43,7 +43,7 @@ fn names(scratch: &Scratch, directory: &str) -> Vec<String> {
 
 #[test]
 fn a_key_round_trips_through_the_file_store() {
-    let scratch = Scratch::new("cred_round_trip");
+    let scratch = cortex_testkit::scratch!("cred_round_trip");
     let store = store(&scratch);
     assert_eq!(store.kind(), StoreKind::File);
     assert!(store.get("example").unwrap().is_none(), "no file yet");
@@ -93,7 +93,7 @@ fn a_key_round_trips_through_the_file_store() {
 
 #[test]
 fn the_file_store_is_owner_only() {
-    let scratch = Scratch::new("cred_private");
+    let scratch = cortex_testkit::scratch!("cred_private");
     let store = store(&scratch);
     store.set("example", &Secret::new(KEY_ONE)).unwrap();
 
@@ -134,7 +134,7 @@ fn the_file_store_is_owner_only() {
 /// first write makes the file private and leaves the directory alone.
 #[test]
 fn a_file_made_by_hand_is_read_reported_and_made_private_by_the_next_write() {
-    let scratch = Scratch::new("cred_by_hand");
+    let scratch = cortex_testkit::scratch!("cred_by_hand");
     let store = store(&scratch);
     write(
         store.path(),
@@ -196,7 +196,7 @@ fn a_file_made_by_hand_is_read_reported_and_made_private_by_the_next_write() {
 fn concurrent_writers_do_not_corrupt_the_file_or_lose_each_others_keys() {
     const WRITERS: usize = 4;
     const ROUNDS: usize = 3;
-    let scratch = Scratch::new("cred_concurrent");
+    let scratch = cortex_testkit::scratch!("cred_concurrent");
     let path = store(&scratch).path().to_path_buf();
 
     // Each writer is a store of its own, as a separate process would be:
@@ -257,7 +257,7 @@ fn concurrent_writers_do_not_corrupt_the_file_or_lose_each_others_keys() {
 
 #[test]
 fn what_is_not_understood_is_refused_and_left_alone() {
-    let scratch = Scratch::new("cred_malformed");
+    let scratch = cortex_testkit::scratch!("cred_malformed");
     let store = store(&scratch);
     for (content, expected) in [
         (
@@ -317,7 +317,7 @@ fn what_is_not_understood_is_refused_and_left_alone() {
 
 #[test]
 fn what_this_version_does_not_know_is_kept_when_the_file_is_rewritten() {
-    let scratch = Scratch::new("cred_unknown_kept");
+    let scratch = cortex_testkit::scratch!("cred_unknown_kept");
     let store = store(&scratch);
     write(
         store.path(),
@@ -349,7 +349,7 @@ fn what_this_version_does_not_know_is_kept_when_the_file_is_rewritten() {
 
 #[test]
 fn a_store_and_its_errors_never_print_a_key() {
-    let scratch = Scratch::new("cred_no_print");
+    let scratch = cortex_testkit::scratch!("cred_no_print");
     let store = store(&scratch);
     store.set("example", &Secret::new(KEY_ONE)).unwrap();
     let env = Env::empty(Platform::CURRENT);
@@ -386,7 +386,7 @@ fn a_store_and_its_errors_never_print_a_key() {
 /// repository of dotfiles, say.
 #[test]
 fn a_link_at_the_credentials_path_or_its_lock_is_refused() {
-    let scratch = Scratch::new("cred_link");
+    let scratch = cortex_testkit::scratch!("cred_link");
     let elsewhere = scratch.join("dotfiles/notes.toml");
     write(&elsewhere, "# notes\n");
     let store = store(&scratch);

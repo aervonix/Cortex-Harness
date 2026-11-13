@@ -237,7 +237,7 @@ fn sys_the_posix_shells_pass_the_words_the_analysis_gives() {
     );
     let mut shells_run = 0;
     for shell in ["bash", "sh"] {
-        let scratch = Scratch::new(&format!("differential_{shell}"));
+        let scratch = cortex_testkit::scratch!(&format!("differential_{shell}"));
         let Some(got) = run_posix(shell, &lines, &scratch) else {
             assert!(!in_ci(), "`{shell}` is needed in CI");
             println!("skipped: no `{shell}` here");
@@ -413,7 +413,7 @@ foreach ($line in $lines) {
 /// one command, or `None` for a line that is anything else.
 fn run_powershell(lines: &[String], scratch: &Scratch) -> Option<Vec<Option<Vec<String>>>> {
     let script = scratch.file("parse.ps1", PS_PARSE);
-    let file = scratch.file("lines.txt", &lines.join("\n"));
+    let file = scratch.file("lines.txt", lines.join("\n"));
     let output = Command::new("pwsh")
         .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
         .arg(&script)
@@ -468,7 +468,7 @@ fn sys_powershell_reads_a_modelled_line_as_the_analysis_does() {
         lines.len()
     );
 
-    let scratch = Scratch::new("differential_powershell");
+    let scratch = cortex_testkit::scratch!("differential_powershell");
     let Some(got) = run_powershell(&lines, &scratch) else {
         assert!(!in_ci(), "`pwsh` is needed in CI");
         println!("skipped: no `pwsh` here");
