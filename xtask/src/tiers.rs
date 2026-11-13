@@ -40,35 +40,40 @@ enum Tier {
 /// The quickest tests of a run do next to nothing, so their time is the
 /// start of a process. Not the very quickest: one test that happens to be
 /// a millisecond quicker than the rest moves the whole floor, and with it a
-/// thousand tests' worth of time. In four runs of one commit in one job,
-/// on one runner, the unit tier's figure spread over 2.6 s with the minimum
-/// as the floor, and over 1.6 s with the 1st percentile, which is the
-/// spread of the raw totals themselves. System tests are not looked at:
-/// they start other processes of their own.
+/// thousand tests' worth of time. In one job that ran one tree twice with
+/// each of two settings, the unit tier's figure moved by 1.1 s between the
+/// two runs of one setting with the minimum as the floor, where the 1st
+/// percentile and the raw totals did not move at all. System tests are not
+/// looked at: they start other processes of their own.
 const START_PERCENTILE: usize = 1;
+
+/// Below this many unit and integration tests, the report says that its
+/// start cost may be more than the start: in a run of a few crates, or of
+/// tests chosen by a filter, the quickest may all do real work.
+const SMALL_SAMPLE: usize = 500;
 
 /// What starting one test's process cost in this run, in seconds: the
 /// [`START_PERCENTILE`]th percentile of its unit and integration tests'
-/// times. A run with none of those has no floor to measure: 0.
+/// times. A run with none of those has no floor to measure: 0. The report
+/// asks [`start_of`], which says how many tests it was measured on too.
+#[cfg(test)]
 fn start_cost(cases: &[TestCase]) -> f64 {
+    start_of(cases).0
+}
+
+/// The start cost, and how many unit and integration tests it was
+/// measured on.
+fn start_of(cases: &[TestCase]) -> (f64, usize) {
     let mut times: Vec<f64> = cases
         .iter()
         .filter(|case| Tier::of(&case.binary, &case.name) != Tier::System)
         .map(|case| case.seconds)
         .collect();
     if times.is_empty() {
-        return 0.0;
+        return (0.0, 0);
     }
     times.sort_by(f64::total_cmp);
-    times[times.len() * START_PERCENTILE / 100]
-}
-
-/// How many unit and integration tests a run's start cost was measured on.
-fn start_sample(cases: &[TestCase]) -> usize {
-    cases
-        .iter()
-        .filter(|case| Tier::of(&case.binary, &case.name) != Tier::System)
-        .count()
+    (times[times.len() * START_PERCENTILE / 100], times.len())
 }
 
 /// The OS a report is from. Tier 3 has a larger budget on Windows.
@@ -209,7 +214,7 @@ fn verdict(seconds: f64, budget: f64) -> Option<Verdict> {
 }
 
 /// What a tier's tests took together.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 struct Totals {
     count: usize,
     /// The sum of the tests' times.
@@ -239,21 +244,29 @@ fn total(cases: &[TestCase], tier: Tier, start: f64) -> Totals {
 
 /// The line that says what the start of a test's process was taken to
 /// cost, and from what.
-fn start_line(cases: &[TestCase]) -> String {
-    format!(
-        "process start: {:.0} ms a test ({START_PERCENTILE}% of the run's {} unit and integration \
-         tests were quicker), taken off every test before a tier is held to its budget",
-        1000.0 * start_cost(cases),
-        start_sample(cases),
-    )
+fn start_line(start: f64, sample: usize) -> String {
+    let mut line = format!(
+        "process start: {:.0} ms a test (the {START_PERCENTILE}st percentile of the run's {sample} \
+         unit and integration tests' times), taken off every test before a tier is held to its \
+         budget",
+        1000.0 * start,
+    );
+    if sample < SMALL_SAMPLE {
+        line.push_str(&format!(
+            ". It was measured on fewer than {SMALL_SAMPLE} tests: in a run of a few crates, or \
+             of tests a filter chose, the quickest may do more than start, and the figures \
+             above the start are then too low"
+        ));
+    }
+    line
 }
 
 /// The table for the terminal, and the tiers that are over budget.
 fn summarise(cases: &[TestCase], os: Os) -> (String, Vec<(Tier, Verdict)>) {
-    let start = start_cost(cases);
+    let (start, sample) = start_of(cases);
     let mut table = format!(
         "  {}\n  tier             tests   time    above start  budget  used\n",
-        start_line(cases)
+        start_line(start, sample)
     );
     let mut over = Vec::new();
     for tier in Tier::ALL {
@@ -283,11 +296,11 @@ fn summarise(cases: &[TestCase], os: Os) -> (String, Vec<(Tier, Verdict)>) {
 }
 
 fn markdown(cases: &[TestCase], os: Os) -> String {
-    let start = start_cost(cases);
+    let (start, sample) = start_of(cases);
     let mut table = format!(
         "The {}.\n\n| Tier | Tests | Time | Above start | Budget | Used |\n\
          |---|---:|---:|---:|---:|---:|\n",
-        start_line(cases).replacen("process start: ", "start of a test's process: ", 1)
+        start_line(start, sample).replacen("process start: ", "start of a test's process: ", 1)
     );
     for tier in Tier::ALL {
         let Totals {
@@ -441,8 +454,11 @@ mod tests {
         assert_eq!(over, []);
         assert_eq!(
             report,
-            "  process start: 200 ms a test (1% of the run's 9 unit and integration tests were \
-             quicker), taken off every test before a tier is held to its budget
+            "  process start: 200 ms a test (the 1st percentile of the run's 9 unit and \
+             integration tests' times), taken off every test before a tier is held to its budget. \
+             It was measured on fewer than 500 tests: in a run of a few crates, or of tests a \
+             filter chose, the quickest may do more than start, and the figures above the start \
+             are then too low
   tier             tests   time    above start  budget  used
   1, unit              5    6.0 s        5.0 s    20 s   25%
   2, integration       4   10.0 s        9.2 s    40 s   23%
@@ -472,8 +488,11 @@ mod tests {
 
         assert_eq!(
             markdown(&cases, Os::Windows),
-            "The start of a test's process: 200 ms a test (1% of the run's 9 unit and integration \
-             tests were quicker), taken off every test before a tier is held to its budget.
+            "The start of a test's process: 200 ms a test (the 1st percentile of the run's 9 unit \
+             and integration tests' times), taken off every test before a tier is held to its \
+             budget. It was measured on fewer than 500 tests: in a run of a few crates, or of \
+             tests a filter chose, the quickest may do more than start, and the figures above the \
+             start are then too low.
 
 | Tier | Tests | Time | Above start | Budget | Used |
 |---|---:|---:|---:|---:|---:|
@@ -615,6 +634,8 @@ mod tests {
         let (table, over) = summarise(&cases, Os::Windows);
         assert_eq!(over, [], "{table}");
         assert!(table.contains("24.0 s        0.0 s"), "{table}");
+        // Two thousand tests are enough to measure the start on.
+        assert!(!table.contains("fewer than"), "{table}");
         // One test that takes 21 s puts it over, as it should.
         let mut slow = cases;
         slow.push(case("cortex-base", "tests::slow", 21.0));
@@ -652,7 +673,8 @@ mod tests {
 
         // The unit tier: 17.0 s and 22.7 s raw, a third apart, which is
         // the runner and not the tests. Above the start, 11.0 s and 11.6 s:
-        // within the run-to-run noise of one runner (1.6 s in four runs).
+        // within the run-to-run noise of one runner and one setting (0.5 s
+        // in the one job that measured it).
         assert!(apart(fast[unit].seconds, slow[unit].seconds) > 0.30);
         assert!(
             apart(fast[unit].above_start, slow[unit].above_start) < 0.10,
