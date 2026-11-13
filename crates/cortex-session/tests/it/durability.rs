@@ -29,101 +29,119 @@ fn session_ending_with(world: &World, last: Body) -> (Vec<u8>, usize) {
     (bytes, before)
 }
 
+/// Cuts the log at every byte of its last entry, `last`, and checks that
+/// each cut opens cleanly read-only without being changed, and that a
+/// resume repairs it so that the session goes on.
+fn cut_at_every_byte(test: &str, last: Body) {
+    let world = World::new(test);
+    let kind = last.kind();
+    let is_record = last.is_record();
+    let (bytes, start) = session_ending_with(&world, last);
+    let whole = 5; // the header, three entries and the last one
+    let dir = world.project.session(&SessionId::new("s_1")).unwrap();
+    for cut in start..=bytes.len() {
+        // The directory is kept from one cut to the next (a new one each
+        // time costs more than the test itself on Windows); only what a
+        // resume sets aside is removed.
+        fs::write(dir.log(), &bytes[..cut]).unwrap();
+        let what = format!(
+            "{} cut at {} of {}",
+            kind.as_str(),
+            cut - start,
+            bytes.len() - start
+        );
+
+        // Read-only: opens, reads every entry, changes nothing.
+        let (log, report) = Log::open(&dir).unwrap_or_else(|error| panic!("{what}: {error}"));
+        let survived = cut >= bytes.len() - 1;
+        assert_eq!(
+            log.len(),
+            if survived { whole } else { whole - 1 },
+            "{what}"
+        );
+        assert_eq!(
+            report.cut_tail.is_some(),
+            cut > start && !survived,
+            "{what}"
+        );
+        assert!(report.damaged_lines.is_empty(), "{what}");
+        log.read_branch().unwrap();
+        log.items().unwrap();
+        assert_eq!(
+            fs::read(dir.log()).unwrap(),
+            &bytes[..cut],
+            "{what}: opening changed the file"
+        );
+        drop(log);
+
+        // For writing: the tail is repaired, dangling calls answered.
+        let (mut session, report) = world.resume("s_1");
+        if let Some(tail) = &report.cut_tail {
+            let aside = report
+                .cut_saved_to
+                .as_ref()
+                .expect("the cut bytes are kept");
+            assert_eq!(fs::read(aside).unwrap(), &bytes[start..cut], "{what}");
+            assert_eq!(tail.offset as usize, start, "{what}");
+            fs::remove_file(aside).unwrap();
+        }
+        let dangling = if survived && kind == Kind::Assistant {
+            2
+        } else {
+            0
+        };
+        assert_eq!(report.repaired_calls.len(), dangling, "{what}");
+        let next = session.append(None, user("and then")).unwrap();
+        drop(session);
+
+        let (log, report) = Log::open(&dir).unwrap();
+        assert!(
+            report.cut_tail.is_none() && report.damaged_lines.is_empty(),
+            "{what}: {report:?}"
+        );
+        let expected = if survived { whole } else { whole - 1 } + dangling + 1;
+        assert_eq!(log.len(), expected, "{what}");
+        assert_eq!(log.active(), Some(&next), "{what}");
+        // The branch reaches the first line, through the last entry if it
+        // survived and is part of the tree.
+        let branch = log.branch();
+        assert_eq!(
+            branch.first().map(|id| id.as_str()),
+            Some("e_0000"),
+            "{what}"
+        );
+        assert_eq!(
+            branch.len(),
+            expected - usize::from(survived && is_record),
+            "{what}"
+        );
+    }
+}
+
 #[test]
-fn a_log_cut_at_every_byte_of_its_last_entry_opens_cleanly() {
-    let lasts = [
-        // Text with characters of two, three and four bytes, so that cuts
-        // fall inside a character.
-        user("é ✓ 🦀 \"quoted\"\nsecond line"),
+fn a_log_cut_at_every_byte_of_a_last_prompt_opens_cleanly() {
+    // Characters of two, three and four bytes, so that cuts fall inside a
+    // character, and escapes.
+    cut_at_every_byte("cut_prompt", user("é ✓ 🦀 \"quoted\"\nsecond line"));
+}
+
+#[test]
+fn a_log_cut_at_every_byte_of_a_last_response_opens_cleanly() {
+    cut_at_every_byte(
+        "cut_response",
         assistant("i_5", "Two more: ünïcödé.", &["c_2", "c_3"]),
+    );
+}
+
+#[test]
+fn a_log_cut_at_every_byte_of_a_last_record_opens_cleanly() {
+    cut_at_every_byte(
+        "cut_record",
         Body::Meta(Meta {
             title: Some("A title".into()),
             ..Meta::default()
         }),
-    ];
-    for last in lasts {
-        let world = World::new("cut_every_byte");
-        let kind = last.kind();
-        let is_record = last.is_record();
-        let (bytes, start) = session_ending_with(&world, last);
-        let whole = 5; // the header, three entries and the last one
-        let dir = world.project.session(&SessionId::new("s_1")).unwrap();
-        for cut in start..=bytes.len() {
-            let _ = fs::remove_dir_all(dir.path());
-            fs::create_dir_all(dir.path()).unwrap();
-            fs::write(dir.log(), &bytes[..cut]).unwrap();
-            let what = format!(
-                "{} cut at {} of {}",
-                kind.as_str(),
-                cut - start,
-                bytes.len() - start
-            );
-
-            // Read-only: opens, reads every entry, changes nothing.
-            let (log, report) = Log::open(&dir).unwrap_or_else(|error| panic!("{what}: {error}"));
-            let survived = cut >= bytes.len() - 1;
-            assert_eq!(
-                log.len(),
-                if survived { whole } else { whole - 1 },
-                "{what}"
-            );
-            assert_eq!(
-                report.cut_tail.is_some(),
-                cut > start && !survived,
-                "{what}"
-            );
-            assert!(report.damaged_lines.is_empty(), "{what}");
-            log.read_branch().unwrap();
-            log.items().unwrap();
-            assert_eq!(
-                fs::read(dir.log()).unwrap(),
-                &bytes[..cut],
-                "{what}: opening changed the file"
-            );
-            drop(log);
-
-            // For writing: the tail is repaired, dangling calls answered.
-            let (mut session, report) = world.resume("s_1");
-            if let Some(tail) = &report.cut_tail {
-                let aside = report
-                    .cut_saved_to
-                    .as_ref()
-                    .expect("the cut bytes are kept");
-                assert_eq!(fs::read(aside).unwrap(), &bytes[start..cut], "{what}");
-                assert_eq!(tail.offset as usize, start, "{what}");
-            }
-            let dangling = if survived && kind == Kind::Assistant {
-                2
-            } else {
-                0
-            };
-            assert_eq!(report.repaired_calls.len(), dangling, "{what}");
-            let next = session.append(None, user("and then")).unwrap();
-            drop(session);
-
-            let (log, report) = Log::open(&dir).unwrap();
-            assert!(
-                report.cut_tail.is_none() && report.damaged_lines.is_empty(),
-                "{what}: {report:?}"
-            );
-            let expected = if survived { whole } else { whole - 1 } + dangling + 1;
-            assert_eq!(log.len(), expected, "{what}");
-            assert_eq!(log.active(), Some(&next), "{what}");
-            // The branch reaches the first line, through the last entry if it
-            // survived and is part of the tree.
-            let branch = log.branch();
-            assert_eq!(
-                branch.first().map(|id| id.as_str()),
-                Some("e_0000"),
-                "{what}"
-            );
-            assert_eq!(
-                branch.len(),
-                expected - usize::from(survived && is_record),
-                "{what}"
-            );
-        }
-    }
+    );
 }
 
 #[test]
