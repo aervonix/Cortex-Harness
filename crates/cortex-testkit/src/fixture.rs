@@ -31,6 +31,13 @@
 //!   like (`msg_…`, `req_…`, `toolu_…`), and the opaque payloads of
 //!   reasoning blocks (`signature`, `data`, `encrypted_content`), which are
 //!   bound to the account that produced them.
+//! - **The size of the account's rate limits is made up.** The headers
+//!   that are kept say how large each limit is and how much of it is left,
+//!   which shows the usage tier of the account that recorded. Every
+//!   `…-limit` is replaced by a round number chosen by what the limit
+//!   counts, and every `…-remaining` by the same share of that number, so
+//!   that "all of it", "none of it" and "one request used" still read as
+//!   they did ([`made_up_limit`]).
 //! - **The key is looked for in everything that is about to be written or
 //!   printed** ([`Scrubber::check`]). If the key, or any twelve characters
 //!   in a row of it, is there, nothing is written and nothing is printed:
@@ -58,6 +65,29 @@ pub fn keeps_header(name: &str) -> bool {
     matches!(name.as_str(), "content-type" | "retry-after" | "request-id")
         || name.starts_with("anthropic-ratelimit-")
         || name.starts_with("anthropic-fast-")
+}
+
+/// The made-up size of a rate limit, by what the header's name says it
+/// counts: requests, output tokens, or any other tokens. A fixture never
+/// holds the size of a real account's limit.
+#[must_use]
+pub fn made_up_limit(header: &str) -> u64 {
+    let header = header.to_ascii_lowercase();
+    if header.contains("-requests-") {
+        1_000
+    } else if header.contains("-output-tokens-") {
+        100_000
+    } else {
+        1_000_000
+    }
+}
+
+/// Whether a kept header holds the size of a rate limit or what is left of
+/// one.
+fn is_limit_header(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    (name.starts_with("anthropic-ratelimit-") || name.starts_with("anthropic-fast-"))
+        && (name.ends_with("-limit") || name.ends_with("-remaining"))
 }
 
 /// The prefixes of the identifiers a provider makes up, each followed by an
@@ -240,15 +270,21 @@ impl Scrubber {
         Ok(text)
     }
 
-    /// The response headers that are kept, with the request id replaced.
+    /// The response headers that are kept, with the request id replaced
+    /// and the size of every rate limit made up.
     #[must_use]
     pub fn headers(&mut self, headers: &Headers) -> Headers {
         let mut kept = Headers::new();
         for (name, value) in headers.iter() {
-            if keeps_header(name) {
-                let value = self.text(value);
-                kept.insert(name, value);
+            if !keeps_header(name) {
+                continue;
             }
+            let value = if is_limit_header(name) {
+                limit_stand_in(name, value, headers)
+            } else {
+                self.text(value)
+            };
+            kept.insert(name, value);
         }
         kept
     }
@@ -390,6 +426,35 @@ impl Scrubber {
         }
         Ok(fixture)
     }
+}
+
+/// What a fixture holds in place of the size of a rate limit, or of what is
+/// left of one.
+///
+/// A limit becomes [`made_up_limit`]. What is left becomes the same share
+/// of the made-up limit: nothing stays nothing, all of it stays all of it,
+/// and anything between stays between, at least one. A value that cannot be
+/// read as a number, or whose limit cannot, is taken for "all of it".
+fn limit_stand_in(name: &str, value: &str, headers: &Headers) -> String {
+    let made_up = made_up_limit(name);
+    let number = |text: &str| text.trim().parse::<u64>().ok();
+    let lower = name.to_ascii_lowercase();
+    let Some(family) = lower.strip_suffix("-remaining") else {
+        return made_up.to_string();
+    };
+    let limit = headers
+        .get(&format!("{family}-limit"))
+        .and_then(number)
+        .filter(|limit| *limit > 0);
+    let left = match (number(value), limit) {
+        (Some(0), _) => 0,
+        (Some(left), Some(limit)) => {
+            let share = u128::from(made_up) * u128::from(left) / u128::from(limit);
+            u64::try_from(share).unwrap_or(made_up).clamp(1, made_up)
+        }
+        _ => made_up,
+    };
+    left.to_string()
 }
 
 /// Where a JSON string's content ends, given the text after its opening
@@ -621,7 +686,7 @@ mod tests {
                 "anthropic-organization-id",
                 "0f0f0f0f-aaaa-bbbb-cccc-121212121212",
             ),
-            ("anthropic-fast-input-tokens-remaining", "159000"),
+            ("retry-after", "7"),
             ("set-cookie", "session=abc"),
         ]
         .into_iter()
@@ -629,9 +694,106 @@ mod tests {
         let kept = scrubber.headers(&headers);
         assert_eq!(kept.len(), 2);
         assert_eq!(kept.get("request-id"), Some("req_fixture0001"));
+        assert_eq!(kept.get("retry-after"), Some("7"));
+    }
+
+    #[test]
+    fn the_size_of_a_rate_limit_is_made_up() {
+        // Numbers no real account has, standing in for a real account's.
+        let recorded: Headers = [
+            ("anthropic-ratelimit-requests-limit", "7310"),
+            ("anthropic-ratelimit-requests-remaining", "7309"),
+            ("anthropic-ratelimit-requests-reset", "2026-11-13T05:39:18Z"),
+            ("anthropic-ratelimit-tokens-limit", "3141000"),
+            ("anthropic-ratelimit-tokens-remaining", "3141000"),
+            ("anthropic-ratelimit-input-tokens-limit", "2718000"),
+            ("anthropic-ratelimit-input-tokens-remaining", "1359000"),
+            ("anthropic-ratelimit-output-tokens-limit", "577000"),
+            ("anthropic-ratelimit-output-tokens-remaining", "0"),
+            ("Anthropic-Fast-Input-Tokens-Limit", "912000"),
+            ("Anthropic-Fast-Input-Tokens-Remaining", "3"),
+            ("anthropic-fast-output-tokens-limit", "183000"),
+            ("anthropic-fast-output-tokens-remaining", "183000"),
+            ("retry-after", "7"),
+        ]
+        .into_iter()
+        .collect();
+        let mut scrubber = scrubber();
+        let kept = scrubber.headers(&recorded);
+        let expected = [
+            // A limit is a round number chosen by what it counts.
+            ("anthropic-ratelimit-requests-limit", "1000"),
+            // One request used is still one request used.
+            ("anthropic-ratelimit-requests-remaining", "999"),
+            ("anthropic-ratelimit-tokens-limit", "1000000"),
+            // All of it left is all of it left.
+            ("anthropic-ratelimit-tokens-remaining", "1000000"),
+            ("anthropic-ratelimit-input-tokens-limit", "1000000"),
+            // Half left is half left.
+            ("anthropic-ratelimit-input-tokens-remaining", "500000"),
+            ("anthropic-ratelimit-output-tokens-limit", "100000"),
+            // Nothing left is nothing left: that is what a refusal turns on.
+            ("anthropic-ratelimit-output-tokens-remaining", "0"),
+            ("anthropic-fast-input-tokens-limit", "1000000"),
+            // Nearly nothing is not nothing.
+            ("anthropic-fast-input-tokens-remaining", "3"),
+            ("anthropic-fast-output-tokens-limit", "100000"),
+            ("anthropic-fast-output-tokens-remaining", "100000"),
+            // Times and waits are not sizes, and stay.
+            ("anthropic-ratelimit-requests-reset", "2026-11-13T05:39:18Z"),
+            ("retry-after", "7"),
+        ];
+        for (name, value) in expected {
+            assert_eq!(kept.get(name), Some(value), "{name}");
+        }
+        // None of the recorded sizes is in what is kept.
+        let written = format!("{kept:?}");
+        for real in [
+            "7310", "7309", "3141000", "2718000", "1359000", "577000", "912000", "183000",
+        ] {
+            assert!(!written.contains(real), "{real} in {written}");
+        }
+        // What the scrubber wrote, it leaves alone: a fixture can be checked
+        // against it.
+        let again = scrubber.headers(&kept);
+        for (name, value) in kept.iter() {
+            if name != "request-id" {
+                assert_eq!(again.get(name), Some(value), "{name}");
+            }
+        }
+
+        // What is left without a limit to measure it by, or a value that is
+        // not a number, is taken for all of it.
+        let odd: Headers = [
+            ("anthropic-ratelimit-tokens-remaining", "88000"),
+            ("anthropic-ratelimit-requests-limit", "many"),
+            ("anthropic-ratelimit-requests-remaining", "some"),
+            ("anthropic-fast-output-tokens-limit", "0"),
+            ("anthropic-fast-output-tokens-remaining", "12"),
+        ]
+        .into_iter()
+        .collect();
+        let kept = scrubber.headers(&odd);
         assert_eq!(
-            kept.get("anthropic-fast-input-tokens-remaining"),
-            Some("159000")
+            kept.get("anthropic-ratelimit-tokens-remaining"),
+            Some("1000000")
+        );
+        assert_eq!(kept.get("anthropic-ratelimit-requests-limit"), Some("1000"));
+        assert_eq!(
+            kept.get("anthropic-ratelimit-requests-remaining"),
+            Some("1000")
+        );
+        assert_eq!(
+            kept.get("anthropic-fast-output-tokens-remaining"),
+            Some("100000")
+        );
+        // And a whole recording goes through the same rule.
+        let fixture = scrubber
+            .fixture(b"{}", 200, &recorded, b"data: {}\n\n", "note")
+            .unwrap();
+        assert_eq!(
+            fixture.headers.get("anthropic-ratelimit-requests-limit"),
+            Some("1000")
         );
     }
 

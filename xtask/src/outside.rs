@@ -18,6 +18,10 @@
 //! Runs each fuzz target of the `fuzz/` package for a fixed time, with
 //! `cargo fuzz`, which needs a nightly toolchain and the `cargo-fuzz`
 //! subcommand. The recorded fixtures are the corpus each run starts from.
+//!
+//! The nightly toolchain is pinned, to a date, in `fuzz/rust-toolchain.toml`
+//! and nowhere else: the commands here run inside `fuzz/`, where that file
+//! decides the toolchain.
 
 use std::fs;
 use std::path::Path;
@@ -175,14 +179,15 @@ pub(crate) fn fuzz(arguments: &[String]) -> Result<()> {
             &corpus,
         )?;
         println!("fuzz {target}: {seconds} s, starting from {seeded} recorded streams");
-        // `cargo fuzz` builds with a nightly compiler, whatever toolchain
-        // this command itself was started with.
+        // `cargo fuzz` builds with the nightly compiler that
+        // `fuzz/rust-toolchain.toml` names, whatever toolchain this command
+        // itself was started with.
         let status = Command::new("cargo")
             // The target is named. `cargo fuzz` otherwise builds for the
             // target it was itself built for, and a prebuilt `cargo-fuzz`
             // is a static binary for a target the fuzzer cannot use: the
             // sanitizer does not work with a statically linked C library.
-            .args(["+nightly", "fuzz", "run", "--target", &host, target, "--"])
+            .args(["fuzz", "run", "--target", &host, target, "--"])
             .arg(format!("-max_total_time={seconds}"))
             // A stream event is a few hundred bytes. Inputs up to this size
             // hold a whole response of several blocks.
@@ -198,9 +203,9 @@ pub(crate) fn fuzz(arguments: &[String]) -> Result<()> {
             .status()
             .map_err(|error| {
                 format!(
-                    "could not start `cargo +nightly fuzz`: {error}. It needs a nightly \
-                     toolchain (`rustup toolchain install nightly`) and cargo-fuzz \
-                     (`cargo install cargo-fuzz`)."
+                    "could not start `cargo fuzz`: {error}. It needs the nightly \
+                     toolchain that fuzz/rust-toolchain.toml names (`rustup toolchain \
+                     install`, run inside fuzz/) and cargo-fuzz (`cargo install cargo-fuzz`)."
                 )
             })?;
         if !status.success() {
@@ -212,7 +217,7 @@ pub(crate) fn fuzz(arguments: &[String]) -> Result<()> {
     } else {
         Err(format!(
             "the fuzz target(s) {} failed. The input that failed is under fuzz/artifacts/, \
-             and `cargo +nightly fuzz run <target> <file>` runs it again.",
+             and `cargo fuzz run <target> <file>`, run inside fuzz/, runs it again.",
             failed.join(", ")
         ))
     }
@@ -222,20 +227,21 @@ pub(crate) fn fuzz(arguments: &[String]) -> Result<()> {
 /// machine's own.
 fn nightly_host() -> Result<String> {
     let output = Command::new("rustc")
-        .args(["+nightly", "-vV"])
+        .arg("-vV")
+        .current_dir(workspace::root().join("fuzz"))
         .env_remove("RUSTUP_TOOLCHAIN")
         .env_remove("RUSTC")
         .output()
-        .map_err(|error| format!("could not run `rustc +nightly -vV`: {error}"))?;
+        .map_err(|error| format!("could not run `rustc -vV` in fuzz/: {error}"))?;
     if !output.status.success() {
         return Err(
-            "`rustc +nightly -vV` failed. The fuzzer needs a nightly toolchain: `rustup \
-             toolchain install nightly`."
+            "`rustc -vV` failed in fuzz/. The fuzzer needs the nightly toolchain that \
+             fuzz/rust-toolchain.toml names: run `rustup toolchain install` inside fuzz/."
                 .to_owned(),
         );
     }
     host_of(&String::from_utf8_lossy(&output.stdout))
-        .ok_or_else(|| "`rustc +nightly -vV` did not name a host".to_owned())
+        .ok_or_else(|| "`rustc -vV` did not name a host".to_owned())
 }
 
 /// The host target in the output of `rustc -vV`.
