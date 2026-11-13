@@ -271,10 +271,23 @@ pub(crate) struct Round {
     draining: Vec<Draining>,
     /// The open question: the call's token, and the task that asks.
     asking: Option<(u64, AbortHandle)>,
-    /// Why the policy stopped the turn, once it has: from then on nothing
-    /// that has not started starts.
-    stopped: Option<String>,
+    /// The stop, once the policy has stopped the turn.
+    stopped: Option<Stopped>,
     next_token: u64,
+}
+
+/// The policy stopped the turn over a call.
+///
+/// The turn stops *at that call*, in the model's order, as it would if the
+/// calls ran one after another: a call the model wrote before it, and that
+/// was allowed, runs; nothing the model wrote after it starts. So what a
+/// stopped turn did does not depend on which answer arrived first.
+struct Stopped {
+    /// The block index of the call: the first one in the model's order,
+    /// if the policy stopped the turn over several.
+    at: u32,
+    /// Why, from the first stop to arrive.
+    reason: String,
 }
 
 /// The text of the result of a call that never ran because the turn was
@@ -315,7 +328,7 @@ impl Round {
     /// Why the policy stopped the turn, if it did: the turn then ends with
     /// the outcome `denied` once the round is settled and recorded.
     pub(crate) fn stopped(&self) -> Option<&str> {
-        self.stopped.as_deref()
+        self.stopped.as_ref().map(|stopped| stopped.reason.as_str())
     }
 
     /// Whether the response that counts has any call.
@@ -674,7 +687,10 @@ impl Round {
             self.not_run(position, NOT_RUN);
             return;
         }
-        if self.stopped.is_some() {
+        let index = self.calls[position].index;
+        let stopped_at = self.stopped.as_ref().map(|stopped| stopped.at);
+        if stopped_at.is_some_and(|at| index > at) {
+            // The model wrote this call after the one the turn stopped at.
             self.not_run(position, NOT_RUN_STOPPED);
             return;
         }
@@ -682,6 +698,8 @@ impl Round {
             Decision::Allow | Decision::AllowReadOnly => {
                 self.calls[position].state = CallState::Ready(plan);
             }
+            // Nobody is asked anything once the turn is stopped.
+            Decision::Ask if stopped_at.is_some() => self.not_run(position, NOT_RUN_STOPPED),
             Decision::Ask => self.calls[position].state = CallState::NeedsAnswer(plan),
             Decision::Deny { reason } => {
                 let mut text = "This call was not allowed to run.".to_owned();
@@ -696,19 +714,31 @@ impl Round {
     }
 
     /// The policy refused the call at `position` and said to stop the turn.
-    /// The call gets its denial. Every call that has not started gets a
-    /// result that says it did not run, an open question is withdrawn, and
-    /// from here on nothing starts. Calls that are running finish: they
-    /// were allowed.
+    ///
+    /// - The call gets its denial.
+    /// - A call the model wrote after it that has not started gets a result
+    ///   that says it did not run, and none of those starts from here on.
+    /// - A call the model wrote before it, and that was allowed, runs as it
+    ///   would have: it was allowed, and its place in the response is before
+    ///   the stop. A call that is running finishes.
+    /// - A question is withdrawn, and no other is put: the call it was about
+    ///   does not run, wherever it stands.
     fn stop(&mut self, position: usize, reason: String) {
+        let at = self.calls[position].index;
         self.deny(
             position,
             format!("This call was not allowed to run, and the turn was stopped. Reason: {reason}"),
         );
-        if self.stopped.is_some() {
-            return;
-        }
-        self.stopped = Some(reason);
+        let at = match &mut self.stopped {
+            Some(stopped) => {
+                stopped.at = stopped.at.min(at);
+                stopped.at
+            }
+            None => {
+                self.stopped = Some(Stopped { at, reason });
+                at
+            }
+        };
         if let Some((token, question)) = self.asking.take() {
             question.abort();
             if let Some(asked) = self.position(token) {
@@ -716,10 +746,13 @@ impl Round {
             }
         }
         for other in 0..self.calls.len() {
-            if matches!(
-                self.calls[other].state,
-                CallState::NeedsAnswer(_) | CallState::Ready(_)
-            ) {
+            let after = self.calls[other].index > at;
+            let withdrawn = match self.calls[other].state {
+                CallState::NeedsAnswer(_) => true,
+                CallState::Ready(_) => after,
+                _ => false,
+            };
+            if withdrawn {
                 self.not_run(other, NOT_RUN_STOPPED);
             }
         }
@@ -869,14 +902,6 @@ impl Round {
         if self.cancel.is_cancelled() {
             return;
         }
-        if self.stopped.is_some() {
-            // Nothing more starts. Once no more calls are coming, a run
-            // kept from an earlier attempt is not going to be claimed.
-            if stage == Stage::Ended {
-                self.discard_kept();
-            }
-            return;
-        }
         let (streaming, open_call) = match stage {
             Stage::Streaming { open_call } => (true, open_call),
             Stage::Ended => {
@@ -887,7 +912,11 @@ impl Round {
                 (false, None)
             }
         };
-        self.ask_next(open_call);
+        // Once the turn is stopped, nobody is asked anything, and the only
+        // calls left to start are the ones before the stop.
+        if self.stopped.is_none() {
+            self.ask_next(open_call);
+        }
 
         let mut running = self
             .calls

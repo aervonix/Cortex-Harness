@@ -290,6 +290,13 @@ mod windows {
             (r"Get-Content \\.\C:\Windows\win.ini".to_owned(), Ask),
             (r"Get-Content \\?\C:\Windows\win.ini".to_owned(), Ask),
             (r"Get-Content \\server\share\file.txt".to_owned(), Ask),
+            // A word git may read as a revision is a path when it starts
+            // at a share, and one that cannot be followed.
+            (
+                r"git diff --no-index \\server\share\a README.md".to_owned(),
+                Ask,
+            ),
+            ("git log -- //server/share/x".to_owned(), Ask),
             ("Get-Content C:README.md".to_owned(), Ask),
             (r"Get-Content \Windows\win.ini".to_owned(), Ask),
             ("Get-Content Env:PATH".to_owned(), Ask),

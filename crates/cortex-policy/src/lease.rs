@@ -511,12 +511,28 @@ pub fn standing_lease(
     })
 }
 
-/// The names, at the top of a workspace, that a command must not change:
-/// whoever can write them can run code later, outside the sandbox
-/// (`docs/architecture/06-permissions-and-sandbox.md`, "The sandbox").
-pub const PROTECTED_IN_WORKSPACE: [&str; 11] = [
+/// The names, at the top of a workspace, that nothing changes without the
+/// supervisor's answer: whoever can write them can run code later, outside
+/// the sandbox, or reach a secret
+/// (`docs/architecture/06-permissions-and-sandbox.md`, "Protected paths").
+///
+/// - Git's hooks and configuration: git runs the programs they name.
+/// - The project's own Cortex-Harness files.
+/// - The files a shell reads when it starts, and `direnv`'s.
+/// - What a CI service runs for the repository, with the repository's
+///   secrets.
+/// - Registry and build settings that name a program to run or a place to
+///   send a token.
+///
+/// The list is in the lease, so the sandbox enforces it for what a command
+/// does. It leaves the rest of `.git` writable there, because `git commit`
+/// must write it; the engine asks about every write a tool or a command
+/// line names anywhere in a `.git` directory.
+pub const PROTECTED_IN_WORKSPACE: [&str; 25] = [
     ".git/hooks",
     ".git/config",
+    ".git/config.worktree",
+    ".git/info",
     ".cortex",
     ".bashrc",
     ".bash_profile",
@@ -526,6 +542,18 @@ pub const PROTECTED_IN_WORKSPACE: [&str; 11] = [
     ".zshenv",
     ".zprofile",
     ".envrc",
+    ".github/workflows",
+    ".github/actions",
+    ".gitlab-ci.yml",
+    ".circleci",
+    ".cargo/config.toml",
+    ".cargo/config",
+    ".npmrc",
+    ".yarnrc",
+    ".yarnrc.yml",
+    ".pypirc",
+    ".pre-commit-config.yaml",
+    ".husky",
 ];
 
 /// The default sandbox policy of a session: read anywhere, write only

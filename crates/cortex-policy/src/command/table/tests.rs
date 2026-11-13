@@ -16,7 +16,8 @@ fn part(command: &str, syntax: ShellSyntax) -> Option<Part> {
 /// command.
 fn named(command: &str, syntax: ShellSyntax) -> Option<Vec<String>> {
     let part = part(command, syntax)?;
-    read_only(&part, syntax, true).map(|named| named.into_iter().map(|named| named.text).collect())
+    read_only(&part, syntax, true)
+        .map(|reading| reading.named.into_iter().map(|named| named.text).collect())
 }
 
 fn posix(command: &str) -> Option<Vec<String>> {
@@ -47,14 +48,19 @@ fn commands_that_only_read_are_on_the_table_with_what_they_name() {
         ("tail -5 log.txt", &["log.txt"]),
         ("tail -n +5 log.txt", &["log.txt"]),
         ("wc -l src/main.rs", &["src/main.rs"]),
-        ("grep -rn TODO src", &["TODO", "src"]),
-        ("grep -rn 'a b' src", &["a b", "src"]),
+        ("grep -n TODO src/main.rs", &["TODO", "src/main.rs"]),
+        ("grep -n 'a b' a.txt b.txt", &["a b", "a.txt", "b.txt"]),
         ("grep -e pattern -A 2 file.txt", &["file.txt"]),
-        ("grep --include='*.rs' -r x .", &["x", "."]),
         ("grep -c x -- -file", &["x", "-file"]),
         ("egrep 'a|b' f", &["a|b", "f"]),
         ("rg -n TODO src", &["TODO", "src"]),
-        ("rg --files -g '*.rs'", &[]),
+        // With no path, `rg` searches the directory it runs in.
+        ("rg TODO", &["TODO", "."]),
+        ("rg -e TODO", &["."]),
+        ("rg -ie TODO src", &["src"]),
+        ("rg --regexp=TODO src", &["src"]),
+        ("rg --files", &["."]),
+        ("rg --files src", &["src"]),
         ("rg -t rust -C3 'fn main' crates", &["fn main", "crates"]),
         ("fd -e rs main src", &["main", "src"]),
         ("find . -name '*.rs' -type f", &["."]),
@@ -92,8 +98,6 @@ fn commands_that_only_read_are_on_the_table_with_what_they_name() {
         ("false", &[]),
         ("echo hello -n --anything 'at all'", &[]),
         ("echo ~/x", &[]),
-        ("printf '%s\\n' a b", &[]),
-        ("test -f Cargo.toml", &[]),
         ("date", &[]),
         ("date -u +%Y-%m-%d", &[]),
         ("date -Iseconds", &[]),
@@ -244,6 +248,34 @@ fn a_command_with_anything_unlisted_is_not_on_the_table() {
         "git",
         "git status --no-such-option",
         "git log --outpu=x",
+        // A search of a whole tree that reads hidden and ignored files,
+        // which is where the files that look like secrets are.
+        "grep -r x .",
+        "grep -rn TODO src",
+        "grep --recursive x .",
+        "grep --include='*.rs' -r x .",
+        "rg --hidden x",
+        "rg -. x",
+        "rg -u x",
+        "rg -uu x",
+        "rg -uuu x",
+        "rg --unrestricted x",
+        "rg --no-ignore x",
+        "rg --no-ignore-vcs x",
+        "rg --no-ignore-parent x",
+        "rg --no-ignore-dot x",
+        "rg -g .env x",
+        "rg -g '!*.rs' x",
+        "rg --glob=.env x",
+        "rg --iglob .ENV x",
+        "rg --ignore-file=none x",
+        "rg -f patterns",
+        // Shell builtins that evaluate their arguments.
+        "printf '%s\\n' a b",
+        "printf -v x %s 1",
+        "printf -v 'a[$(touch pwned)]' %s 1",
+        "test -f Cargo.toml",
+        "test -v 'a[$(touch pwned)]'",
         // An abbreviation of a long option is not the option listed.
         "sort --rev data.txt",
         "ls --al",
@@ -410,22 +442,100 @@ fn a_named_revision_need_not_be_a_path_and_a_named_file_must() {
         let part = part(command, ShellSyntax::Posix).unwrap();
         read_only(&part, ShellSyntax::Posix, true).unwrap()
     };
-    assert!(named_of("cat a.txt").iter().all(|named| named.must_resolve));
-    assert!(
-        named_of("find src -newer x")
+    let all = |command: &str, wanted: bool| {
+        let reading = named_of(command);
+        assert!(!reading.named.is_empty(), "{command:?}");
+        assert!(
+            reading
+                .named
+                .iter()
+                .all(|named| named.must_resolve == wanted),
+            "{command:?}"
+        );
+    };
+    all("cat a.txt", true);
+    all("find src -newer x", true);
+    all("git show HEAD:a.txt", false);
+    all("git status src", true);
+}
+
+/// A command that reads the content of files nobody named says so: the
+/// engine then asks whether a rule protects anything there.
+#[test]
+fn a_search_says_which_trees_it_reads_and_git_says_it_reads_the_repository() {
+    let reading = |command: &str, syntax: ShellSyntax| {
+        let part = part(command, syntax).unwrap();
+        read_only(&part, syntax, true).unwrap()
+    };
+    let searched = |command: &str| -> Vec<String> {
+        reading(command, ShellSyntax::Posix)
+            .named
+            .into_iter()
+            .filter(|named| named.searched)
+            .map(|named| named.text)
+            .collect()
+    };
+    assert_eq!(searched("rg TODO"), ["TODO", "."]);
+    assert_eq!(searched("rg TODO src tests"), ["TODO", "src", "tests"]);
+    assert_eq!(searched("rg -e TODO"), ["."]);
+    assert_eq!(searched("rg -e TODO src"), ["src"]);
+    assert_eq!(searched("rg --files"), ["."]);
+    // The text of an option is not a tree.
+    assert_eq!(searched("rg -t rust TODO src"), ["TODO", "src"]);
+    assert_eq!(
+        reading("rg TODO", ShellSyntax::PowerShell)
+            .named
             .iter()
-            .all(|named| named.must_resolve)
+            .filter(|named| named.searched)
+            .count(),
+        2
     );
-    assert!(
-        named_of("git show HEAD:a.txt")
-            .iter()
-            .all(|named| !named.must_resolve)
-    );
-    assert!(
-        named_of("git status src")
-            .iter()
-            .all(|named| named.must_resolve)
-    );
+    // Commands that read the files they name, or print names only.
+    for command in [
+        "cat a.txt",
+        "grep x a.txt",
+        "ls -R src",
+        "find . -name x",
+        "tree src",
+        "fd x src",
+        "du -sh .",
+        "git status",
+        "git ls-files",
+        "git blame a.rs",
+        "git branch -a",
+        "git log",
+        "git log --oneline -20",
+        "git log --stat --name-only --format=%H -n 5",
+        "git log --follow -- src/lib.rs",
+    ] {
+        assert!(searched(command).is_empty(), "{command:?}");
+        assert!(
+            !reading(command, ShellSyntax::Posix).repository,
+            "{command:?}"
+        );
+    }
+    for command in [
+        "git diff",
+        "git diff --stat HEAD~1",
+        "git show HEAD",
+        "git show --stat HEAD",
+        "git log -p",
+        "git log --oneline --patch",
+        "git log -5 -U3",
+        "git log -pn 3",
+        "git log -S password",
+        "git log -Gpassword --oneline",
+        "git log --unified=3",
+        "git log --word-diff",
+        "git log -L 1,5:a.rs",
+        "git grep TODO",
+    ] {
+        assert!(
+            reading(command, ShellSyntax::Posix).repository,
+            "{command:?}"
+        );
+    }
+    assert!(!reading("rg TODO", ShellSyntax::Posix).repository);
 }
 
 #[test]
@@ -495,6 +605,8 @@ fn powershell_commands_that_only_read_are_on_the_table() {
         ("git status --short", &[]),
         ("GIT.EXE log --oneline -5", &[]),
         ("rg -n TODO src", &["TODO", "src"]),
+        ("Get-Content C:\\work\\a.txt", &["C:\\work\\a.txt"]),
+        ("Get-Content C:/work/a.txt", &["C:/work/a.txt"]),
     ];
     for (command, expected) in cases {
         assert_eq!(
@@ -520,6 +632,18 @@ fn a_powershell_command_with_anything_unlisted_is_not_on_the_table() {
         "Get-Content -Path:",
         "Get-Date -Wrong",
         "Get-Location extra",
+        // A path that is not a file's: the environment, the registry, a
+        // function's text, a second stream of a file.
+        "Get-ChildItem Env:",
+        "Get-Content Env:PATH",
+        "Get-Content -Path Env:PATH",
+        "Get-Content -Path:Env:PATH",
+        "Get-Item HKLM:\\Software",
+        "Get-Content Function:prompt",
+        "Get-Content C:\\work\\a.txt:hidden",
+        "Get-Content a.txt:hidden",
+        "Get-Content C:a.txt",
+        "Test-Path Variable:x",
         // Unix options given to a PowerShell alias.
         "ls -la",
         "cat -n x",

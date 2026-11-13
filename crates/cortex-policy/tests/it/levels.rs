@@ -83,7 +83,7 @@ fn at_read_only_no_rule_makes_a_write_happen() {
     let engine = engine_with(|parts| {
         parts.level = Level::ReadOnly;
         parts.rules = vec![
-            user(Effect::Write, "**", RuleAction::Allow),
+            user(Effect::Write, "/**", RuleAction::Allow),
             user(Effect::Write, "src/**", RuleAction::Allow),
             user(Effect::Exec, "*", RuleAction::Allow),
         ];
@@ -155,12 +155,15 @@ fn a_deny_holds_at_every_level() {
         assert_eq!(said(&write(&engine, credentials)), Deny, "{level:?}");
         assert_eq!(
             said(&shell(&engine, &format!("cat {credentials}"))),
-            Ask,
+            Deny,
             "{level:?}"
         );
+        // A search of a tree with a protected file in it is asked about at
+        // every level: the rule holds whatever the level lets run.
+        assert_eq!(said(&shell(&engine, "rg KEY")), Ask, "{level:?}");
         assert_eq!(
             said(&shell(&engine, &format!("cp {credentials} /tmp/x"))),
-            Ask,
+            Deny,
             "{level:?}"
         );
     }
@@ -175,7 +178,7 @@ fn an_ask_rule_is_asked_at_every_level() {
                 user(Effect::Exec, "git push *", RuleAction::Ask),
                 user(Effect::Exec, "git *", RuleAction::Allow),
                 user(Effect::Write, "migrations/**", RuleAction::Ask),
-                user(Effect::Write, "**", RuleAction::Allow),
+                user(Effect::Write, "/**", RuleAction::Allow),
             ];
         });
         assert_eq!(said(&shell(&engine, "git push")), Ask, "{level:?}");

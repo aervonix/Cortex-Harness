@@ -356,6 +356,76 @@ impl PathGlob {
             starts && steps_match(&alternative.steps, &names)
         })
     }
+
+    /// The same glob, with a start anywhere (`**/…`) made a start at
+    /// `workspace`: for a glob that grants. `**/*.md` in a rule that holds
+    /// back means every `.md` file on the machine, which is the wide side
+    /// for a rule that holds back. In a rule that allows, the wide side
+    /// would be every such file in the home directory and beyond, so there
+    /// it means the workspace. A rule that is to allow more says where:
+    /// `~/notes/**`, `/srv/data/**`.
+    #[must_use]
+    pub fn kept_within(mut self, workspace: &AbsPath) -> Self {
+        let (style, case) = (self.style, self.case);
+        for alternative in &mut self.alternatives {
+            if alternative.start != Start::Anywhere {
+                continue;
+            }
+            let mut steps: Vec<Step> = workspace
+                .names()
+                .map(|name| match case {
+                    Case::Exact => NamePattern::literal(name),
+                    Case::Folded => NamePattern::literal(&style.fold(name)),
+                })
+                .map(Step::Name)
+                .collect();
+            steps.append(&mut alternative.steps);
+            alternative.steps = steps;
+            alternative.start = Start::Root(style.fold(workspace.root().as_str()).into_owned());
+        }
+        self
+    }
+
+    /// Whether the glob can match a path below the directory `tree`: one
+    /// that a search of the tree would read without anybody naming it.
+    ///
+    /// The answer errs towards yes. A tree in another style is never
+    /// reached.
+    #[must_use]
+    pub fn reaches_under(&self, tree: &AbsPath) -> bool {
+        if tree.style() != self.style {
+            return false;
+        }
+        let root = self.style.fold(tree.root().as_str()).into_owned();
+        let names: Vec<std::borrow::Cow<'_, str>> = match self.case {
+            Case::Exact => tree.names().map(std::borrow::Cow::Borrowed).collect(),
+            Case::Folded => tree.names().map(|name| self.style.fold(name)).collect(),
+        };
+        self.alternatives.iter().any(|alternative| {
+            let starts = match &alternative.start {
+                Start::Anywhere => true,
+                Start::Root(wanted) => *wanted == root,
+            };
+            starts && steps_reach(&alternative.steps, &names)
+        })
+    }
+}
+
+/// Whether the steps can take all of the names and then at least one
+/// more: whether the glob can match something below the directory the
+/// names lead to. Errs towards yes: a `**` is taken to reach everywhere
+/// below where it stands.
+fn steps_reach(steps: &[Step], names: &[std::borrow::Cow<'_, str>]) -> bool {
+    match (steps.split_first(), names.split_first()) {
+        // The glob ends at this directory or above it.
+        (None, _) => false,
+        (Some((Step::AnyDepth, _)), _) => true,
+        // The glob goes on below the directory.
+        (Some((Step::Name(_), _)), None) => true,
+        (Some((Step::Name(pattern), rest)), Some((name, more))) => {
+            pattern.matches(name) && steps_reach(rest, more)
+        }
+    }
 }
 
 /// Whether the steps take all of the names.
@@ -765,6 +835,132 @@ mod tests {
                 "{pattern:?} on {path:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_glob_kept_within_the_workspace_starts_there_and_nowhere_else() {
+        let workspace = posix("/work/app");
+        let inside = ["/work/app/a.md", "/work/app/docs/deep/a.md"];
+        let outside = ["/users/dev/a.md", "/work/a.md", "/work/app2/a.md", "/a.md"];
+        let anywhere = glob("**/*.md");
+        let kept = glob("**/*.md").kept_within(&workspace);
+        for path in inside {
+            assert!(anywhere.matches(&posix(path)), "{path}");
+            assert!(kept.matches(&posix(path)), "{path}");
+        }
+        for path in outside {
+            assert!(anywhere.matches(&posix(path)), "{path}");
+            assert!(!kept.matches(&posix(path)), "{path}");
+        }
+        // `**` alone: the workspace and everything in it.
+        let all = glob("**").kept_within(&workspace);
+        assert!(all.matches(&posix("/work/app")));
+        assert!(all.matches(&posix("/work/app/src/main.rs")));
+        assert!(!all.matches(&posix("/work")));
+        assert!(!all.matches(&posix("/users/dev/.ssh/id_rsa")));
+        // Only the alternatives that start anywhere change.
+        let mixed = glob("{**/*.md,~/notes/**,/srv/**}").kept_within(&workspace);
+        assert!(mixed.matches(&posix("/work/app/a.md")));
+        assert!(!mixed.matches(&posix("/users/dev/a.md")));
+        assert!(mixed.matches(&posix("/users/dev/notes/a.txt")));
+        assert!(mixed.matches(&posix("/srv/x")));
+        // A glob that starts somewhere is as it was.
+        for pattern in ["src/**", "*.md", "~/notes/**", "/srv/**"] {
+            assert_eq!(
+                glob(pattern).kept_within(&workspace),
+                glob(pattern),
+                "{pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_glob_reaches_under_a_tree_it_can_match_something_in() {
+        // (pattern, tree, whether something below the tree can match)
+        let cases = [
+            ("secrets/**", "/work/app", true),
+            ("secrets/**", "/work/app/secrets", true),
+            ("secrets/**", "/work/app/secrets/deep", true),
+            ("secrets/**", "/work/app/src", false),
+            ("secrets/**", "/work", true),
+            ("secrets/**", "/", true),
+            ("secrets/**", "/other", false),
+            ("config/keys.txt", "/work/app", true),
+            ("config/keys.txt", "/work/app/config", true),
+            // The glob names the file itself, and nothing below it.
+            ("config/keys.txt", "/work/app/config/keys.txt", false),
+            ("config/keys.txt", "/work/app/src", false),
+            ("**/*.pem", "/anywhere/at/all", true),
+            ("*.pem", "/work/app/src/deep", true),
+            ("*.pem", "/elsewhere", false),
+            ("~/notes/**", "/users/dev", true),
+            ("~/notes/**", "/users/dev/notes/old", true),
+            ("~/notes/**", "/users/dev/code", false),
+            ("/etc/ssl/{private,keys}/*", "/etc/ssl/keys", true),
+            ("/etc/ssl/{private,keys}/*", "/etc/ssl/certs", false),
+            ("src/*/gen/*.rs", "/work/app/src/a", true),
+            ("src/*/gen/*.rs", "/work/app/src/a/other", false),
+        ];
+        for (pattern, tree, reaches) in cases {
+            assert_eq!(
+                glob(pattern).reaches_under(&posix(tree)),
+                reaches,
+                "{pattern} under {tree}"
+            );
+        }
+        assert!(!glob("secrets/**").reaches_under(&windows("C:\\work\\app")));
+    }
+
+    /// Whatever a glob matches, it is said to reach under every directory
+    /// above the match: the check that a search of a tree relies on never
+    /// says no where the answer is yes.
+    #[test]
+    fn a_glob_reaches_under_every_directory_above_what_it_matches() {
+        let patterns = [
+            "secrets/**",
+            "**/*.pem",
+            "*.key",
+            "a/*/c",
+            "a/**/c/*.txt",
+            "/etc/**",
+            "~/x/**/y",
+            "src/{a,b}/**",
+            "[a-c]*/d",
+        ];
+        let names = [
+            "a", "b", "c", "d", "x", "y", "secrets", "k.pem", "k.key", "n.txt", "etc",
+        ];
+        let roots = ["/work/app", "/users/dev", "/etc", "/"];
+        cases::check(
+            "glob_reaches_under",
+            3000,
+            |rng| {
+                let pattern = *cases::pick(rng, &patterns);
+                let root = *cases::pick(rng, &roots);
+                let below: Vec<&str> = (0..rng.below(5))
+                    .map(|_| *cases::pick(rng, &names))
+                    .collect();
+                (pattern, root, below)
+            },
+            |(pattern, root, below)| {
+                let pattern = glob(pattern);
+                let mut path = posix(root);
+                for name in below {
+                    path = path.join(name)?;
+                }
+                if pattern.matches(&path) {
+                    let mut above = path.parent();
+                    while let Some(tree) = above {
+                        cases::ensure!(
+                            pattern.reaches_under(&tree),
+                            "matches {path} and is said not to reach under {tree}"
+                        );
+                        above = tree.parent();
+                    }
+                }
+                Ok(())
+            },
+        );
     }
 
     #[test]
