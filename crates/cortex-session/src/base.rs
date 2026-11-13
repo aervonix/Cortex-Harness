@@ -22,9 +22,13 @@
 //! is marked incomplete. A capture after the project is trusted appends a
 //! second, complete record.
 //!
-//! **Likely secrets are never kept**, trusted or not: files named like
-//! environment files, keys and certificates, and `.netrc`. They are listed
-//! as omitted, with the reason.
+//! **What the model may not read unasked is never kept**, trusted or not.
+//! The capture is given a [`KeepGate`], which the core fills from the
+//! permission engine's read rules: a file the rules protect, or one that
+//! looks like a secret (an environment file, a private key), is listed as
+//! omitted, with the reason, and its content goes nowhere. This crate holds
+//! no list of such names of its own, so the session store and the `read`
+//! tool cannot disagree about what is protected.
 //!
 //! git is run with [`GIT_HARDENING`], which turns off what would otherwise
 //! let it write to the repository or start a file-system monitor.
@@ -216,8 +220,9 @@ pub struct Omitted {
 /// Why something was left out of a base state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum OmitReason {
-    /// It is likely to hold a secret.
-    Secret,
+    /// The permission rules do not let it be read without asking: a rule
+    /// protects it, or it looks like a secret ([`KeepGate`]).
+    Protected,
     /// It is larger than the limit for one file.
     TooLarge,
     /// The limit on how many files was reached.
@@ -238,7 +243,7 @@ pub enum OmitReason {
 impl OmitReason {
     fn as_str(&self) -> &str {
         match self {
-            Self::Secret => "secret",
+            Self::Protected => "protected",
             Self::TooLarge => "too_large",
             Self::TooMany => "too_many",
             Self::TotalLimit => "total_limit",
@@ -260,7 +265,7 @@ impl<'de> Deserialize<'de> for OmitReason {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = String::deserialize(deserializer)?;
         Ok(match text.as_str() {
-            "secret" => Self::Secret,
+            "protected" => Self::Protected,
             "too_large" => Self::TooLarge,
             "too_many" => Self::TooMany,
             "total_limit" => Self::TotalLimit,
@@ -272,24 +277,40 @@ impl<'de> Deserialize<'de> for OmitReason {
     }
 }
 
-/// Whether a file's name says it is likely to hold a secret: environment
-/// files (`.env`, `.env.local`), private keys and certificates (`*.pem`,
-/// `*.key`, `*.p12`, `*.pfx`, `id_*` but not `id_*.pub`) and `.netrc`.
-/// The permission rules of a later step replace this list.
-#[must_use]
-pub fn is_likely_secret(path: &str) -> bool {
-    let name = path
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(path)
-        .to_ascii_lowercase();
-    name.starts_with(".env")
-        || name == ".netrc"
-        || name == "_netrc"
-        || [".pem", ".key", ".p12", ".pfx"]
-            .iter()
-            .any(|suffix| name.ends_with(suffix))
-        || (name.starts_with("id_") && !name.ends_with(".pub"))
+/// Says which files a base state may keep
+/// (`docs/architecture/07-sessions-and-context.md`, "The base state").
+///
+/// The core fills it from the permission engine: a file may be kept when the
+/// read rules would let the model read it **without asking**
+/// (`cortex-policy`'s `Engine::may_store`). So a file a rule protects, and a
+/// file that looks like a secret, never reaches the checkpoint store or the
+/// patch through the base state, which nobody approved.
+///
+/// `cortex-session` cannot see `cortex-policy`, and keeps no list of its
+/// own: this trait is the seam. Any `Fn(&AbsPath) -> bool` is one.
+pub trait KeepGate: Send + Sync {
+    /// Whether the content of the file at `path` may be kept. `path` is the
+    /// file's absolute location, made from the directory git or the listing
+    /// gave and the file's name: no link in it has been followed.
+    fn may_keep(&self, path: &AbsPath) -> bool;
+}
+
+impl<F> KeepGate for F
+where
+    F: Fn(&AbsPath) -> bool + Send + Sync,
+{
+    fn may_keep(&self, path: &AbsPath) -> bool {
+        self(path)
+    }
+}
+
+/// Whether the file named `relative` under `directory` may be kept. A name
+/// that is not a path the harness accepts cannot be put to the gate, and is
+/// not kept: the model could not have read it either.
+fn may_keep(gate: &dyn KeepGate, directory: Option<&AbsPath>, relative: &str) -> bool {
+    directory
+        .and_then(|directory| directory.join(relative).ok())
+        .is_some_and(|path| gate.may_keep(&path))
 }
 
 /// What a git command printed.
@@ -383,12 +404,13 @@ impl BaseCapture {
         git: Arc<dyn Git>,
         clock: SharedClock,
         limits: BaseLimits,
+        gate: Arc<dyn KeepGate>,
     ) -> io::Result<Self> {
         let (sender, receiver) = mpsc::channel();
         std::thread::Builder::new()
             .name("cortex-base-state".to_owned())
             .spawn(move || {
-                let state = capture(&root, trusted, &store, &*git, &*clock, &limits);
+                let state = capture(&root, trusted, &store, &*git, &*clock, &limits, &*gate);
                 // The session may have ended first; then nobody wants it.
                 let _ = sender.send(state);
             })?;
@@ -414,7 +436,8 @@ impl BaseCapture {
 }
 
 /// Takes the base state of the workspace at `root`. Blocks. Never fails: a
-/// problem is recorded in the state's `note`.
+/// problem is recorded in the state's `note`. Nothing `gate` refuses is
+/// kept.
 pub fn capture(
     root: &AbsPath,
     trusted: bool,
@@ -422,6 +445,7 @@ pub fn capture(
     git: &dyn Git,
     clock: &dyn Clock,
     limits: &BaseLimits,
+    gate: &dyn KeepGate,
 ) -> BaseState {
     let started = clock.now();
     let directory = root.to_fs_path();
@@ -431,8 +455,8 @@ pub fn capture(
         .filter(|output| output.success)
         .and_then(|output| first_line(&output.stdout));
     let mut state = match top {
-        Some(top) => from_git(root, &top, trusted, store, git, limits),
-        None => from_listing(root, clock, limits),
+        Some(top) => from_git(root, &top, trusted, store, git, limits, gate),
+        None => from_listing(root, clock, limits, gate),
     };
     state.trusted = trusted;
     state.took_ms = clock
@@ -455,6 +479,7 @@ fn from_git(
     store: &DiskStore,
     git: &dyn Git,
     limits: &BaseLimits,
+    gate: &dyn KeepGate,
 ) -> BaseState {
     let top_dir = PathBuf::from(top);
     let small = 64 * 1024;
@@ -467,9 +492,11 @@ fn from_git(
         .ok()
         .filter(|output| output.success)
         .and_then(|output| first_line(&output.stdout));
-    let workspace_root = AbsPath::parse(top, PathStyle::NATIVE)
-        .ok()
-        .and_then(|top| root.strip_prefix(&top))
+    // Where git's names start from, for putting each to the gate.
+    let top_path = AbsPath::parse(top, PathStyle::NATIVE).ok();
+    let workspace_root = top_path
+        .as_ref()
+        .and_then(|top| root.strip_prefix(top))
         .map(|relative| relative.as_str().to_owned())
         .unwrap_or_default();
     let mut base = GitBase {
@@ -496,10 +523,16 @@ fn from_git(
     let mut omitted = Vec::new();
     let mut problems = Vec::new();
 
-    // Tracked changes, leaving out files that are likely secrets.
+    // Tracked changes, leaving out the files the gate does not let through.
     let patch =
         changed_names(&run, base.commit.is_some(), limits, &mut problems).and_then(|changed| {
-            let exclusions = secret_exclusions(changed, &mut omitted, &mut problems)?;
+            let exclusions = protected_exclusions(
+                changed,
+                gate,
+                top_path.as_ref(),
+                &mut omitted,
+                &mut problems,
+            )?;
             Some(if base.commit.is_some() {
                 diff(&run, &["HEAD"], &exclusions, limits.patch_bytes)
             } else {
@@ -540,6 +573,7 @@ fn from_git(
                 split_nul(&output.stdout),
                 store,
                 limits,
+                (gate, top_path.as_ref()),
                 &mut base,
                 &mut omitted,
             );
@@ -555,7 +589,7 @@ fn from_git(
     let complete = problems.is_empty()
         && omitted
             .iter()
-            .all(|omitted| omitted.reason == OmitReason::Secret);
+            .all(|omitted| omitted.reason == OmitReason::Protected);
     BaseState {
         complete,
         git: Some(base),
@@ -568,14 +602,14 @@ fn from_git(
 /// Why there is no patch when the names of the changed files are not all
 /// known.
 const NOT_LISTED: &str =
-    "so no patch was taken: without the whole list, likely secrets could not be left out of it";
+    "so no patch was taken: without the whole list, protected files could not be left out of it";
 
 /// The names of every file the patch will hold a change to, as git gives
 /// them: against the commit, or with no commits yet, the staged and then the
 /// unstaged ones (a file added with `--intent-to-add` is only in the
 /// second). `None`, with the reason in `problems`, unless git listed them
-/// all: the secrets are left out of the patch by name, so a patch is taken
-/// only with the whole list in hand.
+/// all: protected files are left out of the patch by name, so a patch is
+/// taken only with the whole list in hand.
 fn changed_names(
     run: &dyn Fn(&[&str], usize) -> io::Result<GitOutput>,
     has_commit: bool,
@@ -624,12 +658,18 @@ fn changed_names(
     Some(changed)
 }
 
-/// The pathspecs that leave the likely secrets among `changed` out of the
-/// patch, each secret listed as omitted. `None`, with the reason in
-/// `problems`, when a likely secret's name is not UTF-8: git could not be
-/// given a pathspec that names it, so no patch is taken.
-fn secret_exclusions(
+/// The pathspecs that leave the files the gate refuses out of the patch,
+/// each listed as omitted. `None`, with the reason in `problems`, when such
+/// a file's name is not UTF-8: git could not be given a pathspec that names
+/// it, so no patch is taken.
+///
+/// A name that is not UTF-8 is put to the gate with its bad bytes replaced,
+/// which is how it would be shown: the gate cannot be asked about a name it
+/// cannot be given.
+fn protected_exclusions(
     changed: Vec<Vec<u8>>,
+    gate: &dyn KeepGate,
+    top: Option<&AbsPath>,
     omitted: &mut Vec<Omitted>,
     problems: &mut Vec<String>,
 ) -> Option<Vec<String>> {
@@ -638,7 +678,7 @@ fn secret_exclusions(
     let mut unnamed = false;
     for raw in changed {
         let path = String::from_utf8_lossy(&raw).into_owned();
-        if !is_likely_secret(&path) || !seen.insert(raw.clone()) {
+        if may_keep(gate, top, &path) || !seen.insert(raw.clone()) {
             continue;
         }
         if std::str::from_utf8(&raw).is_ok() {
@@ -648,12 +688,12 @@ fn secret_exclusions(
         }
         omitted.push(Omitted {
             path,
-            reason: OmitReason::Secret,
+            reason: OmitReason::Protected,
         });
     }
     if unnamed {
         problems.push(
-            "a likely secret has a name that is not UTF-8, so it could not be left out of the \
+            "a protected file has a name that is not UTF-8, so it could not be left out of the \
              patch, and no patch was taken"
                 .to_owned(),
         );
@@ -677,15 +717,16 @@ fn untracked(
     paths: Vec<String>,
     store: &DiskStore,
     limits: &BaseLimits,
+    (gate, top): (&dyn KeepGate, Option<&AbsPath>),
     base: &mut GitBase,
     omitted: &mut Vec<Omitted>,
 ) {
     let mut total = 0u64;
     for path in paths {
-        if is_likely_secret(&path) {
+        if !may_keep(gate, top, &path) {
             omitted.push(Omitted {
                 path,
-                reason: OmitReason::Secret,
+                reason: OmitReason::Protected,
             });
             continue;
         }
@@ -777,7 +818,12 @@ fn split_nul(output: &[u8]) -> Vec<String> {
 }
 
 /// Lists a workspace that is not a git repository.
-fn from_listing(root: &AbsPath, clock: &dyn Clock, limits: &BaseLimits) -> BaseState {
+fn from_listing(
+    root: &AbsPath,
+    clock: &dyn Clock,
+    limits: &BaseLimits,
+    gate: &dyn KeepGate,
+) -> BaseState {
     let started = clock.now();
     let mut files = Vec::new();
     let mut omitted = Vec::new();
@@ -846,10 +892,10 @@ fn from_listing(root: &AbsPath, clock: &dyn Clock, limits: &BaseLimits) -> BaseS
                 complete = false;
                 break 'walk;
             }
-            if is_likely_secret(&path) {
+            if !may_keep(gate, Some(root), &path) {
                 omitted.push(Omitted {
                     path,
-                    reason: OmitReason::Secret,
+                    reason: OmitReason::Protected,
                 });
                 continue;
             }
@@ -904,39 +950,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn likely_secrets_are_recognised_by_name() {
-        for secret in [
-            ".env",
-            ".env.local",
-            "config/.ENV.production",
-            "certs/server.pem",
-            "tls.key",
-            "store.p12",
-            "a\\b\\cert.pfx",
-            ".netrc",
-            "_netrc",
-            "home/.ssh/id_ed25519",
-            "id_rsa",
-        ] {
-            assert!(is_likely_secret(secret), "{secret}");
-        }
-        for ordinary in [
-            "src/env.rs",
-            "environment.md",
-            "id_rsa.pub",
-            "keys.rs",
-            "monkey.txt",
-            "src/identity.rs",
-            "docs/pem-files.md",
-        ] {
-            assert!(!is_likely_secret(ordinary), "{ordinary}");
-        }
+    fn a_name_the_gate_cannot_be_asked_about_is_not_kept() {
+        let open = |_: &AbsPath| true;
+        let top = AbsPath::parse("/work/project", PathStyle::Posix).unwrap();
+        assert!(may_keep(&open, Some(&top), "src/main.rs"));
+        // A name that climbs out is not one the harness accepts.
+        assert!(!may_keep(&open, Some(&top), "../outside.txt"));
+        assert!(!may_keep(&open, Some(&top), "a\0b"));
+        // No directory to start from: nothing can be asked, nothing is kept.
+        assert!(!may_keep(&open, None, "src/main.rs"));
+        // And the gate is asked about the whole path.
+        let no_env = |path: &AbsPath| path.file_name() != Some(".env");
+        assert!(!may_keep(&no_env, Some(&top), "config/.env"));
+        assert!(may_keep(&no_env, Some(&top), "config/env.rs"));
     }
 
     #[test]
     fn omit_reasons_round_trip_and_tolerate_new_ones() {
         let reasons = [
-            OmitReason::Secret,
+            OmitReason::Protected,
             OmitReason::TooLarge,
             OmitReason::TooMany,
             OmitReason::TotalLimit,

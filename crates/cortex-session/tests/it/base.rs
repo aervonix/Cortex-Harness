@@ -6,6 +6,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use cortex_base::AbsPath;
 use cortex_protocol::ids::SessionId;
 use cortex_session::base::{GIT_HARDENING, GitOutput, OmitReason, capture};
 use cortex_session::entry::{Body, Kind};
@@ -13,6 +14,17 @@ use cortex_session::{BaseCapture, BaseLimits, Git, Log, SessionError, SystemGit}
 use cortex_testkit::Gate;
 
 use crate::{World, assistant, in_ci, user};
+
+/// The gate these tests give a capture, standing in for the permission
+/// engine's read rules: files that look like secrets are not kept. The list
+/// is the test's. `cortex-session` has none of its own.
+fn no_secrets(path: &AbsPath) -> bool {
+    let name = path.file_name().unwrap_or_default().to_ascii_lowercase();
+    !(name.starts_with(".env")
+        || name.ends_with(".pem")
+        || name == "id_ed25519"
+        || name.contains("secret"))
+}
 
 /// A git that answers from a script, records what it was asked, and can be
 /// held back until a gate opens.
@@ -113,6 +125,7 @@ fn the_base_state_does_not_delay_the_first_prompt() {
         git.clone(),
         Arc::new(world.clock.clone()),
         BaseLimits::default(),
+        Arc::new(no_secrets),
     )
     .unwrap();
     // git has not answered, and the conversation goes on.
@@ -143,6 +156,7 @@ fn an_untrusted_project_gets_its_commit_and_branch_and_nothing_that_runs_its_con
         &git,
         &world.clock,
         &BaseLimits::default(),
+        &no_secrets,
     );
     assert!(!base.complete);
     assert!(!base.trusted);
@@ -155,8 +169,98 @@ fn an_untrusted_project_gets_its_commit_and_branch_and_nothing_that_runs_its_con
     assert_eq!(commands, ["rev-parse", "rev-parse", "symbolic-ref"]);
 }
 
+/// The store keeps no list of secret names of its own: what is kept is
+/// what the gate lets through, asked about each file's absolute path.
 #[test]
-fn likely_secrets_are_never_kept() {
+fn the_gate_alone_decides_what_is_kept() {
+    let world = World::new("base_gate_alone");
+    let session = world.create("s_1");
+    let top = world.workspace.to_string_lossy().into_owned();
+    let mut git = ScriptedGit::repository("abc123");
+    git.answers[0].1 = format!("{top}\n").into_bytes();
+    git.answers[3].1 = b"src/id_map.rs\0".to_vec();
+    world.write("src/id_map.rs", b"ordinary source");
+    world.write(".env.local", b"KEY=hunter2");
+    world.write("notes.txt", b"untracked notes");
+    git.answers[5].1 = b"notes.txt\0.env.local\0src/id_map.rs\0".to_vec();
+
+    // A gate that lets everything through: nothing is held back by name.
+    let asked = Mutex::new(Vec::new());
+    let open = |path: &AbsPath| {
+        asked.lock().unwrap().push(path.clone());
+        true
+    };
+    let base = capture(
+        &world.root,
+        true,
+        &session.store(),
+        &git,
+        &world.clock,
+        &BaseLimits::default(),
+        &open,
+    );
+    assert!(base.omitted.is_empty(), "{:?}", base.omitted);
+    let kept: Vec<String> = base
+        .git
+        .unwrap()
+        .untracked
+        .into_iter()
+        .map(|file| file.path)
+        .collect();
+    assert_eq!(kept, ["notes.txt", ".env.local", "src/id_map.rs"]);
+    // Each file was asked about by its absolute path under git's top.
+    let asked = asked.into_inner().unwrap();
+    assert!(
+        asked.contains(&world.root.join("src/id_map.rs").unwrap()),
+        "{asked:?}"
+    );
+    assert!(asked.contains(&world.root.join(".env.local").unwrap()));
+
+    // A gate that refuses one ordinary-looking file: that file is left out,
+    // of the store and of the patch.
+    let session = world.create("s_2");
+    let git = {
+        let mut git = ScriptedGit::repository("abc123");
+        git.answers[0].1 = format!("{top}\n").into_bytes();
+        git.answers[3].1 = b"notes.txt\0src/lib.rs\0".to_vec();
+        git.answers[5].1 = b"notes.txt\0.env.local\0".to_vec();
+        git
+    };
+    let no_notes = |path: &AbsPath| path.file_name() != Some("notes.txt");
+    let base = capture(
+        &world.root,
+        true,
+        &session.store(),
+        &git,
+        &world.clock,
+        &BaseLimits::default(),
+        &no_notes,
+    );
+    let protected: Vec<&str> = base
+        .omitted
+        .iter()
+        .filter(|omitted| omitted.reason == OmitReason::Protected)
+        .map(|omitted| omitted.path.as_str())
+        .collect();
+    assert_eq!(protected, ["notes.txt", "notes.txt"], "tracked, then untracked");
+    assert!(
+        !session
+            .store()
+            .has_blob(&cortex_base::ContentHash::of(b"untracked notes"))
+    );
+    let diff = git
+        .asked()
+        .into_iter()
+        .find(|args| args[0] == "diff" && args[1] == "--no-ext-diff")
+        .unwrap();
+    assert!(
+        diff.contains(&":(exclude,literal)notes.txt".to_owned()),
+        "{diff:?}"
+    );
+}
+
+#[test]
+fn what_the_gate_refuses_is_never_kept() {
     let world = World::new("base_secrets");
     let session = world.create("s_1");
     let top = world.workspace.to_string_lossy().into_owned();
@@ -173,12 +277,13 @@ fn likely_secrets_are_never_kept() {
         &git,
         &world.clock,
         &BaseLimits::default(),
+        &no_secrets,
     );
     let state = base.git.clone().unwrap();
     let secret: Vec<&str> = base
         .omitted
         .iter()
-        .filter(|omitted| omitted.reason == OmitReason::Secret)
+        .filter(|omitted| omitted.reason == OmitReason::Protected)
         .map(|omitted| omitted.path.as_str())
         .collect();
     assert_eq!(
@@ -228,6 +333,7 @@ fn a_workspace_outside_git_is_listed_with_hashes() {
         &git,
         &world.clock,
         &BaseLimits::default(),
+        &no_secrets,
     );
     assert!(base.complete, "{base:?}");
     assert!(base.git.is_none());
@@ -251,6 +357,7 @@ fn a_workspace_outside_git_is_listed_with_hashes() {
         &git,
         &world.clock,
         &limits,
+        &no_secrets,
     );
     assert!(!base.complete);
     assert!(
@@ -321,6 +428,7 @@ fn sys_a_git_workspace_records_what_replay_needs() {
         &SystemGit,
         &world.clock,
         &BaseLimits::default(),
+        &no_secrets,
     );
     assert!(base.complete, "{base:?}");
     let state = base.git.clone().unwrap();
@@ -405,6 +513,7 @@ fn sys_the_base_state_is_recorded_in_the_log_from_a_real_capture() {
         Arc::new(SystemGit),
         Arc::new(world.clock.clone()),
         BaseLimits::default(),
+        Arc::new(no_secrets),
     )
     .unwrap();
     session.append(None, user("go")).unwrap();
@@ -465,6 +574,7 @@ fn untracked_files_past_a_limit_on_the_whole_are_recorded_once() {
             &git,
             &world.clock,
             &limits,
+            &no_secrets,
         );
         assert!(!base.complete, "{base:?}");
         let kept: Vec<&str> = base
@@ -498,7 +608,7 @@ fn without_the_whole_list_of_changed_files_no_patch_is_taken() {
         too_long: vec![vec!["diff", "--name-only"]],
         ..ScriptedGit::repository("abc123")
     };
-    // A likely secret whose name cannot be given to git as a pathspec.
+    // A protected file whose name cannot be given to git as a pathspec.
     let unnamed = {
         let mut git = ScriptedGit::repository("abc123");
         git.answers[3].1 = b"src/lib.rs\0.env\xff\0".to_vec();
@@ -516,6 +626,7 @@ fn without_the_whole_list_of_changed_files_no_patch_is_taken() {
             &git,
             &world.clock,
             &BaseLimits::default(),
+            &no_secrets,
         );
         assert!(!base.complete, "{base:?}");
         assert!(
@@ -558,6 +669,7 @@ fn sys_a_secret_added_with_intent_to_add_is_left_out_of_the_patch() {
         &SystemGit,
         &world.clock,
         &BaseLimits::default(),
+        &no_secrets,
     );
     assert!(base.complete, "{base:?}");
     let state = base.git.clone().unwrap();
@@ -570,7 +682,7 @@ fn sys_a_secret_added_with_intent_to_add_is_left_out_of_the_patch() {
     assert!(
         base.omitted
             .iter()
-            .any(|omitted| omitted.path == ".env" && omitted.reason == OmitReason::Secret),
+            .any(|omitted| omitted.path == ".env" && omitted.reason == OmitReason::Protected),
         "{:?}",
         base.omitted
     );
@@ -617,7 +729,7 @@ fn an_unborn_sessions_store_is_cleared_when_its_last_write_ends() {
 }
 
 /// A link to a file outside the workspace used to be followed, and that
-/// file's content kept in the session, past the list of likely secrets.
+/// file's content kept in the session, past what the gate holds back.
 #[cfg(unix)]
 #[test]
 fn sys_an_untracked_link_is_recorded_as_a_link_and_never_followed() {
@@ -645,6 +757,7 @@ fn sys_an_untracked_link_is_recorded_as_a_link_and_never_followed() {
         &SystemGit,
         &world.clock,
         &BaseLimits::default(),
+        &no_secrets,
     );
     assert!(base.complete, "{base:?}");
     let state = base.git.unwrap();
@@ -681,6 +794,7 @@ fn sys_an_untracked_link_to_a_device_does_not_stall_the_capture() {
         Arc::new(SystemGit),
         Arc::new(world.clock.clone()),
         BaseLimits::default(),
+        Arc::new(no_secrets),
     )
     .unwrap();
     // A bound on a failure, not a wait: the state comes as soon as git
@@ -716,6 +830,7 @@ fn sys_a_session_that_never_got_a_prompt_leaves_nothing_behind() {
         &SystemGit,
         &world.clock,
         &BaseLimits::default(),
+        &no_secrets,
     );
     assert!(base.complete, "{base:?}");
     let git_state = base.git.unwrap();
