@@ -9,8 +9,21 @@ publish.workspace = true
 [lib]
 doctest = false
 
+[features]
+# The Linux sandbox's backends: Landlock and seccomp. Off by default, so that
+# cortex-tools, which depends on this crate for process trees, does not link
+# them. cortex-core's `sandbox` feature turns it on
+# (docs/architecture/01-workspace.md, rule 8).
+backends = ["dep:landlock", "dep:seccompiler"]
+
 [dependencies]
 cortex-base.workspace = true
+thiserror.workspace = true
+
+# The sandbox's backends (docs/decisions/0032-what-the-linux-sandbox-needs.md).
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = { workspace = true, optional = true }
+seccompiler = { workspace = true, optional = true }
 
 # Sessions, group signals, the death signal and a wait on two pipes: what
 # the standard library does not reach
@@ -27,6 +40,7 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
     "Win32_System_JobObjects",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }
 

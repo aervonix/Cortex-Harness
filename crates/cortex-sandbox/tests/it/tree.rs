@@ -693,3 +693,39 @@ fn sys_a_command_leads_its_own_session_and_group() {
     tree.end();
     assert!(leader.gone_within(LIMIT));
 }
+
+#[cfg(windows)]
+#[test]
+fn sys_a_tree_is_held_to_the_standard_limits() {
+    use cortex_sandbox::tree::Limits;
+    let mut command = std::process::Command::new("cmd");
+    command.args(["/d", "/c", "exit 0"]);
+    let tree = Tree::spawn(command, None).expect("start the command");
+    let limits = tree.limits().expect("ask the job for its limits");
+    assert_eq!(limits.processes, Some(Limits::PROCESSES));
+    assert!(limits.memory.is_some_and(|bytes| bytes > 0), "{limits:?}");
+    assert_eq!(limits, Limits::standard());
+    tree.wait().expect("wait");
+    tree.end();
+}
+
+#[cfg(windows)]
+#[test]
+fn sys_a_tree_cannot_start_a_process_past_its_limit() {
+    use cortex_sandbox::tree::Limits;
+    for (processes, inner) in [(1, false), (2, true)] {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/d", "/c", "echo outer-ran & cmd /d /c echo inner-ran"]);
+        let (mut output, _stop) = Output::attach(&mut command).expect("make the pipe");
+        let limits = Limits {
+            processes: Some(processes),
+            memory: None,
+        };
+        let tree = Tree::spawn_limited(command, None, limits).expect("start the command");
+        let text = read_all(&mut output);
+        tree.wait().expect("wait");
+        tree.end();
+        assert!(text.contains("outer-ran"), "{processes}: {text:?}");
+        assert_eq!(text.contains("inner-ran"), inner, "{processes}: {text:?}");
+    }
+}

@@ -16,6 +16,10 @@
     reason = "a process test starts processes, fails by panicking, and says what it measured"
 )]
 
+#[cfg(all(target_os = "linux", feature = "backends"))]
+mod confined;
+#[cfg(target_os = "linux")]
+mod helpers;
 mod tree;
 
 use std::process::Command;
@@ -46,6 +50,19 @@ const WAITED: i32 = 40;
 /// How long a test lets something take before it calls it a failure.
 const LIMIT: Duration = Duration::from_secs(30);
 
+/// The argument that makes this binary the sandbox launcher: what follows
+/// it is what the launcher's hidden subcommand is given.
+const LAUNCH: &str = "cx-launch";
+
+/// The argument that makes this binary a network helper: it tries one kind
+/// of socket and prints `net: ok` or `net: refused <kind of error>`.
+const NET: &str = "cx-net";
+
+/// The argument that makes this binary install a seccomp filter that
+/// refuses one system call, and then become the command after `--`: a
+/// parent that keeps the launcher from confining itself.
+const DENY: &str = "cx-deny";
+
 /// What the test runner runs as an ordinary test, which passes at once, and
 /// what a test runs again as a child, as the guard, or as a harness.
 #[test]
@@ -54,6 +71,24 @@ fn child_entry() {
     if arguments.iter().any(|argument| argument == GUARD) {
         run_guard();
         return;
+    }
+    // The first of these words is this process's role: what follows it may
+    // hold another, which is the role of the process it starts.
+    let role = arguments
+        .iter()
+        .position(|argument| [LAUNCH, NET, DENY].contains(&argument.as_str()));
+    match role.map(|at| (at, arguments[at].as_str())) {
+        Some((at, LAUNCH)) => {
+            let rest = std::env::args_os().skip(at + 1).collect();
+            let code = cortex_sandbox::launch::run(rest);
+            #[expect(clippy::exit, reason = "the launcher ends as the hidden subcommand does")]
+            std::process::exit(code);
+        }
+        #[cfg(target_os = "linux")]
+        Some((at, NET)) => helpers::net(&arguments[at + 1], &arguments[at + 2]),
+        #[cfg(all(target_os = "linux", feature = "backends"))]
+        Some((at, DENY)) => helpers::deny(&arguments[at + 1], &arguments[at + 3..]),
+        _ => {}
     }
     let harness = arguments
         .iter()
