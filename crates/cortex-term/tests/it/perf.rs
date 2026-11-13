@@ -95,8 +95,11 @@ fn quit(session: &mut Session) {
 
 /// Types keys one at a time, each when the last has shown, and returns the
 /// latencies in milliseconds.
-fn idle_keys(count: usize) -> Vec<f64> {
-    let mut session = start(&["rate=400"]);
+/// Also the demo's own share of each: from reading the key to having written
+/// the frame that shows it.
+fn idle_keys(count: usize, stats: &std::path::Path) -> (Vec<f64>, Vec<f64>) {
+    let stats_option = format!("stats={}", stats.display());
+    let mut session = start(&["rate=400", &stats_option]);
     session.wait_for(LIMIT, "the first frame", |t| t.shows(STATUS_MARK));
     let mut typed = String::new();
     let mut latencies = Vec::new();
@@ -110,7 +113,8 @@ fn idle_keys(count: usize) -> Vec<f64> {
         latencies.push(millis(shown.saturating_duration_since(sent)));
     }
     quit(&mut session);
-    latencies
+    let (_, demo) = read_stats(stats);
+    (latencies, demo)
 }
 
 /// What one streamed run gave.
@@ -333,7 +337,7 @@ fn perf_the_demo_against_the_budgets() {
         first_frames.push(millis(drawn - session.started()));
         quit(&mut session);
     }
-    let idle = idle_keys(30);
+    let (idle, idle_demo) = idle_keys(30, &scratch.join("idle.json"));
     let light = stream(&[], seconds, &scratch.join("light.json"));
     let heavy = stream(&["live-rows=30"], seconds, &scratch.join("heavy.json"));
 
@@ -355,6 +359,7 @@ fn perf_the_demo_against_the_budgets() {
         "desktop 20, runner 50 / 120",
     );
     row(&mut out, "Key to frame, idle", &idle, "99th 2");
+    row(&mut out, "  of which the demo's (read to written)", &idle_demo, "");
     row(
         &mut out,
         "Key to frame, streaming 2,000 tok/s",

@@ -137,7 +137,15 @@ fn sys_the_terminal_is_put_back_after_a_panic() {
     let started = Instant::now();
     session.send(b"P");
     restored(&mut session);
-    assert!(session.screen().shows("demo panic on request"));
+    // The terminal was put back before the panic's message was printed:
+    // each of its lines starts at the left edge, where in raw mode a line
+    // break would not have returned the cursor there.
+    let screen = session.screen().screen();
+    assert!(
+        screen.iter().any(|row| row.starts_with("demo panic on request")),
+        "the panic's message was printed in raw mode:\n{}",
+        session.screen().dump()
+    );
     assert!(started.elapsed() < LIMIT);
 }
 
