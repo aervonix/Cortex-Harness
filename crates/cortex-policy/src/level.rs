@@ -227,10 +227,12 @@ impl NoSandbox {
             ),
             Self::HarnessFilesWritable => "The workspace, or a directory `sandbox.write` \
                                            names, holds Cortex-Harness's own configuration, \
-                                           state or data, which the sandbox cannot keep a \
-                                           command from changing: a command could change what \
-                                           it is allowed. So a command that runs is not \
-                                           confined. Open the project's own directory instead."
+                                           state or data, or its program, which the sandbox \
+                                           cannot keep a command from changing: a command \
+                                           could change what it is allowed. So a command that \
+                                           runs is not confined. Open the project's own \
+                                           directory instead, and keep the program out of \
+                                           `sandbox.write`."
                 .to_owned(),
             Self::TurnedOff => "The sandbox is turned off in configuration (`sandbox.enabled = \
                                 false`), so a command that runs is not confined."

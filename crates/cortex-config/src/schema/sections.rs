@@ -343,9 +343,10 @@ settings! {
         /// to this machine's own addresses included, and no Unix socket,
         /// so a test suite that starts a server on loopback or on a Unix
         /// socket fails in the sandbox; such a run needs `full`, or one
-        /// approved run outside the sandbox. `full`: the network, and
-        /// still no Unix socket (the session bus, an agent, the Docker
-        /// socket).
+        /// approved run outside the sandbox. `full`: the network (TCP and
+        /// UDP, loopback included), and nothing else: still no Unix socket
+        /// (the session bus, an agent, the Docker socket), no virtual
+        /// machine's socket to its host, no raw socket.
         [ByNetwork, Now]
         pub network: NetworkAccess = NetworkAccess::Off,
     }

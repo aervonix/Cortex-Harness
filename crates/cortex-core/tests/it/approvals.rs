@@ -756,8 +756,12 @@ fn what_was_allowed_for_the_session_stays_the_sessions_when_the_level_changes() 
 /// Two calls in one response: a write that is asked about, and after it a
 /// write that is allowed. Runs the turn as far as the open question, gives
 /// the second write every chance to run, and says whether it did. Then
-/// allows the first, and checks that both were written.
-fn later_write_ran_while_the_question_was_open(test: &str, fail_on_denial: bool) -> bool {
+/// allows the first, and checks that both were written. `change` sets the
+/// core up.
+pub(crate) fn later_write_ran_while_the_question_was_open(
+    test: &str,
+    change: impl FnOnce(&mut cortex_core::CoreOptions),
+) -> bool {
     let world = World::new(
         test,
         [
@@ -776,7 +780,7 @@ fn later_write_ran_while_the_question_was_open(test: &str, fail_on_denial: bool)
             says("Done."),
         ],
     );
-    let core = world.core_with(|options| options.fail_on_denial = fail_on_denial);
+    let core = world.core_with(change);
     world.run(async {
         let front = Front::start(&world, &core).await;
         front.prompt("set up CI").await;
@@ -805,7 +809,7 @@ fn later_write_ran_while_the_question_was_open(test: &str, fail_on_denial: bool)
 fn a_later_call_runs_beside_a_question_a_person_is_answering() {
     assert!(later_write_ran_while_the_question_was_open(
         "beside_question",
-        false
+        |options| options.fail_on_denial = false
     ));
 }
 
@@ -817,6 +821,6 @@ fn a_later_call_runs_beside_a_question_a_person_is_answering() {
 fn with_fail_on_denial_a_later_call_waits_for_the_open_question() {
     assert!(!later_write_ran_while_the_question_was_open(
         "behind_question",
-        true
+        |options| options.fail_on_denial = true
     ));
 }

@@ -729,3 +729,57 @@ fn sys_a_tree_cannot_start_a_process_past_its_limit() {
         assert_eq!(text.contains("inner-ran"), inner, "{processes}: {text:?}");
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sys_a_process_that_makes_a_group_of_its_own_is_still_killed_with_the_tree() {
+    let exe = std::env::current_exe().expect("the test binary has a path");
+    let mut command = std::process::Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg(format!(
+            "\"$0\" --exact {ENTRY} --nocapture {} own-group & exit 0",
+            crate::CALL
+        ))
+        .arg(&exe);
+    let (mut output, _stop) = Output::attach(&mut command).expect("make the pipe");
+    let tree = Tree::spawn(command, None).expect("start the command");
+    // The helper says its id once it is in a group of its own.
+    let mut text = String::new();
+    let mut buffer = [0u8; 4096];
+    let started = std::time::Instant::now();
+    while !text.lines().any(|line| line.starts_with("group: ")) {
+        assert!(
+            started.elapsed() < LIMIT,
+            "the helper said nothing: {text:?}"
+        );
+        match output.read(&mut buffer).expect("read the output") {
+            ReadOutcome::Bytes(count) => text.push_str(&String::from_utf8_lossy(&buffer[..count])),
+            other => panic!("the output ended: {other:?} {text:?}"),
+        }
+    }
+    let line = text
+        .lines()
+        .find_map(|line| line.strip_prefix("group: "))
+        .expect("the line");
+    let (pid, made) = line.split_once(' ').expect("an id and a result");
+    assert_eq!(made, "0", "setpgid: {line}");
+    assert_eq!(tree.wait().expect("wait"), Exit::Code(0));
+    // Outside the command's group, inside its session: still counted.
+    assert!(tree.others_running().expect("count") >= 1);
+    tree.end();
+    let gone = || {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+            stat.rsplit_once(") ")
+                .is_some_and(|(_, rest)| rest.starts_with('Z'))
+        })
+    };
+    let started = std::time::Instant::now();
+    while !gone() {
+        assert!(
+            started.elapsed() < LIMIT,
+            "the process in its own group outlived the tree"
+        );
+        std::thread::yield_now();
+    }
+}

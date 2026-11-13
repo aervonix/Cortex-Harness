@@ -190,7 +190,9 @@ impl Rounds {
                 }
                 Was::Directory => false,
             };
-            if !recorded {
+            // Undo leaves a path reached through a link, and cannot put
+            // back a mode.
+            if !recorded || changed.mode_changed || reached_through_a_link(&self.root, &file) {
                 by_hand.push(changed.path.clone());
             }
         }
@@ -271,6 +273,69 @@ impl Checkpoints for Rounds {
     }
 }
 
+/// Whether a directory between `root` and `file`, or `file` itself, is a
+/// link now: undo will not put such a file back
+/// (`cortex_session`'s `through_a_link`).
+#[allow(
+    clippy::disallowed_methods,
+    reason = "called while the round is recorded, on the blocking pool"
+)]
+fn reached_through_a_link(root: &AbsPath, file: &AbsPath) -> bool {
+    let top = root.to_fs_path();
+    let target = file.to_fs_path();
+    let Ok(below) = target.strip_prefix(&top) else {
+        return false;
+    };
+    let mut walked = top.clone();
+    below.components().any(|part| {
+        walked.push(part);
+        std::fs::symlink_metadata(&walked).is_ok_and(|metadata| metadata.file_type().is_symlink())
+    })
+}
+
+/// Any tool of a session, held to a stop a command made: once a confined
+/// command of the turn changed protected paths, no call of the turn that
+/// changes anything runs, even one decided or approved before the stop
+/// (found by the reviews of step 26). A call that only reads still runs.
+pub(crate) struct StopsWithTurn {
+    tool: Arc<dyn Tool>,
+    policy: Arc<EnginePolicy>,
+}
+
+impl StopsWithTurn {
+    pub(crate) fn new(tool: Arc<dyn Tool>, policy: Arc<EnginePolicy>) -> Self {
+        Self { tool, policy }
+    }
+}
+
+impl Tool for StopsWithTurn {
+    fn spec(&self) -> &ToolSpec {
+        self.tool.spec()
+    }
+
+    fn plan(&self, args: &Json, cx: &PlanCx) -> Result<Plan, ToolError> {
+        self.tool.plan(args, cx)
+    }
+
+    fn run<'a>(
+        &'a self,
+        plan: Plan,
+        cx: &'a RunCx,
+        out: &'a mut dyn ToolOutput,
+    ) -> BoxFuture<'a, ToolResult> {
+        if plan.has_side_effects()
+            && let Some(reason) = self.policy.stopped_turn(cx.turn)
+        {
+            return Box::pin(async move {
+                ToolResult::denied(format!(
+                    "The call was not run: the turn was stopped. {reason}"
+                ))
+            });
+        }
+        self.tool.run(plan, cx, out)
+    }
+}
+
 /// The shell tool, with what each command changed recorded in the round's
 /// checkpoint when the command is over, and the protected paths looked at
 /// around each confined command (`docs/architecture/06-permissions-and-sandbox.md`,
@@ -316,13 +381,9 @@ impl Tool for RecordingShell {
         out: &'a mut dyn ToolOutput,
     ) -> BoxFuture<'a, ToolResult> {
         Box::pin(async move {
-            // A turn a command of it stopped runs no more commands, even
-            // one decided or approved before the stop.
-            if let Some(reason) = self.policy.stopped_turn(cx.turn) {
-                return ToolResult::denied(format!(
-                    "The command was not run: the turn was stopped. {reason}"
-                ));
-            }
+            // A turn a command of it stopped runs no more of its calls:
+            // [`StopsWithTurn`], around every tool, sees to that.
+            //
             // Every confined command has its protected paths looked at
             // before and after it, one the engine marked as only reading
             // too: the program it runs may do otherwise. One the user let
@@ -345,7 +406,7 @@ impl Tool for RecordingShell {
             let found = match (watch, before) {
                 (Some(watch), Some(before)) => tokio::task::spawn_blocking(move || {
                     let (changed, after) = watch.changes_since(&before);
-                    (changed, before.is_complete() && after.is_complete())
+                    (changed, (before.is_complete(), after.is_complete()))
                 })
                 .await
                 .ok(),
@@ -383,7 +444,10 @@ impl Tool for RecordingShell {
                 let root = cx.paths.root().to_fs_path();
                 if let Some(note) = protected_note(&changed, complete, &root, &by_hand) {
                     result = result.with_part(Part::text(note.clone()));
-                    if !changed.is_empty() {
+                    // A change, or a look the command itself made stop
+                    // short, stops the turn; a workspace already past the
+                    // bound only warns.
+                    if !changed.is_empty() || (complete.0 && !complete.1) {
                         self.policy.stop_turn(cx.turn, note);
                     }
                 }

@@ -213,6 +213,18 @@ pub(crate) fn call(name: &str) -> ! {
                     &raw const byte,
                 )))
             }
+            // A process group of its own, then the process waits to be
+            // killed: what a tree must still reach.
+            "own-group" => {
+                let made = libc::setpgid(0, 0);
+                let mut out = std::io::stdout().lock();
+                let _ = writeln!(out, "\ngroup: {} {made}", libc::getpid());
+                let _ = out.flush();
+                drop(out);
+                loop {
+                    std::thread::park();
+                }
+            }
             "setsid" | "setpgid" => {
                 let (session, group) = (libc::getsid(0), libc::getpgid(0));
                 let result = if name == "setsid" {
