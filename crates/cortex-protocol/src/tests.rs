@@ -138,6 +138,13 @@ fn the_golden_values_round_trip_exactly() {
                 let params = round_trip::<TurnInterruptParams>(value);
                 assert!(params.now, "the transcript has the ordinary interrupt");
             }
+            Some("HeadlessRecord") => {
+                let record = round_trip::<crate::HeadlessRecord>(value);
+                assert!(
+                    !matches!(record, crate::HeadlessRecord::Unknown(_)),
+                    "a headless record is read as the type it says it is"
+                );
+            }
             other => panic!("the values file names a type this test does not read: {other:?}"),
         }
     }

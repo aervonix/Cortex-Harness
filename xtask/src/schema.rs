@@ -576,119 +576,16 @@ mod tests {
         assert!(error.contains("`pattern`"), "{error}");
     }
 
-    // ---- A validator for the subset of JSON Schema the protocol uses, so
-    // that the hand-written golden transcript can be checked against the
-    // generated schema. It is the proof that the schema describes the wire
-    // form the Rust types really have, including the parts of the schema
-    // that are written by hand (the open enumerations and unions).
+    // ---- The validator is the test kit's (`cortex_testkit::schema`), so
+    // that the binary's system tests check what it writes against the same
+    // schema. It is the proof that the schema describes the wire form the
+    // Rust types really have, including the parts of the schema that are
+    // written by hand (the open enumerations and unions).
 
     fn valid(schema: &Value, instance: &Value, root: &Value, at: &str) -> Result<(), String> {
-        let object = match schema {
-            Value::Bool(true) => return Ok(()),
-            Value::Bool(false) => return Err(format!("{at}: nothing is allowed here")),
-            Value::Object(object) => object,
-            other => return Err(format!("{at}: bad schema {other}")),
-        };
-        if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
-            let name = reference.strip_prefix("#/$defs/").ok_or("bad $ref")?;
-            let target = root["$defs"]
-                .get(name)
-                .ok_or(format!("no definition {name}"))?;
-            valid(target, instance, root, at)?;
+        cortex_testkit::schema::valid_seen(schema, instance, root, at, &mut |name| {
             SEEN.with(|seen| seen.borrow_mut().insert(name.to_owned()));
-        }
-        if let Some(expected) = object.get("const")
-            && expected != instance
-        {
-            return Err(format!("{at}: expected {expected}, found {instance}"));
-        }
-        if let Some(allowed) = object.get("enum").and_then(Value::as_array)
-            && !allowed.contains(instance)
-        {
-            return Err(format!("{at}: {instance} is not one of {allowed:?}"));
-        }
-        if let Some(not) = object.get("not")
-            && valid(not, instance, root, at).is_ok()
-        {
-            return Err(format!("{at}: {instance} is excluded here"));
-        }
-        if let Some(type_names) = object.get("type") {
-            let names: Vec<&str> = match type_names {
-                Value::String(name) => vec![name.as_str()],
-                Value::Array(names) => names.iter().filter_map(Value::as_str).collect(),
-                _ => return Err(format!("{at}: bad `type`")),
-            };
-            let fits = names.iter().any(|name| match *name {
-                "string" => instance.is_string(),
-                "integer" => instance.is_i64() || instance.is_u64(),
-                "number" => instance.is_number(),
-                "boolean" => instance.is_boolean(),
-                "null" => instance.is_null(),
-                "array" => instance.is_array(),
-                "object" => instance.is_object(),
-                _ => false,
-            });
-            if !fits {
-                return Err(format!("{at}: {instance} is not of type {type_names}"));
-            }
-        }
-        if let Some(minimum) = object.get("minimum").and_then(Value::as_f64)
-            && instance.as_f64().is_some_and(|number| number < minimum)
-        {
-            return Err(format!("{at}: {instance} is below {minimum}"));
-        }
-        if let Some(fields) = instance.as_object() {
-            for name in object
-                .get("required")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                let name = name.as_str().unwrap_or_default();
-                if !fields.contains_key(name) {
-                    return Err(format!("{at}: missing `{name}`"));
-                }
-            }
-            let properties = object.get("properties").and_then(Value::as_object);
-            for (name, value) in fields {
-                match properties.and_then(|properties| properties.get(name)) {
-                    Some(property) => valid(property, value, root, &format!("{at}.{name}"))?,
-                    None => {
-                        if let Some(additional) = object.get("additionalProperties") {
-                            valid(additional, value, root, &format!("{at}.{name}"))?;
-                        }
-                    }
-                }
-            }
-        }
-        if let (Some(items), Some(elements)) = (object.get("items"), instance.as_array()) {
-            for (index, element) in elements.iter().enumerate() {
-                valid(items, element, root, &format!("{at}[{index}]"))?;
-            }
-        }
-        for part in object
-            .get("allOf")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            valid(part, instance, root, at)?;
-        }
-        for key in ["anyOf", "oneOf"] {
-            if let Some(branches) = object.get(key).and_then(Value::as_array) {
-                let failures: Vec<String> = branches
-                    .iter()
-                    .filter_map(|branch| valid(branch, instance, root, at).err())
-                    .collect();
-                if failures.len() == branches.len() {
-                    return Err(format!(
-                        "{at}: no branch fits:\n      {}",
-                        failures.join("\n      ")
-                    ));
-                }
-            }
-        }
-        Ok(())
+        })
     }
 
     /// Checks one line of a transcript: the envelope against the root, and

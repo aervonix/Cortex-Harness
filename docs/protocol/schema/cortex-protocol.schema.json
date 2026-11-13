@@ -1924,6 +1924,210 @@
       },
       "type": "object"
     },
+    "HeadlessRecord": {
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "session"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/HeadlessStart"
+            }
+          ],
+          "description": "The first line of `jsonl`."
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "result"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/HeadlessResult"
+            }
+          ],
+          "description": "The last line of `jsonl`, and the whole of `json`."
+        },
+        {
+          "description": "A variant this version of the protocol does not know. Receivers skip it or show it generically.",
+          "properties": {
+            "type": {
+              "not": {
+                "enum": [
+                  "session",
+                  "result"
+                ]
+              },
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object",
+          "x-cortex-open": true
+        }
+      ],
+      "description": "A record of headless mode's own, told apart by `type`."
+    },
+    "HeadlessResult": {
+      "description": "How a headless run ended: the whole of `--output json`, and the last\nline of `jsonl`. It is written on success and on failure alike, and its\n`outcome` and the process's exit code always agree.",
+      "properties": {
+        "costs": {
+          "description": "What the run cost, one amount per basis, in whole nano-dollars:\n`usd_nanos / 1e9` is US dollars. Empty when no price is known.",
+          "items": {
+            "$ref": "#/$defs/Cost"
+          },
+          "type": "array"
+        },
+        "duration_ms": {
+          "default": 0,
+          "description": "Milliseconds from the start of the process to this record.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorData"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The failure, when there was one."
+        },
+        "files_changed": {
+          "default": [],
+          "description": "The files the run created, changed or deleted, relative to the\nworkspace, sorted.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "outcome": {
+          "$ref": "#/$defs/TurnOutcome",
+          "description": "How the run ended."
+        },
+        "permission_denials": {
+          "default": [],
+          "description": "The calls that were refused because nothing could approve them.",
+          "items": {
+            "$ref": "#/$defs/PermissionDenial"
+          },
+          "type": "array"
+        },
+        "requests": {
+          "default": 0,
+          "description": "How many requests were made to a model.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "result": {
+          "default": "",
+          "description": "The text of the assistant's last message. Empty when it wrote none.",
+          "type": "string"
+        },
+        "schema": {
+          "description": "The version of the records' shape: [`HEADLESS_SCHEMA`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The session. Absent when the run failed before one was started."
+        },
+        "stop_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StopReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the last response ended."
+        },
+        "tool_calls": {
+          "default": 0,
+          "description": "How many tool calls were made.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "usage": {
+          "$ref": "#/$defs/TokenUsage",
+          "default": {
+            "cache_read": 0,
+            "cache_write": 0,
+            "input": 0,
+            "output": 0
+          },
+          "description": "Tokens, by class."
+        }
+      },
+      "required": [
+        "schema",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "HeadlessStart": {
+      "description": "The first line of `jsonl`: which session the run is, on which model, in\nwhich workspace.",
+      "properties": {
+        "model": {
+          "$ref": "#/$defs/ModelId",
+          "description": "The main role's model."
+        },
+        "schema": {
+          "description": "The version of the records' shape: [`HEADLESS_SCHEMA`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The session the run is in."
+        },
+        "workspace": {
+          "description": "The workspace root: an absolute path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema",
+        "session_id",
+        "model",
+        "workspace"
+      ],
+      "type": "object"
+    },
     "ImagePart": {
       "description": "An image. Input only.",
       "properties": {
@@ -3342,6 +3546,39 @@
       "required": [
         "name",
         "version"
+      ],
+      "type": "object"
+    },
+    "PermissionDenial": {
+      "description": "A tool call that was refused because nothing could approve it: the\nusual reason a headless run does less than was expected.",
+      "properties": {
+        "call_id": {
+          "$ref": "#/$defs/CallId",
+          "description": "The call."
+        },
+        "reason": {
+          "description": "Why it needed an answer.",
+          "type": "string"
+        },
+        "summary": {
+          "description": "The call in one line.",
+          "type": "string"
+        },
+        "tool": {
+          "description": "The tool.",
+          "type": "string"
+        },
+        "turn_id": {
+          "$ref": "#/$defs/TurnId",
+          "description": "The turn the call belonged to."
+        }
+      },
+      "required": [
+        "turn_id",
+        "call_id",
+        "tool",
+        "summary",
+        "reason"
       ],
       "type": "object"
     },

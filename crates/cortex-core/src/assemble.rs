@@ -201,6 +201,17 @@ fn sourced_rules(loaded: &Loaded) -> Vec<SourcedRule> {
         .collect()
 }
 
+/// The project's own permission rules, every action of them, as a load
+/// that trusts the project holds them: the set the trust store pins
+/// (`cortex permissions trust`) and a start compares with the pin.
+pub(crate) fn project_rules(loaded: &Loaded) -> Vec<Rule> {
+    sourced_rules(loaded)
+        .into_iter()
+        .filter(|rule| rule.source == RuleSource::Project)
+        .map(|rule| rule.rule)
+        .collect()
+}
+
 /// Whether the project is trusted for the rules its files hold now.
 ///
 /// The one place the trust store's answer about a project's rules is
@@ -283,12 +294,7 @@ fn trust(
     // now are read as a trusted project's would be, so that none is held
     // back before it is compared with what the user saw.
     let peek = load(true)?;
-    let project_rules: Vec<Rule> = sourced_rules(&peek)
-        .into_iter()
-        .filter(|rule| rule.source == RuleSource::Project)
-        .map(|rule| rule.rule)
-        .collect();
-    if project_rules_approved(&stored, &project_rules) {
+    if project_rules_approved(&stored, &project_rules(&peek)) {
         Ok(Trust {
             rules: true,
             repository: true,
@@ -974,7 +980,11 @@ pub(crate) fn assemble(
         .with_account(Account::for_lease(&lease, Arc::clone(&clock)))
         .with_turn_budget(budget(&settings.limits.turn));
     let specs = toolbox.specs();
-    let context = StubContext::new(SYSTEM_STUB, &specs);
+    let system = match &inner.options.system_append {
+        Some(text) => format!("{SYSTEM_STUB}\n\n{text}"),
+        None => SYSTEM_STUB.to_owned(),
+    };
+    let context = StubContext::new(system, &specs);
     let parts = SessionParts {
         info,
         models,

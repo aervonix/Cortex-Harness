@@ -49,6 +49,7 @@ mod open;
 
 pub mod error;
 pub mod event;
+pub mod headless;
 pub mod ids;
 pub mod item;
 pub mod jsonrpc;
@@ -66,6 +67,7 @@ mod tests;
 
 pub use error::{ErrorData, ErrorKind};
 pub use event::{Event, Notice, SessionEvent};
+pub use headless::{HeadlessRecord, HeadlessResult, HeadlessStart};
 pub use ids::{
     ApprovalId, ArtifactId, CallId, EntryId, ItemId, LeaseId, ModelId, PlanItemId, ProjectKey,
     ProviderId, RawJson, SessionId, Timestamp, TurnId,

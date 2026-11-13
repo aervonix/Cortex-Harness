@@ -44,6 +44,7 @@ pub mod fixtures;
 pub mod gate;
 pub mod protocol;
 pub mod provider;
+pub mod schema;
 pub mod scratch;
 pub mod seed;
 pub mod server;
