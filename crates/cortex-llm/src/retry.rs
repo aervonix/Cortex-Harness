@@ -105,6 +105,12 @@ pub struct SpeedPolicy {
     /// How long a cooldown lasts when the provider did not say when the
     /// tier is available again. Default 10 minutes.
     pub cooldown: Duration,
+    /// The shortest a cooldown is, when the provider did say. A provider's
+    /// time that is sooner than this is not taken: the cooldown lasts this
+    /// long instead. Zero takes the provider's time as given. Default 1
+    /// minute, which is the window the provider's limits are counted in
+    /// (`docs/decisions/0027-speed-tiers.md`, "A shortest cooldown").
+    pub min_cooldown: Duration,
 }
 
 impl Default for SpeedPolicy {
@@ -113,6 +119,7 @@ impl Default for SpeedPolicy {
             fallback: true,
             short_wait: Duration::from_secs(20),
             cooldown: Duration::from_secs(600),
+            min_cooldown: Duration::from_secs(60),
         }
     }
 }
@@ -220,18 +227,28 @@ impl RetryPolicy {
         }
     }
 
-    /// How long a speed tier's cooldown lasts: until the time the provider
-    /// said the tier is available again, and for
-    /// [`SpeedPolicy::cooldown`] when it said nothing.
+    /// How long a speed tier's cooldown lasts.
     ///
-    /// **This is the one place the length of a cooldown is decided.** A
-    /// later change, such as a shortest cooldown so that a provider that
-    /// keeps answering "in 25 seconds" cannot make a session switch speed
-    /// every half minute, belongs here and nowhere else
-    /// (`docs/decisions/0027-speed-tiers.md`, "Settled and open").
+    /// - The provider said when the tier is available again: until then,
+    ///   and at least [`SpeedPolicy::min_cooldown`].
+    /// - It said nothing: [`SpeedPolicy::cooldown`].
+    ///
+    /// **This is the one place the length of a cooldown is decided.**
+    ///
+    /// The floor is there because a provider's wait says when one more
+    /// request would be let through, not when the pressure on the tier is
+    /// over. A cooldown reaches this function only when the wait was too
+    /// long to sit out in place. Without a floor, a provider that keeps
+    /// answering "in 25 seconds" gives 25-second cooldowns, and a session
+    /// changes speed every half minute, each change a possible rewrite of
+    /// the prompt cache (`docs/decisions/0027-speed-tiers.md`, "A shortest
+    /// cooldown").
     #[must_use]
     pub fn cooldown(&self, provider_wait: Option<Duration>) -> Duration {
-        provider_wait.unwrap_or(self.speed.cooldown)
+        match provider_wait {
+            Some(wait) => wait.max(self.speed.min_cooldown),
+            None => self.speed.cooldown,
+        }
     }
 
     /// The largest backoff wait after `failures` failed attempts:
@@ -320,6 +337,7 @@ mod tests {
         assert!(policy.speed.fallback);
         assert_eq!(policy.speed.short_wait, secs(20));
         assert_eq!(policy.speed.cooldown, secs(600));
+        assert_eq!(policy.speed.min_cooldown, secs(60));
     }
 
     #[test]
@@ -525,12 +543,14 @@ mod tests {
             Decision::Wait(secs(8))
         );
         state.begin_attempt();
-        // 16 s waited; another 8 would make 24.
+        // 16 s waited; another 8 would make 24. The tier has now been
+        // refused three times in a row: its cooldown is not 8 s but the
+        // shortest one there is.
         assert_eq!(
             decide(&policy, &mut state, &tier_refusal(Some(8)), &Speed::Fast),
             Decision::FallBack {
                 reason: SpeedFallbackReason::RateLimited,
-                cooldown: secs(8),
+                cooldown: secs(60),
             }
         );
         assert_eq!(state.tier_waited(), Duration::ZERO);
@@ -545,7 +565,7 @@ mod tests {
             decide(&policy, &mut state, &tier_refusal(Some(21)), &Speed::Fast),
             Decision::FallBack {
                 reason: SpeedFallbackReason::RateLimited,
-                cooldown: secs(21),
+                cooldown: secs(60),
             },
             "the cooldown ends when the provider said the tier is back"
         );
@@ -599,7 +619,7 @@ mod tests {
             decide(&policy, &mut state, &tier_refusal(Some(1)), &Speed::Fast),
             Decision::FallBack {
                 reason: SpeedFallbackReason::RateLimited,
-                cooldown: secs(1),
+                cooldown: secs(60),
             }
         );
         assert_eq!(state.attempts(), 4, "standard speed gets a send of its own");
@@ -715,7 +735,7 @@ mod tests {
     fn the_cooldown_is_the_providers_time_or_the_configured_one() {
         let policy = RetryPolicy::default();
         assert_eq!(policy.cooldown(None), secs(600));
-        assert_eq!(policy.cooldown(Some(secs(25))), secs(25));
+        assert_eq!(policy.cooldown(Some(secs(61))), secs(61));
         assert_eq!(policy.cooldown(Some(secs(7200))), secs(7200));
         let own = RetryPolicy {
             speed: SpeedPolicy {
@@ -725,6 +745,52 @@ mod tests {
             ..RetryPolicy::default()
         };
         assert_eq!(own.cooldown(None), secs(90));
-        assert_eq!(own.cooldown(Some(secs(25))), secs(25));
+        assert_eq!(own.cooldown(Some(secs(75))), secs(75));
+    }
+
+    #[test]
+    fn a_cooldown_is_never_shorter_than_the_floor() {
+        // The case the floor is for: a provider that keeps answering "in 25
+        // seconds" must not give 25-second cooldowns.
+        let policy = RetryPolicy::default();
+        for wait in [0, 1, 8, 21, 25, 59, 60] {
+            assert_eq!(policy.cooldown(Some(secs(wait))), secs(60), "{wait} s");
+        }
+        // Above the floor the provider's time is taken as given, with no
+        // rounding and no cap.
+        for wait in [61, 90, 600, 86_400] {
+            assert_eq!(policy.cooldown(Some(secs(wait))), secs(wait), "{wait} s");
+        }
+        // The floor does not touch the cooldown used when the provider
+        // names no time, even when that one is set shorter.
+        let short = RetryPolicy {
+            speed: SpeedPolicy {
+                cooldown: secs(10),
+                ..SpeedPolicy::default()
+            },
+            ..RetryPolicy::default()
+        };
+        assert_eq!(short.cooldown(None), secs(10));
+
+        // It is a setting. Zero takes the provider's time as given, which
+        // is what the harness did before there was a floor.
+        let none = RetryPolicy {
+            speed: SpeedPolicy {
+                min_cooldown: Duration::ZERO,
+                ..SpeedPolicy::default()
+            },
+            ..RetryPolicy::default()
+        };
+        assert_eq!(none.cooldown(Some(secs(25))), secs(25));
+        assert_eq!(none.cooldown(Some(Duration::ZERO)), Duration::ZERO);
+        let long = RetryPolicy {
+            speed: SpeedPolicy {
+                min_cooldown: secs(300),
+                ..SpeedPolicy::default()
+            },
+            ..RetryPolicy::default()
+        };
+        assert_eq!(long.cooldown(Some(secs(25))), secs(300));
+        assert_eq!(long.cooldown(Some(secs(301))), secs(301));
     }
 }

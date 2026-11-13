@@ -22,7 +22,9 @@ cortex-protocol.workspace = true
 cortex-base.workspace = true
 futures-core.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# `raw_value`: a block of a response is kept as the text the provider sent,
+# so that replaying it changes nothing (src/anthropic/decode.rs).
+serde_json = { workspace = true, features = ["raw_value"] }
 thiserror.workspace = true
 reqwest = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
