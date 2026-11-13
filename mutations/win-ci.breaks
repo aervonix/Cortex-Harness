@@ -34,3 +34,12 @@ find: **member != command && !has_exited(**member)
 replace: **member != command
 caught-by:
     tree::tests::a_member_that_has_exited_is_not_left_running
+
+[break] a-member-that-cannot-be-opened-is-taken-for-gone
+rule: A member of the job that refuses to be opened is still there, and is counted as running; only an id that no process has is gone.
+file: crates/cortex-sandbox/src/tree/mod.rs
+in: unopened_is_gone
+find: code == Some(NO_SUCH_PROCESS)
+replace: code.is_some()
+caught-by:
+    tree::tests::a_process_that_refuses_to_be_opened_is_still_there

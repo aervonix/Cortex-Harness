@@ -297,7 +297,7 @@ fn a_walk_that_is_cancelled_part_way_stops_there() {
         // and nowhere near all of them.
         let seen = gate.seen.load(Ordering::SeqCst);
         assert!(
-            (100..400).contains(&seen),
+            (100..250).contains(&seen),
             "{seen} of {} entries were visited",
             total + 30
         );

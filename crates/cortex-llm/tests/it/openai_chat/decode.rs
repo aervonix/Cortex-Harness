@@ -17,7 +17,7 @@
 //! - **On every pull request,** each stream is delivered one byte at a
 //!   time, which puts a boundary at every byte of it (of its first
 //!   [`EXHAUSTIVE`] bytes, for a longer one), and in pieces of two other
-//!   sizes. It is also cut in two at between 8 and 100 places
+//!   sizes. It is also cut in two at between 8 and 50 places
 //!   spread over it, and at every one of its first [`EVERY_BYTE`] bytes
 //!   when it is short.
 //! - **In the nightly run,** each stream is delivered in pieces of seven
@@ -97,10 +97,7 @@ const EXHAUSTIVE: usize = 16_000;
 /// Whether this is the nightly run, which multiplies the property cases
 /// and has the time for many more cuts.
 fn nightly() -> bool {
-    std::env::var("CORTEX_PROPERTY_SCALE")
-        .ok()
-        .and_then(|scale| scale.trim().parse::<u64>().ok())
-        .is_some_and(|scale| scale > 1)
+    cortex_testkit::cases::exhaustive()
 }
 
 /// Where a stream of `len` bytes is cut in two.
