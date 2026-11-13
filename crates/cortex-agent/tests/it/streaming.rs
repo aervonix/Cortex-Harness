@@ -111,7 +111,7 @@ fn a_response_is_deltas_then_one_item_that_is_recorded_once() {
     // The request had the system prompt, the tools and the prompt.
     let request = last_request(&world.provider);
     assert_eq!(request.system, "You are a test.");
-    assert_eq!(request.tools.len(), 6);
+    assert_eq!(request.tools.len(), 7);
     assert_eq!(text_of(&request.messages[0]), "go");
     assert!(request.cache.stable_prefix && request.cache.history);
 
@@ -548,4 +548,39 @@ fn every_record_of_a_turn_is_filed_under_the_turn() {
         })
         .collect();
     assert_eq!(kinds, ["user", "assistant", "result", "assistant"]);
+}
+
+#[test]
+fn a_second_call_with_the_id_of_the_first_is_not_a_call() {
+    // A result names the call it answers by id, so two calls with one id
+    // cannot both be answered. The second is dropped from the message and
+    // never runs.
+    let response = calls(&[
+        ("same", "read", json!({"path": "a"})),
+        ("same", "write", json!({"path": "b"})),
+        ("other", "read", json!({"path": "c"})),
+    ]);
+    let (world, rig) = Rig::one("duplicate_id", [response, says("Done.")]);
+    turn(&world, &rig, 1);
+
+    let items = rig.store.items();
+    let Item::AssistantMessage(assistant) = &items[1] else {
+        panic!("an assistant item");
+    };
+    let ids: Vec<&str> = assistant
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            Part::ToolCall(call) => Some(call.id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, ["same", "other"]);
+    assert_eq!(world.log.count("start write b"), 0);
+    let results = items
+        .iter()
+        .filter(|item| matches!(item, Item::ToolResult(_)))
+        .count();
+    assert_eq!(results, 2);
+    assert_valid_history(&last_request(&world.provider).messages);
 }

@@ -69,10 +69,26 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub struct Events {
     list: Mutex<Vec<SessionEvent>>,
     wake: Notify,
+    /// Set by the one test that makes the loop panic on purpose.
+    pub loop_panic_expected: std::sync::atomic::AtomicBool,
 }
 
 impl EventSink for Events {
     fn emit(&self, event: SessionEvent) {
+        // The loop contains its own panics and ends the turn. In a test
+        // that is a bug showing itself (a failed assertion in the loop),
+        // and it must fail the test whatever else the test looks at.
+        if let Event::TurnCompleted(completed) = &event.event
+            && let Some(error) = &completed.error
+            && error.code == "loop_panicked"
+        {
+            assert!(
+                self.loop_panic_expected
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                "the loop panicked: {}",
+                error.message
+            );
+        }
         lock(&self.list).push(event);
         self.wake.notify_one();
     }
@@ -346,6 +362,9 @@ pub enum Kind {
     Shell,
     /// Touches nothing.
     Plain,
+    /// Declares no effect and is scheduled to run alone: what a tool from
+    /// outside looks like when its author said nothing.
+    Solo,
     /// Panics when it runs.
     Panic,
 }
@@ -356,6 +375,9 @@ pub enum Kind {
 /// - `id`: the call's label in the log, in place of the path;
 /// - `gate`: the name of a gate to wait at before it finishes;
 /// - `output`: text to send to front ends while it runs;
+/// - `stubborn`: wait at the gate even after the call is cancelled;
+/// - `record`: note in the table of seen files, as `read` does, that the
+///   path was shown;
 /// - `fail`: end with an error result;
 /// - `bad`: refuse the arguments when the call is planned.
 pub struct Probe {
@@ -367,8 +389,11 @@ pub struct Probe {
 
 struct ProbeArgs {
     label: String,
+    path: Option<cortex_base::AbsPath>,
     gate: Option<String>,
     output: Option<String>,
+    stubborn: bool,
+    record: bool,
     fail: bool,
 }
 
@@ -377,7 +402,7 @@ impl Probe {
         let class = match kind {
             Kind::Read | Kind::Plain | Kind::Panic => ConcurrencyClass::ReadOnly,
             Kind::Write => ConcurrencyClass::Keyed,
-            Kind::Shell => ConcurrencyClass::Exclusive,
+            Kind::Shell | Kind::Solo => ConcurrencyClass::Exclusive,
         };
         Self {
             spec: ToolSpec::new(
@@ -411,8 +436,11 @@ impl Tool for Probe {
             format!("{} {label}", self.spec.name),
             ProbeArgs {
                 label,
+                path: path.as_ref().map(|path| path.abs().clone()),
                 gate: text("gate"),
                 output: text("output"),
+                stubborn: args.get("stubborn").is_some(),
+                record: args.get("record").is_some(),
                 fail: args.get("fail").is_some(),
             },
         );
@@ -423,6 +451,7 @@ impl Tool for Probe {
                     .with_concurrency(Concurrency::Keyed(vec![path.abs().clone()]))
                     .with_effect(Effect::Write(path));
             }
+            (Kind::Solo, _) => plan = plan.with_concurrency(Concurrency::Exclusive),
             (Kind::Shell, _) => {
                 plan = plan
                     .with_concurrency(Concurrency::Exclusive)
@@ -453,17 +482,27 @@ impl Tool for Probe {
             if let Some(output) = &args.output {
                 out.output(output);
             }
-            if let Some(gate) = &args.gate
-                && cx
-                    .cancel
-                    .race(self.gates.get(gate).opened())
-                    .await
-                    .is_none()
-            {
-                self.log.push(format!("cancelled {name} {label}"));
-                return ToolResult::interrupted(format!("{name} {label} stopped part-way"));
+            if let Some(gate) = &args.gate {
+                let opened = self.gates.get(gate).opened();
+                if args.stubborn {
+                    opened.await;
+                } else if cx.cancel.race(opened).await.is_none() {
+                    self.log.push(format!("cancelled {name} {label}"));
+                    return ToolResult::interrupted(format!("{name} {label} stopped part-way"));
+                }
             }
             assert!(self.kind != Kind::Panic, "the probe was told to panic");
+            if let (true, Some(path)) = (args.record, &args.path) {
+                let snapshot = cortex_tools::FileSnapshot::of_content(b"one line\n", None);
+                let shown = cortex_tools::Shown {
+                    hash: snapshot.hash.clone(),
+                    lines: cortex_tools::LineRanges::of(1, 1),
+                    total_lines: 1,
+                    turn: cx.turn,
+                    kept: false,
+                };
+                cx.files.record_read(path, snapshot, shown);
+            }
             self.log.push(format!("end {name} {label}"));
             if args.fail {
                 ToolResult::error(format!("{name} {label} failed"))
@@ -483,6 +522,11 @@ pub struct ScriptedPolicy {
     /// The answers to come for each tool's questions, in order. With none
     /// left the answer is to allow.
     answers: Mutex<BTreeMap<String, VecDeque<Verdict>>>,
+    /// The calls it was shown to decide, by their plan's summary, in order.
+    decided: Mutex<Vec<String>>,
+    /// The tools whose question, or whose decision, panics.
+    panics_asked: Mutex<Vec<String>>,
+    panics_deciding: Mutex<Vec<String>>,
     /// The calls that were asked about, by their plan's summary, in order.
     asked: Mutex<Vec<String>>,
     /// The questions that were dropped before they were answered.
@@ -513,6 +557,33 @@ impl ScriptedPolicy {
 
     pub fn asked(&self) -> Vec<String> {
         lock(&self.asked).clone()
+    }
+
+    /// Makes the question about `tool` panic.
+    pub fn panic_when_asked(&self, tool: &str) {
+        lock(&self.panics_asked).push(tool.to_owned());
+    }
+
+    /// Makes the decision about `tool` panic.
+    pub fn panic_when_deciding(&self, tool: &str) {
+        lock(&self.panics_deciding).push(tool.to_owned());
+    }
+
+    /// Waits until `count` calls have been planned and shown to the policy,
+    /// and the loop has had the chance to start whatever it would start.
+    pub async fn decisions(&self, count: usize) {
+        loop {
+            if lock(&self.decided).len() >= count {
+                break;
+            }
+            self.wake.notified().await;
+        }
+        // The decision is made in the task that planned the call, which
+        // then reports to the loop, which then starts the call, which logs
+        // when it is first polled: a few turns of the runtime.
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
     }
 
     pub fn withdrawn(&self) -> Vec<String> {
@@ -546,6 +617,12 @@ impl Drop for OpenQuestion {
 
 impl Policy for ScriptedPolicy {
     fn decide(&self, call: &PlannedCall<'_>) -> Decision {
+        lock(&self.decided).push(call.plan.summary.clone());
+        self.wake.notify_one();
+        assert!(
+            !lock(&self.panics_deciding).contains(&call.spec.name),
+            "the policy was told to panic deciding"
+        );
         lock(&self.decisions)
             .get(&call.spec.name)
             .cloned()
@@ -557,6 +634,10 @@ impl Policy for ScriptedPolicy {
             let tool = call.spec.name.clone();
             lock(&self.asked).push(call.plan.summary.clone());
             self.wake.notify_one();
+            assert!(
+                !lock(&self.panics_asked).contains(&tool),
+                "the policy was told to panic asking"
+            );
             let mut open = OpenQuestion {
                 summary: Some(call.plan.summary.clone()),
                 withdrawn: Arc::clone(&self.withdrawn),
@@ -736,7 +817,8 @@ impl World {
     }
 
     /// The fake tools: `read` and `peek` (read-only), `write` (keyed by
-    /// path), `shell` (exclusive), `plain` (touches nothing) and `panic`.
+    /// path), `shell` (exclusive), `plain` (touches nothing), `solo`
+    /// (declares nothing and runs alone) and `panic`.
     pub fn toolbox(&self) -> Toolbox {
         let probe = |name: &str, kind: Kind| Probe::new(name, kind, &self.log, &self.gates);
         Toolbox::new()
@@ -745,6 +827,7 @@ impl World {
             .with(probe("write", Kind::Write))
             .with(probe("shell", Kind::Shell))
             .with(probe("plain", Kind::Plain))
+            .with(probe("solo", Kind::Solo))
             .with(probe("panic", Kind::Panic))
     }
 
@@ -757,12 +840,19 @@ impl World {
 /// A panic in a session's task would leave the test waiting for an event
 /// that never comes, until the runner's time limit. This ends the test at
 /// once, with the panic's message already printed.
-struct AbortIfTheLoopPanics;
+struct AbortIfItPanics<F>(std::pin::Pin<Box<F>>);
 
-impl Drop for AbortIfTheLoopPanics {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            std::process::abort();
+impl<F: Future<Output = ()>> Future for AbortIfItPanics<F> {
+    type Output = ();
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        let inner = self.0.as_mut();
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| inner.poll(context))) {
+            Ok(poll) => poll,
+            Err(_) => std::process::abort(),
         }
     }
 }
@@ -780,6 +870,8 @@ pub struct Setup {
     pub memory: MemorySessionStore,
     pub toolbox: Option<Toolbox>,
     pub context: Arc<ContextScript>,
+    /// A verifier in place of the scripted one.
+    pub verifier: Option<Arc<dyn Verifier>>,
 }
 
 /// One session, with everything it does remembered.
@@ -808,6 +900,7 @@ impl Setup {
             memory: MemorySessionStore::new(),
             toolbox: None,
             context: Arc::default(),
+            verifier: None,
         }
     }
 
@@ -842,7 +935,9 @@ impl Setup {
             context: Box::new(context),
             events: Arc::clone(&events) as Arc<dyn EventSink>,
             stats: Arc::clone(&stats) as Arc<dyn Stats>,
-            verifier: Arc::clone(&verifier) as Arc<dyn Verifier>,
+            verifier: self
+                .verifier
+                .unwrap_or_else(|| Arc::clone(&verifier) as Arc<dyn Verifier>),
             clock: Arc::clone(&clock),
             cooldowns: world.cooldowns.clone(),
             ledger: self.ledger.unwrap_or_else(|| Ledger::new(clock)),
@@ -855,10 +950,9 @@ impl Setup {
             .runtime
             .block_on(Session::open(parts))
             .expect("the session opens");
-        world.runtime.spawn(async move {
-            let _loud = AbortIfTheLoopPanics;
-            session.run().await;
-        });
+        world
+            .runtime
+            .spawn(AbortIfItPanics(Box::pin(session.run())));
         Rig {
             handle,
             events,
@@ -887,6 +981,16 @@ impl Rig {
             .prompt(vec![Part::text(text)], None)
             .map_err(|error| *error)
             .expect("the session is idle")
+    }
+
+    /// Sends a prompt, queues another behind it while the first turn is
+    /// still at its first request, and waits for the first turn to end.
+    pub fn queue_after_start(&self, world: &World, queued: &str) {
+        world.run(async {
+            self.prompt("go");
+            self.queue(queued);
+            self.events.turns(1).await;
+        });
     }
 
     pub fn steer(&self, text: &str) -> TurnStartResult {

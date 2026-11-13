@@ -343,7 +343,8 @@ impl SessionHandle {
     }
 
     /// Tells the loop that the session's items changed under it (a rewind,
-    /// a change of branch): it reads them again, before its next turn.
+    /// a change of branch): it reads them again before its next turn. If
+    /// that fails, the turn fails, and the turn after it tries again.
     ///
     /// # Errors
     ///
@@ -360,8 +361,6 @@ impl SessionHandle {
             )));
         }
         inbox.reload = true;
-        drop(inbox);
-        self.shared.wake.notify_one();
         Ok(())
     }
 
