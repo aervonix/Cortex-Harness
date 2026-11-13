@@ -10,19 +10,15 @@
 //! the idle limit and a ten-minute cooldown are tested in microseconds and
 //! against one clock.
 
+#[cfg(test)]
 use std::pin::Pin;
+#[cfg(feature = "http")]
 use std::time::Duration;
 
-/// A wait in progress: a future that completes when the time has passed.
-/// Dropping it gives the wait up.
-pub type Sleep = Pin<Box<dyn Future<Output = ()> + Send>>;
-
-/// Something that can wait.
-pub trait Timer: Send + Sync + std::fmt::Debug {
-    /// A future that completes after `duration`. The wait starts when this
-    /// is called, not when the future is first polled.
-    fn sleep(&self, duration: Duration) -> Sleep;
-}
+// The trait is `cortex-base`'s since step 13, where the process runner's
+// copy of it went too. It keeps its name here, so `cortex_llm::Timer` is
+// the same trait as `cortex_base::Timer`.
+pub use cortex_base::{Sleep, Timer};
 
 /// The async runtime's timer: what the harness runs with.
 ///

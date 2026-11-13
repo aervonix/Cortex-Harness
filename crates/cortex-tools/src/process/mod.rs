@@ -91,14 +91,9 @@ pub const SETTLE: Duration = Duration::from_secs(1);
 /// the result.
 const PENDING_BYTES: usize = 64 * 1024;
 
-/// A wait in progress. Dropping it gives the wait up.
-pub type Sleep = Pin<Box<dyn Future<Output = ()> + Send>>;
-
-/// Something that can wait: the runner's only source of time passing.
-pub trait Timer: Send + Sync + std::fmt::Debug {
-    /// A future that completes after `duration`.
-    fn sleep(&self, duration: Duration) -> Sleep;
-}
+// The runner's only source of time passing. The trait is `cortex-base`'s
+// since step 13, where the provider layer's copy of it went too.
+pub use cortex_base::{Sleep, Timer};
 
 /// The async runtime's timer: what the harness runs with. It must be used
 /// inside a Tokio runtime that has its timer enabled.
