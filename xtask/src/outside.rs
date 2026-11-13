@@ -145,7 +145,11 @@ fn ignored_test(name: &str, variables: &[(&str, &str)]) -> Result<()> {
 
 /// Runs one ignored test of the test binary `selection` names, and shows
 /// its output. Fails unless exactly one test ran and passed.
-fn run_ignored(selection: &[&str], name: &str, variables: &[(&str, &str)]) -> Result<()> {
+pub(crate) fn run_ignored(
+    selection: &[&str],
+    name: &str,
+    variables: &[(&str, &str)],
+) -> Result<()> {
     let mut arguments = vec!["test", "--locked"];
     arguments.extend_from_slice(selection);
     arguments.extend_from_slice(&["--", "--ignored", "--exact", name, "--nocapture"]);
