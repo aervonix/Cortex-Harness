@@ -692,7 +692,10 @@ fn sys_undo_does_not_write_through_a_link_a_command_planted() {
     // directory outside the workspace.
     world.put(
         "swap.sh",
-        format!("mv .git .git.old && ln -s '{}' .git\n", elsewhere.display()),
+        format!(
+            "mv .git/hooks .git/hooks.old && ln -s '{}' .git/hooks\n",
+            elsewhere.join("hooks").display()
+        ),
     );
     world.provider.push(says("Ready."));
     world
@@ -713,7 +716,13 @@ fn sys_undo_does_not_write_through_a_link_a_command_planted() {
         let keep = first_message(&front);
         front.turn("swap it").await;
         let results = front.results();
-        assert!(results[0].2.contains("`.git` (created)"), "{results:?}");
+        assert!(
+            results[0].2.contains("`.git/hooks` (modified)")
+                && results[0]
+                    .2
+                    .contains("`.git/hooks/pre-commit.sample` (deleted)"),
+            "{results:?}"
+        );
         let _ = front
             .op(Op::SessionRewind(
                 cortex_protocol::methods::SessionRewindParams {

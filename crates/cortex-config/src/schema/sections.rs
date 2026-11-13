@@ -339,7 +339,13 @@ settings! {
         /// layer adds to the list.
         [Preference, Now, joined]
         pub protect: Vec<String>,
-        /// Whether a command may use the network.
+        /// Whether a command may use the network. `off`: no TCP or UDP,
+        /// to this machine's own addresses included, and no Unix socket,
+        /// so a test suite that starts a server on loopback or on a Unix
+        /// socket fails in the sandbox; such a run needs `full`, or one
+        /// approved run outside the sandbox. `full`: the network, and
+        /// still no Unix socket (the session bus, an agent, the Docker
+        /// socket).
         [ByNetwork, Now]
         pub network: NetworkAccess = NetworkAccess::Off,
     }

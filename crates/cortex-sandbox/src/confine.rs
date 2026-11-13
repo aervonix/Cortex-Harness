@@ -4,10 +4,11 @@
 //! # Landlock: the file system
 //!
 //! Every right of the version the harness counted on is handled, except
-//! two: `ioctl` on a device file, so that a program that drives a device
-//! (a GPU, a terminal it opened) is not stopped, and the resolving of a
-//! Unix socket's path, which the seccomp filter below settles on every
-//! kernel alike. Then:
+//! two. `ioctl` on a device file is left to the device's own permissions:
+//! a device can be opened for writing only under a write root (`/dev/null`
+//! aside), so a program that drives one (a GPU) needs its device among
+//! `sandbox.write`. And the resolving of a Unix socket's path, which the
+//! seccomp filter below settles on every kernel alike. Then:
 //!
 //! - reading and running are allowed beneath `/`, or beneath each read
 //!   root;
@@ -25,10 +26,14 @@
 //!
 //! A filter refuses, with `EPERM`:
 //!
-//! - with the network off, `socket` for every family but netlink: no TCP,
-//!   no UDP, loopback included, no raw socket, and no Unix socket, so no
-//!   D-Bus, no SSH agent and no Docker socket. `socketpair` stays, so a
-//!   command's own processes can still talk to each other;
+//! - with the network off, `socket` for every family but netlink, and
+//!   netlink for every protocol but the route one: no TCP, no UDP,
+//!   loopback included, no raw socket, and no Unix socket, so no D-Bus, no
+//!   SSH agent and no Docker socket. `socketpair` stays, so a command's own
+//!   processes can still talk to each other;
+//! - with the network on, still `socket` for Unix sockets: the session bus,
+//!   an agent or the Docker socket would let a command out of the sandbox
+//!   whatever the network setting;
 //! - `io_uring`, which can open a socket without the `socket` call;
 //! - a new user namespace (`unshare` and `clone` with `CLONE_NEWUSER`);
 //! - the kernel's keyrings, `bpf`, `perf_event_open` and `userfaultfd`;
@@ -36,9 +41,14 @@
 //!
 //! A second filter answers `clone3` with `ENOSYS`, because its flags are in
 //! memory a filter cannot read: the C library then falls back to `clone`,
-//! whose flags the first filter can. A 32-bit system call kills the
-//! process (the filter is for the build's own architecture), and on x86-64
-//! the x32 form of each refused call is refused too.
+//! whose flags the first filter can. A third answers `setsid` and `setpgid`
+//! as done without doing them: every process the command starts stays in
+//! its process group, and dies with the tree, so nothing it started writes
+//! the workspace after the look at protected paths that follows the
+//! command. A 32-bit system call kills the process (the filter is for the
+//! build's own architecture), and on x86-64 the x32 form of each refused
+//! call is refused too. Tracing other processes is left to Landlock, which
+//! keeps it inside the sandbox.
 
 #![allow(
     clippy::disallowed_methods,
