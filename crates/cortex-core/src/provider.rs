@@ -86,11 +86,29 @@ pub(crate) fn catalog(loaded: &Loaded, env: &Env) -> Result<Catalog, Box<ErrorDa
     };
     for (name, entry) in section {
         let place = || {
-            let origin = loaded.origin(&KeyPath::new(["models", name.as_str()]));
-            match (&origin.file, origin.line) {
-                (Some(file), Some(line)) => format!("{}:{line}", env.display_path(file)),
-                (Some(file), None) => env.display_path(file),
-                _ => "the configuration".to_owned(),
+            // The origin of the entry, of one of its keys, or of the
+            // section: whichever the loader recorded a file for.
+            let mut keys = vec![KeyPath::new(["models", name.as_str()])];
+            if let Some(entry) = entry.as_table() {
+                keys.extend(
+                    entry
+                        .keys()
+                        .map(|key| KeyPath::new(["models", name.as_str(), key.as_str()])),
+                );
+            }
+            keys.push(KeyPath::new(["models"]));
+            let origin = keys
+                .iter()
+                .map(|key| loaded.origin(key))
+                .filter(|origin| origin.file.is_some())
+                .min_by_key(|origin| origin.line.unwrap_or(u32::MAX));
+            match origin {
+                Some(origin) => match (&origin.file, origin.line) {
+                    (Some(file), Some(line)) => format!("{}:{line}", env.display_path(file)),
+                    (Some(file), None) => env.display_path(file),
+                    _ => "the configuration".to_owned(),
+                },
+                None => "the configuration".to_owned(),
             }
         };
         let Some(entry) = entry.as_table() else {
