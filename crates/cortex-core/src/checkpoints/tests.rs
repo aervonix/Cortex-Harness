@@ -3,106 +3,48 @@
 //! `docs/architecture/05-tools.md`, "Checkpoints").
 //!
 //! The real `write` and `edit` tools run against a real session. What
-//! joins them is [`RoundCheckpoints`], a test-only adapter from the tools'
-//! checkpoint seam to the session's `RoundCheckpoint`: the core's own
-//! adapter, when the core is assembled, does the same and can start from
-//! this one.
+//! joins them is [`Rounds`], the core's adapter from the tools' checkpoint
+//! seam to the session's `RoundCheckpoint`. (Until the core was assembled,
+//! in step 13, these tests carried a copy of it as test support.)
+
+#![allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test prepares real files and fails by panicking"
+)]
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use cortex_base::{AbsPath, ContentHash, FakeClock, PathOptions, PathResolver};
+use cortex_base::{FakeClock, PathOptions, PathResolver};
 use cortex_protocol::ids::{ItemId, SessionId, TurnId};
 use cortex_protocol::item::UserMessageItem;
 use cortex_protocol::message::Part;
-use cortex_session::entry::{Before, Body, FileVersion};
+use cortex_session::entry::Body;
 use cortex_session::{
-    DiskStore, Durability, FileStatus, ProjectSessions, Restore, RoundCheckpoint, Session,
-    SessionOptions,
+    Durability, FileStatus, KEEP_LIMIT, ProjectSessions, Restore, Session, SessionOptions,
+    SystemGit,
 };
 use cortex_testkit::cases::{self, ensure};
 use cortex_testkit::{Rng, SeededRng};
 use cortex_tools::{
-    CheckpointError, Checkpoints, EditTool, Editing, FileSnapshot, FileTable, MemoryStore,
-    NoOutput, ReadTool, RunCx, Tool, ToolResult, WriteTool, execute,
+    EditTool, Editing, FileTable, MemoryStore, NoOutput, ReadTool, RunCx, Tool, ToolResult,
+    WriteTool, execute,
 };
+
+use super::Rounds;
 use serde_json::{Value, json};
-
-/// The tools' checkpoint seam, filled with the checkpoint of the tool round
-/// that is running.
-struct RoundCheckpoints {
-    store: Arc<DiskStore>,
-    root: AbsPath,
-    round: Mutex<RoundCheckpoint>,
-}
-
-impl RoundCheckpoints {
-    fn new(store: Arc<DiskStore>, root: &AbsPath) -> Self {
-        Self {
-            store,
-            root: root.clone(),
-            round: Mutex::new(RoundCheckpoint::new(root.clone())),
-        }
-    }
-
-    /// The end of a tool round: its `checkpoint` entry, if a file changed,
-    /// and a fresh round for the next.
-    fn finish(&self) -> Option<Body> {
-        let round = std::mem::replace(
-            &mut *self.round.lock().unwrap(),
-            RoundCheckpoint::new(self.root.clone()),
-        );
-        round.finish().expect("the round's files can be read")
-    }
-}
-
-impl Checkpoints for RoundCheckpoints {
-    fn before(&self, file: &AbsPath, content: Option<&[u8]>) -> Result<(), CheckpointError> {
-        let mut round = self.round.lock().unwrap();
-        let before = match content {
-            None => Before::Absent,
-            // The bytes the tool read are what is kept: no second read of
-            // the file, and nothing between the two for it to become.
-            Some(content) => {
-                let bytes = content.len() as u64;
-                let kept = bytes <= round.limit();
-                let hash = if kept {
-                    self.store
-                        .put_blob(content)
-                        .map_err(|error| CheckpointError::new(error.to_string()))?
-                } else {
-                    ContentHash::of(content)
-                };
-                Before::Version(FileVersion { hash, bytes, kept })
-            }
-        };
-        // Only the first record of a file in a round counts.
-        round.record_before(file, before);
-        Ok(())
-    }
-
-    fn after(&self, file: &AbsPath, left: Option<&FileSnapshot>) {
-        // `None`: there is no file, which is what a round records for one
-        // it removed, or could not create.
-        self.round.lock().unwrap().after(
-            file,
-            left.map(|left| FileVersion {
-                hash: left.hash,
-                bytes: left.size,
-                kept: true,
-            }),
-        );
-    }
-}
 
 /// A workspace, a session in it, and the tools wired to that session.
 struct World {
     dir: PathBuf,
     workspace: PathBuf,
     session: Session,
-    checkpoints: Arc<RoundCheckpoints>,
+    checkpoints: Arc<Rounds>,
     cx: RunCx,
     read: ReadTool,
     write: WriteTool,
@@ -113,8 +55,8 @@ struct World {
 
 impl World {
     fn new(test: &str) -> Self {
-        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join("cortex-core-it")
+        let dir = std::env::temp_dir()
+            .join(format!("cortex-core-undo-{}", std::process::id()))
             .join(test);
         if dir.exists() {
             let _ = fs::remove_dir_all(&dir);
@@ -135,7 +77,12 @@ impl World {
             },
         )
         .unwrap();
-        let checkpoints = Arc::new(RoundCheckpoints::new(session.store(), &root));
+        let checkpoints = Arc::new(Rounds::new(
+            session.store(),
+            root.clone(),
+            KEEP_LIMIT,
+            Arc::new(SystemGit),
+        ));
         // No flush to the disk, which takes as long as the disk takes and is
         // not what these tests check. The measurement can ask for it.
         let sync = std::env::var_os("CORTEX_PERF_SYNC").is_some();
@@ -230,7 +177,11 @@ impl World {
 
     /// Ends a tool round: its checkpoint goes into the log.
     fn end_round(&mut self, turn: &TurnId) -> bool {
-        match self.checkpoints.finish() {
+        match self
+            .checkpoints
+            .take()
+            .expect("the round's files can be read")
+        {
             Some(body) => {
                 self.session.append(Some(turn), body).unwrap();
                 true

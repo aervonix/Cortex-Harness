@@ -157,6 +157,13 @@
     "ApprovalRequest": {
       "description": "`approval/request`: may this tool call run?",
       "properties": {
+        "adds": {
+          "description": "The rules that `allow_session` or `allow_project` would add, so that\na front end can show exactly what such an answer allows from then\non. Empty when only this one call can be allowed.",
+          "items": {
+            "$ref": "#/$defs/Rule"
+          },
+          "type": "array"
+        },
         "call_id": {
           "$ref": "#/$defs/CallId",
           "description": "The tool call."
@@ -171,6 +178,13 @@
         "detail": {
           "$ref": "#/$defs/ApprovalDetail",
           "description": "Exactly what would happen."
+        },
+        "reasons": {
+          "description": "Why the call needs an answer, a reason an entry: the rule that asks,\nthe part of a command that is not on a safe list, a protected path.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "session_id": {
           "$ref": "#/$defs/SessionId",

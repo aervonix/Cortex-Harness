@@ -30,14 +30,17 @@ cortex-agent.workspace = true
 cortex-ext.workspace = true
 cortex-mcp = { workspace = true, optional = true }
 
-# The integration tests run the real editing tools against the real session
-# store: the one place before the core is assembled where the two meet
-# (`tests/it/undo.rs`). `tokio` is the runtime the tools' blocking work runs
-# on, and `serde_json` writes their arguments.
+serde_json.workspace = true
+thiserror.workspace = true
+toml = { workspace = true, features = ["display"] }
+tracing.workspace = true
+# The runtime the core's tasks run on: `rt` for tasks and the blocking pool,
+# `sync` for the wake-ups of a client's queue. The timer is not asked of
+# it here: every wait is on `cortex_base::Timer`.
+tokio = { workspace = true, features = ["rt", "sync"] }
+
 [dev-dependencies]
 cortex-testkit.workspace = true
-serde_json.workspace = true
-tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true
