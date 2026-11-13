@@ -12,6 +12,10 @@
 //! | [`schema`] | Validation of arguments against a tool's JSON Schema. |
 //! | [`blocking`] | [`run_blocking`]: blocking work on the blocking pool, with a cancellation token. |
 //! | [`read`], [`list`], [`search`] | The tools [`ReadTool`], [`ListTool`] and [`SearchTool`]. |
+//! | [`write`], [`edit`] | The tools [`WriteTool`] and [`EditTool`], which change files: the staleness guard, the two matching tiers, line endings and byte-order marks kept, atomic writes. |
+//! | [`checkpoint`] | [`Checkpoints`], the seam through which those two record what they change for undo, and [`Editing`], what they are made with. |
+//! | [`plan`] | [`PlanBoard`], a session's plan, which the user can edit, and [`PlanTool`]. |
+//! | [`remember`] | [`RememberTool`], and [`Proposals`], the seam its proposals for the project's memory go through. |
 //! | [`process`] | The process runner: one command from its start to the end of its process tree, with a bounded buffer for what it writes, an artifact for the rest, and staged stopping. |
 //! | [`shell`] | [`ShellTool`], and what it needs: which [`Shell`] there is and how each kind is spoken to, the environment a command gets, and which files it changed. |
 //! | [`registry`] | [`ToolRegistry`], where MCP and extension tools register, and the tools [`ToolSearch`] and [`ToolCall`] that reach them. |
@@ -26,45 +30,62 @@
 //! denial) passes the same policy through [`bound`].
 
 pub mod blocking;
+pub mod checkpoint;
 pub mod context;
 pub mod contract;
+pub mod edit;
 pub mod files;
 pub mod list;
 pub mod output;
+pub mod plan;
 pub mod process;
 pub mod read;
 pub mod registry;
+pub mod remember;
 pub mod result;
 pub mod schema;
 pub mod search;
 pub mod shell;
 pub mod store;
 pub mod toolbox;
+pub mod write;
 
 mod args;
+mod change;
 mod detect;
 mod diff;
+mod matching;
+mod textfile;
 mod walk;
 
 #[cfg(test)]
 use cortex_testkit::cases;
 
 pub use blocking::{BlockingError, run_blocking};
+pub use checkpoint::{
+    Change, CheckpointError, Checkpoints, EDIT_LIMIT, Editing, MemoryCheckpoints,
+};
 pub use context::{ImageSupport, OpenGate, Outliner, PlanCx, ReadGate, RunCx};
 pub use contract::{
     BoxFuture, Concurrency, ConcurrencyClass, Effect, Json, NetworkTarget, NoOutput, Plan, Tool,
     ToolOutput, ToolSpec,
 };
+pub use edit::EditTool;
 pub use files::{FileSnapshot, FileTable, LineRanges, Shown, Staleness};
 pub use list::ListTool;
 pub use output::{Budget, Compression, Keep, OutputLimits, Shaped, Treatment};
+pub use plan::{PlanBoard, PlanChange, PlanEditError, PlanTool};
 pub use read::ReadTool;
 pub use registry::{FoundTool, RegistryError, SourceSummary, ToolCall, ToolRegistry, ToolSearch};
+pub use remember::{
+    MemoryProposals, Proposal, ProposalError, ProposalOutcome, Proposals, RememberTool,
+};
 pub use result::{ToolError, ToolResult};
 pub use search::SearchTool;
 pub use shell::{Shell, ShellConfig, ShellKind, ShellSearch, ShellTool};
 pub use store::{ArtifactWriter, ContentStore, MemoryStore, StoreError};
 pub use toolbox::Toolbox;
+pub use write::WriteTool;
 
 /// Runs a planned call and applies the output policy to its result.
 ///

@@ -211,7 +211,10 @@ fn two_calls_that_change_the_session_run_in_the_models_order() {
     });
     let lines = world.log.lines();
     let at = |line: &str| lines.iter().position(|found| found == line).unwrap();
-    assert!(at("end plain first") < at("start plain second"), "{lines:?}");
+    assert!(
+        at("end plain first") < at("start plain second"),
+        "{lines:?}"
+    );
 }
 
 #[test]

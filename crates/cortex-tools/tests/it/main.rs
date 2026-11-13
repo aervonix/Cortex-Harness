@@ -20,6 +20,9 @@
 
 mod bench;
 mod changes;
+mod editing;
+#[cfg(windows)]
+mod editing_windows;
 mod execute;
 mod list;
 #[cfg(unix)]
@@ -27,9 +30,11 @@ mod paths_unix;
 #[cfg(windows)]
 mod paths_windows;
 mod perf;
+mod plan;
 mod process;
 mod read;
 mod registry;
+mod remember;
 mod search;
 mod shell;
 mod shell_search;
@@ -38,10 +43,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cortex_base::{PathOptions, PathResolver};
+use cortex_base::{FakeClock, PathOptions, PathResolver};
 use cortex_tools::{
-    FileTable, Json, MemoryStore, NoOutput, Plan, RunCx, Tool, ToolError, ToolResult, bound,
-    execute,
+    Editing, FileTable, Json, MemoryCheckpoints, MemoryStore, NoOutput, Plan, RunCx, Tool,
+    ToolError, ToolResult, bound, execute,
 };
 
 /// The test that a child process enters by (`cortex_testkit::children`).
@@ -90,6 +95,10 @@ struct Workspace {
     paths: Arc<PathResolver>,
     store: MemoryStore,
     files: Arc<FileTable>,
+    /// What the editing tools record for undo.
+    checkpoints: MemoryCheckpoints,
+    /// The clock the editing tools wait on: its waits take no time.
+    clock: FakeClock,
 }
 
 impl Workspace {
@@ -113,7 +122,48 @@ impl Workspace {
             paths: Arc::new(paths),
             store: MemoryStore::new(),
             files: Arc::new(FileTable::new()),
+            checkpoints: MemoryCheckpoints::new(),
+            clock: FakeClock::default(),
         }
+    }
+
+    /// What `write` and `edit` are made with in a test: this workspace's
+    /// checkpoints, the fake clock, and no flush to the disk, which takes
+    /// as long as the disk takes and is not what these tests check.
+    fn editing(&self) -> Editing {
+        Editing::new(
+            Arc::new(self.checkpoints.clone()),
+            Arc::new(self.clock.clone()),
+        )
+        .with_sync(false)
+    }
+
+    /// The bytes of a file of the workspace.
+    fn read_bytes(&self, relative: &str) -> Vec<u8> {
+        fs::read(self.root().join(relative)).expect("read a file of the workspace")
+    }
+
+    /// Every file under the workspace, as paths with `/`, sorted.
+    fn listing(&self) -> Vec<String> {
+        fn walk(dir: &Path, prefix: &str, found: &mut Vec<String>) {
+            for entry in fs::read_dir(dir).expect("list a directory").flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let path = if prefix.is_empty() {
+                    name
+                } else {
+                    format!("{prefix}/{name}")
+                };
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    walk(&entry.path(), &path, found);
+                } else {
+                    found.push(path);
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(&self.root(), "", &mut found);
+        found.sort();
+        found
     }
 
     /// The workspace root, as the tests write files into it.
