@@ -23,6 +23,9 @@ tokio = { workspace = true, features = ["rt", "sync"] }
 
 [dev-dependencies]
 cortex-testkit.workspace = true
+# The tests run the loop under a seeded order of events (`tests/it/main.rs`,
+# `World`), which is this feature of the tools crate.
+cortex-tools = { workspace = true, features = ["test-hooks"] }
 
 [lints]
 workspace = true

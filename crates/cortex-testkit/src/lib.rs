@@ -8,6 +8,8 @@
 //! | [`canary`] | [`assert_never_printed`]: no `Debug` or `Display` form of a value holds a made-up key. |
 //! | [`timer`] | [`FakeTimer`]: waits that move the fake clock instead of waiting. |
 //! | [`gate`] | [`Gate`]: how two sides of a test take turns without sleeping. |
+//! | [`scratch`] | [`Scratch`]: a directory of a test's own, with files, a git repository when the test needs one, and nothing left behind. |
+//! | [`seed`] | The seed of a test whose order of events is seeded: 0 in an ordinary run, the next one for each repeat of `cargo xtask stress`, and printed so that a failure can be run again. |
 //! | [`children`] | Child processes for process tests: the test binary run again as a child, a grandchild or a child that will not stop, and a [`Roll`](children::Roll) that shows each one start and die. |
 //! | [`exec`] | [`block_on`], which runs async code with no runtime, and [`join`], which runs two futures together. |
 //! | [`provider`] | [`ScriptedProvider`]: a model that says what the test tells it to. For tests of the agent loop. |
@@ -17,8 +19,8 @@
 //! | [`fixtures`] | Made-up models with every shape of speed tier, and requests to them. |
 //! | [`fixture`] | Recorded provider responses: [`Fixture`](fixture::Fixture), the files one is made of, and [`Scrubber`](fixture::Scrubber), which takes credentials and identifiers out of a recording and refuses one that holds the key. |
 //!
-//! The virtual terminal, the pseudo-terminal driver and temporary
-//! workspaces arrive with the steps that first need them.
+//! The virtual terminal and the pseudo-terminal driver arrive with the
+//! steps that first need them.
 //!
 //! # No real waiting
 //!
@@ -42,6 +44,8 @@ pub mod fixtures;
 pub mod gate;
 pub mod protocol;
 pub mod provider;
+pub mod scratch;
+pub mod seed;
 pub mod server;
 pub mod timer;
 pub mod transport;
@@ -52,6 +56,7 @@ pub use exec::{block_on, join};
 pub use gate::Gate;
 pub use protocol::TestProtocol;
 pub use provider::{Response, ScriptedProvider};
+pub use scratch::Scratch;
 pub use server::{ReceivedRequest, ServerReply, SseServer};
 pub use timer::FakeTimer;
 pub use transport::{Reply, ScriptedTransport};
