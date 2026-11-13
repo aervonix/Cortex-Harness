@@ -1,0 +1,104 @@
+# A Windows test run for a branch that has no pull request yet.
+#
+# Code behind `#[cfg(windows)]` is built and run nowhere but on a Windows
+# runner, and the blocking checks only reach one through a pull request. This
+# runs one crate's tests, or some of them, on a hosted Windows runner, for
+# any branch that has been pushed:
+#
+#   gh workflow run windows-try --ref <branch> -f crate=cortex-tools -f filter=shell::
+#   ci-wait --workflow windows-try          (from the branch, for its head commit)
+#
+# It builds and runs as the blocking `test-windows` job does (cargo's `ci`
+# profile, nextest's `ci` profile), then prints the tier report with the
+# slowest tests, and keeps the JUnit report. It blocks nothing, and it is
+# started by hand only. docs/testing-and-ci.md, "A Windows run without a
+# pull request", has the rest. `cargo xtask rules` checks this file as it
+# does the others: actions pinned by commit hash, a read-only token.
+name: windows-try
+
+on:
+  workflow_dispatch:
+    inputs:
+      crate:
+        description: "The crate whose tests to run, or several separated by spaces. Empty: the whole workspace."
+        required: false
+        default: ""
+      filter:
+        description: "Part of a test's name, as nextest takes it (shell::, sys_). Empty: every test."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# A new run for a branch replaces the one in progress.
+concurrency:
+  group: windows-try-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+
+jobs:
+  # The job's id and its environment are those of the blocking test job, on
+  # purpose: the build cache's key is made of them, so this job restores the
+  # cache the main branch wrote for `test-windows` and builds only what the
+  # branch changed. It never writes a cache.
+  test:
+    name: windows-try
+    runs-on: windows-latest
+    # Not a blocking check, so not held to five minutes: a branch that
+    # changes the lockfile builds its new dependencies from source.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Keep cargo's and rustup's files off the system disk
+        run: |
+          "CARGO_HOME=$env:RUNNER_TEMP\cargo" >> $env:GITHUB_ENV
+          "RUSTUP_HOME=$env:RUNNER_TEMP\rustup" >> $env:GITHUB_ENV
+      - name: Install the toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: "false"
+          cache-bin: "false"
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest@0.9.151
+      # The inputs reach the script through the environment, never as text
+      # in the script itself, and are checked before they are used.
+      - name: Tests
+        env:
+          TRY_CRATE: ${{ inputs.crate }}
+          TRY_FILTER: ${{ inputs.filter }}
+        run: |
+          $arguments = @("ci", "--tiers", "--top", "20")
+          # Split at spaces and commas, and drop the empty pieces.
+          foreach ($crate in ("$env:TRY_CRATE" -split '[ ,]+' | Where-Object { $_ })) {
+            if ($crate -cnotmatch '^[a-z0-9][a-z0-9-]*$') {
+              throw "`"$crate`" is not the name of a crate"
+            }
+            $arguments += @("-p", $crate)
+          }
+          $filter = "$env:TRY_FILTER".Trim()
+          if ($filter) {
+            if ($filter -cnotmatch '^[A-Za-z0-9_:]+$') {
+              throw "the filter is part of a test's name: letters, digits, _ and ::"
+            }
+            $arguments += @("--", $filter)
+          }
+          Write-Host "cargo xtask $($arguments -join ' ')"
+          cargo run --locked --quiet --package xtask -- @arguments
+          exit $LASTEXITCODE
+      - name: Keep the JUnit report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-windows-try
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+          retention-days: 14
