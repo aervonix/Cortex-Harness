@@ -42,4 +42,5 @@ The integration tier on Windows was 33.4 s of 40 at `3172648`, against 27.0 s on
 ## Stress and breaks
 
 - `cargo xtask stress -p cortex-term -p cortex-testkit --count 200` on the desktop, at `3172648`: 143 tests, every one passed every time. An earlier run, at the first fixes after the review, found the Ctrl+Z test failing 70 times in 200: it waited for a state that the output can pass through within one read. The test now checks what was written, in order.
+- The same on a hosted Windows runner, 50 times over (`windows-try` with `count=50`), at `95fd6a3`: every test passed every time.
 - `cargo xtask mutate step-20`: 33 breaks, every one caught by the tests its list names. In one full run `key-release-kept` was reported as not caught by its own test; run again alone it was caught, and the test fails with the break made by hand. The cause was not found.
