@@ -502,6 +502,10 @@ fn the_command_table_for_powershell() {
             "Get-Content ~/.config/cortex-harness/credentials.toml",
             Deny,
         ),
+        // A pattern in quotes: PowerShell's commands expand it themselves.
+        ("Get-Content '.en?'", Ask),
+        ("Get-Content '*.env'", Ask),
+        ("Select-String -Pattern KEY -Path '*.pem'", Ask),
         // Not a file: the environment, the registry.
         ("Get-ChildItem Env:", Ask),
         ("Get-Content Env:PATH", Ask),

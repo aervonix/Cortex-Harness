@@ -162,7 +162,8 @@ const LOG_SHOWS_CONTENT: &[&str] = &[
 enum Param {
     /// `-Name`.
     Switch(&'static str),
-    /// `-Name value` or `-Name:value`.
+    /// `-Name value`. (`-Name:value` is not modelled: PowerShell reads
+    /// it as two words.)
     Value(&'static str, Kind),
 }
 
@@ -1111,24 +1112,15 @@ fn powershell_allows(spec: &PsSpec, arguments: &[Word], named: &mut Vec<Named>) 
             operands.push(word);
             continue;
         }
-        let written = word.text.get(1..).unwrap_or("");
-        let (name, attached) = match written.split_once(':') {
-            Some((name, value)) => (name, Some(value)),
-            None => (written, None),
-        };
-        let name = name.to_ascii_lowercase();
+        // `-Name:value` never gets here: the tokenizer refuses a
+        // parameter with a `:` in it.
+        let name = word.text.get(1..).unwrap_or("").to_ascii_lowercase();
         let found = spec.params.iter().find(|param| {
             matches!(param, Param::Switch(known) | Param::Value(known, _) if *known == name)
         });
-        match (found, attached) {
-            (Some(Param::Switch(_)), None) => {}
-            (Some(Param::Value(_, kind)), Some(value)) => {
-                if value.is_empty() || names_a_provider(*kind, value) {
-                    return false;
-                }
-                record(*kind, value, named);
-            }
-            (Some(Param::Value(_, kind)), None) => {
+        match found {
+            Some(Param::Switch(_)) => {}
+            Some(Param::Value(_, kind)) => {
                 let Some(value) = words.next() else {
                     return false;
                 };
@@ -1152,15 +1144,25 @@ fn powershell_allows(spec: &PsSpec, arguments: &[Word], named: &mut Vec<Named>) 
     true
 }
 
-/// Whether a path a PowerShell command is given names something other than
-/// a file: `Env:PATH` is the environment, `HKLM:\Software` the registry,
-/// `Function:prompt` a function's text. A colon belongs in a file's path
-/// only after a drive letter. Windows refuses such names as paths; on
-/// other systems PowerShell still reads them as its own drives, where a
-/// file system would take them for a file's name.
+/// Whether a path a PowerShell command is given is not the name of one
+/// file, so that checking the name would check nothing.
+///
+/// - **A pattern.** PowerShell's commands expand `*`, `?` and `[…]` in a
+///   path themselves, quoted or not: `Get-Content '.en?'` reads `.env`.
+///   (Only `-LiteralPath` does not, and it is held to the same rule: asking
+///   once too often is the safe side.)
+/// - **Something other than a file.** `Env:PATH` is the environment,
+///   `HKLM:\Software` the registry, `Function:prompt` a function's text. A
+///   colon belongs in a file's path only after a drive letter. Windows
+///   refuses such names as paths; on other systems PowerShell still reads
+///   them as its own drives, where a file system would take them for a
+///   file's name.
 fn names_a_provider(kind: Kind, text: &str) -> bool {
     if kind == Kind::Text {
         return false;
+    }
+    if text.contains(['*', '?', '[', ']']) {
+        return true;
     }
     let mut chars = text.chars();
     let drive = matches!(

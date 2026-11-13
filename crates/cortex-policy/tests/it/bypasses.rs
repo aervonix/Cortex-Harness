@@ -733,6 +733,46 @@ fn git_configuration_is_never_changed_unasked() {
     assert_eq!(said(&shell(&powershell, "Copy-Item evil .git/config")), Ask);
 }
 
+/// A tool other than the shell can declare a command and the one file it
+/// writes. That write is judged for what it is, not only for its place.
+#[test]
+fn a_write_declared_beside_a_command_is_judged_as_a_write() {
+    let decide = |engine: &cortex_policy::Engine, file: &str| {
+        said(&engine.decide(&cortex_policy::Request {
+            tool: "format",
+            default: RuleAction::Allow,
+            accesses: &[
+                cortex_policy::Access::Exec {
+                    command: "rustfmt".to_owned(),
+                    cwd: crate::path("/work/app"),
+                },
+                cortex_policy::Access::Write {
+                    path: crate::path(file),
+                },
+            ],
+        }))
+    };
+    let engine = engine_with(|parts| {
+        parts.level = Level::Autonomous;
+        parts.rules = vec![user(Effect::Write, "vendor/**", RuleAction::Deny)];
+    });
+    assert_eq!(decide(&engine, "/work/app/src/main.rs"), Allow);
+    assert_eq!(decide(&engine, "/work/app/.git/config"), Ask);
+    assert_eq!(decide(&engine, "/work/app/.github/workflows/ci.yml"), Ask);
+    assert_eq!(decide(&engine, "/work/app/.env"), Ask);
+    assert_eq!(decide(&engine, "/users/dev/.bashrc"), Ask);
+    assert_eq!(decide(&engine, "/work/app/vendor/x.rs"), Deny);
+    assert_eq!(
+        decide(
+            &engine,
+            "/users/dev/.config/cortex-harness/credentials.toml"
+        ),
+        Deny
+    );
+    let unrestricted = at(Level::Unrestricted);
+    assert_eq!(decide(&unrestricted, "/work/app/.git/config"), Allow);
+}
+
 /// A `cd` is followed only where every part after it runs if, and only
 /// if, the `cd` ran and succeeded. Each line here reads or writes
 /// `/work/notes.txt` or `/work/keys`, outside the workspace, in the shell;
