@@ -85,7 +85,7 @@ fn sys_git_says_what_a_command_changed() {
     ws.file("untracked before.txt", "here all along\n");
     let head = git(&root, &["rev-parse", "HEAD"]);
 
-    let detector = ChangeDetector::new(&root);
+    let detector = ChangeDetector::new(&root).trusting_the_repository(true);
     let before = detector.before();
     // The command.
     ws.file("changed.txt", "changed by the command, and longer\n");
@@ -134,7 +134,7 @@ fn sys_git_follows_a_commit_and_a_checkout() {
     git(&root, &["commit", "--quiet", "--message", "second"]);
     git(&root, &["checkout", "--quiet", "main"]);
 
-    let detector = ChangeDetector::new(&root);
+    let detector = ChangeDetector::new(&root).trusting_the_repository(true);
 
     // A commit of a file as it is changes no file, and moves the head.
     ws.file("kept.txt", "one, and changed by hand\n");
@@ -171,7 +171,7 @@ fn sys_a_workspace_below_the_repository_sees_its_own_part() {
         ],
     );
     let below = root.join("deep").join("work space");
-    let detector = ChangeDetector::new(&below);
+    let detector = ChangeDetector::new(&below).trusting_the_repository(true);
     let before = detector.before();
     ws.file("outside.txt", "changed, outside the workspace\n");
     ws.file(
@@ -215,7 +215,7 @@ fn sys_asking_git_runs_no_program_the_repository_names() {
     assert!(marker.exists(), "git did not run the program at all");
     std::fs::remove_file(&marker).expect("remove the marker");
 
-    let detector = ChangeDetector::new(&root);
+    let detector = ChangeDetector::new(&root).trusting_the_repository(true);
     let before = detector.before();
     ws.file("a.txt", "changed, and longer\n");
     let changes = detector.after(&before);
@@ -226,12 +226,69 @@ fn sys_asking_git_runs_no_program_the_repository_names() {
     );
 }
 
+/// A repository can also name a filter, which git runs on a file to see
+/// whether it has changed, and nothing turns every filter off. So a
+/// project that is not trusted is not asked through git at all.
+#[cfg(unix)]
+#[test]
+fn sys_a_project_that_is_not_trusted_is_not_asked_through_git() {
+    let ws = Workspace::new("changes_git_untrusted");
+    let root = repository(
+        &ws,
+        &[
+            ("a.txt", "one\n"),
+            (".gitattributes", "*.txt filter=planted\n"),
+        ],
+    );
+    let marker = ws.dir.join("the-filter-ran");
+    git(
+        &root,
+        &[
+            "config",
+            "filter.planted.clean",
+            &format!("sh -c 'echo ran > \"{}\"; cat'", marker.display()),
+        ],
+    );
+
+    // Not trusted: the files themselves are looked at, and git is not run.
+    let detector = ChangeDetector::new(&root);
+    let before = detector.before();
+    ws.file("a.txt", "changed by the command, and longer\n");
+    let changes = detector.after(&before);
+    assert_eq!(changes.method, Method::ModificationTimes);
+    // The files of the repository are a moment old too, and may be inside
+    // the slack this way of looking allows: what matters is that the
+    // changed file is found.
+    assert!(
+        changes.modified.contains(&"a.txt".to_owned()),
+        "{changes:?}"
+    );
+    assert!(changes.restorable.is_empty());
+    assert!(!marker.exists(), "an untrusted repository's filter was run");
+
+    // Trusted, git is asked, and git does run the filter: the user has
+    // accepted this repository's configuration. Git runs it when it has to
+    // read a file to know whether it changed, which a file of the same
+    // size as the committed one makes it do.
+    ws.file("a.txt", "two\n");
+    let trusting = ChangeDetector::new(&root).trusting_the_repository(true);
+    let before = trusting.before();
+    let changes = trusting.after(&before);
+    assert_eq!(changes.method, Method::Git);
+    assert!(
+        marker.exists(),
+        "the filter is live, so the test above means something"
+    );
+}
+
 #[test]
 fn sys_git_that_does_not_answer_in_time_is_not_waited_for() {
     let ws = Workspace::new("changes_git_slow");
     let root = repository(&ws, &[("a.txt", "one\n")]);
     // No time at all: git cannot answer, and nothing else is tried.
-    let detector = ChangeDetector::new(&root).with_cap(Duration::ZERO);
+    let detector = ChangeDetector::new(&root)
+        .trusting_the_repository(true)
+        .with_cap(Duration::ZERO);
     let before = detector.before();
     ws.file("a.txt", "changed\n");
     let changes = detector.after(&before);
@@ -355,7 +412,10 @@ fn sys_the_tool_reports_what_its_command_changed() {
     let ws = Workspace::new("changes_through_the_tool");
     let root = repository(&ws, &[("changed.txt", "one\n"), ("deleted.txt", "one\n")]);
     let head = git(&root, &["rev-parse", "HEAD"]);
-    let bench = Bench::in_workspace(ws, default_shell(), |config| config.detect_changes = true);
+    let bench = Bench::in_workspace(ws, default_shell(), |config| {
+        config.detect_changes = true;
+        config.repository_trusted = true;
+    });
     let command = match bench.shell().kind() {
         ShellKind::Pwsh | ShellKind::WindowsPowerShell => {
             "Add-Content changed.txt 'and more'; Remove-Item deleted.txt; \

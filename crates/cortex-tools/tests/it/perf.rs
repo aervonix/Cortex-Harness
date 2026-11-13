@@ -294,8 +294,12 @@ fn perf_starting_a_command() {
         &looking,
     );
     crate::changes::repository(&ws, &[]);
-    let looking = ShellTool::new(shell, ShellConfig::default())
-        .with_runner(Runner::new().with_guard(crate::guard()));
+    let trusting = ShellConfig {
+        repository_trusted: true,
+        ..ShellConfig::default()
+    };
+    let looking =
+        ShellTool::new(shell, trusting).with_runner(Runner::new().with_guard(crate::guard()));
     let with_changes = look(
         &format!("the tool, looking for changes, {files} files, a repository"),
         &looking,

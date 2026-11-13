@@ -5,22 +5,27 @@
 //! A file tool knows what it writes. A command does not say, so the harness
 //! looks: once before the command and once after it.
 //!
-//! - **In a git repository**, it asks `git status` both times and compares
+//! - **In a git repository of a trusted project**, it asks `git status`
+//!   both times and compares
 //!   the two answers, with the size and modification time of every file
 //!   git named. That finds a file the command changed, created or deleted,
 //!   whether or not the file had been changed before. When the command
 //!   moved `HEAD` (a checkout, a pull, a commit), git is also asked which
 //!   files differ between the two commits.
-//! - **Anywhere else**, it walks the workspace afterwards and takes every
+//! - **Anywhere else, and in a project that is not trusted**, it walks the
+//!   workspace afterwards and takes every
 //!   file modified since the command started. That cannot tell a new file
 //!   from a changed one, and cannot see a deleted one.
 //!
 //! In a repository it also says which changed files git can still give
 //! back as they were, and from which commit ([`Changes::restorable`]).
 //!
-//! **Asking git runs nothing of the repository's.** A repository's own
-//! configuration can name a program for git to run when it is asked what
-//! has changed. The harness asks with that turned off.
+//! **Asking git runs nothing of the repository's that the user has not
+//! accepted.** A repository's own configuration can name programs for git
+//! to run when it is asked what has changed: a file-system monitor, which
+//! the harness turns off ([`GIT_HARDENING`]), and a filter for a kind of
+//! file, which nothing turns off. So git is asked only about a project the
+//! user trusts, and any other is looked at by modification times.
 //!
 //! Both are best-effort, and say so: [`Changes::complete`] is `false` when
 //! the look ran out of its time cap or of its room, and then the lists are
@@ -55,6 +60,35 @@ const MOST_FILES: usize = 20_000;
 /// the command's, when there is no git to ask. A file system stamps a file
 /// with a clock that runs a tick or two behind the one the harness reads.
 const CLOCK_SLACK: Duration = Duration::from_millis(20);
+
+/// What every git command here starts with, so that asking changes
+/// nothing and starts nothing more than git itself:
+///
+/// - `--no-optional-locks`: git writes nothing it does not have to. A
+///   status otherwise refreshes the index, behind the user's own git.
+/// - `core.fsmonitor=false`: no file-system monitor is started, which a
+///   repository's configuration could name as any program.
+/// - `core.hooksPath`: nowhere, so that no hook of the repository runs.
+/// - `core.quotepath=off`: names come out as they are.
+///
+/// The first, second and fourth are the session store's list for the same
+/// purpose (`cortex_session::base::GIT_HARDENING`), which this crate
+/// cannot see. What no flag turns off is a filter that the repository's
+/// configuration names, which is why git is only asked about a trusted
+/// project ([`ChangeDetector::trusting_the_repository`]).
+pub const GIT_HARDENING: [&str; 7] = [
+    "--no-optional-locks",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    if cfg!(windows) {
+        "core.hooksPath=NUL"
+    } else {
+        "core.hooksPath=/dev/null"
+    },
+    "-c",
+    "core.quotepath=off",
+];
 
 /// How the changes were found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -198,6 +232,8 @@ pub struct ChangeDetector {
     root: PathBuf,
     cap: Duration,
     clock: SharedClock,
+    /// Whether git may be asked: whether the project is trusted.
+    ask_git: bool,
     /// Set when `git` could not be started at all, so that it is not tried
     /// before every command.
     no_git: AtomicBool,
@@ -205,15 +241,32 @@ pub struct ChangeDetector {
 
 impl ChangeDetector {
     /// A detector for the workspace at `root`, on the system clock, with
-    /// [`DEFAULT_CAP`] for each look.
+    /// [`DEFAULT_CAP`] for each look, that does not ask git: for a project
+    /// that is not trusted.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
             cap: DEFAULT_CAP,
             clock: std::sync::Arc::new(SystemClock::new()),
+            ask_git: false,
             no_git: AtomicBool::new(false),
         }
+    }
+
+    /// Says whether the project is trusted, and so whether git may be
+    /// asked about it.
+    ///
+    /// A repository's own configuration can make `git status` run a
+    /// program: a filter that git runs on a file to see whether it has
+    /// changed. Git has no switch that turns every such filter off. So git
+    /// is only asked about a repository whose configuration the user has
+    /// accepted, and any other workspace is looked at by modification
+    /// times, which starts nothing.
+    #[must_use]
+    pub fn trusting_the_repository(mut self, trusted: bool) -> Self {
+        self.ask_git = trusted;
+        self
     }
 
     /// Sets how long one look may take.
@@ -272,7 +325,7 @@ impl ChangeDetector {
     /// from there to the workspace root, with `/` and a `/` at its end, or
     /// empty.
     fn repository(&self) -> Option<Repository> {
-        if self.no_git.load(Ordering::Relaxed) {
+        if !self.ask_git || self.no_git.load(Ordering::Relaxed) {
             return None;
         }
         // A directory, or for a worktree a file, named `.git`.
@@ -290,20 +343,7 @@ impl ChangeDetector {
     }
 
     fn git(&self, arguments: &[&str]) -> Option<Vec<u8>> {
-        // A repository's own configuration can name a program for git to
-        // run when it is asked what has changed (`core.fsmonitor`). Nobody
-        // approved that program, so git is told not to use one, and where
-        // hooks are looked for is nowhere.
-        let mut hardened = vec![
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            if cfg!(windows) {
-                "core.hooksPath=NUL"
-            } else {
-                "core.hooksPath=/dev/null"
-            },
-        ];
+        let mut hardened = GIT_HARDENING.to_vec();
         hardened.extend_from_slice(arguments);
         let arguments = &hardened[..];
         let answer = brief::run(
@@ -678,6 +718,31 @@ mod tests {
             parse_name_status(b"M\0only\0D\0"),
             [(b'M', "only".to_owned())]
         );
+    }
+
+    #[test]
+    fn git_is_started_so_that_asking_changes_and_starts_nothing() {
+        // Options of git itself come before `-c` pairs, and each pair is
+        // a `-c` and its setting.
+        assert_eq!(GIT_HARDENING[0], "--no-optional-locks");
+        let settings: Vec<&str> = GIT_HARDENING[1..]
+            .chunks(2)
+            .map(|pair| {
+                assert_eq!(pair[0], "-c");
+                pair[1]
+            })
+            .collect();
+        assert!(settings.contains(&"core.fsmonitor=false"));
+        assert!(settings.contains(&"core.quotepath=off"));
+        assert!(
+            settings
+                .iter()
+                .any(|one| one.starts_with("core.hooksPath="))
+        );
+        // And a detector asks git nothing until it is told it may.
+        let detector = ChangeDetector::new(std::env::temp_dir());
+        assert!(!detector.ask_git);
+        assert!(detector.trusting_the_repository(true).ask_git);
     }
 
     #[test]

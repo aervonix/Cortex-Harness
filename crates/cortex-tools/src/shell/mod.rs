@@ -86,6 +86,10 @@ pub struct ShellConfig {
     /// Whether to look, before and after a command, for the files it
     /// changed.
     pub detect_changes: bool,
+    /// Whether the project is trusted, and so whether that look may ask
+    /// git ([`ChangeDetector::trusting_the_repository`]). Without trust it
+    /// goes by modification times.
+    pub repository_trusted: bool,
 }
 
 impl Default for ShellConfig {
@@ -95,6 +99,7 @@ impl Default for ShellConfig {
             max_timeout: DEFAULT_MAX_TIMEOUT,
             env_remove: Vec::new(),
             detect_changes: true,
+            repository_trusted: false,
         }
     }
 }
@@ -178,7 +183,10 @@ impl ShellTool {
         match &*held {
             Some((known, detector)) if known == root => Arc::clone(detector),
             _ => {
-                let detector = Arc::new(ChangeDetector::new(root.to_native_string()));
+                let detector = Arc::new(
+                    ChangeDetector::new(root.to_native_string())
+                        .trusting_the_repository(self.config.repository_trusted),
+                );
                 *held = Some((root.clone(), Arc::clone(&detector)));
                 detector
             }
@@ -339,6 +347,13 @@ impl Tool for ShellTool {
                 Err(error) => return error.into_result(),
             };
 
+            // A call that was cancelled while it waited its turn starts
+            // nothing.
+            if cx.cancel.is_cancelled() {
+                return ToolResult::interrupted(
+                    "`shell` was interrupted before the command started.",
+                );
+            }
             let detector = looks.then(|| self.detector(cx.paths.root()));
             let before = match &detector {
                 Some(detector) => {

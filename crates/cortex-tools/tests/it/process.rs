@@ -114,6 +114,35 @@ fn sys_the_polite_interrupt_is_enough_for_a_command_that_listens() {
     assert!(ran.text().contains("started"), "{}", ran.text());
 }
 
+/// A call that was cancelled before its turn came starts nothing, whether
+/// or not it would have looked for changed files first.
+#[test]
+fn sys_a_call_cancelled_before_it_starts_runs_no_command() {
+    for looks in [false, true] {
+        let bench = Bench::with(
+            &format!("process_cancelled_first_{looks}"),
+            default_shell(),
+            |config| config.detect_changes = looks,
+        );
+        let roll = Roll::new();
+        let command = bench::child(bench.shell(), &ChildSpec::new(&roll, "never").exiting(0));
+        let cancel = cortex_base::CancelToken::new();
+        cancel.cancel();
+        let cx = bench.ws.cx().with_cancel(cancel);
+        let plan = bench
+            .tool
+            .plan(&json!({ "command": command }), &cx.plan_cx())
+            .expect("a plan");
+        let result = block_on(execute(&bench.tool, plan, &cx, &mut NoOutput));
+        assert_eq!(result.outcome(), &ToolOutcome::Interrupted);
+        assert_eq!(
+            result.text(),
+            "`shell` was interrupted before the command started."
+        );
+        assert!(roll.try_next().is_none(), "the command was started");
+    }
+}
+
 /// Output reaches the front end while the command runs, not when it has
 /// ended.
 #[test]
