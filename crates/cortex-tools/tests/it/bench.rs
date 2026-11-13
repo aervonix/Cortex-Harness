@@ -331,8 +331,18 @@ impl Bench {
                 Some(waits)
             })
         };
-        let ran = self.run_into(arguments, cancel, &CancelToken::new(), &Live::default());
-        ended.open();
+        // Opened when the call returns, and when it panics: the watcher
+        // must not outlive a test that has failed some other way.
+        struct Ended(Gate);
+        impl Drop for Ended {
+            fn drop(&mut self) {
+                self.0.open();
+            }
+        }
+        let ran = {
+            let _ended = Ended(ended);
+            self.run_into(arguments, cancel, &CancelToken::new(), &Live::default())
+        };
         let stuck = match watcher.join() {
             Ok(stuck) => stuck,
             Err(panic) => std::panic::resume_unwind(panic),

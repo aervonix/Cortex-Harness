@@ -118,10 +118,7 @@ const EVERY_BYTE: usize = 64;
 /// Whether this is the nightly run, which multiplies the property cases
 /// and has the time for every cut of every stream.
 fn every_cut_of_every_stream() -> bool {
-    std::env::var("CORTEX_PROPERTY_SCALE")
-        .ok()
-        .and_then(|scale| scale.trim().parse::<u64>().ok())
-        .is_some_and(|scale| scale > 1)
+    cases::exhaustive()
 }
 
 /// Where a stream of `len` bytes is cut in two.

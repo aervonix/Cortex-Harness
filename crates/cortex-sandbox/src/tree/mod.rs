@@ -261,6 +261,16 @@ fn others_among(members: &[u32], command: u32, has_exited: impl Fn(u32) -> bool)
         .count()
 }
 
+/// Whether a process that could not be opened by its id is gone: only when
+/// Windows said that no process has the id (`ERROR_INVALID_PARAMETER`, 87).
+/// A process that refuses to be opened is still there.
+#[cfg(any(windows, test))]
+fn unopened_is_gone(code: Option<i32>) -> bool {
+    /// `ERROR_INVALID_PARAMETER`.
+    const NO_SUCH_PROCESS: i32 = 87;
+    code == Some(NO_SUCH_PROCESS)
+}
+
 /// The error of a call on a tree that has ended.
 fn ended() -> io::Error {
     io::Error::new(io::ErrorKind::NotFound, "the process tree has ended")
@@ -268,7 +278,17 @@ fn ended() -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::others_among;
+    use super::{others_among, unopened_is_gone};
+
+    #[test]
+    fn a_process_that_refuses_to_be_opened_is_still_there() {
+        // No process has the id: it is gone.
+        assert!(unopened_is_gone(Some(87)));
+        // Access denied (5), or anything else: it is there, and counted.
+        assert!(!unopened_is_gone(Some(5)));
+        assert!(!unopened_is_gone(Some(0)));
+        assert!(!unopened_is_gone(None));
+    }
 
     #[test]
     fn the_command_itself_is_never_one_of_the_processes_it_left() {

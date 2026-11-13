@@ -52,7 +52,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use super::guard::Guard;
-use super::{Exit, ReadOutcome, ended, others_among};
+use super::{Exit, ReadOutcome, ended, others_among, unopened_is_gone};
 
 /// The exit code of a process the harness killed.
 const KILLED: u32 = 1;
@@ -315,10 +315,12 @@ fn has_exited_by_id(pid: u32) -> bool {
     // no inheritance, and a process id.
     let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
     if process.is_null() {
-        // Nothing has this id any more, or it cannot be asked: there is
-        // nothing to wait for. A member of a job this process made can be
-        // opened by it for as long as it is there.
-        return true;
+        // Windows says "invalid parameter" for an id that no process has.
+        // Any other refusal is of a process that is there and may not be
+        // asked (one that runs as another user, or closed itself off): it
+        // is counted as running, so that what a command left is never
+        // missed because it could not be opened.
+        return unopened_is_gone(io::Error::last_os_error().raw_os_error());
     }
     // SAFETY: `process` is a handle that was just opened and that nothing
     // else owns.
