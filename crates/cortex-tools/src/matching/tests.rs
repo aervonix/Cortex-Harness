@@ -22,11 +22,11 @@ fn times(old: &str, new: &str, count: usize) -> Edit {
 /// Applies edits to a text, or says why not.
 fn run(text: &str, edits: &[Edit]) -> Result<String, Vec<Failure>> {
     let parsed = Text::new(text);
-    locate(&parsed, edits).map(|places| apply(text, &places))
+    locate(&parsed, edits, &|| false).map(|places| apply(text, &places))
 }
 
 fn places(text: &str, edits: &[Edit]) -> Vec<Replacement> {
-    locate(&Text::new(text), edits).expect("every edit has its place")
+    locate(&Text::new(text), edits, &|| false).expect("every edit has its place")
 }
 
 fn one_failure(text: &str, edits: &[Edit]) -> Failure {
@@ -196,6 +196,76 @@ fn every_failure_of_a_call_is_reported_and_nothing_is_applied() {
     assert_eq!(failures.len(), 2);
     assert!(matches!(failures[0], Failure::NotFound { edit: 1, .. }));
     assert!(matches!(failures[1], Failure::WrongCount { edit: 2, .. }));
+}
+
+#[test]
+fn a_count_of_any_size_is_only_a_wrong_count() {
+    // The count is the model's, and the search must not trip over it.
+    for count in [usize::MAX, usize::MAX - 5, 1_000_000] {
+        assert!(matches!(
+            one_failure("a\nb\n", &[times("a", "x", count)]),
+            Failure::WrongCount { wanted, tolerant: false, .. } if wanted == count
+        ));
+        // The tolerant tier, too.
+        assert!(matches!(
+            one_failure("  a\nb\n", &[times("a ", "x", count)]),
+            Failure::WrongCount { wanted, tolerant: true, .. } if wanted == count
+        ));
+    }
+}
+
+#[test]
+fn a_search_that_is_told_to_stop_stops_and_applies_nothing() {
+    let text = "one\ntwo\n";
+    let parsed = Text::new(text);
+    assert_eq!(
+        locate(&parsed, &[edit("one", "1")], &|| true),
+        Err(vec![Failure::Stopped])
+    );
+    // The tolerant tier asks while it goes through a long file.
+    let long = "x\n".repeat(3 * STOP_CHECK_EVERY);
+    let parsed = Text::new(&long);
+    let asked = std::cell::Cell::new(0);
+    let stop = || {
+        asked.set(asked.get() + 1);
+        // Not at the start of the edit: later, inside the search.
+        asked.get() > 2
+    };
+    assert_eq!(
+        locate(&parsed, &[edit("  nowhere ", "y")], &stop),
+        Err(vec![Failure::Stopped])
+    );
+    assert!(asked.get() >= 3, "asked {} times", asked.get());
+}
+
+#[test]
+fn an_old_that_begins_with_blank_lines_is_found_among_many_blank_lines() {
+    // Every gap of this file matches the blank start of `old`. One line
+    // decides each place, so the search is quick, and finds the one place.
+    let mut text = "\n".repeat(20_000);
+    text.push_str("    the line\n");
+    text.push_str(&"\n".repeat(20_000));
+    let old = format!("{}the line  ", "\n".repeat(50));
+    let found = places(&text, &[edit(&old, "replaced")]);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].lines, (19_951, 20_001));
+    assert!(found[0].tolerant.is_some());
+}
+
+#[test]
+fn the_closest_text_is_worked_out_for_the_first_few_failures_only() {
+    let text = "fn area() -> u32 {\n}\n";
+    let edits: Vec<Edit> = (0..CLOSEST_MAX_EDITS + 2)
+        .map(|number| edit(&format!("fn area() -> u{number} {{"), "x"))
+        .collect();
+    let failures = run(text, &edits).expect_err("none is in the file");
+    assert_eq!(failures.len(), CLOSEST_MAX_EDITS + 2);
+    for (index, failure) in failures.iter().enumerate() {
+        let Failure::NotFound { closest, .. } = failure else {
+            panic!("{failure:?}");
+        };
+        assert_eq!(closest.is_some(), index < CLOSEST_MAX_EDITS, "edit {index}");
+    }
 }
 
 // --- The tolerant tier ------------------------------------------------------
@@ -471,9 +541,56 @@ fn new_content_takes_the_line_endings_of_the_file_it_replaces() {
         "1\n2\n",
         "the file's kind, not the content's"
     );
+    // A carriage return at the very end, with no line feed after it, is
+    // not a line break: it is content, and is written.
+    assert_eq!(rewrite(&crlf, "1\n2\r"), "1\r\n2\r");
+    assert_eq!(rewrite(&lf, "1\r\n2\r"), "1\n2\r");
     // A file with no line break has no ending to keep: as given.
     assert_eq!(rewrite(&Text::new(""), "a\nb\n"), "a\nb\n");
     assert_eq!(rewrite(&Text::new("one line"), "a\r\nb\r\n"), "a\r\nb\r\n");
+}
+
+#[test]
+fn a_carriage_return_that_ends_the_new_text_is_kept_by_both_tiers() {
+    // The exact tier writes `new` as it is but for its line breaks.
+    assert_eq!(
+        run("a\nb\n", &[edit("b", "x\ny\r")]).unwrap(),
+        "a\nx\ny\r\n"
+    );
+    // The tolerant tier writes whole lines, and keeps it too.
+    let found = places("a\n  b\n", &[edit("b ", "x\ny\r")]);
+    assert!(found[0].tolerant.is_some());
+    assert_eq!(apply("a\n  b\n", &found), "a\n  x\n  y\r\n");
+    // One written as part of a line break is the line break.
+    let found = places("a\n  b\n", &[edit("b ", "x\r\ny\r\n")]);
+    assert_eq!(apply("a\n  b\n", &found), "a\n  x\n  y\n");
+}
+
+#[test]
+fn in_a_long_file_with_both_endings_a_write_still_keeps_the_endings_of_lines_it_keeps() {
+    // More lines between the first change and the last than are compared
+    // in full. Every line the write keeps still keeps its ending.
+    let count = 6_000;
+    let old: String = (0..count)
+        .map(|n| format!("line {n}{}", if n % 3 == 0 { "\r\n" } else { "\n" }))
+        .collect();
+    let content: String = (0..count)
+        .map(|n| match n {
+            1 => "changed near the start\n".to_owned(),
+            n if n == count - 2 => "changed near the end\n".to_owned(),
+            n => format!("line {n}\n"),
+        })
+        .collect();
+    let written = rewrite(&Text::new(&old), &content);
+    let wanted: String = (0..count)
+        .map(|n| match n {
+            // A changed line gets the ending most of the file's lines have.
+            1 => "changed near the start\n".to_owned(),
+            n if n == count - 2 => "changed near the end\n".to_owned(),
+            n => format!("line {n}{}", if n % 3 == 0 { "\r\n" } else { "\n" }),
+        })
+        .collect();
+    assert!(written == wanted, "a kept line lost its ending");
 }
 
 #[test]
@@ -698,7 +815,8 @@ fn property_text_outside_an_edit_is_byte_identical_whatever_the_endings() {
                 .map(|pick| edit(&pick.old(lines), &pick.new))
                 .collect();
             let parsed = Text::new(&raw);
-            let places = locate(&parsed, &edits).map_err(|failures| format!("{failures:?}"))?;
+            let places =
+                locate(&parsed, &edits, &|| false).map_err(|failures| format!("{failures:?}"))?;
             ensure!(
                 places.iter().all(|place| place.tolerant.is_none()),
                 "an exact piece was matched by the tolerant tier"
@@ -837,7 +955,7 @@ fn property_the_tolerant_tier_is_reported_whenever_it_is_what_matched() {
             let raw = lines.raw();
             let parsed = Text::new(&raw);
             let new = disturbed.new.join("\n");
-            let places = locate(&parsed, &[edit(&disturbed.old, &new)])
+            let places = locate(&parsed, &[edit(&disturbed.old, &new)], &|| false)
                 .map_err(|failures| format!("{failures:?}"))?;
             ensure!(places.len() == 1, "{} places", places.len());
             let place = &places[0];

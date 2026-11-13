@@ -88,21 +88,83 @@ pub(crate) fn diff_bounded(old: &str, new: &str) -> Option<Diff> {
     Some(render(&old_lines, &new_lines, ops))
 }
 
-/// The runs of lines `old` and `new` have in common, by the comparison of
-/// [`diff_bounded`]: for each, where it starts in `old`, where in `new`,
-/// and how many lines it has.
+/// Runs of lines `old` and `new` have in common, in the order of both: for
+/// each, where it starts in `old`, where in `new`, and how many lines it
+/// has.
+///
+/// They are the runs of [`diff_bounded`]'s comparison. Where that gave up
+/// on a middle too large to compare in full, the lines of the middle are
+/// paired by a single pass instead ([`paired_runs`]): not always as many
+/// pairs as there are, and every pair is the same line in both.
 pub(crate) fn common_runs(old: &[&str], new: &[&str]) -> Vec<(usize, usize, usize)> {
-    bounded_ops(old, new)
-        .into_iter()
-        .filter_map(|op| match op {
+    let mut runs = Vec::new();
+    for op in bounded_ops(old, new) {
+        match op {
             DiffOp::Equal {
                 old_index,
                 new_index,
                 len,
-            } => Some((old_index, new_index, len)),
-            _ => None,
-        })
-        .collect()
+            } => runs.push((old_index, new_index, len)),
+            DiffOp::Replace {
+                old_index,
+                old_len,
+                new_index,
+                new_len,
+            } if old_len + new_len > MIDDLE_MAX_LINES => {
+                let paired = paired_runs(
+                    &old[old_index..old_index + old_len],
+                    &new[new_index..new_index + new_len],
+                );
+                runs.extend(
+                    paired
+                        .into_iter()
+                        .map(|(in_old, in_new, len)| (old_index + in_old, new_index + in_new, len)),
+                );
+            }
+            _ => {}
+        }
+    }
+    runs
+}
+
+/// How far ahead in the old lines a new line may find its pair. A line
+/// such as `}` is everywhere: without a limit, one early pairing far ahead
+/// would leave everything between unpaired.
+const PAIR_WINDOW: usize = 256;
+
+/// Pairs lines of `new` with equal lines of `old`, in order, in one pass:
+/// each new line takes the first equal old line at or after the last pair,
+/// if one is within [`PAIR_WINDOW`] lines. Linear in the number of lines,
+/// whatever the two versions hold.
+fn paired_runs(old: &[&str], new: &[&str]) -> Vec<(usize, usize, usize)> {
+    let mut places: std::collections::HashMap<&str, Vec<usize>> = std::collections::HashMap::new();
+    for (index, line) in old.iter().enumerate() {
+        places.entry(line).or_default().push(index);
+    }
+    let mut runs: Vec<(usize, usize, usize)> = Vec::new();
+    let mut next = 0;
+    for (in_new, line) in new.iter().enumerate() {
+        let Some(found) = places.get(line) else {
+            continue;
+        };
+        let at = found.partition_point(|&place| place < next);
+        let Some(&in_old) = found.get(at) else {
+            continue;
+        };
+        if in_old - next > PAIR_WINDOW {
+            continue;
+        }
+        next = in_old + 1;
+        match runs.last_mut() {
+            Some((run_old, run_new, len))
+                if *run_old + *len == in_old && *run_new + *len == in_new =>
+            {
+                *len += 1;
+            }
+            _ => runs.push((in_old, in_new, 1)),
+        }
+    }
+    runs
 }
 
 fn bounded_ops(old: &[&str], new: &[&str]) -> Vec<DiffOp> {
@@ -464,6 +526,40 @@ mod tests {
         assert_eq!(
             common_runs(&old_lines, &new_lines),
             [(0, 0, 1), (MIDDLE_MAX_LINES + 1, MIDDLE_MAX_LINES + 1, 1)]
+        );
+    }
+
+    #[test]
+    fn lines_in_a_middle_too_large_to_compare_are_still_paired() {
+        // A long file of which a `write` changes the second line and the
+        // last but one, and takes one line out: too much lies between the
+        // two changes to compare in full, and every line there is still
+        // found to be the line it was.
+        let count = MIDDLE_MAX_LINES;
+        let old: Vec<String> = (0..count).map(|n| format!("line {n}")).collect();
+        let mut new = old.clone();
+        new[1] = "changed near the start".to_owned();
+        new[count - 2] = "changed near the end".to_owned();
+        new.remove(count / 2);
+        let old: Vec<&str> = old.iter().map(String::as_str).collect();
+        let new: Vec<&str> = new.iter().map(String::as_str).collect();
+        let runs = common_runs(&old, &new);
+        let covered: usize = runs.iter().map(|run| run.2).sum();
+        assert_eq!(covered, count - 3, "every line but the three: {runs:?}");
+        for &(in_old, in_new, len) in &runs {
+            assert_eq!(old[in_old..in_old + len], new[in_new..in_new + len]);
+        }
+        // A line that is everywhere does not pair far ahead and strand the
+        // lines between.
+        let mut far: Vec<String> = (0..PAIR_WINDOW + 10).map(|n| format!("l{n}")).collect();
+        far.push("}".to_owned());
+        let far: Vec<&str> = far.iter().map(String::as_str).collect();
+        let mut new = vec!["}"];
+        new.extend(&far[..5]);
+        assert_eq!(
+            paired_runs(&far, &new),
+            [(0, 1, 5)],
+            "the `}}` out of reach is passed over, and the lines after it pair"
         );
     }
 

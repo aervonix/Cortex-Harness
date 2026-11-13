@@ -83,10 +83,12 @@ impl Checkpoints for RoundCheckpoints {
         Ok(())
     }
 
-    fn after(&self, file: &AbsPath, left: &FileSnapshot) {
+    fn after(&self, file: &AbsPath, left: Option<&FileSnapshot>) {
+        // `None`: there is no file, which is what a round records for one
+        // it removed, or could not create.
         self.round.lock().unwrap().after(
             file,
-            Some(FileVersion {
+            left.map(|left| FileVersion {
                 hash: left.hash,
                 bytes: left.size,
                 kept: true,
@@ -353,6 +355,60 @@ fn a_file_the_user_edited_after_the_turn_is_not_overwritten_by_undo() {
     let done = world.session.rewind(&plan, &Restore::files()).unwrap();
     assert!(done.restored.is_empty());
     assert_eq!(world.contents()["a.txt"], b"by the user\n");
+}
+
+/// A write that fails after the round was told of it must leave the round
+/// saying that the file is as it was. If the round only found that out at
+/// its end, by looking at the file, a change the user made in between
+/// would be taken for the round's, and an undo would wipe it out.
+#[test]
+fn a_write_that_fails_leaves_no_trace_in_the_round_whatever_happens_to_the_file_next() {
+    let mut world = World::new("undo_failed_write");
+    world.put("locked.txt", b"as it was\n");
+    world.put("other.txt", b"other\n");
+    world.read("locked.txt");
+    world.read("other.txt");
+    let path = world.workspace.join("locked.txt");
+    let read_only = |on: bool| {
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(on);
+        fs::set_permissions(&path, permissions).unwrap();
+    };
+    read_only(true);
+    if fs::OpenOptions::new().write(true).open(&path).is_ok() {
+        // Running as a user that file permissions do not stop.
+        assert!(std::env::var_os("CI").is_none(), "skipped in CI");
+        return;
+    }
+
+    let turn = world.begin_turn();
+    let refused = world.edit("locked.txt", "as it was", "changed by the agent");
+    assert!(refused.is_error());
+    assert!(
+        refused.text().contains("is read-only"),
+        "{}",
+        refused.text()
+    );
+    ok(&world.edit("other.txt", "other", "changed"));
+    // Before the round ends, the user makes the file writable and edits it.
+    read_only(false);
+    world.put("locked.txt", b"edited by the user\n");
+    assert!(world.end_round(&turn));
+
+    let plan = world.session.plan_undo().unwrap().unwrap();
+    let files: Vec<&str> = plan.files.iter().map(|file| file.path.as_str()).collect();
+    assert_eq!(
+        files,
+        ["other.txt"],
+        "the file that was not changed is not in the round"
+    );
+    world.undo();
+    let after = world.contents();
+    assert_eq!(after["other.txt"], b"other\n");
+    assert_eq!(
+        after["locked.txt"], b"edited by the user\n",
+        "the user's edit is not undone as if it were the agent's"
+    );
 }
 
 /// What one step of a generated turn does.

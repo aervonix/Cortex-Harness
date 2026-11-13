@@ -20,6 +20,13 @@
 //! every `old` is matched against the file as it was before the call, the
 //! places found must not overlap, and either every edit has its places or
 //! nothing is returned to apply.
+//!
+//! **The work is bounded and can be stopped.** A file is up to 16 MiB and a
+//! call up to a hundred edits, so the search asks, between edits and every
+//! few thousand lines, whether the call has been cancelled; the tolerant
+//! tier looks at one line of each candidate place before it compares the
+//! rest; and the closest text is worked out for the first few edits that
+//! fail, not for a hundred.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -99,6 +106,8 @@ pub(crate) enum Failure {
         lines: (usize, usize),
         extra: String,
     },
+    /// The call was cancelled while the text was being looked for.
+    Stopped,
 }
 
 impl Failure {
@@ -110,6 +119,7 @@ impl Failure {
             | Self::SelfOverlap { edit, .. }
             | Self::CannotReindent { edit, .. } => *edit,
             Self::Overlap { first, .. } => *first,
+            Self::Stopped => usize::MAX,
         }
     }
 }
@@ -138,6 +148,14 @@ const CLOSEST_MAX_LINES: usize = 40;
 /// compared with `old`'s longest line instead.
 const CLOSEST_MIN_SHARED: usize = 4;
 
+/// For how many failed edits of one call the closest text is worked out.
+/// Each costs a pass over the file.
+const CLOSEST_MAX_EDITS: usize = 5;
+
+/// How many candidate places the tolerant tier looks at between two looks
+/// at whether the call has been cancelled.
+const STOP_CHECK_EVERY: usize = 4096;
+
 /// Of one line's text in the file, how many places are remembered when
 /// looking for the closest region. A line such as `}` is everywhere.
 const CLOSEST_MAX_PLACES: usize = 64;
@@ -145,14 +163,30 @@ const CLOSEST_MAX_PLACES: usize = 64;
 /// Finds the place of every edit. `Ok` holds the replacements in the order
 /// of the file, none overlapping another. `Err` holds everything that was
 /// wrong, so that one new call can put all of it right.
-pub(crate) fn locate(text: &Text<'_>, edits: &[Edit]) -> Result<Vec<Replacement>, Vec<Failure>> {
+///
+/// `stop` is asked now and then whether to give up: when it says yes, the
+/// one failure returned is [`Failure::Stopped`].
+pub(crate) fn locate(
+    text: &Text<'_>,
+    edits: &[Edit],
+    stop: &dyn Fn() -> bool,
+) -> Result<Vec<Replacement>, Vec<Failure>> {
     let view = text.view();
     let mut found = Vec::new();
     let mut failures = Vec::new();
+    let mut not_found = 0;
     for (index, edit) in edits.iter().enumerate() {
-        match locate_one(text, &view, index, edit) {
+        if stop() {
+            return Err(vec![Failure::Stopped]);
+        }
+        let with_closest = not_found < CLOSEST_MAX_EDITS;
+        match locate_one(text, &view, index, edit, with_closest, stop) {
             Ok(places) => found.extend(places),
-            Err(failure) => failures.push(failure),
+            Err(Failure::Stopped) => return Err(vec![Failure::Stopped]),
+            Err(failure) => {
+                not_found += usize::from(matches!(failure, Failure::NotFound { .. }));
+                failures.push(failure);
+            }
         }
     }
     found.sort_by_key(|place: &Replacement| (place.range.start, place.range.end));
@@ -238,9 +272,14 @@ fn locate_one(
     view: &crate::textfile::View<'_>,
     index: usize,
     edit: &Edit,
+    with_closest: bool,
+    stop: &dyn Fn() -> bool,
 ) -> Result<Vec<Replacement>, Failure> {
+    // Enough places to say where the extra ones are, and no more. The
+    // count is the model's: it may be any number.
+    let limit = edit.count.saturating_add(EXTRA_OCCURRENCES);
     // Tier 1.
-    let (starts, more) = occurrences(&view.text, &edit.old, edit.count + EXTRA_OCCURRENCES);
+    let (starts, more) = occurrences(&view.text, &edit.old, limit);
     if !starts.is_empty() {
         let ranges: Vec<Range<usize>> = starts
             .iter()
@@ -284,11 +323,17 @@ fn locate_one(
 
     // Tier 2.
     let old_lines = tolerant_lines(&edit.old);
-    let windows = tolerant_windows(text, &old_lines, edit.count + EXTRA_OCCURRENCES);
+    let Some(windows) = tolerant_windows(text, &old_lines, limit, stop) else {
+        return Err(Failure::Stopped);
+    };
     if windows.is_empty() {
         return Err(Failure::NotFound {
             edit: index,
-            closest: closest(text, &edit.old),
+            closest: if with_closest {
+                closest(text, &edit.old)
+            } else {
+                None
+            },
         });
     }
     let at: Vec<usize> = windows.iter().map(|(start, _)| start + 1).collect();
@@ -296,7 +341,7 @@ fn locate_one(
         return Err(Failure::WrongCount {
             edit: index,
             wanted: edit.count,
-            more: windows.len() == edit.count + EXTRA_OCCURRENCES,
+            more: windows.len() == limit,
             at,
             tolerant: true,
         });
@@ -401,14 +446,34 @@ impl Shift {
 
 /// Every run of whole lines of the file that `old_lines` matches with the
 /// tolerant tier's rules: its first line, and the shift. Up to `limit`.
-fn tolerant_windows(text: &Text<'_>, old_lines: &[&str], limit: usize) -> Vec<(usize, Shift)> {
+/// `None` when `stop` said to give up.
+fn tolerant_windows(
+    text: &Text<'_>,
+    old_lines: &[&str],
+    limit: usize,
+    stop: &dyn Fn() -> bool,
+) -> Option<Vec<(usize, Shift)>> {
     let old: Vec<&str> = old_lines.iter().map(|line| trim_end(line)).collect();
     // An `old` of blank lines names nothing: every gap in the file is one.
-    if old.iter().all(|line| line.is_empty()) || old.len() > text.lines.len() {
-        return Vec::new();
+    let Some(anchor) = old.iter().position(|line| !line.is_empty()) else {
+        return Some(Vec::new());
+    };
+    if old.len() > text.lines.len() {
+        return Some(Vec::new());
     }
     let mut windows = Vec::new();
     'starts: for start in 0..=text.lines.len() - old.len() {
+        if start % STOP_CHECK_EVERY == STOP_CHECK_EVERY - 1 && stop() {
+            return None;
+        }
+        // One line decides for nearly every place: the first line of `old`
+        // that is not blank, against the line it would lie on. Without
+        // this, an `old` that begins with blank lines would be compared in
+        // full at every gap of a file full of them.
+        let on = trim_end(text.content(start + anchor));
+        if on.is_empty() || Shift::between(on, old[anchor]).is_none() {
+            continue;
+        }
         let mut shift: Option<Shift> = None;
         for (offset, old_line) in old.iter().enumerate() {
             let file_line = trim_end(text.content(start + offset));
@@ -434,7 +499,28 @@ fn tolerant_windows(text: &Text<'_>, old_lines: &[&str], limit: usize) -> Vec<(u
             }
         }
     }
-    windows
+    Some(windows)
+}
+
+/// The lines of a new text as they are written: split at line feeds,
+/// without the carriage return of a line break the model wrote as CRLF. A
+/// carriage return at the very end of a text, with no line feed after it,
+/// is not part of a line break: it is content, and stays.
+fn new_lines(text: &str) -> Vec<&str> {
+    let lines = tolerant_lines(text);
+    let last = lines.len().saturating_sub(1);
+    let ends_with_break = text.ends_with('\n');
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if index < last || ends_with_break {
+                line.strip_suffix('\r').unwrap_or(line)
+            } else {
+                line
+            }
+        })
+        .collect()
 }
 
 fn tolerant_replacement(
@@ -452,10 +538,9 @@ fn tolerant_replacement(
     // last ends as the first line replaced did, and the last ends as the
     // last line replaced did, which at the end of a file may be not at all.
     let between = first.ending.unwrap_or(text.dominant);
-    let new_lines = tolerant_lines(&edit.new);
+    let new_lines = new_lines(&edit.new);
     let mut written = String::with_capacity(edit.new.len() + 16);
     for (position, line) in new_lines.iter().enumerate() {
-        let line = line.strip_suffix('\r').unwrap_or(line);
         let blank = trim_end(line).is_empty();
         match shift {
             Shift::FileDeeper(extra) if !blank => {
@@ -649,11 +734,7 @@ pub(crate) fn rewrite(old: &Text<'_>, content: &str) -> String {
     if old.lines.iter().all(|line| line.ending.is_none()) {
         return content.to_owned();
     }
-    let new_lines = tolerant_lines(content);
-    let new_lines: Vec<&str> = new_lines
-        .iter()
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
-        .collect();
+    let new_lines = new_lines(content);
     // The ending each new line gets. Only a file with both kinds of ending
     // needs to know which of its lines stayed.
     let mut endings = vec![old.dominant; new_lines.len()];

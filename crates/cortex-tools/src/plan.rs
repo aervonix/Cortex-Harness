@@ -21,13 +21,21 @@
 //! current plan, and the model's next call goes through. It is the
 //! staleness guard of the file tools, for the plan.
 //!
-//! The model is shown an edit in one of two ways: by a result of the tool,
-//! which always clears what is unseen, or by the notice. The board cannot
-//! see a notice being delivered, so the core tells it
-//! ([`PlanBoard::delivered`]) when the loop has recorded one. A core that
-//! never does loses nothing but a call: the model's first `plan` call
-//! after an edit is then answered with the current plan and replaces
-//! nothing, even when the model had read the notice.
+//! The model is shown an edit in one of two ways.
+//!
+//! - **By a result of the tool,** once that result has reached it. A
+//!   result reaches the model with the next request, after the round. So
+//!   an edit that a call was told about counts as shown only when a call
+//!   of a **later round** arrives ([`RunCx::round`]): a second call in the
+//!   same response was written without the first one's result, and is
+//!   refused like the first. A caller that gives no round number is never
+//!   taken to be in a later round.
+//! - **By the notice.** The board cannot see a notice being delivered, so
+//!   the core tells it ([`PlanBoard::delivered`]) when the loop has
+//!   recorded one. With the loop's round numbers, a core that never does
+//!   loses nothing but a call: the model's first `plan` call after an edit
+//!   is answered with the current plan and replaces nothing, even when the
+//!   model had read the notice.
 //!
 //! A [`PlanBoard`] belongs to one session. It is shared by the tool, which
 //! the model calls, and by the core, which applies the user's edits, tells
@@ -66,9 +74,20 @@ pub struct PlanBoard {
 #[derive(Debug, Default)]
 struct State {
     plan: SessionPlan,
-    /// What the user has changed that the model has not been shown: the
-    /// revision each change made, and one line that says what it was.
-    unseen: Vec<(u64, String)>,
+    /// What the user has changed that the model has not been shown.
+    unseen: Vec<Unseen>,
+}
+
+/// One change of the user's that the model has not been shown.
+#[derive(Debug, Clone)]
+struct Unseen {
+    /// The revision the change made.
+    revision: u64,
+    /// What it was, in one line.
+    change: String,
+    /// The round of the call whose result told the model of it. The model
+    /// has that result once a later round begins.
+    told_in: Option<u64>,
 }
 
 /// What a user's edits did.
@@ -179,7 +198,11 @@ impl PlanBoard {
         let revision = state.plan.revision;
         state
             .unseen
-            .extend(changes.into_iter().map(|change| (revision, change)));
+            .extend(changes.into_iter().map(|change| Unseen {
+                revision,
+                change,
+                told_in: None,
+            }));
         Ok(PlanChange {
             plan: state.plan.clone(),
             notice: Some(notice),
@@ -194,17 +217,34 @@ impl PlanBoard {
     /// Edits made after that revision stay unseen: their own notices are
     /// still on their way.
     pub fn delivered(&self, revision: u64) {
-        self.lock().unseen.retain(|(made, _)| *made > revision);
+        self.lock()
+            .unseen
+            .retain(|unseen| unseen.revision > revision);
     }
 
-    /// The model's call: replaces the list, unless the user has edited the
-    /// plan since the model last saw it.
-    fn replace(&self, items: Vec<PlanItem>) -> Replaced {
+    /// The model's call, in the tool round `round` (0 when the caller did
+    /// not say): replaces the list, unless the user has edited the plan
+    /// since the model last saw it.
+    fn replace(&self, items: Vec<PlanItem>, round: u64) -> Replaced {
         let mut state = self.lock();
-        // Whatever comes back gives the model the current plan.
-        let unseen: Vec<String> = std::mem::take(&mut state.unseen)
-            .into_iter()
-            .map(|(_, change)| change)
+        // What a call of an earlier round was told, the model has been
+        // shown: that round's results went out before this response was
+        // written. A call of the same round was written beside the one that
+        // was told, not after it. And with no round number there is no
+        // telling, so nothing counts as shown.
+        state.unseen.retain(|unseen| match unseen.told_in {
+            Some(told) => round == 0 || told == 0 || told >= round,
+            None => true,
+        });
+        // Whatever this call returns gives the model the current plan,
+        // once its round is over.
+        let unseen: Vec<String> = state
+            .unseen
+            .iter_mut()
+            .map(|unseen| {
+                unseen.told_in = Some(round);
+                unseen.change.clone()
+            })
             .collect();
         if items == state.plan.items {
             return Replaced::Saved {
@@ -525,7 +565,7 @@ impl Tool for PlanTool {
                     "`plan` was interrupted before it started. The plan was not changed.",
                 );
             }
-            match self.board.replace(items) {
+            match self.board.replace(items, cx.round) {
                 Replaced::Saved { plan, changed } => {
                     // What the model sent is the plan: no need to send it
                     // back.

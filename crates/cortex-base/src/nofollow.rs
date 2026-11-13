@@ -12,7 +12,7 @@
 //!
 //! | | How |
 //! |---|---|
-//! | Linux | `O_NOFOLLOW` and `O_NONBLOCK` on the open: a link is an error, and a FIFO opens at once. The handle's own metadata then says whether it is a regular file. |
+//! | Linux | `O_NOFOLLOW` and `O_NONBLOCK` on the open: a link is an error, and a FIFO opens at once. (`O_NOCTTY` too, so that a terminal device put there does not become the process's controlling terminal.) The handle's own metadata then says whether it is a regular file. |
 //! | Windows | The open asks for the reparse point itself, not for what it leads to. A link, a junction or any other link-like reparse point is refused. |
 //!
 //! **What it does not cover.** Only the last name is protected. A directory
@@ -103,6 +103,16 @@ pub fn open_regular(path: &Path) -> Result<(File, Metadata), OpenError> {
     }
 }
 
+/// The flags of an open that follows nothing and waits for nothing.
+///
+/// - `O_NOFOLLOW`: a link at the last name is an error, not a way through.
+/// - `O_NONBLOCK`: a FIFO opens at once, with or without anyone at its
+///   other end. On a regular file it changes nothing.
+/// - `O_NOCTTY`: a terminal device that is opened does not become the
+///   controlling terminal of the process.
+#[cfg(unix)]
+const UNFOLLOWED: i32 = libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY;
+
 /// Whether the current user may open the file at `path` for writing, asked
 /// without following a link and without waiting: a FIFO nobody reads is
 /// not waited for. Opening changes nothing.
@@ -114,7 +124,7 @@ pub(crate) fn may_open_for_writing(path: &Path) -> bool {
     use std::os::unix::fs::OpenOptionsExt;
     match OpenOptions::new()
         .write(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .custom_flags(UNFOLLOWED)
         .open(path)
     {
         Ok(_) => true,
@@ -127,10 +137,7 @@ fn open_unfollowed(path: &Path) -> Result<File, OpenError> {
     use std::os::unix::fs::OpenOptionsExt;
     OpenOptions::new()
         .read(true)
-        // No link is followed at the last name, and nothing is waited for:
-        // a FIFO opens at once, with or without a writer. On a regular file
-        // the second flag changes nothing.
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .custom_flags(UNFOLLOWED)
         .open(path)
         .map_err(|error| match error.raw_os_error() {
             _ if error.kind() == io::ErrorKind::NotFound => OpenError::NotFound,
@@ -250,6 +257,46 @@ mod tests {
         ] {
             assert!(!is_placeholder_tag(tag), "{what} is not a placeholder");
         }
+    }
+
+    /// The look at a target, in an atomic write, is a moment before the
+    /// question "may this user write it?", which is asked by opening the
+    /// target for writing. A FIFO put there in between has no reader, and
+    /// an ordinary open for writing would wait for one for ever. `mkfifo`
+    /// is a process: hence the `sys_` name.
+    #[cfg(unix)]
+    #[test]
+    fn sys_asking_whether_a_fifo_may_be_written_does_not_wait() {
+        use crate::rng::{Rng, SystemRng};
+
+        let directory = std::env::temp_dir().join(format!(
+            "cortex-base-nofollow-{:016x}",
+            SystemRng::new().next_u64()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let fifo = directory.join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("run mkfifo");
+        assert!(made.success(), "mkfifo failed");
+
+        // On a thread of its own, so that a question that waits is a failed
+        // test and not a hung one.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let asked = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(may_open_for_writing(&asked));
+        });
+        let answer = done_rx.recv_timeout(std::time::Duration::from_secs(5));
+        let _ = std::fs::remove_dir_all(&directory);
+        // Not refused for lack of permission, so "may": the caller's rename
+        // is what then deals with the FIFO.
+        assert_eq!(
+            answer,
+            Ok(true),
+            "the question waited on a FIFO nobody reads"
+        );
     }
 
     #[test]

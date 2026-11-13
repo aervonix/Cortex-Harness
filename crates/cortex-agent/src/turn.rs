@@ -117,6 +117,11 @@ pub struct Session {
     config: LoopConfig,
     observer: Option<Arc<dyn Observer>>,
     item_ids: IdCounter,
+    /// How many tool rounds have had their results recorded, and so sent
+    /// to the model with the next request. A round's number is one more:
+    /// it moves on only when the model will see what the round returned,
+    /// which is what a tool takes a later round to mean.
+    rounds_recorded: u64,
     state: TurnState,
     usage: UsageBook,
     moves: Moves,
@@ -350,6 +355,7 @@ impl Session {
             config,
             observer,
             item_ids: IdCounter::new(ITEM_PREFIX).after(opened.last_item),
+            rounds_recorded: 0,
             state: TurnState::Idle,
             usage: UsageBook::default(),
             moves: Moves::default(),
@@ -676,6 +682,7 @@ impl Session {
             Arc::clone(&self.env),
             turn.id.clone(),
             turn.number,
+            self.rounds_recorded + 1,
             turn.cancel.clone(),
         );
         // The request has a token of its own below the turn's. The loop
@@ -1173,7 +1180,9 @@ impl Session {
         signature: &mut String,
     ) -> Result<(), StoreError> {
         let model = self.shared.models.main().clone();
+        let mut recorded = false;
         for finished in round.finish() {
+            recorded = true;
             turn.tool_calls += 1;
             self.stats.record(StatEvent::ToolCall(ToolCallStat {
                 session: self.shared.info.id.clone(),
@@ -1191,6 +1200,12 @@ impl Session {
                 .append(&turn.id, Record::Item(item.clone()))
                 .await?;
             self.context.push(&item);
+        }
+        if recorded {
+            // Every result of the round is in the log and in the context:
+            // the next request carries them. A round whose results could
+            // not all be recorded returned above, and keeps its number.
+            self.rounds_recorded += 1;
         }
         turn.written.sort();
         turn.written.dedup();

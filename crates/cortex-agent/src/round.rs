@@ -254,6 +254,10 @@ pub(crate) struct Round {
     env: Arc<RoundEnv>,
     turn: TurnId,
     turn_number: u32,
+    /// The round's number in the session: one more than the number of
+    /// rounds whose results have been recorded. Tools are told it
+    /// (`RunCx::round`).
+    number: u64,
     /// The turn's token. Every call's token is a child of it.
     cancel: CancelToken,
     tx: UnboundedSender<Report>,
@@ -277,6 +281,7 @@ impl Round {
         env: Arc<RoundEnv>,
         turn: TurnId,
         turn_number: u32,
+        number: u64,
         cancel: CancelToken,
     ) -> Self {
         let (tx, rx) = unbounded_channel();
@@ -284,6 +289,7 @@ impl Round {
             env,
             turn,
             turn_number,
+            number,
             cancel,
             tx,
             rx,
@@ -344,7 +350,8 @@ impl Round {
         .with_cancel(cancel)
         .with_limits(workspace.limits)
         .with_gate(self.env.policy.read_gate())
-        .with_turn(self.turn_number);
+        .with_turn(self.turn_number)
+        .with_round(self.number);
         if let Some(outliner) = &workspace.outliner {
             cx = cx.with_outliner(Arc::clone(outliner));
         }

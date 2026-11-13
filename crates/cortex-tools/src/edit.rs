@@ -31,6 +31,10 @@ use crate::write::{plan_change, run_change};
 /// The most edits one call may hold.
 const MAX_EDITS: usize = 100;
 
+/// The largest `count` an edit may give. It bounds how many replacements
+/// one call can make, with [`MAX_EDITS`].
+const MAX_COUNT: usize = 10_000;
+
 /// How many places a result lists by line before it says "and more".
 const MAX_PLACES_LISTED: usize = 20;
 
@@ -86,6 +90,7 @@ impl EditTool {
                                     "count": {
                                         "type": "integer",
                                         "minimum": 1,
+                                        "maximum": MAX_COUNT,
                                         "description": "How many times `old` must occur. Default 1."
                                     }
                                 },
@@ -200,13 +205,22 @@ fn edit_file(call: &Call, env: &Env) -> Result<ToolResult, ToolResult> {
     target.guard(env, existing, "edit")?;
 
     let text = Text::new(old_text);
-    let places = matching::locate(&text, &call.edits)
-        .map_err(|failures| ToolResult::error(explain(shown, call.edits.len(), &failures)))?;
+    let stop = || env.cancel.is_cancelled();
+    let places = matching::locate(&text, &call.edits, &stop).map_err(|failures| {
+        if failures.contains(&Failure::Stopped) {
+            ToolResult::interrupted(format!(
+                "`edit` was interrupted while it looked for the text in `{shown}`. Nothing was \
+                 changed."
+            ))
+        } else {
+            ToolResult::error(explain(shown, call.edits.len(), &failures))
+        }
+    })?;
     let body = matching::apply(old_text, &places);
     if body == old_text {
         return Ok(ToolResult::success(format!(
-            "`{shown}` already has this text: the edits change nothing but how line breaks are \
-             written, which the file keeps. Nothing was written."
+            "`{shown}` already has this text: with the edits made it would be exactly as it \
+             is. Nothing was written."
         ))
         .with_payload(json!({"path": shown, "kind": "unchanged"})));
     }
@@ -372,6 +386,9 @@ fn explain(shown: &str, total: usize, failures: &[Failure]) -> String {
                     span(*second_lines),
                 );
             }
+            // Never among other failures: it is returned alone, and the
+            // caller answers it before it gets here.
+            Failure::Stopped => text.push_str("The call was interrupted."),
             Failure::CannotReindent { edit, lines, extra } => {
                 let _ = write!(
                     text,

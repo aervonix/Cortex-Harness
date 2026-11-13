@@ -174,11 +174,11 @@ fn a_resumed_session_sends_its_history_and_continues_its_ids() {
 
 /// The memory store, with appends that can be made to fail.
 #[derive(Clone, Default)]
-struct Flaky {
-    inner: MemorySessionStore,
-    appends: Arc<Mutex<usize>>,
+pub struct Flaky {
+    pub inner: MemorySessionStore,
+    pub appends: Arc<Mutex<usize>>,
     /// The append, counted from 0, that fails.
-    fail_append: Arc<Mutex<Option<usize>>>,
+    pub fail_append: Arc<Mutex<Option<usize>>>,
     fail_end: Arc<Mutex<bool>>,
     /// Whether opening the session fails. The first open, when the session
     /// starts, is before a test can set it.
