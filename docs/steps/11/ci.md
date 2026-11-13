@@ -56,6 +56,8 @@ A job after wave 5 looked at the Windows checks: a test of `shell::cmd` stopped 
 | Integration, the same, temporary files on `D:` | | 39.3, 39.6 s | the same job |
 | System, the same, `C:` then `D:` | | 67.3, 63.1 s, then 61.4, 61.3 s | the same job |
 
+The pull request's own run, on a slow runner (10 ms a process): 19.7 s, 39.1 s and 63.4 s for the three tiers, with the job at 2 min 36 s.
+
 Step 13a's own five runs, before any of this, gave 19.3 to 28.2 s for the unit tier and 35.0 to 52.0 s for the integration tier.
 
 - **What was changed:** the heaviest exhaustive tests check a sample on a pull request and the whole space in the nightly run; the heaviest properties run 40 to 50% of the cases they did, on a pull request and, multiplied by fifty, in the nightly run; the decoder replays cut each stream at half as many places; `serde_json` and `sha2` are optimised in the `ci` profile; two tests made more files than they needed; the scripted server no longer has its own wake-up connection refused, which cost one test 2.0 s in half the runs; and the Windows test job's temporary directory is on the workspace's disk ([testing-and-ci.md](../../testing-and-ci.md)). No test was removed.
