@@ -926,6 +926,18 @@ fn the_harnesss_own_files_cannot_be_reached() {
         // certain.
         assert_eq!(said(&shell(&engine, &format!("echo x > {file}"))), Deny);
     }
+    // A search of a tree that has them somewhere in it is asked about,
+    // even here, where every rule allows and the level asks nothing.
+    for command in [
+        "rg token /users/dev",
+        "rg token /users/dev/.config",
+        "rg token /users/dev/.local/share",
+        "rg token /",
+    ] {
+        assert_eq!(said(&shell(&engine, command)), Ask, "{command:?}");
+    }
+    assert_eq!(said(&shell(&engine, "rg token /users/dev/code")), ReadOnly);
+    assert_eq!(said(&shell(&engine, "rg token")), ReadOnly);
     // Granting itself trust or an approval is writing those files.
     assert_eq!(
         said(&shell(

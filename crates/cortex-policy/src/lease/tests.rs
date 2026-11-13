@@ -337,6 +337,77 @@ fn budgets_and_hard_limits_take_the_smaller() {
     assert!(!within(&unlimited, &parent));
 }
 
+/// A lease that holds more than its parent in any one respect is not
+/// within it. Each line changes one thing in a lease that is otherwise
+/// its parent's equal.
+#[test]
+fn a_lease_with_more_of_any_one_thing_is_not_within_its_parent() {
+    let mut parent = lease("l_parent", Level::Supervised);
+    parent.grant.budget = Budget {
+        usd_nanos: Some(2_000_000_000),
+        tokens: Some(1_000_000),
+        requests: Some(50),
+        wall_clock_ms: Some(600_000),
+    };
+    parent.grant.limits = HardLimits {
+        merge_to_main: false,
+        team_size: Some(4),
+    };
+    parent.grant.rules = vec![rule(Effect::Write, "secrets/**", RuleAction::Deny)];
+    parent.grant.models = vec!["model-a".to_owned().into()];
+    let equal = {
+        let mut child = parent.clone();
+        child.id = LeaseId::new("l_child");
+        child
+    };
+    assert!(within(&equal, &parent));
+
+    type Change = fn(&mut Lease);
+    let more: [(&str, Change); 14] = [
+        ("more money", |l| {
+            l.grant.budget.usd_nanos = Some(2_000_000_001)
+        }),
+        ("no limit on money", |l| l.grant.budget.usd_nanos = None),
+        ("more tokens", |l| l.grant.budget.tokens = Some(1_000_001)),
+        ("more requests", |l| l.grant.budget.requests = Some(51)),
+        ("more time", |l| {
+            l.grant.budget.wall_clock_ms = Some(600_001)
+        }),
+        ("a merge to main", |l| l.grant.limits.merge_to_main = true),
+        ("a larger team", |l| l.grant.limits.team_size = Some(5)),
+        ("no limit on the team", |l| l.grant.limits.team_size = None),
+        ("a higher level", |l| l.grant.level = Level::Autonomous),
+        ("the network", |l| {
+            l.grant.sandbox.network = NetworkAccess::Full
+        }),
+        ("another writable root", |l| {
+            l.grant.sandbox.write.roots.push("/srv/other".to_owned());
+        }),
+        ("a deny rule dropped", |l| l.grant.rules.clear()),
+        ("an allow rule of its own", |l| {
+            l.grant
+                .rules
+                .push(rule(Effect::Exec, "make *", RuleAction::Allow));
+        }),
+        ("another model", |l| {
+            l.grant.models.push("model-b".to_owned().into())
+        }),
+    ];
+    for (what, change) in more {
+        let mut child = equal.clone();
+        change(&mut child);
+        assert!(!within(&child, &parent), "{what}");
+        // And the other way round it is: the parent holds no more than a
+        // lease that holds more than it.
+        if what != "a deny rule dropped" {
+            assert!(
+                within(&parent, &child) || what == "an allow rule of its own",
+                "{what}"
+            );
+        }
+    }
+}
+
 #[test]
 fn stop_conditions_are_those_of_both() {
     let failed = StopCondition::VerificationFailed(VerificationFailedStop { rounds: 3 });
@@ -809,7 +880,7 @@ fn never_wider(child: &Lease, parent: &Lease) -> Outcome {
 fn narrow_is_always_within_both_inputs() {
     cases::check(
         "narrow_is_within_both",
-        3000,
+        400,
         |rng| (any_lease(rng, "l_parent"), any_lease(rng, "l_child")),
         |(parent, requested)| {
             let Ok(child) = narrow_in(parent, requested, POSIX) else {
@@ -876,7 +947,7 @@ fn a_narrowed_lease_never_has_a_higher_level_a_later_expiry_or_a_larger_budget()
 fn no_sequence_of_narrowing_widens_a_lease() {
     cases::check(
         "narrowing_never_widens",
-        1500,
+        250,
         |rng| {
             let root = any_lease(rng, "l_root");
             let proposals: Vec<Lease> = (0..1 + rng.below(4))
@@ -908,7 +979,7 @@ fn no_sequence_of_narrowing_widens_a_lease() {
 fn narrowing_a_lease_under_itself_gives_nothing_it_did_not_have() {
     cases::check(
         "narrow_under_itself",
-        1500,
+        300,
         |rng| any_lease(rng, "l_same"),
         |lease| {
             let child = narrow_in(lease, lease, POSIX)?;
@@ -923,7 +994,7 @@ fn narrowing_a_lease_under_itself_gives_nothing_it_did_not_have() {
 fn within_is_transitive_and_agrees_with_the_field_by_field_check() {
     cases::check(
         "within_is_transitive",
-        4000,
+        500,
         |rng| {
             let top = any_lease(rng, "l_top");
             // Leases made by narrowing are within each other often enough

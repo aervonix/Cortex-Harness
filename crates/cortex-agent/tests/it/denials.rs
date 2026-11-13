@@ -154,8 +154,15 @@ fn a_stop_as_the_answer_to_a_question_ends_the_turn_denied() {
             reason: "no front end is attached to answer".to_owned(),
         },
     );
+    // The answer waits until the write after the command has been planned
+    // and allowed: it is ready, and waiting for the command, when the stop
+    // comes.
+    rig.policy.wait_at(&world.gates);
     world.run(async {
         rig.prompt("go");
+        rig.policy.questions(1).await;
+        rig.policy.decisions(2).await;
+        world.gates.open("ask shell");
         rig.events.turns(1).await;
     });
     let ends = rig.events.ends();
@@ -244,6 +251,99 @@ fn the_turn_stops_at_the_refused_call_in_the_models_order() {
     assert_eq!(world.log.count("start write b"), 0);
     assert_eq!(world.log.count("start read c"), 0);
     assert!(text(&results[2]).contains("did not run"));
+}
+
+/// The same, with the order of events fixed: the write before the refused
+/// call is allowed and waiting for the response to end when the stop
+/// comes. It still runs.
+#[test]
+fn a_call_allowed_before_the_stop_and_not_yet_started_still_runs() {
+    let more = Gate::new();
+    let response = Response::new()
+        .tool_call("c1", "write", &json!({"path": "a"}))
+        .tool_call("c2", "shell", &json!({"id": "deploy"}))
+        .tool_call("c3", "write", &json!({"path": "b"}))
+        .wait(&more)
+        .end(StopReason::ToolCalls);
+    let world = World::new("stop_then_end", [response, says("Unused.")]);
+    let rig = Setup::new(&world).start(&world);
+    rig.policy
+        .decide_for("shell", stop("stop at the first denial"));
+    world.run(async {
+        rig.prompt("go");
+        // Every call is planned and decided, and the loop has seen the
+        // stop, while the response is still open: nothing has started.
+        rig.policy.decisions(3).await;
+        assert!(world.log.lines().is_empty(), "{:?}", world.log.lines());
+        more.open();
+        rig.events.turns(1).await;
+    });
+    assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Denied);
+    let results = results(&rig);
+    let outcomes: Vec<&ToolOutcome> = results.iter().map(|result| &result.outcome).collect();
+    assert_eq!(
+        outcomes,
+        [
+            &ToolOutcome::Success,
+            &ToolOutcome::Denied,
+            &ToolOutcome::Interrupted
+        ]
+    );
+    assert_eq!(world.log.lines(), ["start write a", "end write a"]);
+}
+
+/// Once the turn is stopped nobody is asked anything: the open question is
+/// withdrawn, and a call that was waiting its turn to be asked about gets
+/// its result without a question, before the stop or after it.
+#[test]
+fn a_stop_leaves_no_question_open_and_puts_no_other() {
+    let (asked, more) = (Gate::new(), Gate::new());
+    let response = Response::new()
+        .tool_call("c1", "write", &json!({"path": "a"}))
+        .tool_call("c2", "write", &json!({"path": "b"}))
+        .wait(&asked)
+        .tool_call("c3", "shell", &json!({"id": "deploy"}))
+        .tool_call("c4", "write", &json!({"path": "c"}))
+        .wait(&more)
+        .end(StopReason::ToolCalls);
+    let world = World::new("stop_asks_nobody", [response, says("Unused.")]);
+    let rig = Setup::new(&world).start(&world);
+    rig.policy.decide_for("write", Decision::Ask);
+    rig.policy
+        .decide_for("shell", stop("stop at the first denial"));
+    // The question about the first write stays open: nobody opens its gate.
+    rig.policy.wait_at(&world.gates);
+    world.run(async {
+        rig.prompt("go");
+        // The first write's question is open, and the second write waits
+        // its turn, before the refused command is written.
+        rig.policy.decisions(2).await;
+        rig.policy.questions(1).await;
+        asked.open();
+        rig.policy.decisions(4).await;
+        more.open();
+        rig.events.turns(1).await;
+    });
+    assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Denied);
+    let results = results(&rig);
+    let outcomes: Vec<&ToolOutcome> = results.iter().map(|result| &result.outcome).collect();
+    assert_eq!(
+        outcomes,
+        [
+            &ToolOutcome::Interrupted,
+            &ToolOutcome::Interrupted,
+            &ToolOutcome::Denied,
+            &ToolOutcome::Interrupted
+        ]
+    );
+    for result in [&results[0], &results[1], &results[3]] {
+        assert!(text(result).contains("did not run"), "{}", text(result));
+    }
+    assert!(world.log.lines().is_empty(), "nothing ran");
+    // One question was put, about the first write, and it was withdrawn.
+    // No question followed it.
+    assert_eq!(rig.policy.asked(), ["write a"]);
+    assert_eq!(rig.policy.withdrawn(), ["write a"]);
 }
 
 /// Two calls the policy stops the turn over: the turn stops at the first of

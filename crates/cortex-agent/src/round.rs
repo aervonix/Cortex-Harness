@@ -698,8 +698,6 @@ impl Round {
             Decision::Allow | Decision::AllowReadOnly => {
                 self.calls[position].state = CallState::Ready(plan);
             }
-            // Nobody is asked anything once the turn is stopped.
-            Decision::Ask if stopped_at.is_some() => self.not_run(position, NOT_RUN_STOPPED),
             Decision::Ask => self.calls[position].state = CallState::NeedsAnswer(plan),
             Decision::Deny { reason } => {
                 let mut text = "This call was not allowed to run.".to_owned();
@@ -721,8 +719,9 @@ impl Round {
     /// - A call the model wrote before it, and that was allowed, runs as it
     ///   would have: it was allowed, and its place in the response is before
     ///   the stop. A call that is running finishes.
-    /// - A question is withdrawn, and no other is put: the call it was about
-    ///   does not run, wherever it stands.
+    /// - The open question is withdrawn, and no other is put: a call that
+    ///   needs an answer does not run, wherever it stands
+    ///   ([`ask_next`](Self::ask_next) gives it its result).
     fn stop(&mut self, position: usize, reason: String) {
         let at = self.calls[position].index;
         self.deny(
@@ -746,13 +745,9 @@ impl Round {
             }
         }
         for other in 0..self.calls.len() {
-            let after = self.calls[other].index > at;
-            let withdrawn = match self.calls[other].state {
-                CallState::NeedsAnswer(_) => true,
-                CallState::Ready(_) => after,
-                _ => false,
-            };
-            if withdrawn {
+            if matches!(self.calls[other].state, CallState::Ready(_))
+                && self.calls[other].index > at
+            {
                 self.not_run(other, NOT_RUN_STOPPED);
             }
         }
@@ -912,10 +907,6 @@ impl Round {
                 (false, None)
             }
         };
-        // Once the turn is stopped there is nobody left to ask about: a
-        // stop gives every call that was waiting for an answer its result,
-        // and a call planned after it never waits for one. The only calls
-        // left to start are the ones before the stop.
         self.ask_next(open_call);
 
         let mut running = self
@@ -963,6 +954,11 @@ impl Round {
 
     /// Puts the next question, if none is open: the first call in order
     /// that needs an answer, once every call before it has been planned.
+    ///
+    /// Once the turn is stopped nobody is asked anything: a call that needs
+    /// an answer gets a result that says it did not run. This is the one
+    /// place that happens, whether the call was waiting its turn when the
+    /// stop came or was planned after it.
     fn ask_next(&mut self, open_call: Option<u32>) {
         if self.asking.is_some() {
             return;
@@ -973,6 +969,9 @@ impl Round {
             }
             match &self.calls[position].state {
                 CallState::Pending if self.calls[position].footprint.is_none() => return,
+                CallState::NeedsAnswer(_) if self.stopped.is_some() => {
+                    self.not_run(position, NOT_RUN_STOPPED);
+                }
                 CallState::NeedsAnswer(_) => {
                     self.ask(position);
                     return;
