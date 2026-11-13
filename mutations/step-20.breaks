@@ -6,7 +6,7 @@
 # virtual-terminal processing turned on at start, and the console's modes
 # put back on every way out (`crates/cortex-term/src/sys/windows.rs`). They
 # were broken by hand on a Windows runner, each on a scratch branch, and the
-# system tests of `cortex-term` failed; docs/steps/20/answered.md has the
+# system tests of `cortex-term` failed; docs/steps/20/ci.md has the
 # runs.
 
 [break] a-frame-in-two-writes
