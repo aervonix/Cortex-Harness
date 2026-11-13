@@ -62,6 +62,14 @@ const GIT_CONFIG_KEY: &str = "GIT_CONFIG_KEY_";
 /// The value of the `n`th setting is in `GIT_CONFIG_VALUE_<n>`.
 const GIT_CONFIG_VALUE: &str = "GIT_CONFIG_VALUE_";
 
+/// Git's older way of being given settings through the environment: one
+/// text of quoted `name=value` pairs, which `git -c` fills for the
+/// programs git starts. Git reads it after the counted settings, so a
+/// setting here wins over one there.
+const GIT_CONFIG_PARAMETERS: &str = "GIT_CONFIG_PARAMETERS";
+/// The directory a shell believes it is in.
+const PWD: &str = "PWD";
+
 /// What every command is given, whatever the harness's own environment
 /// says.
 const FIXED: &[(&str, &str)] = &[
@@ -194,6 +202,41 @@ fn no_fsmonitor(env: &mut Vec<(OsString, OsString)>, same: &dyn Fn(&str, &str) -
     ));
     env.push((OsString::from(key), OsString::from(setting)));
     env.push((OsString::from(value), OsString::from(off)));
+    // Git reads `GIT_CONFIG_PARAMETERS` after the counted settings, so a
+    // monitor named there (the harness was started under `git -c …`) would
+    // win over ours. Ours goes at its end too. An empty one is left alone:
+    // git reads it as no settings.
+    for (name, parameters) in env.iter_mut() {
+        if is(name, GIT_CONFIG_PARAMETERS) && !parameters.is_empty() {
+            parameters.push(format!(" '{setting}={off}'"));
+        }
+    }
+}
+
+/// `env` for a command that starts in `cwd`: `PWD` names that directory,
+/// as it was resolved.
+///
+/// A POSIX shell keeps an inherited `PWD` when it names the directory the
+/// shell starts in, by whatever path, and `cd ..` then goes to the parent
+/// of that *name*. For a workspace reached through a link that is not the
+/// parent of the directory the command analysis followed the `cd` to. With
+/// `PWD` set to the resolved directory the two agree.
+pub(crate) fn starting_in(
+    mut env: Vec<(OsString, OsString)>,
+    cwd: &std::ffi::OsStr,
+    windows: bool,
+) -> Vec<(OsString, OsString)> {
+    env.retain(|(name, _)| {
+        !name.to_str().is_some_and(|name| {
+            if windows {
+                name.eq_ignore_ascii_case(PWD)
+            } else {
+                name == PWD
+            }
+        })
+    });
+    env.push((OsString::from(PWD), cwd.to_owned()));
+    env
 }
 
 #[cfg(test)]
@@ -387,6 +430,65 @@ mod tests {
         // Ours is the last, so it is the one git takes.
         assert_eq!(get(&built, "GIT_CONFIG_KEY_2"), ["core.fsmonitor"]);
         assert_eq!(get(&built, "GIT_CONFIG_VALUE_2"), ["false"]);
+    }
+
+    /// Git reads `GIT_CONFIG_PARAMETERS` after the counted settings (seen
+    /// with git 2.53: with a monitor named there and ours counted, `git
+    /// config core.fsmonitor` gives the one named there), so ours is put at
+    /// its end as well.
+    #[test]
+    fn the_monitor_is_turned_off_in_gits_older_parameters_too() {
+        let built = build(
+            env(&[
+                (
+                    "GIT_CONFIG_PARAMETERS",
+                    "'core.fsmonitor=/tmp/watch' 'user.name'='A B'",
+                ),
+                ("KEPT", "1"),
+            ]),
+            &[],
+            false,
+        );
+        assert_eq!(
+            get(&built, "GIT_CONFIG_PARAMETERS"),
+            ["'core.fsmonitor=/tmp/watch' 'user.name'='A B' 'core.fsmonitor=false'"]
+        );
+        // The counted setting is there as before.
+        assert_eq!(get(&built, "GIT_CONFIG_COUNT"), ["1"]);
+
+        // Without the variable none is made, and an empty one stays empty.
+        let built = build(env(&[("KEPT", "1")]), &[], false);
+        assert!(get(&built, "GIT_CONFIG_PARAMETERS").is_empty());
+        let built = build(env(&[("GIT_CONFIG_PARAMETERS", "")]), &[], false);
+        assert_eq!(get(&built, "GIT_CONFIG_PARAMETERS"), [""]);
+
+        // On Windows the name is found under any spelling.
+        let built = build(
+            env(&[("Git_Config_Parameters", "'core.fsmonitor=x'")]),
+            &[],
+            true,
+        );
+        assert_eq!(
+            get(&built, "Git_Config_Parameters"),
+            ["'core.fsmonitor=x' 'core.fsmonitor=false'"]
+        );
+    }
+
+    #[test]
+    fn the_shell_is_told_the_directory_it_starts_in() {
+        let cwd = std::ffi::OsStr::new("/real/deep/app");
+        let built = starting_in(env(&[("PWD", "/link/app"), ("KEPT", "1")]), cwd, false);
+        assert_eq!(get(&built, "PWD"), ["/real/deep/app"]);
+        assert_eq!(get(&built, "KEPT"), ["1"]);
+        // Given none, it has one all the same.
+        let built = starting_in(env(&[]), cwd, false);
+        assert_eq!(get(&built, "PWD"), ["/real/deep/app"]);
+        // On Windows a name is one name under any spelling; elsewhere `Pwd`
+        // is another variable.
+        let built = starting_in(env(&[("Pwd", "C:\\link")]), cwd, true);
+        assert_eq!(built.len(), 1);
+        let built = starting_in(env(&[("Pwd", "/link")]), cwd, false);
+        assert_eq!(built.len(), 2);
     }
 
     #[test]

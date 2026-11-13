@@ -399,19 +399,26 @@ impl Tool for ShellTool {
                     return ToolResult::error(format!("The command was not started: {reason}"));
                 }
             };
+            // The plain spelling: a program is not given the form of
+            // path that only file calls understand.
+            let cwd: std::path::PathBuf = call.cwd.abs().to_native_string().into();
             let start = Start {
                 launch,
-                // The plain spelling: a program is not given the form of
-                // path that only file calls understand.
-                cwd: call.cwd.abs().to_native_string().into(),
-                env: match &self.inherited {
-                    Some(inherited) => env::build(
-                        inherited.iter().cloned(),
-                        &self.config.env_remove,
-                        cfg!(windows),
-                    ),
-                    None => env::build(std::env::vars_os(), &self.config.env_remove, cfg!(windows)),
-                },
+                cwd: cwd.clone(),
+                env: env::starting_in(
+                    match &self.inherited {
+                        Some(inherited) => env::build(
+                            inherited.iter().cloned(),
+                            &self.config.env_remove,
+                            cfg!(windows),
+                        ),
+                        None => {
+                            env::build(std::env::vars_os(), &self.config.env_remove, cfg!(windows))
+                        }
+                    },
+                    cwd.as_os_str(),
+                    cfg!(windows),
+                ),
                 timeout: call.timeout,
                 label: ARTIFACT_LABEL.to_owned(),
             };

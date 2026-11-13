@@ -59,9 +59,30 @@ impl Redactor for NoRedaction {
     }
 }
 
+/// The fields of an entry that hold JSON somebody else wrote: a tool
+/// call's arguments (the model's), a tool result's payload, and the
+/// free-form fields of this crate's own records. A key named `raw` inside
+/// one is that somebody's, not a provider's block.
+const FREE_FORM: [&str; 6] = [
+    "arguments",
+    "payload",
+    "data",
+    "detail",
+    "basis",
+    "allowed_by",
+];
+
 /// Applies `redactor` to every string in `value`, except in fields named
 /// `raw`, which hold a provider's blocks. Says whether it changed anything.
+///
+/// A provider's block is a `raw` field of a part or of a usage record.
+/// Inside JSON that is somebody's own ([`FREE_FORM`]) the name means
+/// nothing, and what is under it is redacted like the rest.
 pub(crate) fn value(value: &mut Value, redactor: &dyn Redactor) -> bool {
+    walk(value, redactor, false)
+}
+
+fn walk(value: &mut Value, redactor: &dyn Redactor, free_form: bool) -> bool {
     match value {
         Value::String(text) => {
             if let Cow::Owned(masked) = redactor.redact(text) {
@@ -73,15 +94,16 @@ pub(crate) fn value(value: &mut Value, redactor: &dyn Redactor) -> bool {
         Value::Array(items) => {
             let mut changed = false;
             for item in items {
-                changed |= self::value(item, redactor);
+                changed |= walk(item, redactor, free_form);
             }
             changed
         }
         Value::Object(fields) => {
             let mut changed = false;
             for (key, item) in fields.iter_mut() {
-                if key != "raw" {
-                    changed |= self::value(item, redactor);
+                if free_form || key != "raw" {
+                    let free_form = free_form || FREE_FORM.contains(&key.as_str());
+                    changed |= walk(item, redactor, free_form);
                 }
             }
             changed
@@ -129,6 +151,35 @@ pub(crate) mod tests {
                     {"kind": "tool_call", "arguments": {"cmd": "echo [redacted]"}}
                 ]},
                 "n": 3
+            })
+        );
+    }
+
+    /// `raw` is a provider's block where a part or a usage record has it.
+    /// Under a name the model chose, in a tool call's arguments or in what
+    /// a tool returned, it is a key like any other.
+    #[test]
+    fn a_key_named_raw_in_somebody_elses_json_is_redacted() {
+        let mut entry = json!({
+            "item": {"parts": [
+                {"kind": "tool_call",
+                 "arguments": {"raw": "hunter2", "deep": [{"raw": {"x": "hunter2"}}]},
+                 "raw": "{\"input\":\"hunter2\"}"}
+            ]},
+            "result": {"payload": {"raw": "hunter2"}},
+            "usage": {"raw": "{\"note\":\"hunter2\"}"}
+        });
+        assert!(value(&mut entry, &MaskHunter));
+        assert_eq!(
+            entry,
+            json!({
+                "item": {"parts": [
+                    {"kind": "tool_call",
+                     "arguments": {"raw": "[redacted]", "deep": [{"raw": {"x": "[redacted]"}}]},
+                     "raw": "{\"input\":\"hunter2\"}"}
+                ]},
+                "result": {"payload": {"raw": "[redacted]"}},
+                "usage": {"raw": "{\"note\":\"hunter2\"}"}
             })
         );
     }

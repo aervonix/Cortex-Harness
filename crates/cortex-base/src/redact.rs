@@ -368,7 +368,7 @@ impl SecretFilter {
             _ => {}
         }
         // A key is a word of its own: `task-…` does not hold an `sk-` key.
-        if at > 0 && is(bytes[at - 1], TOKEN) {
+        if at > 0 && is(bytes[at - 1], TOKEN) && !after_escape(bytes, at) {
             return None;
         }
         match rest[0] {
@@ -388,6 +388,15 @@ impl SecretFilter {
             }
         }
     }
+}
+
+/// Whether what stands before `at` is a written-out line break or tab
+/// (`\n`, `\r`, `\t`), as text is when it is JSON, or a string printed for
+/// debugging. The letter is then no part of a word, and a key that follows
+/// it is a word of its own. Where the backslash was itself escaped and the
+/// letter is a letter, a key is masked from one letter in: nothing is lost.
+fn after_escape(bytes: &[u8], at: usize) -> bool {
+    at >= 2 && bytes[at - 2] == b'\\' && matches!(bytes[at - 1], b'n' | b'r' | b't')
 }
 
 impl Format {
@@ -588,6 +597,29 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// Text inside JSON, or printed for debugging, has its line breaks
+    /// written out, and the letter of one is not the start of a word.
+    #[test]
+    fn a_key_after_a_written_out_line_break_is_masked() {
+        let filter = SecretFilter::new();
+        for (name, key) in samples() {
+            for escape in ["\\n", "\\r", "\\t", "\\r\\n"] {
+                let text = format!("{{\"thinking\":\"Found in .env:{escape}{key}\"}}");
+                assert!(filter.finds(&text), "{name} after {escape}: {text}");
+                let masked = filter.redact(&text);
+                assert!(!masked.contains(&key), "{name} after {escape}: {masked}");
+            }
+            // As a string is printed for debugging, which is how the log
+            // writes a field given with `?`.
+            let debugged = format!("{:?}", format!("first line\n{key}"));
+            assert!(!filter.redact(&debugged).contains(&key), "{name}");
+        }
+        let bearer = "Authorization:\\tBearer abcdefghijklmnopqrstuvwxyz012345";
+        assert!(!filter.redact(bearer).contains("abcdefghijklmnop"));
+        // A word that merely ends in one of those letters is a word.
+        assert_eq!(filter.redact("C:\\dir\\task-notes"), "C:\\dir\\task-notes");
     }
 
     #[test]
