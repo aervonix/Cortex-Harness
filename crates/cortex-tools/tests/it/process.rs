@@ -122,6 +122,69 @@ fn sys_the_polite_interrupt_is_enough_for_a_command_that_listens() {
     assert!(ran.text().contains("started"), "{}", ran.text());
 }
 
+/// A second interrupt, "kill now": the whole tree is killed at once, with
+/// no grace ended by the test. The grandchild ignores the polite
+/// interrupt, so without the second token it would outlive every grace
+/// that nobody ends.
+#[test]
+fn sys_kill_now_stops_the_whole_tree_without_the_graces() {
+    let bench = Bench::new("process_kill_now", default_shell());
+    let roll = Roll::new();
+    let command = stubborn_family(bench.shell(), &roll);
+
+    let (ran, graces_ended) = bench.directed(json!({ "command": command }), move |director| {
+        let family = roll.all(&["parent", "grandchild"], LIMIT);
+        // The first interrupt: the polite stage, and its grace begins.
+        director.cancel.cancel();
+        until(LIMIT, "the grace to begin", || {
+            director.timer.running().contains(&GRACE)
+        });
+        assert!(family[1].is_alive(), "it ignores the interrupt");
+        // The second: nothing waits for the grace.
+        director.kill.cancel();
+        assert!(
+            family[0].gone_within(LIMIT),
+            "the command outlived the kill"
+        );
+        assert!(
+            family[1].gone_within(LIMIT),
+            "the grandchild outlived the kill"
+        );
+        until(LIMIT, "the call to end", || director.call_has_ended());
+        director.timer.end(GRACE)
+    });
+    assert_eq!(graces_ended, 0, "the run was over before any grace ended");
+    assert_eq!(ran.result.outcome(), &ToolOutcome::Interrupted);
+    assert_eq!(ran.payload("interrupted"), json!(true));
+    assert_eq!(ran.payload("stopped_with"), json!("kill"));
+}
+
+/// "Kill now" alone, with no interrupt before it: no polite stage is sent
+/// at all.
+#[test]
+fn sys_kill_now_alone_sends_no_polite_stage() {
+    let bench = Bench::new("process_kill_alone", default_shell());
+    let roll = Roll::new();
+    let command = stubborn_family(bench.shell(), &roll);
+
+    let (ran, graces) = bench.directed(json!({ "command": command }), move |director| {
+        let family = roll.all(&["parent", "grandchild"], LIMIT);
+        director.kill.cancel();
+        assert!(family[0].gone_within(LIMIT) && family[1].gone_within(LIMIT));
+        until(LIMIT, "the call to end", || director.call_has_ended());
+        // No grace was ever started: nothing was asked politely.
+        director
+            .timer
+            .started()
+            .iter()
+            .filter(|wait| **wait == GRACE)
+            .count()
+    });
+    assert_eq!(graces, 0);
+    assert_eq!(ran.result.outcome(), &ToolOutcome::Interrupted);
+    assert_eq!(ran.payload("stopped_with"), json!("kill"));
+}
+
 /// A call that was cancelled before its turn came starts nothing, whether
 /// or not it would have looked for changed files first.
 #[test]

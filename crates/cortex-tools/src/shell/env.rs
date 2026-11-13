@@ -1,7 +1,7 @@
 //! The environment a command runs with
 //! (`docs/architecture/05-tools.md`, "`shell`", "Environment").
 //!
-//! A command inherits the harness's environment, with two changes.
+//! A command inherits the harness's environment, with three changes.
 //!
 //! - **Credentials are taken out.** The key variables of the providers the
 //!   harness knows ([`DEFAULT_REMOVED`]) are never passed on, whatever the
@@ -11,6 +11,25 @@
 //!   unless a command asks for it, a terminal that can do nothing, and no
 //!   prompt from `git`. A command has no terminal: a tool that waits for a
 //!   key would wait until the time limit.
+//! - **What the command analysis relies on is made true**
+//!   (`docs/architecture/06-permissions-and-sandbox.md`, "Command analysis
+//!   as built"). The permission engine reads a command line and decides
+//!   from it what the command can touch. Three things in an environment
+//!   would make a command do something its line does not say, so they are
+//!   settled here ([`ANALYSIS_REMOVED`], and git's file-system monitor):
+//!   - `CDPATH` is removed, so that `cd dir` goes where the analysis
+//!     followed it and not to a directory of that name somewhere else;
+//!   - `RIPGREP_CONFIG_PATH` is removed, so that a configuration file
+//!     cannot add `--hidden`, or a preprocessor, to an `rg` the engine
+//!     passed as a command that only reads what it names;
+//!   - git's file-system monitor is turned off for every git the command
+//!     starts. A repository's configuration can name any program as the
+//!     monitor, and `git status`, which the engine takes to change
+//!     nothing, would start it. The setting is given the way git reads
+//!     settings from its environment (`GIT_CONFIG_COUNT`,
+//!     `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_VALUE_<n>`), after whatever the
+//!     user's environment already counts, so it wins over theirs and over
+//!     the repository's, and theirs stay in force.
 
 use std::ffi::OsString;
 
@@ -24,6 +43,18 @@ pub const DEFAULT_REMOVED: &[&str] = &[
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
 ];
+
+/// The variables that are removed because the command analysis takes them
+/// to be unset. Not a matter of configuration: a user who could bring one
+/// back would be widening what a command the engine allowed can do.
+pub const ANALYSIS_REMOVED: &[&str] = &["CDPATH", "RIPGREP_CONFIG_PATH"];
+
+/// How git counts the settings given in its environment.
+const GIT_CONFIG_COUNT: &str = "GIT_CONFIG_COUNT";
+/// The name of the `n`th setting is in `GIT_CONFIG_KEY_<n>`.
+const GIT_CONFIG_KEY: &str = "GIT_CONFIG_KEY_";
+/// The value of the `n`th setting is in `GIT_CONFIG_VALUE_<n>`.
+const GIT_CONFIG_VALUE: &str = "GIT_CONFIG_VALUE_";
 
 /// What every command is given, whatever the harness's own environment
 /// says.
@@ -41,9 +72,10 @@ const FIXED: &[(&str, &str)] = &[
     ("GIT_TERMINAL_PROMPT", "0"),
 ];
 
-/// The environment for a command: `inherited`, less [`DEFAULT_REMOVED`]
-/// and the variables `removed` names, with the fixed settings in place of
-/// whatever was there.
+/// The environment for a command: `inherited`, less [`DEFAULT_REMOVED`],
+/// [`ANALYSIS_REMOVED`] and the variables `removed` names, with the fixed
+/// settings in place of whatever was there, and git's file-system monitor
+/// turned off after the settings the environment already gives git.
 ///
 /// On Windows a variable's name is matched in any case, as Windows does.
 pub(crate) fn build(
@@ -75,6 +107,7 @@ pub(crate) fn build(
                 return true;
             };
             !DEFAULT_REMOVED.iter().any(|pattern| same(name, pattern))
+                && !ANALYSIS_REMOVED.iter().any(|pattern| same(name, pattern))
                 && !removed.iter().any(|pattern| same(name, pattern))
                 && !FIXED.iter().any(|(fixed, _)| same(name, fixed))
         })
@@ -84,7 +117,36 @@ pub(crate) fn build(
             .iter()
             .map(|(name, value)| (OsString::from(name), OsString::from(value))),
     );
+    no_fsmonitor(&mut env, &same);
     env
+}
+
+/// Adds `core.fsmonitor=false` to the settings git reads from its
+/// environment, as the last of them: git takes the last value of a setting
+/// it is given twice, and settings from the environment win over every
+/// configuration file.
+fn no_fsmonitor(env: &mut Vec<(OsString, OsString)>, same: &dyn Fn(&str, &str) -> bool) {
+    let is = |name: &OsString, wanted: &str| name.to_str().is_some_and(|name| same(name, wanted));
+    // What the user's environment counts. A count git itself would refuse
+    // (not a number) counts nothing: the command then runs with ours alone,
+    // where it would have failed.
+    let count = env
+        .iter()
+        .find(|(name, _)| is(name, GIT_CONFIG_COUNT))
+        .and_then(|(_, value)| value.to_str()?.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    let key = format!("{GIT_CONFIG_KEY}{count}");
+    let value = format!("{GIT_CONFIG_VALUE}{count}");
+    // A leftover pair at our number, beyond the count, is not a setting
+    // git reads; it must not be passed beside ours under the same name.
+    env.retain(|(name, _)| !is(name, GIT_CONFIG_COUNT) && !is(name, &key) && !is(name, &value));
+    let (setting, off) = cortex_base::git::NO_FSMONITOR;
+    env.push((
+        OsString::from(GIT_CONFIG_COUNT),
+        OsString::from(count.saturating_add(1).to_string()),
+    ));
+    env.push((OsString::from(key), OsString::from(setting)));
+    env.push((OsString::from(value), OsString::from(off)));
 }
 
 #[cfg(test)]
@@ -174,6 +236,106 @@ mod tests {
         // On Linux that is another variable.
         let on_linux = build(env(&inherited), &defaults(), false);
         assert_eq!(get(&on_linux, "Anthropic_Api_Key"), ["sk-test-key"]);
+    }
+
+    #[test]
+    fn what_the_command_analysis_relies_on_is_removed() {
+        let built = build(
+            env(&[
+                ("CDPATH", "/somewhere/else"),
+                ("RIPGREP_CONFIG_PATH", "/home/dev/.ripgreprc"),
+                ("CDPATHS", "kept: another name"),
+                ("PATH", "/usr/bin"),
+            ]),
+            &defaults(),
+            false,
+        );
+        assert!(get(&built, "CDPATH").is_empty());
+        assert!(get(&built, "RIPGREP_CONFIG_PATH").is_empty());
+        assert_eq!(get(&built, "CDPATHS"), ["kept: another name"]);
+        assert_eq!(get(&built, "PATH"), ["/usr/bin"]);
+        // In any case on Windows, where a name has none.
+        let on_windows = build(
+            env(&[("CdPath", "C:\\else"), ("Ripgrep_Config_Path", "C:\\rc")]),
+            &defaults(),
+            true,
+        );
+        assert!(get(&on_windows, "CdPath").is_empty());
+        assert!(get(&on_windows, "Ripgrep_Config_Path").is_empty());
+    }
+
+    #[test]
+    fn gits_file_system_monitor_is_turned_off() {
+        let built = build(env(&[("PATH", "/usr/bin")]), &defaults(), false);
+        assert_eq!(get(&built, "GIT_CONFIG_COUNT"), ["1"]);
+        assert_eq!(get(&built, "GIT_CONFIG_KEY_0"), ["core.fsmonitor"]);
+        assert_eq!(get(&built, "GIT_CONFIG_VALUE_0"), ["false"]);
+    }
+
+    #[test]
+    fn the_monitor_setting_comes_after_the_settings_the_user_already_gives_git() {
+        let built = build(
+            env(&[
+                ("GIT_CONFIG_COUNT", "2"),
+                ("GIT_CONFIG_KEY_0", "user.name"),
+                ("GIT_CONFIG_VALUE_0", "Dev"),
+                ("GIT_CONFIG_KEY_1", "core.fsmonitor"),
+                ("GIT_CONFIG_VALUE_1", "/usr/local/bin/watcher"),
+                // Beyond the count: git does not read these, and they must
+                // not stand beside ours.
+                ("GIT_CONFIG_KEY_2", "core.pager"),
+                ("GIT_CONFIG_VALUE_2", "less"),
+            ]),
+            &defaults(),
+            false,
+        );
+        assert_eq!(get(&built, "GIT_CONFIG_COUNT"), ["3"]);
+        // The user's own stay as they were.
+        assert_eq!(get(&built, "GIT_CONFIG_KEY_0"), ["user.name"]);
+        assert_eq!(get(&built, "GIT_CONFIG_VALUE_0"), ["Dev"]);
+        assert_eq!(get(&built, "GIT_CONFIG_KEY_1"), ["core.fsmonitor"]);
+        assert_eq!(
+            get(&built, "GIT_CONFIG_VALUE_1"),
+            ["/usr/local/bin/watcher"]
+        );
+        // Ours is the last, so it is the one git takes.
+        assert_eq!(get(&built, "GIT_CONFIG_KEY_2"), ["core.fsmonitor"]);
+        assert_eq!(get(&built, "GIT_CONFIG_VALUE_2"), ["false"]);
+    }
+
+    #[test]
+    fn a_count_git_would_refuse_counts_nothing() {
+        for count in ["", "many", "-1", "1.5"] {
+            let built = build(
+                env(&[("GIT_CONFIG_COUNT", count), ("GIT_CONFIG_KEY_0", "old")]),
+                &defaults(),
+                false,
+            );
+            assert_eq!(get(&built, "GIT_CONFIG_COUNT"), ["1"], "{count:?}");
+            assert_eq!(get(&built, "GIT_CONFIG_KEY_0"), ["core.fsmonitor"]);
+            assert_eq!(get(&built, "GIT_CONFIG_VALUE_0"), ["false"]);
+        }
+        // Spaces around a number are read as git reads them.
+        let built = build(env(&[("GIT_CONFIG_COUNT", " 4 ")]), &defaults(), false);
+        assert_eq!(get(&built, "GIT_CONFIG_COUNT"), ["5"]);
+        assert_eq!(get(&built, "GIT_CONFIG_KEY_4"), ["core.fsmonitor"]);
+    }
+
+    #[test]
+    fn on_windows_the_count_is_found_under_any_spelling() {
+        let built = build(
+            env(&[
+                ("Git_Config_Count", "1"),
+                ("GIT_CONFIG_KEY_0", "user.name"),
+                ("GIT_CONFIG_VALUE_0", "Dev"),
+            ]),
+            &defaults(),
+            true,
+        );
+        assert!(get(&built, "Git_Config_Count").is_empty());
+        assert_eq!(get(&built, "GIT_CONFIG_COUNT"), ["2"]);
+        assert_eq!(get(&built, "GIT_CONFIG_KEY_1"), ["core.fsmonitor"]);
+        assert_eq!(get(&built, "GIT_CONFIG_VALUE_1"), ["false"]);
     }
 
     #[test]

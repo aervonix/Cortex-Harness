@@ -343,6 +343,48 @@ pub struct TurnStartResult {
     pub disposition: Disposition,
 }
 
+/// `turn/interrupt`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct TurnInterruptParams {
+    /// The session.
+    pub session_id: SessionId,
+    /// Whether to stop running commands at once, without the polite
+    /// interrupt and the grace that normally come first: what a second
+    /// interrupt means. Absent or `false` is the ordinary interrupt, which
+    /// stays safe to send twice.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub now: bool,
+}
+
+impl TurnInterruptParams {
+    /// The ordinary interrupt of `session_id`'s running turn.
+    #[must_use]
+    pub fn new(session_id: SessionId) -> Self {
+        Self {
+            session_id,
+            now: false,
+        }
+    }
+
+    /// The interrupt that also kills running commands at once.
+    #[must_use]
+    pub fn now(session_id: SessionId) -> Self {
+        Self {
+            session_id,
+            now: true,
+        }
+    }
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the signature serde's `skip_serializing_if` calls"
+)]
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// The result of `turn/interrupt`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -1000,7 +1042,8 @@ methods! {
     /// steer it or to queue behind it.
     TurnStart(TurnStartParams) -> TurnStartResult => "turn/start",
     /// Cancels the running turn. It is not an error when none is running.
-    TurnInterrupt(SessionRef) -> TurnInterruptResult => "turn/interrupt",
+    /// With `now`, running commands are killed at once.
+    TurnInterrupt(TurnInterruptParams) -> TurnInterruptResult => "turn/interrupt",
     /// Compacts now, with optional focus instructions.
     SessionCompact(SessionCompactParams) -> Empty => "session/compact",
     /// Changes a session's settings: models, reasoning level, speed, level.

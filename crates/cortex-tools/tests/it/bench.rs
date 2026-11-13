@@ -49,6 +49,8 @@ pub(crate) struct TestTimer {
 struct TimerState {
     next: u64,
     waits: Vec<Wait>,
+    /// The length of every wait that was ever started, in order.
+    started: Vec<Duration>,
     /// Every wait ends at once: the test is over, or has failed.
     released: bool,
 }
@@ -72,6 +74,7 @@ impl Timer for TestTimer {
         let id = state.next;
         state.next += 1;
         let over = state.released;
+        state.started.push(duration);
         state.waits.push(Wait {
             id,
             length: duration,
@@ -112,6 +115,11 @@ impl Drop for TestSleep {
 }
 
 impl TestTimer {
+    /// The lengths of every wait that was ever started, in order.
+    pub(crate) fn started(&self) -> Vec<Duration> {
+        self.state.lock().unwrap().started.clone()
+    }
+
     /// The lengths of the waits that are running.
     pub(crate) fn running(&self) -> Vec<Duration> {
         let state = self.state.lock().unwrap();
@@ -179,6 +187,8 @@ impl TestTimer {
 pub(crate) struct Director {
     pub(crate) timer: TestTimer,
     pub(crate) cancel: CancelToken,
+    /// The call's second token: "kill now".
+    pub(crate) kill: CancelToken,
     finished: Arc<AtomicBool>,
 }
 
@@ -301,11 +311,21 @@ impl Bench {
     }
 
     fn run_with(&self, arguments: Json, cancel: &CancelToken) -> Ran {
-        self.run_into(arguments, cancel, &Live::default())
+        self.run_into(arguments, cancel, &CancelToken::new(), &Live::default())
     }
 
-    fn run_into(&self, arguments: Json, cancel: &CancelToken, live: &Live) -> Ran {
-        let cx = self.ws.cx().with_cancel(cancel.clone());
+    fn run_into(
+        &self,
+        arguments: Json,
+        cancel: &CancelToken,
+        kill: &CancelToken,
+        live: &Live,
+    ) -> Ran {
+        let cx = self
+            .ws
+            .cx()
+            .with_cancel(cancel.clone())
+            .with_kill(kill.clone());
         let plan = self
             .tool
             .plan(&arguments, &cx.plan_cx())
@@ -346,14 +366,16 @@ impl Bench {
         direct: impl FnOnce(&Director) -> T + Send + 'static,
     ) -> (Ran, T) {
         let cancel = CancelToken::new();
+        let kill = CancelToken::new();
         let finished = Arc::new(AtomicBool::new(false));
         let director = Director {
             timer: self.timer.clone(),
             cancel: cancel.clone(),
+            kill: kill.clone(),
             finished: Arc::clone(&finished),
         };
         let thread = std::thread::spawn(move || direct(&director));
-        let ran = self.run_into(arguments, &cancel, live);
+        let ran = self.run_into(arguments, &cancel, &kill, live);
         finished.store(true, Ordering::SeqCst);
         let directed = match thread.join() {
             Ok(directed) => directed,

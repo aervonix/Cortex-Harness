@@ -42,7 +42,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 pub use changes::{ChangeDetector, Changes};
-pub use env::DEFAULT_REMOVED;
+pub use env::{ANALYSIS_REMOVED, DEFAULT_REMOVED};
 pub use kind::{Shell, ShellError, ShellKind, ShellSearch, Unquotable, Unrunnable};
 
 use crate::args;
@@ -124,6 +124,9 @@ pub struct ShellTool {
     runner: Runner,
     launcher: Arc<dyn Launcher>,
     profile: Option<Arc<dyn CommandProfile>>,
+    /// The environment commands inherit from, when it is not the
+    /// process's own.
+    inherited: Option<Vec<(std::ffi::OsString, std::ffi::OsString)>>,
     /// The detector of the workspace the tool last ran in. It remembers,
     /// for one workspace, that git is not installed.
     detector: Mutex<Option<(AbsPath, Arc<ChangeDetector>)>>,
@@ -146,6 +149,7 @@ impl ShellTool {
             runner: Runner::new(),
             launcher: Arc::new(Direct),
             profile: None,
+            inherited: None,
             detector: Mutex::new(None),
         }
     }
@@ -169,6 +173,21 @@ impl ShellTool {
     #[must_use]
     pub fn with_profile(mut self, profile: Arc<dyn CommandProfile>) -> Self {
         self.profile = Some(profile);
+        self
+    }
+
+    /// Sets the environment commands inherit from, in place of the
+    /// process's own. What is removed from it and added to it is the same
+    /// either way (`docs/architecture/05-tools.md`, "`shell`",
+    /// "Environment"). The harness leaves this alone; a test of what a
+    /// command is given sets it, because a test cannot change its own
+    /// process's environment.
+    #[must_use]
+    pub fn with_inherited_env(
+        mut self,
+        inherited: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    ) -> Self {
+        self.inherited = Some(inherited.into_iter().collect());
         self
     }
 
@@ -385,13 +404,20 @@ impl Tool for ShellTool {
                 // The plain spelling: a program is not given the form of
                 // path that only file calls understand.
                 cwd: call.cwd.abs().to_native_string().into(),
-                env: env::build(std::env::vars_os(), &self.config.env_remove, cfg!(windows)),
+                env: match &self.inherited {
+                    Some(inherited) => env::build(
+                        inherited.iter().cloned(),
+                        &self.config.env_remove,
+                        cfg!(windows),
+                    ),
+                    None => env::build(std::env::vars_os(), &self.config.env_remove, cfg!(windows)),
+                },
                 timeout: call.timeout,
                 label: ARTIFACT_LABEL.to_owned(),
             };
             let finished = match self
                 .runner
-                .run(start, &cx.cancel, Arc::clone(&cx.store), out)
+                .run_until(start, &cx.cancel, &cx.kill, Arc::clone(&cx.store), out)
                 .await
             {
                 Ok(finished) => finished,

@@ -14,6 +14,7 @@ model.speed                        by value: `standard` is a preference, any oth
 model.speed_fallback               preference
 model.speed_wait                   preference
 model.speed_cooldown               preference
+model.speed_cooldown_min           preference
 model.roles.*.provider             raises cost
 model.roles.*.effort               raises cost
 model.roles.*.speed                by value: `standard` is a preference, any other tier raises cost

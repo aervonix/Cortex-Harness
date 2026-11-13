@@ -346,6 +346,14 @@
           "x-cortex-effect": "at once",
           "x-cortex-trust": "preference"
         },
+        "speed_cooldown_min": {
+          "default": "1m",
+          "description": "The least time requests stay at `standard` after a fallback when the provider does say when the tier is available again: its time, or this long, whichever is later. `\"0s\"` takes the provider's time as given.",
+          "pattern": "^([0-9]+(ms|s|m|h|d))+$",
+          "type": "string",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "preference"
+        },
         "speed_fallback": {
           "default": true,
           "description": "Whether a request that a speed tier refuses is sent again at `standard`. When off, such a refusal is an ordinary rate limit.",
@@ -365,7 +373,7 @@
       "type": "object"
     },
     "models": {
-      "description": "Catalog overrides and additions by model name: limits, prices, reasoning control, capability flags.",
+      "description": "Catalog overrides and additions: limits, prices, reasoning control, capability flags. The section has the shape of the built-in catalog file: `[[models.model]]` tables, each a whole entry that replaces the built-in one for the same provider and model, and an optional `version` text. It is read by the model catalog itself when a session starts, which refuses an entry it does not understand: the session then does not start, and the error names this file, the entry and what is wrong.",
       "type": "object",
       "x-cortex-reserved": true,
       "x-cortex-trust": "user only"
@@ -452,7 +460,7 @@
             "x-cortex-trust": "user only"
           },
           "capabilities": {
-            "description": "Capability flags of the endpoint.",
+            "description": "Capability flags of the endpoint, as the provider's protocol names them. For `anthropic-messages`: `replay_reasoning` (`\"all\"` for a server that leaves out the reasoning a model cannot read, as Anthropic's own does), `eager_tool_streaming`, `api_version` and `beta`. Each value is text, a whole number or `true`/`false`.",
             "type": "object",
             "x-cortex-reserved": true,
             "x-cortex-trust": "user only"

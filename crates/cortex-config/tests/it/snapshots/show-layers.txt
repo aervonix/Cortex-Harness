@@ -8,6 +8,7 @@ managed.locked = []
 model.reasoning = "summary"
 model.speed = "standard"
 model.speed_cooldown = "10m"
+model.speed_cooldown_min = "1m"
 model.speed_fallback = true
 model.speed_wait = "20s"
 permissions.mode = "supervised"

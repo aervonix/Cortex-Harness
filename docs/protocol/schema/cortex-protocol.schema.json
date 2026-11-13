@@ -6165,6 +6165,23 @@
       "description": "One turn of a session: from a prompt until the session is settled again.",
       "type": "string"
     },
+    "TurnInterruptParams": {
+      "description": "`turn/interrupt`",
+      "properties": {
+        "now": {
+          "description": "Whether to stop running commands at once, without the polite\ninterrupt and the grace that normally come first: what a second\ninterrupt means. Absent or `false` is the ordinary interrupt, which\nstays safe to send twice.",
+          "type": "boolean"
+        },
+        "session_id": {
+          "$ref": "#/$defs/SessionId",
+          "description": "The session."
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
     "TurnInterruptResult": {
       "description": "The result of `turn/interrupt`.",
       "properties": {
@@ -6845,9 +6862,9 @@
         }
       },
       "turn/interrupt": {
-        "description": "Cancels the running turn. It is not an error when none is running.",
+        "description": "Cancels the running turn. It is not an error when none is running. With `now`, running commands are killed at once.",
         "params": {
-          "$ref": "#/$defs/SessionRef"
+          "$ref": "#/$defs/TurnInterruptParams"
         },
         "result": {
           "$ref": "#/$defs/TurnInterruptResult"

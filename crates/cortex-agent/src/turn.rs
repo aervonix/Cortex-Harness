@@ -117,6 +117,14 @@ pub struct Session {
     config: LoopConfig,
     observer: Option<Arc<dyn Observer>>,
     item_ids: IdCounter,
+    /// The main model of the request that is being prepared or is in
+    /// flight, and the version of the catalog its prices come from. It is
+    /// read from the session's settings once for each request, in
+    /// `Preparing`, so that a change of model in the middle of a request
+    /// applies from the next one and a request is accounted to the model
+    /// it was sent to.
+    model: RoleModel,
+    catalog_version: String,
     /// How many tool rounds have had their results recorded, and so sent
     /// to the model with the next request. A round's number is one more:
     /// it moves on only when the model will see what the round returned,
@@ -147,6 +155,8 @@ struct Turn {
     /// The turn's number in the session, counted from 1.
     number: u32,
     cancel: CancelToken,
+    /// The token of a second interrupt, which every tool call is given.
+    kill: CancelToken,
     /// When it started, on the monotonic clock.
     started: Duration,
     usage: UsageTotals,
@@ -320,9 +330,15 @@ impl Session {
             clock: Arc::clone(&clock),
             max_parallel: config.max_parallel_tools.max(1),
         });
+        let model = models.main().clone();
+        let catalog_version = models.catalog_version().to_owned();
+        let (level, lease_id, title) = (
+            info.level.clone(),
+            info.lease_id.clone(),
+            info.title.clone(),
+        );
         let shared = Arc::new(Shared {
             info,
-            models,
             cooldowns,
             emitter,
             cancel,
@@ -335,6 +351,10 @@ impl Session {
                 queue: std::collections::VecDeque::new(),
                 held: std::collections::VecDeque::new(),
                 speeds,
+                models,
+                level,
+                lease_id,
+                title,
                 state: TurnState::Idle,
                 usage: cortex_protocol::usage::SessionUsage::default(),
                 reload: false,
@@ -355,6 +375,8 @@ impl Session {
             config,
             observer,
             item_ids: IdCounter::new(ITEM_PREFIX).after(opened.last_item),
+            model,
+            catalog_version,
             rounds_recorded: 0,
             state: TurnState::Idle,
             usage: UsageBook::default(),
@@ -475,6 +497,7 @@ impl Session {
             id: running.id,
             number,
             cancel: running.cancel,
+            kill: running.kill,
             started: self.clock.monotonic(),
             usage: UsageTotals::default(),
             requests: 0,
@@ -603,8 +626,17 @@ impl Session {
             });
         }
 
+        // The model of this request: what the role is set to now.
+        {
+            let inbox = self.shared.lock();
+            self.model = inbox.models.main().clone();
+            inbox
+                .models
+                .catalog_version()
+                .clone_into(&mut self.catalog_version);
+        }
         self.tell_speed();
-        let model = self.shared.models.main();
+        let model = self.model.clone();
         let assembled = self.context.assemble();
         let mut request = ModelRequest::new(Arc::clone(&model.entry), ModelRole::Main);
         request.system = assembled.system;
@@ -668,7 +700,7 @@ impl Session {
 
     async fn respond(&mut self, turn: &mut Turn, request: ModelRequest, prep: Prep) -> Phase {
         self.enter(TurnState::Requesting);
-        let model = self.shared.models.main().clone();
+        let model = self.model.clone();
         let mut live = Live {
             item_id: self.item_ids.next_id(),
             draft: Draft::default(),
@@ -684,6 +716,7 @@ impl Session {
             turn.number,
             self.rounds_recorded + 1,
             turn.cancel.clone(),
+            turn.kill.clone(),
         );
         // The request has a token of its own below the turn's. The loop
         // itself watches the turn's, and drops the stream when it fires:
@@ -986,7 +1019,7 @@ impl Session {
             usage,
             prep,
         } = response;
-        let model = self.shared.models.main().clone();
+        let model = self.model.clone();
         live.usage = None;
         let usage = self.account(turn, &model, usage, &live);
         self.tell_usage(turn, &model, None, true);
@@ -1200,7 +1233,7 @@ impl Session {
         round: &mut Round,
         signature: &mut String,
     ) -> Result<(), StoreError> {
-        let model = self.shared.models.main().clone();
+        let model = self.model.clone();
         let mut recorded = false;
         for finished in round.finish() {
             recorded = true;
@@ -1335,7 +1368,7 @@ impl Session {
         turn.cancel.cancel();
         if let Some(partial) = partial {
             let (mut live, mut round) = *partial;
-            let model = self.shared.models.main().clone();
+            let model = self.model.clone();
             let usage = live
                 .usage
                 .take()
@@ -1414,7 +1447,7 @@ impl Session {
         self.stats.record(StatEvent::Turn(TurnStat {
             session: self.shared.info.id.clone(),
             turn: turn.id.clone(),
-            model: self.shared.models.main().entry.info.id.clone(),
+            model: self.model.entry.info.id.clone(),
             requests: turn.requests,
             tool_calls: turn.tool_calls,
             outcome: outcome.clone(),
@@ -1479,6 +1512,7 @@ impl Session {
         let running = Running {
             id: turn,
             cancel: self.shared.cancel.child(),
+            kill: CancelToken::new(),
         };
         Some((running, prompt))
     }
@@ -1605,7 +1639,7 @@ impl Session {
             &model.entry.info,
             ModelRole::Main,
             model.billing.clone(),
-            self.shared.models.catalog_version(),
+            &self.catalog_version,
         );
         if let Some((sent, first_content)) = timing {
             let now = self.clock.monotonic();

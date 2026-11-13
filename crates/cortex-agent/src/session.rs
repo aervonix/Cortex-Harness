@@ -21,14 +21,15 @@ use cortex_llm::SpeedCooldowns;
 use cortex_protocol::error::code;
 use cortex_protocol::event::{Event, SessionUpdated};
 use cortex_protocol::item::{Delivery, NoticeSource};
+use cortex_protocol::lease::Level;
 use cortex_protocol::methods::{Disposition, TurnInterruptResult, TurnStartResult};
 use cortex_protocol::model::ModelRole;
 use cortex_protocol::session::SessionState;
 use cortex_protocol::usage::SessionUsage;
-use cortex_protocol::{ErrorData, ErrorKind, Part, SessionId, Speed, TurnId};
+use cortex_protocol::{ErrorData, ErrorKind, LeaseId, Part, SessionId, Speed, TurnId};
 use tokio::sync::Notify;
 
-use crate::config::{Models, SessionInfo};
+use crate::config::{Models, RoleModel, SessionInfo};
 use crate::events::Emitter;
 use crate::speed::{SpeedSettings, role_state};
 use crate::state::TurnState;
@@ -39,6 +40,10 @@ pub(crate) struct Running {
     pub(crate) id: TurnId,
     /// The turn's token: a child of the session's.
     pub(crate) cancel: CancelToken,
+    /// The turn's second token, "kill now": fired by a second interrupt,
+    /// and handed to every tool call of the turn
+    /// (`docs/architecture/02-runtime.md`, "Cancellation").
+    pub(crate) kill: CancelToken,
 }
 
 /// A prompt that starts a turn.
@@ -80,6 +85,13 @@ pub(crate) struct Inbox {
     /// so they wait for the user's next prompt and follow it.
     pub(crate) held: VecDeque<Queued>,
     pub(crate) speeds: SpeedSettings,
+    /// The models, by role. A change applies from the next request.
+    pub(crate) models: Models,
+    /// The level of the lease in force, and the lease.
+    pub(crate) level: Level,
+    pub(crate) lease_id: Option<LeaseId>,
+    /// The session's title.
+    pub(crate) title: Option<String>,
     pub(crate) state: TurnState,
     pub(crate) usage: SessionUsage,
     /// The session's items changed under the loop (a rewind): it reads them
@@ -89,8 +101,10 @@ pub(crate) struct Inbox {
 }
 
 pub(crate) struct Shared {
+    /// The session as it was opened. What can change afterwards (the
+    /// level, the lease, the title) is in the inbox, which is what the
+    /// state reports.
     pub(crate) info: SessionInfo,
-    pub(crate) models: Models,
     pub(crate) cooldowns: SpeedCooldowns,
     pub(crate) emitter: Arc<Emitter>,
     /// The session's token: a child of the process's.
@@ -112,14 +126,14 @@ impl Shared {
         SessionState {
             session_id: self.info.id.clone(),
             workspace: self.info.workspace.clone(),
-            title: self.info.title.clone(),
+            title: inbox.title.clone(),
             created_at: self.info.created_at.clone(),
             parent: self.info.parent.clone(),
-            level: self.info.level.clone(),
-            lease_id: self.info.lease_id.clone(),
+            level: inbox.level.clone(),
+            lease_id: inbox.lease_id.clone(),
             sandbox: self.info.sandbox.clone(),
             speed: inbox.speeds.session.clone(),
-            roles: self
+            roles: inbox
                 .models
                 .roles()
                 .map(|(role, model)| {
@@ -208,6 +222,7 @@ impl SessionHandle {
             inbox.running = Some(Running {
                 id: turn.clone(),
                 cancel: shared.cancel.child(),
+                kill: CancelToken::new(),
             });
             inbox.starting = Some(Prompt {
                 input,
@@ -293,6 +308,32 @@ impl SessionHandle {
         }
     }
 
+    /// A second interrupt, "kill now": the running turn is interrupted as
+    /// by [`interrupt`](Self::interrupt), and its tools are told to stop at
+    /// once. A command that is being stopped in stages loses what is left
+    /// of its graces, and one that had not been asked yet is killed
+    /// without being asked (`docs/architecture/02-runtime.md`,
+    /// "Cancellation").
+    ///
+    /// It can be the first interrupt a turn gets. With no turn running it
+    /// does nothing.
+    #[must_use]
+    pub fn interrupt_now(&self) -> TurnInterruptResult {
+        let kill = self
+            .shared
+            .lock()
+            .running
+            .as_ref()
+            .map(|running| running.kill.clone());
+        // The ordinary interrupt first, so that a tool that looks at the
+        // second token finds the first one fired too.
+        let result = self.interrupt();
+        if let Some(kill) = kill {
+            kill.cancel();
+        }
+        result
+    }
+
     /// Gives the model a notice at the next safe boundary: after the
     /// running turn's current tool round, or at the start of the next turn
     /// when none is running. This is how a user's edit to the plan reaches
@@ -321,6 +362,65 @@ impl SessionHandle {
             inbox.speeds.roles.insert(role, speed);
             self.shared.emit_updated(&inbox);
         }
+    }
+
+    /// Replaces the model of a role: another model, another provider's
+    /// client, another reasoning level or output limit. It applies from
+    /// the role's next request; a request that is being prepared or is in
+    /// flight keeps the model it was made for.
+    ///
+    /// The conversation is not touched. What a new model is sent of the
+    /// reasoning an earlier one wrote is the provider layer's rule
+    /// (`docs/architecture/04-providers.md`, "The conversation model").
+    pub fn set_role_model(&self, role: ModelRole, model: RoleModel) {
+        let mut inbox = self.shared.lock();
+        let models = inbox.models.clone().with_role(role, model);
+        inbox.models = models;
+        self.shared.emit_updated(&inbox);
+    }
+
+    /// The model a role runs on now. `None` for a role with no model.
+    #[must_use]
+    pub fn role_model(&self, role: &ModelRole) -> Option<RoleModel> {
+        let inbox = self.shared.lock();
+        inbox
+            .models
+            .roles()
+            .find(|(known, _)| known == role)
+            .map(|(_, model)| model.clone())
+    }
+
+    /// Records that the session's lease changed: its level, and the lease
+    /// now in force. The loop holds no lease itself; this is what the
+    /// session's state reports.
+    pub fn set_level(&self, level: Level, lease_id: Option<LeaseId>) {
+        let mut inbox = self.shared.lock();
+        if inbox.level != level || inbox.lease_id != lease_id {
+            inbox.level = level;
+            inbox.lease_id = lease_id;
+            self.shared.emit_updated(&inbox);
+        }
+    }
+
+    /// Sets the session's title.
+    pub fn set_title(&self, title: Option<String>) {
+        let mut inbox = self.shared.lock();
+        if inbox.title != title {
+            inbox.title = title;
+            self.shared.emit_updated(&inbox);
+        }
+    }
+
+    /// Sends front ends an event of the session that the loop does not
+    /// make itself: the plan changed, a notice from whoever assembled the
+    /// session, a request that was resolved. It takes the next `seq`, and
+    /// belongs to the running turn when there is one.
+    ///
+    /// **Not to be called from the session's [`EventSink`](crate::EventSink).**
+    pub fn emit(&self, event: Event) {
+        let inbox = self.shared.lock();
+        let turn = inbox.running.as_ref().map(|running| &running.id);
+        self.shared.emitter.emit(turn, event);
     }
 
     /// The session's state now: what is set, what is in effect, the turn
