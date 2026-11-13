@@ -613,6 +613,21 @@ impl AbsPath {
         Some(RelPath::from_text(self.style, rest.join("/")))
     }
 
+    /// [`starts_with`](Self::starts_with) with the names compared exactly,
+    /// whatever the style. For two paths that are both in the file system's
+    /// own spelling, as resolved paths are.
+    ///
+    /// This is the test for anything that **grants**: what a lease's scope
+    /// covers, what an allow rule reaches. On Windows a directory can be
+    /// marked case-sensitive, and there `App` and `app` are two folders, so
+    /// a folded comparison would put one inside a scope that names the
+    /// other. The root (a drive letter, a share's server and name) has no
+    /// spelling on disk and is still compared as the style compares names.
+    #[must_use]
+    pub fn starts_with_exactly(&self, base: &Self) -> bool {
+        self.strip_prefix_exactly(base).is_some()
+    }
+
     /// The path in the operating system's own spelling, for showing to a
     /// person or handing to another program: `C:\Work\dev\project`.
     #[must_use]

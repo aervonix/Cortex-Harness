@@ -386,6 +386,28 @@ fn windows_compares_without_case_and_keeps_the_spelling() {
 }
 
 #[test]
+fn an_exact_prefix_tells_two_casings_apart_and_folds_only_the_root() {
+    let base = abs(r"C:\Work\App", Windows);
+    let inside = abs(r"c:\Work\App\src\main.rs", Windows);
+    let other_case = abs(r"C:\Work\app\src\main.rs", Windows);
+    // Folded, both are under the base. Exactly, only the first is.
+    assert!(inside.starts_with(&base) && other_case.starts_with(&base));
+    assert!(inside.starts_with_exactly(&base), "the drive letter is folded");
+    assert!(!other_case.starts_with_exactly(&base));
+    assert!(base.starts_with_exactly(&base));
+    assert!(!base.starts_with_exactly(&inside));
+    assert!(!abs(r"C:\Work\App2", Windows).starts_with_exactly(&base));
+    // A share's server and name are folded like a drive letter.
+    let share = abs(r"\\Server\Share\Dir", Windows);
+    assert!(abs(r"\\SERVER\share\Dir\x", Windows).starts_with_exactly(&share));
+    assert!(!abs(r"\\SERVER\share\dir\x", Windows).starts_with_exactly(&share));
+    // On POSIX it is `starts_with`.
+    assert!(abs("/work/app/src", Posix).starts_with_exactly(&abs("/work/app", Posix)));
+    assert!(!abs("/work/App/src", Posix).starts_with_exactly(&abs("/work/app", Posix)));
+    assert!(!abs("/work/app", Posix).starts_with_exactly(&base));
+}
+
+#[test]
 fn case_folding_follows_windows_one_to_one_upper_casing() {
     let cases = [
         ('a', 'A'),
