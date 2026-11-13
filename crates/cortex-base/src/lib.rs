@@ -13,13 +13,14 @@
 //! | [`text`] | Width in terminal columns, wrapping and truncation, by grapheme cluster. |
 //! | [`atomic`] | [`write_atomic`]: replace a file's content in one step. |
 //! | [`hash`] | [`ContentHash`]: the hash a piece of content is known by. |
+//! | [`private`] | Files and directories that only the current user can open, on Linux and on Windows. |
 //! | [`framing`] | The newline-delimited JSON reader and writer of the RPC protocol. |
 //! | [`watch`] | [`WatchList`]: the modification-time check behind hot-reload. |
 //!
 //! # Blocking and async
 //!
 //! This crate has no async runtime. The modules that touch the file system
-//! ([`path`]'s resolver, [`atomic`], [`watch`]) block, and async callers
+//! ([`path`]'s resolver, [`atomic`], [`private`], [`watch`]) block, and async callers
 //! run them on the blocking pool. [`CancelToken`] is built on the standard
 //! library's wakers and works under any runtime. [`framing`] has a decoder
 //! that does no I/O at all, so one implementation serves pipes, sockets and
@@ -31,6 +32,13 @@
 //! implement, as ordinary public types: this crate's own tests need them,
 //! and it cannot depend on the test kit, which depends on it. Other crates'
 //! tests reach them through `cortex-testkit`.
+//!
+//! # Unsafe code
+//!
+//! One module of this crate may use `unsafe`: `private::windows`, which sets
+//! access lists through the Windows API
+//! (`docs/decisions/0029-owner-only-files-on-windows.md`). Everywhere else
+//! in the crate the workspace's `unsafe_code = "deny"` holds.
 
 pub mod atomic;
 pub mod cancel;
@@ -40,6 +48,7 @@ pub mod framing;
 pub mod hash;
 pub mod id;
 pub mod path;
+pub mod private;
 pub mod rng;
 pub mod secret;
 pub mod text;

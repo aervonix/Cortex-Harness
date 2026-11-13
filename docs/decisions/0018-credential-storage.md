@@ -32,9 +32,16 @@ On Linux almost all of that is the D-Bus client stack. On Windows the backend is
 - **Linux:** a `credentials.toml` file in the configuration directory, created with owner-only permissions, by default. The Secret Service keychain is available with the `keychain` build feature and `credentials.store = "keychain"`.
 - Lookup order: command-line flag, environment variable, the store.
 - Credentials are `Secret` values in memory: not printable, not serialisable, never logged.
-- All of it sits behind the `AuthMethod` layer, so sign-in flows added later store their tokens the same way.
+- All of it sits behind the `AuthMethod` layer, so sign-in flows added later store their tokens the same way. **Where the boundary is** (settled in step 9): the `AuthMethod` trait is in `cortex-llm`, and `cortex-config` may not depend on that crate. So `cortex-config` owns the stores and the lookup order, and returns the key as a `Secret` together with where it came from, never the value. `cortex-core` hands both to the provider layer's API-key `AuthMethod`. No crate gains a dependency for it.
 
 Specified in [architecture/08-configuration.md](../architecture/08-configuration.md).
+
+## As built, in step 9
+
+- **The Windows wrapper.** Credential Manager is reached through `windows-native-keyring-store` with `keyring-core`: the Windows store of the `keyring` family, split out by its maintainer, who now tells applications to depend on the core crate and the one store they want. With its search feature off it is 5 packages on Windows besides the Windows bindings `cortex-base` already brings, against 16 for `keyring` itself. `cortex-config` has no `unsafe` of its own. The row in [dependencies.md](../dependencies.md) has the alternatives.
+- **A stored key stays on its machine.** It is written with local-machine persistence. The wrapper's default lets Windows copy a credential to the user's other domain machines.
+- **The Linux keychain is not built yet.** The `keychain` feature and the `credentials.store = "keychain"` value exist, and on Linux the value gives an error that says the backend is not in any build so far and to use the file. The Secret Service backend could not be run in the blocking CI (the runners have no keyring daemon), and a credential backend that no test has run is not shipped. It is listed in the build plan as outstanding, to be built with a non-blocking job that runs it against a real keyring daemon.
+- **The file.** `credentials.toml` is written owner-only every time, so a file someone made by hand with wider permissions is private after the next key is stored. Until then it is read as it is, and reported. A lock file beside it, held with the operating system's own file lock, keeps two writers apart.
 
 ## Why
 

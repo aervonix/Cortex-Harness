@@ -23,6 +23,7 @@ Everything goes through the `xtask` crate: `cargo xtask <command>`, or `./x <com
 | `cargo xtask rules` | The repo-rule checks alone (see below). |
 | `cargo xtask fmt` | Formats the workspace. |
 | `cargo xtask schema` | Regenerates the protocol's JSON Schema and TypeScript declarations in `docs/protocol/` from the types in `cortex-protocol`. Run it after any change to those types and commit the result. `--check` only compares. |
+| `cargo xtask gen` | Regenerates every generated file: what `schema` writes, and the configuration schema and reference in `docs/configuration/`, from the settings in `cortex-config`. Run it after adding or changing a configuration key. |
 | `cargo xtask size`, `unused`, `advisories` | What the non-blocking workflows run: the `dist` build with its binary size and crate count, the unused-dependency check (needs [cargo-machete](https://github.com/bnjbvr/cargo-machete)), and the advisory check. |
 | `cargo xtask alias` | Builds `cortex` and puts its alias `cx` beside it in the target directory. |
 
@@ -34,6 +35,7 @@ crates/cortex-cli  the `cortex` binary; `cx` is a link to it
 xtask/             developer commands; not shipped
 docs/              the specification
 docs/protocol/     generated: the protocol's JSON Schema and TypeScript declarations
+docs/configuration/  generated: the configuration file's JSON Schema and reference
 assets/            the logo
 AGENTS.md          the rules for agents; CLAUDE.md is one line that includes it
 .config/nextest.toml, clippy.toml, deny.toml, rustfmt.toml, rust-toolchain.toml
@@ -82,7 +84,7 @@ The lint levels are in the root `Cargo.toml` under `[workspace.lints]`, the list
   #![allow(clippy::disallowed_methods, clippy::disallowed_types, reason = "runs on the blocking pool")]
   ```
 
-- **`unsafe` is denied**, and allowed per module only in `cortex-sandbox` and `cortex-term`, with a `// SAFETY:` comment on every block.
+- **`unsafe` is denied**, and allowed per module only in `cortex-sandbox` and `cortex-term`, and in one Windows-only module of `cortex-base` (`private::windows`, which sets access lists; [decision 0029](docs/decisions/0029-owner-only-files-on-windows.md)). Every block has a `// SAFETY:` comment. A private file is written with `write_atomic` and `owner_only`, or created with `cortex_base::private::create_new`: no other crate needs `unsafe` for it.
 - **An `allow` or `expect` always carries a `reason`.**
 - **Public items are documented.**
 - **No `todo!`, `unimplemented!` or `dbg!`** on the main branch, and no `std::process::exit`: return an exit code, so the terminal is always restored.
@@ -99,7 +101,7 @@ Clippy treats `#[test]` functions and `#[cfg(test)]` modules as tests. Helper fu
 - **`cortex-protocol` depends on anything but serde and serde_json**, other than schemars behind its `schema` feature.
 - **A workflow uses an action that is not pinned by commit hash**; a workflow that runs on pull requests uses a secret or a token that can write; or any job other than the `report` job of a non-blocking workflow has a write permission, or that job has one other than `issues: write`.
 
-`cargo xtask check` also fails, in its `generated` step, when the files in `docs/protocol/` are not what the protocol types generate. Run `cargo xtask schema`.
+`cargo xtask check` also fails, in its `generated` step, when the files in `docs/protocol/` are not what the protocol types generate. Run `cargo xtask schema`. The files in `docs/configuration/` are checked the same way by a test in `cortex-config`, on both OSes. Run `cargo xtask gen`.
 
 ## Dependencies
 
@@ -114,7 +116,7 @@ Four jobs block a pull request: `lint-linux`, `lint-windows`, `test-linux` and `
 - A step is not done until its tests pass on both OSes.
 - Nothing that blocks uses a secret or a paid API.
 - Only the main branch writes the build caches. A pull request reads them.
-- A pull request that touches only `docs/**` and `*.md` skips the Rust build and tests. Its four checks still report, and the Linux lint job still runs the repo rules, because those rules are mostly about documentation. The generated files in `docs/protocol/` are the exception: they count as code.
+- A pull request that touches only `docs/**` and `*.md` skips the Rust build and tests. Its four checks still report, and the Linux lint job still runs the repo rules, because those rules are mostly about documentation. The generated files in `docs/protocol/` and `docs/configuration/` are the exception: they count as code.
 - Two workflows do not block: `main`, after each merge, and `nightly`. When one fails it opens an issue labelled `ci-failure`, or adds a comment to the open one. Close the issue when the cause is fixed.
 - A change that makes the blocking checks slower than their budget moves the slow part to a non-blocking tier, or raises it for a decision. The limit is not loosened quietly.
 

@@ -23,6 +23,7 @@ mod paths;
 mod paths_unix;
 #[cfg(windows)]
 mod paths_windows;
+mod private;
 mod watch;
 
 use std::fs;

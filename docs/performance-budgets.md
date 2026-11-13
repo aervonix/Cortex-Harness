@@ -17,6 +17,8 @@ Numbers the product and the tooling must meet, how each is measured, and where e
 | TUI: process start to first complete frame | ≤ 20 ms | ≤ 50 ms | ≤ 120 ms | Prototype: 0.8 to 1.0 ms (desktop), 1.3 to 1.6 ms (laptop). The TypeScript prototypes: 51 and 98 ms (desktop), 64 and 131 ms (laptop). |
 | Headless: process start to request handed to the network stack (warm connection excluded) | ≤ 15 ms | ≤ 40 ms | ≤ 100 ms | Building the HTTP client: 1.2 ms warm, 45 ms on a cold file cache. |
 
+| Loading configuration: the managed, user, project and local files, a profile, the environment and the command line, checked and merged | ≤ 1 ms | ≤ 3 ms | ≤ 10 ms | Step 9, desktop, release build, files in the page cache, median of 2,000 loads: 127 µs for four files with a profile, three environment and command-line settings, 41 effective settings and four rules (slowest 0.5 ms); 4.7 µs when none of the four files exists. It is part of each start-up budget above, not an addition to them: under 1% of the headless budget. Runners are not measured yet. |
+
 **How.** A pseudo-terminal harness records the time from spawning the process to the first frame that shows the editor and status line. Thirty runs, median and 95th percentile. The alias `cx` is the same file under a second name ([decisions/0013-naming.md](decisions/0013-naming.md)), so it has the same budget; the measurement is taken under both names.
 
 **Rules that protect it.**

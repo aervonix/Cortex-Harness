@@ -1,0 +1,42 @@
+compat.instructions = true
+compat.mcp = true
+compat.skills = true
+config_version = 1
+credentials.store = "auto"
+limits.day.cost = 20.0
+log.level = "info,cortex_llm=debug"
+managed.locked = ["sandbox.enabled"]
+model.effort = "high"
+model.fast = "claude-haiku-5-5"
+model.judge = "claude-opus-5-5"
+model.main = "claude-sonnet-5-5"
+model.reasoning = "summary"
+model.roles.fast.speed = "standard"
+model.speed = "fast"
+model.speed_cooldown = "10m"
+model.speed_fallback = true
+model.speed_wait = "5s"
+permissions.mode = "read-only"
+permissions.rules = [
+    { action = "deny", effect = "write", match = "/etc/**" },
+    { action = "allow", effect = "exec", match = "cargo test *" },
+    { action = "deny", effect = "write", match = "**/.env*" },
+]
+profile = "review"
+providers.local.base_url = "http://localhost:11434"
+providers.local.first_event_timeout = "5m"
+providers.local.headers = { Authorization = { env = "LOCAL_TOKEN" }, X-Team = "tools" }
+retry.attempts = 3
+retry.backoff_base = "1s"
+retry.backoff_cap = "30s"
+retry.backoff_factor = 2.0
+retry.first_event_timeout = "1m"
+retry.idle_timeout = "1m30s"
+retry.max_wait = "5m"
+sandbox.enabled = true
+sandbox.network = "off"
+sandbox.protect = [
+    "/srv/keys",
+]
+sandbox.write = []
+tui.theme = "dusk"

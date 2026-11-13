@@ -1,0 +1,712 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "A Cortex-Harness configuration file: the user's `config.toml`, a project's `.cortex/config.toml` or `.cortex/config.local.toml`, or the managed file. Generated from the settings in `crates/cortex-config`; not edited by hand. `x-cortex-trust` says what a project's file may set, and `x-cortex-effect` when a change takes effect.",
+  "properties": {
+    "adapt": {
+      "description": "Variant overrides per model, and the map and profile budgets.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "user only"
+    },
+    "compat": {
+      "additionalProperties": true,
+      "description": "Which files written for other tools are read.",
+      "properties": {
+        "instructions": {
+          "default": true,
+          "description": "Instruction files: `AGENTS.md` and `CLAUDE.md`.",
+          "type": "boolean",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "user only"
+        },
+        "mcp": {
+          "default": true,
+          "description": "MCP server definitions of other clients, offered for import.",
+          "type": "boolean",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "user only"
+        },
+        "skills": {
+          "default": true,
+          "description": "Agent Skills folders: `.agents/skills` and `.claude/skills`.",
+          "type": "boolean",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "user only"
+        }
+      },
+      "type": "object"
+    },
+    "config_version": {
+      "default": 1,
+      "description": "The version of the configuration schema the file was written for. A file with a newer version than this build understands is refused.",
+      "maximum": 1000000,
+      "minimum": 1,
+      "type": "integer",
+      "x-cortex-effect": "restart",
+      "x-cortex-trust": "preference"
+    },
+    "context": {
+      "description": "The compaction trigger and settings, and instruction file names.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "user only"
+    },
+    "credentials": {
+      "additionalProperties": true,
+      "description": "Where stored credentials are kept. Never the credentials themselves: no key of this file takes a secret.",
+      "properties": {
+        "store": {
+          "default": "auto",
+          "description": "The store for API keys saved with `cortex auth login`.",
+          "enum": [
+            "auto",
+            "file",
+            "keychain"
+          ],
+          "x-cortex-effect": "restart",
+          "x-cortex-trust": "user only"
+        }
+      },
+      "type": "object"
+    },
+    "extensions": {
+      "description": "Extensions by name.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "runs code"
+    },
+    "hooks": {
+      "description": "Hooks by name.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "runs code"
+    },
+    "http": {
+      "description": "The HTTP client: the connect timeout, a proxy, and extra certificate authorities.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "user only"
+    },
+    "index": {
+      "description": "The repository map's caps.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "user only"
+    },
+    "keys": {
+      "description": "Key bindings by mode.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "user only"
+    },
+    "limits": {
+      "additionalProperties": false,
+      "description": "The most a turn, a session and a day may spend.",
+      "properties": {
+        "day": {
+          "additionalProperties": false,
+          "description": "Limits on one day, across sessions.",
+          "properties": {
+            "cost": {
+              "description": "Money, in US dollars.",
+              "maximum": 1000000000,
+              "minimum": 0,
+              "type": "number",
+              "x-cortex-effect": "at once",
+              "x-cortex-trust": "tighten only: a lower limit is a preference, a higher one user only"
+            },
+            "requests": {
+              "description": "Requests to a model.",
+              "maximum": 1000000000,
+              "minimum": 1,
+              "type": "integer",
+              "x-cortex-effect": "at once",
+              "x-cortex-trust": "tighten only: a lower limit is a preference, a higher one user only"
+            },
+            "time": {
+              "description": "Wall-clock time.",
+              "pattern": "^([0-9]+(ms|s|m|h|d))+$",
+              "type": "string",
+              "x-cortex-effect": "at once",
+              "x-cortex-trust": "tighten only: a lower limit is a preference, a higher one user only"
+            },
+            "tokens": {
+              "description": "Tokens, input and output together.",
+              "maximum": 1000000000000000,
+              "minimum": 1,
+              "type": "integer",
+              "x-cortex-effect": "at once",
+              "x-cortex-trust": "tighten only: a lower limit is a preference, a higher one user only"
+            }
+          },
+          "type": "object"
+        },
+        "session": {
+          "additionalProperties": false,
+          "description": "Limits on one session.",
+          "properties": {
+            "cost": {
+              "description": "Money, in US dollars.",
+              "maximum": 1000000000,
+              "minimum": 0,
+              "type": "number",
+              "x-cortex-effect": "at once",
+              "x-cortex-trust": "tighten only: a lower limit is a preference, a higher one user only"
+            },
+            "requests": {
+              "description": "Requests to a model.",
+              "maximum": 1000000000,
+              "minimum": 1,
+              "type": "integer",
+              "x-cortex-effect": "at once",
+              "x-cortex-trust": "tighten only: a lower limit is a preference, a higher one user only"
+            },
+            "time": {
+              "description": "Wall-clock time.",
+              "pattern": "^([0-9]+(ms|s|m|h|d))+$",
+              "type": "string",
+              "x-cortex-effect": "at once",
+              "x-cortex-trust": "tighten only: a lower limit is a preference, a higher one user only"
+            },
+            "tokens": {
+              "description": "Tokens, input and output together.",
+              "maximum": 1000000000000000,
+              "minimum": 1,
+              "type": "integer",
+              "x-cortex-effect": "at once",
+              "x-cortex-trust": "tighten only: a lower limit is a preference, a higher one user only"
+            }
+          },
+          "type": "object"
+        },
+        "turn": {
+          "additionalProperties": false,
+          "description": "Limits on one turn.",
+          "properties": {
+            "cost": {
+              "description": "Money, in US dollars.",
+              "maximum": 1000000000,
+              "minimum": 0,
+              "type": "number",
+              "x-cortex-effect": "at once",
+              "x-cortex-trust": "tighten only: a lower limit is a preference, a higher one user only"
+            },
+            "requests": {
+              "description": "Requests to a model.",
+              "maximum": 1000000000,
+              "minimum": 1,
+              "type": "integer",
+              "x-cortex-effect": "at once",
+              "x-cortex-trust": "tighten only: a lower limit is a preference, a higher one user only"
+            },
+            "time": {
+              "description": "Wall-clock time.",
+              "pattern": "^([0-9]+(ms|s|m|h|d))+$",
+              "type": "string",
+              "x-cortex-effect": "at once",
+              "x-cortex-trust": "tighten only: a lower limit is a preference, a higher one user only"
+            },
+            "tokens": {
+              "description": "Tokens, input and output together.",
+              "maximum": 1000000000000000,
+              "minimum": 1,
+              "type": "integer",
+              "x-cortex-effect": "at once",
+              "x-cortex-trust": "tighten only: a lower limit is a preference, a higher one user only"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "log": {
+      "additionalProperties": true,
+      "description": "What is logged.",
+      "properties": {
+        "level": {
+          "description": "The level (`error`, `warn`, `info`, `debug` or `trace`), optionally followed by levels for target prefixes: `\"info,cortex_llm=debug\"`. The `CORTEX_LOG` variable and `--log-level` override it.",
+          "type": "string",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "user only"
+        }
+      },
+      "type": "object"
+    },
+    "managed": {
+      "additionalProperties": true,
+      "description": "For the managed file of a shared machine only.",
+      "properties": {
+        "locked": {
+          "default": [],
+          "description": "Keys that no layer above the managed file may change. A table's name locks every key in it. Read from the managed file only.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "user only"
+        }
+      },
+      "type": "object"
+    },
+    "mcp": {
+      "description": "MCP servers by name, and MCP settings.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "runs code"
+    },
+    "model": {
+      "additionalProperties": true,
+      "description": "Models by role, the reasoning level and the speed tier.",
+      "properties": {
+        "effort": {
+          "description": "The reasoning level of the main role: one of the model's own levels, or `minimal`, `low`, `medium`, `high` or `max`.",
+          "type": "string",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "preference"
+        },
+        "fast": {
+          "description": "The model for utility calls: summaries, titles. Without one, the main model is used.",
+          "type": "string",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "preference"
+        },
+        "judge": {
+          "description": "The model for model-graded comparisons. Without one, the main model is used.",
+          "type": "string",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "preference"
+        },
+        "main": {
+          "description": "The model for the agent's own turns. Needed to run a turn.",
+          "type": "string",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "preference"
+        },
+        "max_output": {
+          "description": "The most output tokens one response may have. Without it, the model's own limit applies.",
+          "maximum": 10000000,
+          "minimum": 1,
+          "type": "integer",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "preference"
+        },
+        "reasoning": {
+          "default": "summary",
+          "description": "How much of the model's reasoning is shown.",
+          "enum": [
+            "summary",
+            "none"
+          ],
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "preference"
+        },
+        "roles": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "properties": {
+              "effort": {
+                "description": "The role's reasoning level. For `main` it overrides `model.effort`.",
+                "type": "string",
+                "x-cortex-effect": "next epoch",
+                "x-cortex-trust": "preference"
+              },
+              "provider": {
+                "description": "The provider that serves the role's model. Needed only when two providers have a model with the same name.",
+                "type": "string",
+                "x-cortex-effect": "next epoch",
+                "x-cortex-trust": "preference"
+              },
+              "speed": {
+                "description": "The role's speed tier. For `main` it overrides `model.speed`.",
+                "type": "string",
+                "x-cortex-effect": "at once",
+                "x-cortex-trust": "preference"
+              }
+            },
+            "type": "object"
+          },
+          "description": "Settings of one role: `main`, `fast` or `judge`.",
+          "type": "object"
+        },
+        "speed": {
+          "default": "standard",
+          "description": "The session's speed tier, which the main role runs at: `standard`, `fast` where the model offers it, or a provider's own tier name. The utility roles do not follow it: they run at `standard` unless `model.roles.<role>.speed` says otherwise.",
+          "type": "string",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "preference"
+        },
+        "speed_cooldown": {
+          "default": "10m",
+          "description": "How long requests stay at `standard` after a fallback, when the provider does not say when the tier is available again.",
+          "pattern": "^([0-9]+(ms|s|m|h|d))+$",
+          "type": "string",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "preference"
+        },
+        "speed_fallback": {
+          "default": true,
+          "description": "Whether a request that a speed tier refuses is sent again at `standard`. When off, such a refusal is an ordinary rate limit.",
+          "type": "boolean",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "preference"
+        },
+        "speed_wait": {
+          "default": "20s",
+          "description": "The longest one request waits in place for a speed tier before it falls back to `standard`. `\"0s\"` never waits.",
+          "pattern": "^([0-9]+(ms|s|m|h|d))+$",
+          "type": "string",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "preference"
+        }
+      },
+      "type": "object"
+    },
+    "models": {
+      "description": "Catalog overrides and additions by model name: limits, prices, reasoning control, capability flags.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "user only"
+    },
+    "permissions": {
+      "additionalProperties": false,
+      "description": "The permission mode and the permission rules.",
+      "properties": {
+        "mode": {
+          "default": "supervised",
+          "description": "The session's level: how much runs without asking.",
+          "enum": [
+            "read-only",
+            "supervised",
+            "guided",
+            "autonomous",
+            "unrestricted"
+          ],
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "by level: not above the mode in effect is a preference, up to `supervised` widens access, above it user only"
+        },
+        "rules": {
+          "default": [],
+          "description": "Permission rules. Every layer adds to the list; `deny` beats `ask` beats `allow`, whatever the order.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "allow",
+                  "ask",
+                  "deny"
+                ]
+              },
+              "effect": {
+                "enum": [
+                  "read",
+                  "write",
+                  "exec",
+                  "network",
+                  "ext"
+                ]
+              },
+              "match": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "effect",
+              "match",
+              "action"
+            ],
+            "type": "object"
+          },
+          "type": "array",
+          "x-cortex-effect": "at once",
+          "x-cortex-joined": true,
+          "x-cortex-trust": "by action: `deny` and `ask` are preferences, `allow` widens access"
+        }
+      },
+      "type": "object"
+    },
+    "profile": {
+      "description": "The profile to apply: the name of a `[profiles.<name>]` table. The `--profile` flag overrides it. A project's file may define profiles and may not select one: a profile the user wrote is applied with the user's rights, so a repository that could pick it could switch on whatever the user's loosest profile allows.",
+      "type": "string",
+      "x-cortex-effect": "next epoch",
+      "x-cortex-trust": "user only"
+    },
+    "profiles": {
+      "additionalProperties": {
+        "$ref": "#"
+      },
+      "description": "Named sets of settings. A profile may hold any key of this file except `profile`, `profiles`, `managed` and `config_version`.",
+      "type": "object"
+    },
+    "providers": {
+      "additionalProperties": {
+        "additionalProperties": true,
+        "properties": {
+          "base_url": {
+            "description": "The endpoint's base URL.",
+            "type": "string",
+            "x-cortex-effect": "next epoch",
+            "x-cortex-trust": "user only"
+          },
+          "capabilities": {
+            "description": "Capability flags of the endpoint.",
+            "type": "object",
+            "x-cortex-reserved": true,
+            "x-cortex-trust": "user only"
+          },
+          "enabled": {
+            "default": true,
+            "description": "Whether the provider is available. `false` removes an entry that a lower layer or the built-in table defines.",
+            "type": "boolean",
+            "x-cortex-effect": "next epoch",
+            "x-cortex-trust": "user only"
+          },
+          "first_event_timeout": {
+            "description": "How long to wait for the first event of a response. Overrides `retry.first_event_timeout` for this provider.",
+            "pattern": "^([0-9]+(ms|s|m|h|d))+$",
+            "type": "string",
+            "x-cortex-effect": "at once",
+            "x-cortex-trust": "user only"
+          },
+          "headers": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "env": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "env"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "description": "Extra headers for every request. A value is text, or `{ env = \"NAME\" }` to read an environment variable when used.",
+            "type": "object",
+            "x-cortex-effect": "at once",
+            "x-cortex-trust": "user only"
+          },
+          "idle_timeout": {
+            "description": "How long a response stream may be silent before the request fails. Overrides `retry.idle_timeout` for this provider.",
+            "pattern": "^([0-9]+(ms|s|m|h|d))+$",
+            "type": "string",
+            "x-cortex-effect": "at once",
+            "x-cortex-trust": "user only"
+          },
+          "key_env": {
+            "description": "The environment variable that holds the provider's API key. It is looked at before the credential store.",
+            "type": "string",
+            "x-cortex-effect": "at once",
+            "x-cortex-trust": "user only"
+          },
+          "protocol": {
+            "description": "The wire protocol the endpoint speaks.",
+            "type": "string",
+            "x-cortex-effect": "next epoch",
+            "x-cortex-trust": "user only"
+          }
+        },
+        "type": "object"
+      },
+      "description": "Providers by name. A built-in provider needs no entry; an entry changes it or adds a new one. `enabled = false` removes one.",
+      "type": "object"
+    },
+    "retry": {
+      "additionalProperties": true,
+      "description": "How a request that failed is tried again.",
+      "properties": {
+        "attempts": {
+          "default": 5,
+          "description": "The most attempts for one request, the first included.",
+          "maximum": 20,
+          "minimum": 1,
+          "type": "integer",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "preference"
+        },
+        "backoff_base": {
+          "default": "1s",
+          "description": "The wait before the second attempt. Each later wait is this multiplied by `backoff_factor` again, up to `backoff_cap`.",
+          "pattern": "^([0-9]+(ms|s|m|h|d))+$",
+          "type": "string",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "preference"
+        },
+        "backoff_cap": {
+          "default": "30s",
+          "description": "The longest wait between two attempts.",
+          "pattern": "^([0-9]+(ms|s|m|h|d))+$",
+          "type": "string",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "preference"
+        },
+        "backoff_factor": {
+          "default": 2.0,
+          "description": "What the wait is multiplied by after each attempt.",
+          "maximum": 10,
+          "minimum": 1,
+          "type": "number",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "preference"
+        },
+        "first_event_timeout": {
+          "default": "1m",
+          "description": "How long to wait for the first event of a response.",
+          "pattern": "^([0-9]+(ms|s|m|h|d))+$",
+          "type": "string",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "preference"
+        },
+        "idle_timeout": {
+          "default": "1m30s",
+          "description": "How long a response stream may be silent before the request fails.",
+          "pattern": "^([0-9]+(ms|s|m|h|d))+$",
+          "type": "string",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "preference"
+        },
+        "max_wait": {
+          "default": "2m",
+          "description": "The longest wait a provider may ask for. A longer one ends the turn with the error and the provider's hint.",
+          "pattern": "^([0-9]+(ms|s|m|h|d))+$",
+          "type": "string",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "preference"
+        }
+      },
+      "type": "object"
+    },
+    "rpc": {
+      "description": "The RPC server: socket path, token, client timeouts.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "user only"
+    },
+    "runs": {
+      "description": "The run engine: concurrency, workspaces, budgets.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "user only"
+    },
+    "sandbox": {
+      "additionalProperties": false,
+      "description": "What a command the harness starts may touch.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "description": "Whether commands are confined by the OS sandbox where there is one.",
+          "type": "boolean",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "user only"
+        },
+        "network": {
+          "default": "off",
+          "description": "Whether a command may use the network.",
+          "enum": [
+            "off",
+            "full"
+          ],
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "by value: `off` is a preference, `full` widens access"
+        },
+        "protect": {
+          "default": [],
+          "description": "Paths a command may not change, besides the built-in ones. Every layer adds to the list.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "x-cortex-effect": "at once",
+          "x-cortex-joined": true,
+          "x-cortex-trust": "preference"
+        },
+        "write": {
+          "default": [],
+          "description": "Paths a command may write besides the workspace. Every layer adds to the list.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "x-cortex-effect": "at once",
+          "x-cortex-joined": true,
+          "x-cortex-trust": "widens access"
+        }
+      },
+      "type": "object"
+    },
+    "session": {
+      "additionalProperties": true,
+      "description": "Where sessions are stored.",
+      "properties": {
+        "data_dir": {
+          "description": "The data directory. A leading `~` is the home directory. Without it the platform's usual place is used.",
+          "type": "string",
+          "x-cortex-effect": "restart",
+          "x-cortex-trust": "user only"
+        }
+      },
+      "type": "object"
+    },
+    "shell": {
+      "description": "The shell that runs commands: program, arguments, time limits.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "user only"
+    },
+    "skills": {
+      "description": "Where skills are looked for.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "user only"
+    },
+    "stats": {
+      "description": "Whether local statistics are recorded, and for how long.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "user only"
+    },
+    "terminal": {
+      "description": "Terminal capability overrides.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "user only"
+    },
+    "tools": {
+      "description": "Enabled tools, output limits and per-tool settings.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "user only"
+    },
+    "tui": {
+      "description": "The terminal UI: presenter, theme, density.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "user only"
+    },
+    "usage": {
+      "description": "The usage view: week start, ranges, the opt-in refresh and the other tools whose records may be read.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "user only"
+    },
+    "verify": {
+      "description": "The verification mode, commands and time limits.",
+      "type": "object",
+      "x-cortex-reserved": true,
+      "x-cortex-trust": "runs code"
+    }
+  },
+  "title": "Cortex-Harness configuration",
+  "type": "object"
+}

@@ -221,11 +221,36 @@ mod unix {
         write_atomic(&target, b"key", &private, &clock).unwrap();
         assert_eq!(mode(&target), 0o600);
 
-        // An existing file keeps its mode, whatever the option says.
-        write_atomic(&ordinary, b"y", &private, &clock).unwrap();
-        assert_eq!(mode(&ordinary), usual);
+        // Without the option, an existing file keeps its mode: a private
+        // file stays private.
         write_atomic(&target, b"key2", &options(), &clock).unwrap();
         assert_eq!(mode(&target), 0o600);
+    }
+
+    /// The option means the same whether or not the file was there: a
+    /// credentials file someone made by hand, readable by others, is private
+    /// once a key has been written into it.
+    #[test]
+    fn an_owner_only_write_makes_an_existing_file_private() {
+        let scratch = Scratch::new("atomic_unix_tighten");
+        let clock = FakeClock::default();
+        let private = AtomicWriteOptions {
+            owner_only: true,
+            ..options()
+        };
+        for before in [0o644, 0o664, 0o640, 0o755, 0o600, 0o666] {
+            let target = scratch.file("credentials.toml", "# made by hand\n");
+            fs::set_permissions(&target, fs::Permissions::from_mode(before)).unwrap();
+            assert_eq!(mode(&target), before);
+
+            write_atomic(&target, b"key", &private, &clock).unwrap();
+
+            assert_eq!(mode(&target), 0o600, "from mode {before:o}");
+            assert!(cortex_base::private::is_private(&target).unwrap());
+            assert_eq!(fs::read(&target).unwrap(), b"key");
+            assert_eq!(scratch.listing(""), ["credentials.toml"]);
+            fs::remove_file(&target).unwrap();
+        }
     }
 
     #[test]

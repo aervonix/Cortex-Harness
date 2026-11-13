@@ -139,6 +139,8 @@ The Windows rows apply on Windows only. On Linux `notes:2026` and `name.` are or
 
 **Atomic writes.** New content goes to a temporary file in the same directory, is flushed, and is renamed over the target. On Windows the replace is retried briefly when another process holds the file open (six more attempts over half a second), and fails with a clear message if it stays locked. File permissions are preserved: the new file takes the mode of the one it replaces, and the temporary file is private until it does.
 
+- **A write can ask for an owner-only file,** and then the file it leaves can be opened by the current user alone, on both OSes, whether it existed before or not: mode `0600` on Linux, and on Windows an access list with one entry and inheritance from the folder off ([decision 0029](../decisions/0029-owner-only-files-on-windows.md)). The temporary file is created that way, before any content is in it. The option only ever tightens: a file that was readable by others is private after the write. Session, credential and state files are written this way, every time, because on Windows a write without the option gives the file its folder's rules again.
+
 - A target that could not have been written in place is refused. A rename needs only the right to change the directory, so without this it would replace a file its owner had protected. Refused: a file marked read-only (on Linux one with no write permission at all, on Windows one with the read-only attribute), and on Linux also a file the user may not open for writing.
 - Only a regular file is replaced. A directory, a device, a socket or a pipe under the target's name is refused, not swapped for a file.
 - A symbolic link is written through: the file it points to is replaced, and the link stays.

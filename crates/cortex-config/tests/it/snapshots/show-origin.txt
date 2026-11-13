@@ -1,0 +1,42 @@
+compat.instructions = true                  # default
+compat.mcp = true                           # default
+compat.skills = true                        # default
+config_version = 1                          # default
+credentials.store = "auto"                  # default
+limits.day.cost = 20.0                      # user: ~/cortex/config.toml:29
+log.level = "info,cortex_llm=debug"         # environment: CORTEX_LOG
+managed.locked = ["sandbox.enabled"]        # managed: ~/managed/config.toml:3
+model.effort = "high"                       # profile review (user: ~/cortex/config.toml:32)
+model.fast = "claude-haiku-5-5"             # user: ~/cortex/config.toml:6
+model.judge = "claude-opus-5-5"             # command-line: --judge-model
+model.main = "claude-sonnet-5-5"            # project: ~/work/app/.cortex/config.toml:2
+model.reasoning = "summary"                 # default
+model.roles.fast.speed = "standard"         # user: ~/cortex/config.toml:10
+model.speed = "fast"                        # profile review (project: ~/work/app/.cortex/config.toml:10)
+model.speed_cooldown = "10m"                # default
+model.speed_fallback = true                 # default
+model.speed_wait = "5s"                     # command-line: -c model.speed_wait
+permissions.mode = "read-only"              # profile review (user: ~/cortex/config.toml:33)
+permissions.rules = [
+    { action = "deny", effect = "write", match = "/etc/**" },  # managed: ~/managed/config.toml:9
+    { action = "allow", effect = "exec", match = "cargo test *" },  # user: ~/cortex/config.toml:23
+    { action = "deny", effect = "write", match = "**/.env*" },  # project: ~/work/app/.cortex/config.toml:4
+]
+profile = "review"                          # user: ~/cortex/config.toml:2
+providers.local.base_url = "http://localhost:11434"  # user: ~/cortex/config.toml:13
+providers.local.first_event_timeout = "5m"  # user: ~/cortex/config.toml:14
+providers.local.headers = { Authorization = { env = "LOCAL_TOKEN" }, X-Team = "tools" }  # user: ~/cortex/config.toml:15
+retry.attempts = 3                          # user: ~/cortex/config.toml:18
+retry.backoff_base = "1s"                   # default
+retry.backoff_cap = "30s"                   # default
+retry.backoff_factor = 2.0                  # default
+retry.first_event_timeout = "1m"            # default
+retry.idle_timeout = "1m30s"                # default
+retry.max_wait = "5m"                       # project-local: ~/work/app/.cortex/config.local.toml:2
+sandbox.enabled = true                      # managed: ~/managed/config.toml:6, locked
+sandbox.network = "off"                     # default
+sandbox.protect = [
+    "/srv/keys",                            # managed: ~/managed/config.toml:7
+]
+sandbox.write = []                          # default
+tui.theme = "dusk"                          # user: ~/cortex/config.toml:36

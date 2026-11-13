@@ -18,5 +18,17 @@ thiserror.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
 
+# Owner-only files: an access list can only be set through the Windows API
+# (docs/decisions/0029-owner-only-files-on-windows.md). Used by one module,
+# `private::windows`, the only place in this crate where `unsafe` is allowed.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
+
 [lints]
 workspace = true

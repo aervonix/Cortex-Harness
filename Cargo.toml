@@ -42,6 +42,7 @@ grep-matcher = { version = "0.1.9", default-features = false }
 grep-regex = { version = "0.1.14", default-features = false }
 grep-searcher = { version = "0.1.17", default-features = false }
 ignore = { version = "0.4.34", default-features = false }
+keyring-core = { version = "1.0.1", default-features = false }
 schemars = { version = "1.2.3", default-features = false, features = ["derive", "std"] }
 serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1.0.145", default-features = false, features = ["std"] }
@@ -49,8 +50,14 @@ sha2 = { version = "0.11.1", default-features = false }
 similar = { version = "3.2.1", default-features = false, features = ["std"] }
 thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
 tokio = { version = "1.54.1", default-features = false, features = ["rt"] }
+toml = { version = "1.2.1", default-features = false, features = ["std", "parse", "serde", "display"] }
 unicode-segmentation = { version = "1.13.3", default-features = false }
 unicode-width = { version = "0.2.3", default-features = false }
+# Without `search`, which brings a regular-expression engine for a listing
+# of stored credentials that nothing here asks for.
+windows-native-keyring-store = { version = "1.1.0", default-features = false }
+# No features here: each crate that uses it names the API families it calls.
+windows-sys = { version = "0.61.2", default-features = false }
 
 # The nightly unused-dependency check (`cargo xtask unused`, cargo-machete)
 # looks at third-party crates only, for now. The skeleton declares the edges
@@ -83,8 +90,10 @@ ignored = [
 ]
 
 [workspace.lints.rust]
-# Allowed per module in cortex-sandbox and cortex-term only, where the OS
-# interfaces need it, with a safety comment on each block.
+# Allowed per module in cortex-sandbox and cortex-term, where the OS
+# interfaces need it, and in one Windows-only module of cortex-base
+# (`private::windows`, which sets access lists; decision 0029). Nowhere else.
+# Every block has a safety comment.
 unsafe_code = "deny"
 # Public items are documented: part of "done" for every step.
 missing_docs = "warn"
