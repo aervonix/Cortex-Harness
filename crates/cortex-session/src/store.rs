@@ -831,20 +831,38 @@ mod tests {
         assert_eq!(char_boundary(&[0x80, 0x80, 0x80, 0x80, 0x80]), 5);
         assert_eq!(char_boundary(&[0xff]), 1);
 
-        let mut redact = redactor();
-        let mut line = b"hunter2 ".to_vec();
-        line.extend("é".repeat(REDACT_PENDING).as_bytes());
+        // A character split by a cut would reach the redactor as stray
+        // bytes on either side, which it cannot match: here, an `é` it
+        // would mask, in pieces of an odd size, on a line too long to hold.
+        let mut redact = LineRedactor {
+            redactor: Arc::new(MaskAccent),
+            pending: Vec::new(),
+        };
+        let line = "é".repeat(REDACT_PENDING);
         let mut out = Vec::new();
-        for piece in line.chunks(4093) {
+        for piece in line.as_bytes().chunks(4093) {
             out.extend(redact.push(piece).unwrap_or_default());
         }
         out.extend(redact.take_all());
-        let text = String::from_utf8(out).expect("no character was split");
         assert!(
-            text.starts_with("[redacted] é"),
-            "{}",
-            text.chars().take(20).collect::<String>()
+            !out.windows(2).any(|pair| pair == "é".as_bytes()),
+            "an `é` was split and not masked"
         );
+        assert_eq!(out, "*".repeat(REDACT_PENDING).as_bytes());
+    }
+
+    /// Masks every `é`: a redactor whose match is a character of two bytes.
+    #[derive(Debug)]
+    struct MaskAccent;
+
+    impl Redactor for MaskAccent {
+        fn redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+            if text.contains('é') {
+                std::borrow::Cow::Owned(text.replace('é', "*"))
+            } else {
+                std::borrow::Cow::Borrowed(text)
+            }
+        }
     }
 
     #[test]

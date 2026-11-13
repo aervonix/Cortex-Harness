@@ -280,7 +280,7 @@ fn undo_never_removes_a_file_whose_earlier_content_is_unknown() {
     for file in &plan.files {
         assert_eq!(file.restore, Before::Unknown, "{file:?}");
         assert_eq!(file.status, FileStatus::CannotRestore, "{file:?}");
-        assert!(file.why_not().unwrap().contains("not recorded"), "{file:?}");
+        assert!(file.why_not.unwrap().contains("not recorded"), "{file:?}");
     }
     assert_eq!(plan.cannot_restore().len(), 2);
 
@@ -446,4 +446,116 @@ fn a_rewind_follows_only_a_plan_made_for_the_session_where_it_is() {
     assert_eq!(done.restored, ["a.txt"]);
     assert_eq!(fs::read(world.file("a.txt")).unwrap(), b"original");
     assert!(invalid(session.rewind(&plan, &Restore::files())));
+}
+
+/// What a command left is looked at when the round ends. A link it made,
+/// to a device, used to be read forever; a directory where a file was made
+/// the round fail, and its checkpoint was lost.
+#[test]
+fn a_round_never_reads_through_a_link_or_into_a_directory() {
+    let world = World::new("snapshot_not_files");
+    world.write("was-a-file.txt", b"a file");
+    let mut session = world.create("s_1");
+    let turn = TurnId::new("t_1");
+    session.append(Some(&turn), user("run it")).unwrap();
+    // The command.
+    fs::remove_file(world.file("was-a-file.txt")).unwrap();
+    fs::create_dir_all(world.file("was-a-file.txt")).unwrap();
+    let mut round = RoundCheckpoint::new(world.root.clone());
+    round.record_before(&world.abs("was-a-file.txt"), Before::Unknown);
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("/dev/zero", world.file("zeros")).unwrap();
+        round.record_before(&world.abs("zeros"), Before::Absent);
+    }
+    end_round(&mut session, &turn, round);
+
+    let plan = session.plan_undo().unwrap().unwrap();
+    let directory = &plan.files[0];
+    assert_eq!(directory.status, FileStatus::CannotRestore, "{directory:?}");
+    assert!(
+        !directory.now.unwrap().kept,
+        "known by what it is, never read"
+    );
+    let done = session.rewind(&plan, &Restore::files()).unwrap();
+    assert!(world.file("was-a-file.txt").is_dir());
+    #[cfg(unix)]
+    {
+        assert_eq!(plan.files[1].status, FileStatus::AsLeft, "{plan:?}");
+        assert_eq!(done.restored, ["zeros"]);
+        assert!(
+            fs::symlink_metadata(world.file("zeros")).is_err(),
+            "the link the command made is gone"
+        );
+    }
+    #[cfg(not(unix))]
+    assert!(done.restored.is_empty());
+}
+
+/// A checkpoint of the undone turns that this build cannot read may name
+/// any file, including one a readable checkpoint names too: putting the
+/// others back could put a file back to the wrong version. So none is.
+#[test]
+fn a_checkpoint_that_cannot_be_read_stops_every_file_being_put_back() {
+    let lines = [
+        // Written in a newer format.
+        r#"{"v":2,"id":"e_0003","parent":"e_0002","ts":"2026-11-12T10:00:09Z","turn":"t_1","kind":"checkpoint","files":[{"path":"a.txt","from":"elsewhere"}]}"#,
+        // Damaged: its files are not a list.
+        r#"{"v":1,"id":"e_0003","parent":"e_0002","ts":"2026-11-12T10:00:09Z","turn":"t_1","kind":"checkpoint","files":"a.txt"}"#,
+    ];
+    for (case, line) in lines.into_iter().enumerate() {
+        let world = World::new(&format!("snapshot_unreadable_{case}"));
+        world.write("a.txt", b"original");
+        let mut session = world.create("s_1");
+        let turn = TurnId::new("t_1");
+        session.append(Some(&turn), user("edit")).unwrap();
+        let mut round = RoundCheckpoint::new(world.root.clone());
+        tool_write(&world, &mut round, &session, "a.txt", Some(b"edited"));
+        end_round(&mut session, &turn, round);
+        drop(session);
+        let dir = world.project.session(&SessionId::new("s_1")).unwrap();
+        let mut log = fs::read(dir.log()).unwrap();
+        log.extend_from_slice(line.as_bytes());
+        log.push(b'\n');
+        fs::write(dir.log(), log).unwrap();
+
+        let (mut session, _) = world.resume("s_1");
+        let plan = session.plan_undo().unwrap().unwrap();
+        assert_eq!(plan.unreadable, [EntryId::new("e_0003")], "case {case}");
+        let file = &plan.files[0];
+        assert_eq!(
+            file.status,
+            FileStatus::CannotRestore,
+            "case {case}: {file:?}"
+        );
+        assert!(file.why_not.unwrap().contains("cannot be read"), "{file:?}");
+        let done = session.rewind(&plan, &Restore::files()).unwrap();
+        assert!(done.restored.is_empty(), "case {case}: {done:?}");
+        assert_eq!(fs::read(world.file("a.txt")).unwrap(), b"edited");
+    }
+}
+
+/// A version said to be kept whose content is not in the store cannot be
+/// put back, and the plan says so before the rewind.
+#[test]
+fn a_version_missing_from_the_store_is_not_offered_as_restorable() {
+    let world = World::new("snapshot_missing_blob");
+    world.write("a.txt", b"now");
+    let mut session = world.create("s_1");
+    let turn = TurnId::new("t_1");
+    session.append(Some(&turn), user("run it")).unwrap();
+    let mut round = RoundCheckpoint::new(world.root.clone());
+    round.record_before(
+        &world.abs("a.txt"),
+        Before::Version(version_of(b"never stored")),
+    );
+    end_round(&mut session, &turn, round);
+
+    let plan = session.plan_undo().unwrap().unwrap();
+    let file = &plan.files[0];
+    assert_eq!(file.status, FileStatus::CannotRestore, "{file:?}");
+    assert!(file.why_not.unwrap().contains("no longer in"), "{file:?}");
+    let done = session.rewind(&plan, &Restore::files()).unwrap();
+    assert_eq!(done.not_restored.len(), 1);
+    assert_eq!(fs::read(world.file("a.txt")).unwrap(), b"now");
 }

@@ -89,6 +89,9 @@ pub struct Session {
     turn_ids: IdCounter,
     store: Arc<DiskStore>,
     warnings: Vec<PathBuf>,
+    /// The longest line written: the longest the reader takes as an entry,
+    /// [`MAX_LINE`]. Only a test sets another.
+    max_line: usize,
 }
 
 #[derive(Debug)]
@@ -183,6 +186,7 @@ impl Session {
             turn_ids: IdCounter::new("t_"),
             store,
             warnings: Vec::new(),
+            max_line: MAX_LINE,
             options,
         };
         // The header is written by the same code as every other entry.
@@ -261,6 +265,7 @@ impl Session {
             },
             store,
             warnings: Vec::new(),
+            max_line: MAX_LINE,
             options,
         };
         session.log.scan.end = end;
@@ -428,10 +433,10 @@ impl Session {
         // would be in memory now and gone, with the branch after it, when
         // the log is read again.
         let length = line.len() - 1;
-        if length > MAX_LINE {
+        if length > self.max_line {
             return Err(SessionError::EntryTooLarge {
                 bytes: length as u64,
-                limit: MAX_LINE as u64,
+                limit: self.max_line as u64,
             });
         }
         let id = entry.id.clone();
@@ -621,26 +626,31 @@ impl Session {
     }
 
     fn plan(&self, to: &EntryId, reason: RewindReason) -> Result<RewindPlan> {
-        let (turns, changes) = self.undone(to)?;
+        let undone = self.undone(to)?;
         let root = self.workspace_root()?;
-        let files = changes
+        let blocked = !undone.unreadable.is_empty();
+        let files = undone
+            .changes
             .into_iter()
-            .map(|(path, restore, left)| snapshot::file_status(&root, &path, restore, left))
+            .map(|change| snapshot::file_status(&self.store, &root, change, blocked))
             .collect::<Result<Vec<FileRestore>>>()?;
         Ok(RewindPlan {
             to: to.clone(),
             reason,
             from: self.log.active().cloned(),
-            turns,
+            turns: undone.turns,
             files,
+            unreadable: undone.unreadable,
             session: self.log.id().clone(),
         })
     }
 
     /// What a rewind to `to` undoes, read from the log: the turns, and for
     /// each file the undone rounds changed, the earliest `before` (what to
-    /// go back to) and the latest `after` (what the harness left).
-    fn undone(&self, to: &EntryId) -> Result<(Vec<TurnId>, Vec<snapshot::Change>)> {
+    /// go back to) and the latest `after` (what the harness left). And the
+    /// checkpoints among them that cannot be read: damaged, or written in
+    /// a newer format, so that what they changed is not known.
+    fn undone(&self, to: &EntryId) -> Result<Undone> {
         let branch = self.log.branch();
         let Some(position) = branch.iter().position(|id| id == to) else {
             return Err(SessionError::Invalid(format!(
@@ -650,6 +660,7 @@ impl Session {
         let root = self.workspace_root()?;
         let mut turns: Vec<TurnId> = Vec::new();
         let mut changes: Vec<snapshot::Change> = Vec::new();
+        let mut unreadable: Vec<EntryId> = Vec::new();
         // By the file's comparison form, so two spellings of one file in
         // different rounds are one file.
         let mut by_key: HashMap<String, usize> = HashMap::new();
@@ -659,22 +670,36 @@ impl Session {
             {
                 turns.push(turn.clone());
             }
-            if self.log.kind_of(id) == Some(&Kind::Checkpoint)
-                && let Body::Checkpoint(Checkpoint { files }) = self.log.read(id)?.body
-            {
-                for change in files {
-                    let key = snapshot::locate(&root, &change.path)?.key().to_owned();
-                    match by_key.get(&key) {
-                        Some(&index) => changes[index].2 = change.after,
-                        None => {
-                            by_key.insert(key, changes.len());
-                            changes.push((change.path, change.before, change.after));
-                        }
+            let is_checkpoint = match self.log.kind_of(id) {
+                Some(Kind::Checkpoint) => true,
+                // A newer format's line is read as a kind this build does
+                // not know, whatever it is called.
+                Some(Kind::Unknown(name)) => **name == *Kind::Checkpoint.as_str(),
+                _ => false,
+            };
+            if !is_checkpoint {
+                continue;
+            }
+            let Body::Checkpoint(Checkpoint { files }) = self.log.read(id)?.body else {
+                unreadable.push(id.clone());
+                continue;
+            };
+            for change in files {
+                let key = snapshot::locate(&root, &change.path)?.key().to_owned();
+                match by_key.get(&key) {
+                    Some(&index) => changes[index].2 = change.after,
+                    None => {
+                        by_key.insert(key, changes.len());
+                        changes.push((change.path, change.before, change.after));
                     }
                 }
             }
         }
-        Ok((turns, changes))
+        Ok(Undone {
+            turns,
+            changes,
+            unreadable,
+        })
     }
 
     fn workspace_root(&self) -> Result<AbsPath> {
@@ -715,8 +740,12 @@ impl Session {
         }
         // From the log, not from the plan: `to` must be on the active
         // branch, and the plan must say what the log says.
-        let (turns, changes) = self.undone(&plan.to)?;
-        if turns != plan.turns || changes != plan.changes() {
+        let Undone {
+            turns,
+            changes,
+            unreadable,
+        } = self.undone(&plan.to)?;
+        if turns != plan.turns || changes != plan.changes() || unreadable != plan.unreadable {
             return Err(SessionError::Invalid(
                 "the rewind plan does not match the session's checkpoints; plan it again"
                     .to_owned(),
@@ -731,11 +760,12 @@ impl Session {
                 .iter()
                 .map(String::as_str)
                 .collect();
-            for (path, before, left) in changes {
-                let file = snapshot::file_status(&root, &path, before, left)?;
+            let blocked = !unreadable.is_empty();
+            for change in changes {
+                let file = snapshot::file_status(&self.store, &root, change, blocked)?;
                 let why_not = match file.status {
                     FileStatus::AlreadyRestored => None,
-                    FileStatus::CannotRestore => file.why_not().map(str::to_owned),
+                    FileStatus::CannotRestore => file.why_not.map(str::to_owned),
                     FileStatus::EditedSince if !overwrite.contains(file.path.as_str()) => {
                         Some("it was changed after the harness left it".to_owned())
                     }
@@ -902,6 +932,13 @@ impl Log {
     }
 }
 
+/// What a rewind undoes, read from the log.
+struct Undone {
+    turns: Vec<TurnId>,
+    changes: Vec<snapshot::Change>,
+    unreadable: Vec<EntryId>,
+}
+
 /// Whether an entry is a lease record, which is flushed whatever the
 /// durability.
 fn is_lease(body: &Body) -> bool {
@@ -910,12 +947,9 @@ fn is_lease(body: &Body) -> bool {
 
 /// Takes the session's lock, creating the lock file if it is missing.
 fn take_lock(dir: &SessionDir) -> Result<File> {
-    match lock::take(&dir.lock(), lock::Wait::No)? {
-        lock::Taken::Held(file) => Ok(file),
-        lock::Taken::Busy => Err(SessionError::Busy {
-            session: dir.id().to_string(),
-        }),
-    }
+    lock::try_take(&dir.lock())?.ok_or_else(|| SessionError::Busy {
+        session: dir.id().to_string(),
+    })
 }
 
 /// Keeps the bytes of a cut last line in a private file of their own,
@@ -1294,6 +1328,75 @@ mod tests {
             session.append(None, lease()).unwrap();
             agree(&session, &disk).unwrap();
         }
+    }
+
+    /// Gives its bytes one at a time, so that the scanner looks at the
+    /// length of every line before its newline arrives, as it does for a
+    /// line that spans its reads of a real file.
+    struct Trickle<'a>(&'a [u8]);
+
+    impl io::Read for Trickle<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let count = self.0.len().min(buffer.len()).min(1);
+            buffer[..count].copy_from_slice(&self.0[..count]);
+            self.0 = &self.0[count..];
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn the_longest_line_a_session_writes_is_the_longest_the_reader_takes() {
+        let scratch = Scratch::new();
+        let (mut session, disk) = on_fake_disk(&scratch, Durability::Never);
+        let meta = |length: usize| {
+            Body::Meta(Meta {
+                title: Some("x".repeat(length)),
+                ..Meta::default()
+            })
+        };
+        let probe = Entry {
+            id: EntryId::new("e_0002"),
+            parent: None,
+            ts: session.options.clock.now().to_timestamp(),
+            turn: None,
+            body: meta(100),
+        };
+        let limit = entry::encode(&probe, &NoRedaction).unwrap().len() - 1;
+        session.max_line = limit;
+
+        let before = disk.contents();
+        let refused = session.append(None, meta(101));
+        assert!(
+            matches!(refused, Err(SessionError::EntryTooLarge { bytes, limit: most })
+                if bytes == limit as u64 + 1 && most == limit as u64),
+            "{refused:?}"
+        );
+        assert_eq!(disk.contents(), before, "nothing was written");
+        let kept = session.append(None, meta(100)).unwrap();
+        agree(&session, &disk).unwrap();
+        let scan = Scan::read_limited(Trickle(&disk.contents()), limit)
+            .unwrap()
+            .unwrap();
+        assert!(scan.damaged.is_empty(), "{:?}", scan.damaged);
+        assert!(scan.by_id.contains_key(&kept));
+
+        // One byte longer is a line the reader skips as damage.
+        let mut longer = disk.contents();
+        longer.extend(
+            entry::encode(
+                &Entry {
+                    id: EntryId::new("e_0003"),
+                    body: meta(101),
+                    ..probe
+                },
+                &NoRedaction,
+            )
+            .unwrap(),
+        );
+        let scan = Scan::read_limited(Trickle(&longer), limit)
+            .unwrap()
+            .unwrap();
+        assert_eq!(scan.damaged.len(), 1);
     }
 
     #[test]

@@ -35,11 +35,11 @@
 //! - any other changed file: [`Before::Unknown`].
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io;
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::path::PathBuf;
 
-use cortex_base::{AbsPath, ContentHasher, PathStyle};
+use cortex_base::{AbsPath, ContentHash, ContentHasher, PathStyle};
 use cortex_protocol::ids::{SessionId, TurnId};
 
 use crate::entry::{Before, Body, Checkpoint, EntryId, FileChange, FileVersion, RewindReason};
@@ -123,8 +123,9 @@ impl RoundCheckpoint {
     /// seen only after it was made (see the [module](self) documentation).
     /// Only the first record of a file in a round counts.
     ///
-    /// A [`Before::Version`] must name content already in the store, or be
-    /// marked as not kept.
+    /// A [`Before::Version`] names content already in the store, or is
+    /// marked as not kept; one whose content is not in the store is shown
+    /// by a rewind's plan as a file it cannot put back.
     pub fn record_before(&mut self, file: &AbsPath, before: Before) {
         if !self.by_key.contains_key(file.key()) {
             self.touch(file, before, None);
@@ -201,20 +202,63 @@ impl RoundCheckpoint {
 
 /// The hash and size of the file at `path` now, streamed. `None` when there
 /// is no file.
+///
+/// It reads as [`DiskStore::put_file`] does: a regular file only, and no
+/// more than the length it had when it was opened. Anything else at the
+/// path (a link, a directory, a device, a FIFO) is never opened, and is
+/// known by what it is: see [`not_a_file`].
 pub(crate) fn hash_file(path: &std::path::Path) -> Result<Option<FileVersion>> {
-    let mut file = match File::open(path) {
+    let found = match fs::symlink_metadata(path) {
+        Ok(found) => found,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(SessionError::io("read the file", path.to_path_buf())(error)),
+    };
+    if !found.is_file() {
+        return Ok(Some(not_a_file(path, &found)));
+    }
+    let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(SessionError::io("read the file", path.to_path_buf())(error)),
     };
+    let opened = file
+        .metadata()
+        .map_err(SessionError::io("read the file", path.to_path_buf()))?;
+    if !opened.is_file() {
+        return Ok(Some(not_a_file(path, &opened)));
+    }
     let mut hasher = ContentHasher::new();
-    let bytes = io::copy(&mut file, &mut hasher)
+    let bytes = io::copy(&mut file.take(opened.len()), &mut hasher)
         .map_err(SessionError::io("read the file", path.to_path_buf()))?;
     Ok(Some(FileVersion {
         hash: hasher.finish(),
         bytes,
         kept: true,
     }))
+}
+
+/// What stands for something at a path that is not a regular file: a hash
+/// of what it is (its kind, and for a link the text it holds), size 0,
+/// content not kept. It compares equal to the same thing seen again, and
+/// unequal to any file, so a rewind can tell whether it is as the harness
+/// left it, and never reads it.
+fn not_a_file(path: &std::path::Path, found: &fs::Metadata) -> FileVersion {
+    let kind = found.file_type();
+    let what = if kind.is_symlink() {
+        let target = fs::read_link(path)
+            .map(|target| target.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        format!("link\0{target}")
+    } else if kind.is_dir() {
+        "directory".to_owned()
+    } else {
+        "special".to_owned()
+    };
+    FileVersion {
+        hash: ContentHash::of(format!("\0cortex-harness: not a regular file\0{what}").as_bytes()),
+        bytes: 0,
+        kept: false,
+    }
 }
 
 /// Where a file a checkpoint names is: inside the workspace for a relative
@@ -238,8 +282,9 @@ pub enum FileStatus {
     /// only if the user says so.
     EditedSince,
     /// It cannot be put back: its earlier content was too large to keep,
-    /// or is not known ([`FileRestore::why_not`] says which). The file is
-    /// left as it is.
+    /// is not known, or is missing from the store, or a checkpoint of the
+    /// undone turns cannot be read ([`FileRestore::why_not`] says which).
+    /// The file is left as it is.
     CannotRestore,
 }
 
@@ -257,23 +302,21 @@ pub struct FileRestore {
     pub now: Option<FileVersion>,
     /// Whether putting it back is safe.
     pub status: FileStatus,
+    /// Why it cannot be put back, for a [`FileStatus::CannotRestore`] file.
+    pub why_not: Option<&'static str>,
 }
 
-impl FileRestore {
-    /// Why the file cannot be put back, for a [`FileStatus::CannotRestore`]
-    /// file; `None` for any other.
-    #[must_use]
-    pub fn why_not(&self) -> Option<&'static str> {
-        (self.status == FileStatus::CannotRestore).then_some(match self.restore {
-            Before::Unknown => {
-                "what it held before was not recorded (it was changed by a command, and its \
-                 earlier content could not be recovered), so it cannot be put back"
-            }
-            Before::Absent | Before::Version(_) => {
-                "its earlier content was too large to keep, so it cannot be put back"
-            }
-        })
-    }
+/// Why a file cannot be put back.
+mod why_not {
+    pub(super) const NOT_RECORDED: &str = "what it held before was not recorded (it was changed \
+                                           by a command, and its earlier content could not be \
+                                           recovered), so it cannot be put back";
+    pub(super) const TOO_LARGE: &str =
+        "its earlier content was too large to keep, so it cannot be put back";
+    pub(super) const MISSING: &str =
+        "its earlier content is no longer in the session's store, so it cannot be put back";
+    pub(super) const UNREADABLE: &str = "a checkpoint of the undone turns cannot be read, so what \
+                                         they changed is not fully known, and no file is put back";
 }
 
 /// A rewind, worked out and not yet done: what it undoes and what it would
@@ -293,6 +336,10 @@ pub struct RewindPlan {
     pub turns: Vec<TurnId>,
     /// The files those turns changed, in the order they were first changed.
     pub files: Vec<FileRestore>,
+    /// Checkpoints of those turns that this build cannot read: damaged, or
+    /// written in a newer format. What they changed is not known, so when
+    /// there is one, no file is put back.
+    pub unreadable: Vec<EntryId>,
     /// The session it was made for.
     pub(crate) session: SessionId,
 }
@@ -395,33 +442,39 @@ pub struct SwitchDone {
     pub repaired: Vec<Repaired>,
 }
 
-/// Works out the status of each file of a plan from what is on disk now.
+/// Works out the status of one file of a plan from what is on disk now and
+/// what the store holds. `unreadable`: a checkpoint of the undone turns
+/// could not be read, so no file is put back.
 pub(crate) fn file_status(
+    store: &DiskStore,
     root: &AbsPath,
-    path: &str,
-    restore: Before,
-    left: Option<FileVersion>,
+    (path, restore, left): Change,
+    unreadable: bool,
 ) -> Result<FileRestore> {
-    let now = hash_file(&locate(root, path)?.to_fs_path())?;
+    let now = hash_file(&locate(root, &path)?.to_fs_path())?;
     let same = |a: Option<FileVersion>, b: Option<FileVersion>| match (a, b) {
         (None, None) => true,
         (Some(a), Some(b)) => a.hash == b.hash,
         _ => false,
     };
-    let status = match restore {
+    let cannot = |why: &'static str| (FileStatus::CannotRestore, Some(why));
+    let (status, why_not) = match restore {
+        _ if unreadable => cannot(why_not::UNREADABLE),
         // Nothing to go back to: never removed, never overwritten.
-        Before::Unknown => FileStatus::CannotRestore,
-        _ if restore.is(now.as_ref()) => FileStatus::AlreadyRestored,
-        Before::Version(version) if !version.kept => FileStatus::CannotRestore,
-        _ if same(now, left) => FileStatus::AsLeft,
-        _ => FileStatus::EditedSince,
+        Before::Unknown => cannot(why_not::NOT_RECORDED),
+        _ if restore.is(now.as_ref()) => (FileStatus::AlreadyRestored, None),
+        Before::Version(version) if !version.kept => cannot(why_not::TOO_LARGE),
+        Before::Version(version) if !store.has_blob(&version.hash) => cannot(why_not::MISSING),
+        _ if same(now, left) => (FileStatus::AsLeft, None),
+        _ => (FileStatus::EditedSince, None),
     };
     Ok(FileRestore {
-        path: path.to_owned(),
+        path,
         restore,
         left,
         now,
         status,
+        why_not,
     })
 }
 

@@ -22,6 +22,8 @@ struct ScriptedGit {
     hold: Option<Arc<Gate>>,
     /// Answers by the first arguments (after the hardening flags).
     answers: Vec<(Vec<&'static str>, Vec<u8>)>,
+    /// Commands, by their first arguments, whose output is over the limit.
+    too_long: Vec<Vec<&'static str>>,
     asked: Mutex<Vec<Vec<String>>>,
 }
 
@@ -69,6 +71,13 @@ impl Git for ScriptedGit {
             .lock()
             .unwrap()
             .push(args.iter().map(ToString::to_string).collect());
+        if self.too_long.iter().any(|prefix| args.starts_with(prefix)) {
+            return Ok(GitOutput {
+                success: false,
+                stdout: Vec::new(),
+                truncated: true,
+            });
+        }
         let answer = self
             .answers
             .iter()
@@ -480,29 +489,90 @@ fn untracked_files_past_a_limit_on_the_whole_are_recorded_once() {
 fn without_the_whole_list_of_changed_files_no_patch_is_taken() {
     let world = World::new("base_no_name_list");
     let session = world.create("s_1");
-    let mut git = ScriptedGit::repository("abc123");
-    git.answers.remove(3); // `diff --name-only` fails
+    let failed = {
+        let mut git = ScriptedGit::repository("abc123");
+        git.answers.remove(3); // `diff --name-only` fails
+        git
+    };
+    let too_long = ScriptedGit {
+        too_long: vec![vec!["diff", "--name-only"]],
+        ..ScriptedGit::repository("abc123")
+    };
+    // A likely secret whose name cannot be given to git as a pathspec.
+    let unnamed = {
+        let mut git = ScriptedGit::repository("abc123");
+        git.answers[3].1 = b"src/lib.rs\0.env\xff\0".to_vec();
+        git
+    };
+    for (git, expected) in [
+        (failed, "could not list the changed files"),
+        (too_long, "the list of changed files is too long"),
+        (unnamed, "not UTF-8"),
+    ] {
+        let base = capture(
+            &world.root,
+            true,
+            &session.store(),
+            &git,
+            &world.clock,
+            &BaseLimits::default(),
+        );
+        assert!(!base.complete, "{base:?}");
+        assert!(
+            base.git.unwrap().patch.is_none(),
+            "no patch without its exclusions"
+        );
+        let note = base.note.unwrap();
+        assert!(note.contains(expected), "{note}");
+        assert!(note.contains("no patch was taken"), "{note}");
+        assert!(
+            !git.asked()
+                .iter()
+                .any(|args| args[0] == "diff" && args[1] == "--no-ext-diff"),
+            "the patch was not even asked for"
+        );
+    }
+}
+
+/// In a repository with no commits the patch holds the staged changes and
+/// then the unstaged ones, and a file added with `--intent-to-add` is only
+/// in the second: its name must be known to leave it out.
+#[test]
+fn sys_a_secret_added_with_intent_to_add_is_left_out_of_the_patch() {
+    if !has_git() {
+        return;
+    }
+    let world = World::new("sys_base_intent_to_add");
+    let dir = world.workspace.clone();
+    git(&dir, &["init", "--quiet"]);
+    world.write("src/lib.rs", b"pub fn one() {}\n");
+    world.write(".env", b"TOKEN=s3cr3t-intent-to-add\n");
+    git(&dir, &["add", "src/lib.rs"]);
+    git(&dir, &["add", "--intent-to-add", ".env"]);
+    let session = world.create("s_1");
+    let store = session.store();
     let base = capture(
         &world.root,
         true,
-        &session.store(),
-        &git,
+        &store,
+        &SystemGit,
         &world.clock,
         &BaseLimits::default(),
     );
-    assert!(!base.complete, "{base:?}");
+    assert!(base.complete, "{base:?}");
+    let state = base.git.clone().unwrap();
+    assert!(state.commit.is_none());
+    let mut patch = Vec::new();
+    assert!(cortex_session::base::write_patch(&store, &state, &mut patch).unwrap());
+    let patch = String::from_utf8_lossy(&patch);
+    assert!(patch.contains("pub fn one"), "{patch}");
+    assert!(!patch.contains("s3cr3t"), "{patch}");
     assert!(
-        base.git.unwrap().patch.is_none(),
-        "no patch without its exclusions"
-    );
-    let note = base.note.unwrap();
-    assert!(note.contains("could not list the changed files"), "{note}");
-    assert!(note.contains("no patch was taken"), "{note}");
-    assert!(
-        !git.asked()
+        base.omitted
             .iter()
-            .any(|args| args[0] == "diff" && args[1] == "--no-ext-diff"),
-        "the patch was not even asked for"
+            .any(|omitted| omitted.path == ".env" && omitted.reason == OmitReason::Secret),
+        "{:?}",
+        base.omitted
     );
 }
 
@@ -525,6 +595,13 @@ fn an_unborn_sessions_store_is_cleared_when_its_last_write_ends() {
         Err(SessionError::ReadOnly { .. })
     ));
     assert!(store.begin_artifact("more", "text/plain").is_err());
+    world.write("later.txt", b"later");
+    assert!(
+        store
+            .put_file(&world.file("later.txt"), cortex_session::KEEP_LIMIT)
+            .is_err()
+    );
+    assert!(store.put_stream(&mut &b"later"[..], 64).is_err());
     patch.finish().unwrap();
     assert!(!dir.exists(), "the last write took the directory with it");
     assert!(world.project.index().list().unwrap().is_empty());

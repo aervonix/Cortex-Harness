@@ -608,15 +608,41 @@ impl<'de> Deserialize<'de> for Before {
                 Ok(Before::Absent)
             }
 
+            // "unknown", or anything else that is not null or a version: a
+            // state a later build added, or damage. Either way not one this
+            // build can put back, and not a reason to lose the rest of the
+            // checkpoint.
             fn visit_str<E>(self, _: &str) -> Result<Before, E> {
-                // "unknown", or a state a later build added: either way not
-                // one this build can put back.
+                Ok(Before::Unknown)
+            }
+
+            fn visit_bool<E>(self, _: bool) -> Result<Before, E> {
+                Ok(Before::Unknown)
+            }
+
+            fn visit_i64<E>(self, _: i64) -> Result<Before, E> {
+                Ok(Before::Unknown)
+            }
+
+            fn visit_u64<E>(self, _: u64) -> Result<Before, E> {
+                Ok(Before::Unknown)
+            }
+
+            fn visit_f64<E>(self, _: f64) -> Result<Before, E> {
+                Ok(Before::Unknown)
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Before, A::Error> {
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
                 Ok(Before::Unknown)
             }
 
             fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Before, A::Error> {
-                FileVersion::deserialize(serde::de::value::MapAccessDeserializer::new(map))
-                    .map(Before::Version)
+                let value = Value::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(FileVersion::deserialize(value).map_or(Before::Unknown, Before::Version))
             }
         }
 
@@ -1097,7 +1123,7 @@ fn decode_lease(mut fields: Map<String, Value>) -> Result<LeaseRecord, Box<Error
 }
 
 /// The refusal of a lease record, saying what was wrong with it.
-fn lease_refusal(what: String) -> Box<ErrorData> {
+pub(crate) fn lease_refusal(what: String) -> Box<ErrorData> {
     Box::new(ErrorData::new(
         WireKind::Permission,
         code::LEASE_NOT_UNDERSTOOD,
@@ -1262,6 +1288,11 @@ mod tests {
             // No `before` at all, and a state from a later build.
             {"path": "bare.txt", "after": version},
             {"path": "later.txt", "before": "in_git", "after": version},
+            // Not a version: nothing to put back, and the rest still read.
+            {"path": "odd-1.txt", "before": true, "after": version},
+            {"path": "odd-2.txt", "before": 7, "after": version},
+            {"path": "odd-3.txt", "before": [1], "after": version},
+            {"path": "odd-4.txt", "before": {"hash": 5}, "after": version},
         ])))
         .unwrap();
         let Body::Checkpoint(checkpoint) = read.body else {
@@ -1278,6 +1309,10 @@ mod tests {
             [
                 Before::Absent,
                 Before::Version(kept),
+                Before::Unknown,
+                Before::Unknown,
+                Before::Unknown,
+                Before::Unknown,
                 Before::Unknown,
                 Before::Unknown,
                 Before::Unknown

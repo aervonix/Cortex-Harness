@@ -497,60 +497,20 @@ fn from_git(
     let mut problems = Vec::new();
 
     // Tracked changes, leaving out files that are likely secrets.
-    let against: &[&str] = if base.commit.is_some() {
-        &["HEAD"]
-    } else {
-        &["--cached"]
-    };
-    let mut names = vec!["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff"];
-    names.extend_from_slice(against);
-    // The secrets are left out of the patch by name, so a patch is taken
-    // only with the whole list of changed files in hand.
-    let not_listed = "so no patch was taken: without the whole list, likely secrets could not \
-                      be left out of it";
-    let changed = match run(&names, limits.patch_bytes) {
-        Ok(output) if output.success && !output.truncated => Some(split_nul(&output.stdout)),
-        Ok(output) if output.truncated => {
-            problems.push(format!(
-                "the list of changed files is too long, {not_listed}"
-            ));
-            None
-        }
-        Ok(_) => {
-            problems.push(format!(
-                "git could not list the changed files, {not_listed}"
-            ));
-            None
-        }
-        Err(error) => {
-            problems.push(format!(
-                "git could not list the changed files ({error}), {not_listed}"
-            ));
-            None
-        }
-    };
-    let patch = changed.map(|changed| {
-        let mut exclusions = Vec::new();
-        for path in changed {
-            if is_likely_secret(&path) {
-                exclusions.push(format!(":(exclude,literal){path}"));
-                omitted.push(Omitted {
-                    path,
-                    reason: OmitReason::Secret,
-                });
-            }
-        }
-        if base.commit.is_some() {
-            diff(&run, &["HEAD"], &exclusions, limits.patch_bytes)
-        } else {
-            // No commits yet: the staged changes, then the unstaged ones.
-            diff(&run, &["--cached"], &exclusions, limits.patch_bytes).and_then(|mut staged| {
-                let unstaged = diff(&run, &[], &exclusions, limits.patch_bytes)?;
-                staged.extend(unstaged);
-                Ok(staged)
+    let patch =
+        changed_names(&run, base.commit.is_some(), limits, &mut problems).and_then(|changed| {
+            let exclusions = secret_exclusions(changed, &mut omitted, &mut problems)?;
+            Some(if base.commit.is_some() {
+                diff(&run, &["HEAD"], &exclusions, limits.patch_bytes)
+            } else {
+                // No commits yet: the staged changes, then the unstaged ones.
+                diff(&run, &["--cached"], &exclusions, limits.patch_bytes).and_then(|mut staged| {
+                    let unstaged = diff(&run, &[], &exclusions, limits.patch_bytes)?;
+                    staged.extend(unstaged);
+                    Ok(staged)
+                })
             })
-        }
-    });
+        });
     match patch {
         None => {}
         Some(Ok(patch)) if patch.is_empty() => {}
@@ -605,12 +565,109 @@ fn from_git(
     }
 }
 
+/// Why there is no patch when the names of the changed files are not all
+/// known.
+const NOT_LISTED: &str =
+    "so no patch was taken: without the whole list, likely secrets could not be left out of it";
+
+/// The names of every file the patch will hold a change to, as git gives
+/// them: against the commit, or with no commits yet, the staged and then the
+/// unstaged ones (a file added with `--intent-to-add` is only in the
+/// second). `None`, with the reason in `problems`, unless git listed them
+/// all: the secrets are left out of the patch by name, so a patch is taken
+/// only with the whole list in hand.
+fn changed_names(
+    run: &dyn Fn(&[&str], usize) -> io::Result<GitOutput>,
+    has_commit: bool,
+    limits: &BaseLimits,
+    problems: &mut Vec<String>,
+) -> Option<Vec<Vec<u8>>> {
+    let lists: &[&[&str]] = if has_commit {
+        &[&["HEAD"]]
+    } else {
+        &[&["--cached"], &[]]
+    };
+    let mut changed = Vec::new();
+    for against in lists {
+        let mut args = vec!["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff"];
+        args.extend_from_slice(against);
+        match run(&args, limits.patch_bytes) {
+            Ok(output) if output.success && !output.truncated => {
+                changed.extend(
+                    output
+                        .stdout
+                        .split(|&byte| byte == 0)
+                        .filter(|name| !name.is_empty())
+                        .map(<[u8]>::to_vec),
+                );
+            }
+            Ok(output) if output.truncated => {
+                problems.push(format!(
+                    "the list of changed files is too long, {NOT_LISTED}"
+                ));
+                return None;
+            }
+            Ok(_) => {
+                problems.push(format!(
+                    "git could not list the changed files, {NOT_LISTED}"
+                ));
+                return None;
+            }
+            Err(error) => {
+                problems.push(format!(
+                    "git could not list the changed files ({error}), {NOT_LISTED}"
+                ));
+                return None;
+            }
+        }
+    }
+    Some(changed)
+}
+
+/// The pathspecs that leave the likely secrets among `changed` out of the
+/// patch, each secret listed as omitted. `None`, with the reason in
+/// `problems`, when a likely secret's name is not UTF-8: git could not be
+/// given a pathspec that names it, so no patch is taken.
+fn secret_exclusions(
+    changed: Vec<Vec<u8>>,
+    omitted: &mut Vec<Omitted>,
+    problems: &mut Vec<String>,
+) -> Option<Vec<String>> {
+    let mut exclusions = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut unnamed = false;
+    for raw in changed {
+        let path = String::from_utf8_lossy(&raw).into_owned();
+        if !is_likely_secret(&path) || !seen.insert(raw.clone()) {
+            continue;
+        }
+        if std::str::from_utf8(&raw).is_ok() {
+            exclusions.push(format!(":(exclude,literal){path}"));
+        } else {
+            unnamed = true;
+        }
+        omitted.push(Omitted {
+            path,
+            reason: OmitReason::Secret,
+        });
+    }
+    if unnamed {
+        problems.push(
+            "a likely secret has a name that is not UTF-8, so it could not be left out of the \
+             patch, and no patch was taken"
+                .to_owned(),
+        );
+        return None;
+    }
+    Some(exclusions)
+}
+
 /// Keeps the untracked files git listed, under the limits.
 ///
 /// A file over the limit for one file is listed by name. Past the limit on
 /// the number of files or on bytes in all, one `*` entry says so and
-/// nothing more is kept, so a workspace with a million untracked files
-/// gives a record of a fixed size, not one entry for each.
+/// nothing after it is kept or listed, so those limits do not make the
+/// record grow with the number of files.
 ///
 /// Nothing is followed or read but a regular file: a link is recorded by
 /// what it points to, and a directory, a device or a FIFO is listed as not
