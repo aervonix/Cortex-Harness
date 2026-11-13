@@ -737,7 +737,6 @@ mod tests {
     /// `cargo test -p cortex-base --release -- --ignored measure_redaction`.
     #[test]
     #[ignore = "a measurement, run by hand"]
-    #[expect(clippy::print_stderr, reason = "a measurement prints its result")]
     fn measure_redaction_of_a_large_artifact() {
         let filter = SecretFilter::new()
             .with_value(&Secret::new(OWN))
