@@ -1,0 +1,45 @@
+start id=msg_fixture0002 model=claude-sonnet-5-5
+usage input=4 cache_read=1408 cache_write=147[5m=147] output=8 reasoning=- speed=standard asked=-
+block_start 0 Reasoning
+reasoning 0 "I'm checking the flag"
+reasoning 0 ","
+reasoning 0 " the capital and"
+reasoning 0 " the"
+reasoning 0 " Nile's"
+reasoning 0 " largest city against"
+reasoning 0 " the user"
+reasoning 0 "'s clues:"
+reasoning 0 " that"
+reasoning 0 " points"
+reasoning 0 " to Norway,"
+reasoning 0 " Oslo and"
+reasoning 0 " Cairo. The"
+reasoning 0 " \"Oslo\" and \""
+reasoning 0 "Cairo\" names"
+reasoning 0 " have other"
+reasoning 0 " places"
+reasoning 0 " with those"
+reasoning 0 " names"
+reasoning 0 ","
+reasoning 0 " but the user"
+reasoning 0 "'s description sett"
+reasoning 0 "les which"
+reasoning 0 " one is"
+reasoning 0 " meant, so I'll answ"
+reasoning 0 "er with"
+reasoning 0 " both together"
+reasoning 0 "."
+reasoning 0 "\n\n"
+block_end 0 {"type":"thinking","thinking":"I'm checking the flag, the capital and the Nile's largest city against the user's clues: that points to Norway, Oslo and Cairo. The \"Oslo\" and \"Cairo\" names have other places with those names, but the user's description settles which one is meant, so I'll answer with both together.\n\n","signature":"fixture-signature-01"}
+block_start 1 ToolCall
+tool_call 1 id=toolu_fixture0003 name=get_weather
+tool_args 1 "{\"city\": \"Oslo"
+tool_args 1 "\"}"
+block_end 1 {"type":"tool_use","id":"toolu_fixture0003","name":"get_weather","input":{"city": "Oslo"},"caller":{"type":"direct"}}
+block_start 2 ToolCall
+tool_call 2 id=toolu_fixture0004 name=get_weather
+tool_args 2 "{\"city\": \"Cairo"
+tool_args 2 "\"}"
+block_end 2 {"type":"tool_use","id":"toolu_fixture0004","name":"get_weather","input":{"city": "Cairo"},"caller":{"type":"direct"}}
+usage input=4 cache_read=1408 cache_write=147[5m=147] output=246 reasoning=146 speed=standard asked=-
+end stop=tool_calls raw=tool_use detail=- input=4 cache_read=1408 cache_write=147[5m=147] output=246 reasoning=146 speed=standard asked=-

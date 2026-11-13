@@ -1,0 +1,17 @@
+{
+  "headers": {
+    "anthropic-fast-input-tokens-limit": "1000000",
+    "anthropic-fast-input-tokens-remaining": "765000",
+    "anthropic-fast-input-tokens-reset": "2026-11-13T05:40:12Z",
+    "anthropic-fast-output-tokens-limit": "100000",
+    "anthropic-fast-output-tokens-remaining": "0",
+    "anthropic-fast-output-tokens-reset": "2026-11-13T05:40:05Z",
+    "anthropic-ratelimit-requests-limit": "1000",
+    "anthropic-ratelimit-requests-remaining": "999",
+    "anthropic-ratelimit-requests-reset": "2026-11-13T05:39:58Z",
+    "content-type": "application/json",
+    "request-id": "req_fixture9006",
+    "retry-after": "7"
+  },
+  "status": 429
+}

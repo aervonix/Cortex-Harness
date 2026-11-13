@@ -1,0 +1,11 @@
+start id=msg_fixture9001 model=claude-haiku-5-5
+usage input=40 cache_read=0 cache_write=0[] output=1 reasoning=- speed=standard asked=-
+block_start 0 Reasoning
+block_end 0 {"type":"redacted_thinking","data":"fixture-data-92"}
+block_start 1 Reasoning
+block_end 1 {"type":"thinking","thinking":"","signature":"fixture-signature-93"}
+block_start 2 Text
+text 2 "Forty-two."
+block_end 2 {"type":"text","text":"Forty-two."}
+usage input=40 cache_read=0 cache_write=0[] output=30 reasoning=21 speed=standard asked=-
+end stop=end raw=end_turn detail=- input=40 cache_read=0 cache_write=0[] output=30 reasoning=21 speed=standard asked=-

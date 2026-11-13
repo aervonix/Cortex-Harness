@@ -1,0 +1,7 @@
+start id=msg_fixture0012 model=claude-opus-5-5
+usage input=18 cache_read=0 cache_write=0[] output=4 reasoning=- speed=standard asked=-
+block_start 0 Text
+text 0 "ready"
+block_end 0 {"type":"text","text":"ready"}
+usage input=18 cache_read=0 cache_write=0[] output=4 reasoning=0 speed=standard asked=-
+end stop=end raw=end_turn detail=- input=18 cache_read=0 cache_write=0[] output=4 reasoning=0 speed=standard asked=-

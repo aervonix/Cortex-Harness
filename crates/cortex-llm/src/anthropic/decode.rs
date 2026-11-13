@@ -397,13 +397,11 @@ impl Decoder {
             _ => {
                 out.block_start(index, BlockKind::ProviderBlock);
                 // A server-side tool's call streams its arguments like any
-                // other call. Every other block arrives whole.
-                if members.iter().any(|(key, _)| key == "input") {
-                    Shape::Call {
-                        input: String::new(),
-                    }
-                } else {
-                    Shape::Whole
+                // other call, and may start without an `input` member. A
+                // block that arrives whole has nothing added to it, and
+                // then this shape leaves it exactly as it started.
+                Shape::Call {
+                    input: String::new(),
                 }
             }
         };

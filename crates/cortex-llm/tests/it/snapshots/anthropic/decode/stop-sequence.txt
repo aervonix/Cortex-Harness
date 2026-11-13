@@ -1,0 +1,7 @@
+start id=msg_fixture9001 model=claude-haiku-5-5
+usage input=40 cache_read=0 cache_write=0[] output=1 reasoning=- speed=standard asked=-
+block_start 0 Text
+text 0 "One, two, three,"
+block_end 0 {"type":"text","text":"One, two, three,"}
+usage input=40 cache_read=0 cache_write=0[] output=9 reasoning=0 speed=standard asked=-
+end stop=end raw=stop_sequence detail=END input=40 cache_read=0 cache_write=0[] output=9 reasoning=0 speed=standard asked=-

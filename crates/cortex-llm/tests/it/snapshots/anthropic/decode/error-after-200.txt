@@ -1,0 +1,5 @@
+start id=msg_fixture9001 model=claude-haiku-5-5
+usage input=40 cache_read=0 cache_write=0[] output=1 reasoning=- speed=standard asked=-
+block_start 0 Text
+text 0 "The weather in"
+error kind=transient code=overloaded_error status=None throttle=Some(Overload) tier=- retry_after=None id=- message="Overloaded"

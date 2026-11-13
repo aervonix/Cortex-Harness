@@ -14,6 +14,7 @@
 //! | [`protocol`] | [`TestProtocol`]: a wire dialect made for tests. |
 //! | [`server`] | [`SseServer`]: a provider's HTTP endpoint on the loopback interface. For tests of the real HTTP client, and of the real binary. |
 //! | [`fixtures`] | Made-up models with every shape of speed tier, and requests to them. |
+//! | [`fixture`] | Recorded provider responses: [`Fixture`](fixture::Fixture), the files one is made of, and [`Scrubber`](fixture::Scrubber), which takes credentials and identifiers out of a recording and refuses one that holds the key. |
 //!
 //! The virtual terminal, the pseudo-terminal driver and temporary
 //! workspaces arrive with the steps that first need them.
@@ -34,6 +35,7 @@
 pub mod cases;
 pub mod children;
 pub mod exec;
+pub mod fixture;
 pub mod fixtures;
 pub mod gate;
 pub mod protocol;
