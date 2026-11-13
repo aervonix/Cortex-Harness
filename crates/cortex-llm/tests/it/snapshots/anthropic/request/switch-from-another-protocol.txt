@@ -1,0 +1,81 @@
+POST https://api.anthropic.com/v1/messages
+content-type: application/json
+accept: text/event-stream
+anthropic-version: 2026-10-21
+
+{
+  "model": "claude-sonnet-5-5",
+  "max_tokens": 128000,
+  "stream": true,
+  "thinking": {
+    "type": "adaptive",
+    "display": "summarized"
+  },
+  "output_config": {
+    "effort": "low"
+  },
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get the current weather in a city.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "city": {
+            "description": "The city's name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "type": "object"
+      },
+      "strict": true,
+      "eager_input_streaming": true
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "What is the weather in Oslo?"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Let me check."
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_1",
+          "name": "get_weather",
+          "input": {
+            "city": "Oslo"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_1",
+          "content": [
+            {
+              "type": "text",
+              "text": "Oslo: 18 degrees Celsius."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
