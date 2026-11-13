@@ -290,7 +290,7 @@ Four jobs in parallel, in `.github/workflows/ci.yml`. Wall time is the slowest j
 
 | Job | Runner | Runs |
 |---|---|---|
-| `lint-linux` | `ubuntu-latest` | `cargo xtask check`: `cargo fmt --all --check`; the repo rules; the break lists, each break of which must still apply ("Breaking the code on purpose"); the generated files (the protocol's schema and TypeScript declarations are what the types generate); `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo deny check licenses bans sources`. |
+| `lint-linux` | `ubuntu-latest` | `cargo xtask check`, and the owner guard ("The owner guard", below): `cargo fmt --all --check`; the repo rules; the break lists, each break of which must still apply ("Breaking the code on purpose"); the generated files (the protocol's schema and TypeScript declarations are what the types generate); `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo deny check licenses bans sources`. |
 | `lint-windows` | `windows-latest` | `cargo xtask check clippy`. Formatting, the repo rules and cargo-deny give the same answer on every OS and run once. Clippy runs on both, because code compiled only for Windows is otherwise never linted. |
 | `test-linux` | `ubuntu-latest` | `cargo xtask ci test`: build the tests, run tiers 1 to 3 (`cargo nextest run --workspace --locked --cargo-profile ci --profile ci`), check the tier budgets and list each tier's slowest tests. Then the JUnit report is kept as an artifact. |
 | `test-windows` | `windows-latest` | The same. |
@@ -311,23 +311,12 @@ Settings common to all jobs:
 - **The Windows test job's temporary directory is on the workspace's disk too** (`TEMP` and `TMP`, since 2026-11-13). A test that needs a directory with no repository above it makes it in the system's temporary directory, which is on `C:` by default. Measured in one job, alternating twice: the 53 integration tests of `cortex-core` took 6.3 and 6.2 s with it on `C:` and 3.3 and 3.5 s on `D:`, and the three tiers together about 8 s less ([steps/11/ci.md](steps/11/ci.md)).
 - `cargo-nextest` and `cargo-deny` are installed as prebuilt, checksummed binaries, not compiled.
 - A new push to a pull request cancels the run in progress.
-- Actions are pinned by commit hash. The workflow token has read-only permissions. No secret is used, but the owner's protected terms, which the owner guard reads (below). `cargo xtask rules` checks all three: the one secret is allowed only as the line `OWNER_TERMS: ${{ secrets.OWNER_TERMS }}`.
-
-### The owner guard
-
-The owner's name, email and home path never appear in the repository (rule 3). Since 2026-11-13 CI checks for them, in the `lint-linux` job, on every pull request and every push to the main branch: `cargo xtask owner-guard --base REV --head REV`.
-
-- **What it looks at:** every line the change adds, the path of every file it adds or changes, and every commit's message and its author's and committer's names and emails. A line it removes is not looked at. For a pull request the change is what its head adds since it left the base branch; for a push, what the push adds (the head commit alone on a first push). The repository's existing content is not scanned.
-- **The terms are a secret, `OWNER_TERMS`,** which only the owner sets, so that they are not in a public repository. Its format: one term a line; white space around a term and empty lines are ignored; case is ignored. A term that contains `@` or `/` (an email, a home path) matches anywhere in the text; any other term (a name, a phrase of several words) matches only as a whole word, with no letter, digit or `_` against either end. The owner sets it with `gh secret set OWNER_TERMS < file`, from a file with one term a line.
-- **A term is never printed.** A finding names the file and the line, or the commit and the field, and says that it "matches a protected term"; a file whose path matches is named by its number in the diff. GitHub masks a secret's value in a log as well, which is not relied on.
-- **Without the secret it passes, with a warning** in the log and on the job's summary page: a pull request from a fork is not given the repository's secrets, and the secret may not have been set yet. A fork's pull request is therefore not checked until it is merged, when the push to the main branch is.
-- **What it is not.** Anyone who can push a branch to this repository can change the workflow or the guard on that branch, and with it read the secret: the guard catches an accident, not someone set on leaking the terms. The step that reads the secret is the only one given it.
-- **How it is tested:** with made-up terms (`xtask/src/owner_guard.rs`): whole words and case, a phrase, an email and a path anywhere, letters beyond ASCII, an added line against a deleted one, a line that looks like a diff header, a path, a commit's author, its committer and its message, and on a real repository made by the test. Its breaks are in `mutations/owner-guard.breaks`.
-
+- Actions are pinned by commit hash. The workflow token has read-only permissions. No secret is used except the owner's protected terms, which the owner guard reads ("The owner guard", below). `cargo xtask rules` checks all three: the one secret is allowed only as the line `OWNER_TERMS: ${{ secrets.OWNER_TERMS }}`.
 
 **Documentation-only pull requests skip the Rust build and tests.** Each job starts with a step (`.github/actions/changes`) that lists what the pull request changes. If every changed file is under `docs/` or ends in `.md`, the job's remaining steps are skipped and the job still reports success under its own name.
 
 - The decision is made inside each job, not in a separate job that the others wait for. All four checks therefore always report, so they can be required by branch protection as they are, with no gate job, and a pull request that does touch code pays about a second for the question.
+- **The owner guard runs on every pull request,** documentation-only or not, and whatever the steps before it did.
 - **The repo rules still run on a documentation-only pull request, deliberately.** The check for home-directory paths, the check of `docs/dependencies.md`, the check that every link inside the repository leads somewhere and the check of where the step records are exist mostly for documentation, and skipping them on exactly the pull requests that write prose would open the hole they close. This compiles `xtask`, which is five small crates, and nothing else.
 - Anything else in the change set (a manifest, a workflow, an asset, a source file) runs everything. So does every push to the main branch and every scheduled or manual run.
 - **The generated files under `docs/protocol/` and `docs/configuration/` count as code.** They are checked against the Rust types by tests, so a pull request that touches them runs the tests, wherever else its changes are.
@@ -340,6 +329,23 @@ The owner's name, email and home path never appear in the repository (rule 3). S
 - a test group that limits pseudo-terminal and process tests (everything named `sys_…`) to two at a time, so they do not starve each other on a 4-core runner;
 - no retries, except tests in a module named `timing_sensitive`, which get one retry and are reported as flaky when it is used;
 - profile `fast` for local use: tiers 1 and 2 only.
+
+### The owner guard
+
+The owner's name, email and home path never appear in the repository (rule 3). Since 2026-11-13 CI checks for them, in the `lint-linux` job, on every pull request and every push to the main branch: `cargo xtask owner-guard --base REV --head REV`.
+
+- **What it looks at:** every line the change adds, the path of every file it adds or changes, and every commit's message and its author's and committer's names and emails. A line it removes is not looked at. For a pull request the change is what its head adds since it left the base branch; for a push, what the push adds (the head commit alone on a first push). The repository's existing content is not scanned.
+- **The terms are a secret, `OWNER_TERMS`,** which only the owner sets, so that they are not in a public repository. Its format: one term a line; white space around a term and empty lines are ignored; case is ignored. A term that contains `@` or `/` (an email, a home path) matches anywhere in the text; any other term (a name, a phrase of several words) matches only as a whole word, with no letter, digit or `_` against either end. The owner sets it with `gh secret set OWNER_TERMS < file`, from a file with one term a line.
+- **A term is never printed.** A finding names the file and the line, or the commit and the field, and says that it "matches a protected term"; a file whose path matches is named by its number in the diff. GitHub masks a secret's value in a log as well, which is not relied on.
+- **Without the secret it passes, with a warning** in the log and on the job's summary page: a pull request from a fork is not given the repository's secrets, and the secret may not have been set yet. A fork's pull request is therefore not checked until it is merged, when the push to the main branch is.
+- **Which terms to list.** Each part of the name as a word of its own, as well as the whole name: a phrase is matched across any white space, line breaks included, but not across two lines of a diff. The account names, the email addresses, and the home directory's folder name as a word: a Windows path such as `C:\Users\<name>` has no `/`, would be matched as written, and would miss its escaped forms (`C:\\Users\\…`, `C:/Users/…`). Text is lowered and nothing more: a name written in decomposed Unicode, or `ß` against `SS`, does not match.
+- **What it is not.**
+  - **It stops a merge, not a leak.** A pull request's diff and commits are public as soon as it is opened, before the guard has run. To stop a term before it leaves the desk, run the guard locally before a push, with the terms in the environment.
+  - **It catches an accident, not someone set on leaking the terms.** Anyone who can push a branch to this repository can change the workflow or the guard on that branch, and with it read the secret.
+  - **The workflow rule checks the line's form, not its place.** Only `ci.yml`'s guard step is given the secret today, and nothing enforces that.
+  - **GitHub masks the secret's lines in the whole job's log,** so a term that appears in another step's output shows as `***`, in a public log; the guard fails on the same change.
+- **Who commits on the main branch.** A pull request merged on GitHub by rebase has, as its committer on the main branch, the GitHub account that merged it, with that account's name and email. The guard looks at committers on a push to the main branch as on a pull request, so terms that name the merging account fail every merge. This was open with the owner when the guard was added ([outstanding/who-commits-on-the-main-branch.md](outstanding/who-commits-on-the-main-branch.md)).
+- **How it is tested:** with made-up terms (`xtask/src/owner_guard.rs`): whole words and case, an occurrence inside one that is not a word, a phrase across white space and a line break, an email and a path anywhere, letters beyond ASCII, an added line against a deleted one, a line that looks like a diff header, a path (an empty file's and one with a tab included), a commit's author, its committer and its message, and a message that holds the separators. And on a real repository the test makes: a range, a first push, a base that is not there (a force push: the head commit alone is checked, and the log says so), a binary file and an empty file. Its breaks are in `mutations/owner-guard.breaks`.
 
 ### A CI run's test times
 

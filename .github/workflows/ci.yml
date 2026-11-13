@@ -93,9 +93,10 @@ jobs:
       # request, or the push to the main branch, adds: its lines, its paths
       # and its commits. The terms are a secret only the owner holds. Without
       # it (a fork, or a secret not set) the step passes with a warning.
+      # It runs whatever happened in the steps before it.
       # docs/testing-and-ci.md, "The owner guard".
       - name: Owner guard
-        if: matrix.name == 'linux' && (github.event_name == 'pull_request' || github.event_name == 'push')
+        if: ${{ !cancelled() && matrix.name == 'linux' && (github.event_name == 'pull_request' || github.event_name == 'push') }}
         env:
           OWNER_TERMS: ${{ secrets.OWNER_TERMS }}
           GUARD_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}

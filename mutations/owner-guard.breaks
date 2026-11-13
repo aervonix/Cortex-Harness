@@ -13,9 +13,9 @@ caught-by:
 [break] case-is-not-ignored
 rule: A term is matched whatever its case.
 file: xtask/src/owner_guard.rs
-in: Terms::matches
-find: let lowered = text.to_lowercase();
-replace: let lowered = text.to_owned();
+in: fold
+find: text.to_lowercase()
+replace: text.to_owned()
 caught-by:
     owner_guard::tests::a_plain_term_is_a_whole_word_in_any_case
 
@@ -35,7 +35,7 @@ in: scan_diff
 find: text.strip_prefix('+').filter(|_| !in_header)
 replace: text.strip_prefix('+').or_else(|| text.strip_prefix('-')).filter(|_| !in_header)
 caught-by:
-    owner_guard::tests::a_diff_is_read_for_its_added_lines_and_its_paths
+    owner_guard::tests::a_diff_is_read_for_its_added_lines
 
 [break] the-author-is-not-searched
 rule: A commit's author is searched as well as its message.
@@ -53,7 +53,7 @@ in: scan_diff
 find: (!matched).then(|| path.clone())
 replace: Some(path.clone())
 caught-by:
-    owner_guard::tests::a_diff_is_read_for_its_added_lines_and_its_paths
+    owner_guard::tests::a_diff_is_read_for_its_added_lines
 
 [break] the-guard-reads-another-secret
 rule: A workflow that runs on pull requests reads no secret but the owner's terms, under their own name.
@@ -63,3 +63,30 @@ find: line.contains("secrets.") && line.trim() != OWNER_TERMS_LINE
 replace: line.contains("secrets.") && !line.contains("OWNER_TERMS")
 caught-by:
     rules::workflows::tests::the_owners_terms_are_the_one_secret_a_pull_request_may_read
+
+[break] paths-are-not-read
+rule: The path of every file a change adds or changes is searched, an empty file's included.
+file: xtask/src/owner_guard.rs
+in: scan_paths
+find: .filter(|(_, name)| terms.matches(name))
+replace: .filter(|_| false)
+caught-by:
+    owner_guard::tests::every_path_the_change_adds_or_changes_is_read
+
+[break] white-space-is-not-folded
+rule: A phrase matches whatever white space, line breaks included, is between its words.
+file: xtask/src/owner_guard.rs
+in: fold
+find: .split_whitespace().collect::<Vec<_>>().join(" ")
+replace: .to_string()
+caught-by:
+    owner_guard::tests::a_phrase_is_matched_as_words_too
+
+[break] a-message-fragment-is-taken-for-a-commit
+rule: Text after a separator inside a message is that commit's message, never printed as a commit.
+file: xtask/src/owner_guard.rs
+in: scan_commits
+find: hash.len() != 40 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+replace: hash.is_empty()
+caught-by:
+    owner_guard::tests::a_message_that_holds_the_separators_prints_nothing_of_itself

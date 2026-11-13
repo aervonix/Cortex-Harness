@@ -58,9 +58,10 @@ pub(crate) fn check(file: &str, text: &str) -> Vec<Violation> {
             violations.push(Violation::new(
                 file,
                 line_number,
-                "a workflow that runs on pull requests uses no secrets. Its jobs run code from \
-                 the pull request, and nothing that blocks may need a paid API or a credential \
-                 (rule 9 in docs/build-plan.md).",
+                "a workflow that runs on pull requests uses no secret but the owner's protected \
+                 terms, as the line `OWNER_TERMS: ${{ secrets.OWNER_TERMS }}`. Its jobs run code \
+                 from the pull request, and nothing that blocks may need a paid API or a \
+                 credential (rule 9 in docs/build-plan.md).",
             ));
         }
 
@@ -211,7 +212,8 @@ mod tests {
         let found = messages(".github/workflows/ci.yml", &blocking(step));
         assert_eq!(found.len(), 1);
         assert!(
-            found[0].contains("ci.yml:13: a workflow that runs on pull requests uses no secrets"),
+            found[0]
+                .contains("ci.yml:13: a workflow that runs on pull requests uses no secret but"),
             "{}",
             found[0]
         );

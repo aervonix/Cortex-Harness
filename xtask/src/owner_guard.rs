@@ -64,7 +64,7 @@ impl Terms {
             .map(str::trim)
             .filter(|line| !line.is_empty())
             .map(|line| Term {
-                lowered: line.to_lowercase(),
+                lowered: fold(line),
                 anywhere: line.contains(['@', '/']),
             })
             .collect();
@@ -80,22 +80,44 @@ impl Terms {
         if self.terms.is_empty() || text.is_empty() {
             return false;
         }
-        let lowered = text.to_lowercase();
+        let lowered = fold(text);
         self.terms.iter().any(|term| term.is_in(&lowered))
     }
 }
 
+/// Text as it is matched: lowered, and every run of white space, line
+/// breaks included, one space. A name that a commit message or a paragraph
+/// wraps between its two words is still the name.
+fn fold(text: &str) -> String {
+    text.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 impl Term {
     fn is_in(&self, lowered: &str) -> bool {
-        lowered.match_indices(&self.lowered).any(|(at, found)| {
+        if self.lowered.is_empty() {
+            return false;
+        }
+        // Every place the term starts, overlapping ones included: a place
+        // that is not a whole word must not hide one that starts inside it.
+        let mut from = 0;
+        while let Some(found) = lowered[from..].find(&self.lowered) {
+            let at = from + found;
             if self.anywhere {
                 return true;
             }
             // A word: what is on either side is not part of a word.
             let before = lowered[..at].chars().next_back();
-            let after = lowered[at + found.len()..].chars().next();
-            !before.is_some_and(is_word) && !after.is_some_and(is_word)
-        })
+            let after = lowered[at + self.lowered.len()..].chars().next();
+            if !before.is_some_and(is_word) && !after.is_some_and(is_word) {
+                return true;
+            }
+            let step = lowered[at..].chars().next().map_or(1, char::len_utf8);
+            from = at + step;
+        }
+        false
     }
 }
 
@@ -109,8 +131,9 @@ pub(crate) enum Finding {
     /// A line the diff adds: the file's path, unless the path itself
     /// matches, and the line's number in the new file.
     Line { path: Option<String>, line: usize },
-    /// The path of a file the diff adds or changes, which is not shown: the
-    /// number of the file in the diff, counted from 1.
+    /// The path of a file the change adds or changes, which is not shown:
+    /// its number, counted from 1, in what `git diff --name-only
+    /// --no-renames --diff-filter=d` prints for the range.
     Path { file: usize },
     /// A field of a commit.
     Commit { commit: String, field: &'static str },
@@ -129,7 +152,8 @@ impl std::fmt::Display for Finding {
             ),
             Finding::Path { file } => write!(
                 f,
-                "the path of the diff's file number {file} matches a protected term"
+                "the path of file {file} of `git diff --name-only --no-renames --diff-filter=d` \
+                 for this range matches a protected term"
             ),
             Finding::Commit { commit, field } => {
                 write!(f, "commit {commit}: its {field} matches a protected term")
@@ -138,12 +162,24 @@ impl std::fmt::Display for Finding {
     }
 }
 
-/// What a diff made with `--unified=0` adds that matches: its lines, and
-/// the paths of the files it adds or changes. A deleted line is not looked
-/// at: taking a term out is what is wanted.
+/// The paths a change adds or changes that match: `names` is what `git diff
+/// --name-only -z` printed. A file that is only deleted is not listed.
+pub(crate) fn scan_paths(terms: &Terms, names: &str) -> Vec<Finding> {
+    names
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .enumerate()
+        .filter(|(_, name)| terms.matches(name))
+        .map(|(index, _)| Finding::Path { file: index + 1 })
+        .collect()
+}
+
+/// What a diff made with `--unified=0` adds that matches: its lines. A
+/// deleted line is not looked at: taking a term out is what is wanted.
+/// Paths are [`scan_paths`]'s: a file with no lines, or whose mode alone
+/// changed, has no `+++` line here.
 pub(crate) fn scan_diff(terms: &Terms, diff: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
-    let mut files = 0;
     // The current file's path, and whether it matched.
     let mut path: Option<(String, bool)> = None;
     let mut line = 0usize;
@@ -155,13 +191,9 @@ pub(crate) fn scan_diff(terms: &Terms, diff: &str) -> Vec<Finding> {
             path = None;
             in_header = true;
         } else if let Some(new) = text.strip_prefix("+++ ").filter(|_| in_header) {
-            files += 1;
             // `+++ /dev/null` is a deletion: there is no new path.
             let new = new.strip_prefix("b/").unwrap_or(new).to_owned();
             let matched = new != "/dev/null" && terms.matches(&new);
-            if matched {
-                findings.push(Finding::Path { file: files });
-            }
             path = Some((new, matched));
         } else if let Some(hunk) = text.strip_prefix("@@ ").filter(|_| path.is_some()) {
             in_header = false;
@@ -199,13 +231,27 @@ pub(crate) fn scan_commits(terms: &Terms, log: &str) -> Vec<Finding> {
         "message",
     ];
     let mut findings = Vec::new();
+    let mut last: Option<String> = None;
     for record in log.split('\u{1e}') {
         let record = record.trim_start_matches(['\n', '\r']);
         if record.is_empty() {
             continue;
         }
         let mut parts = record.split('\u{1f}');
-        let Some(hash) = parts.next() else { continue };
+        let hash = parts.next().unwrap_or_default();
+        if hash.len() != 40 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            // A message that holds the separator itself: this is the rest of
+            // the last commit's message, and nothing of it is printed.
+            if let Some(commit) = &last
+                && terms.matches(record)
+            {
+                findings.push(Finding::Commit {
+                    commit: commit.clone(),
+                    field: "message",
+                });
+            }
+            continue;
+        }
         let short: String = hash.chars().take(12).collect();
         for (field, value) in FIELDS.iter().zip(parts) {
             if terms.matches(value) {
@@ -215,6 +261,7 @@ pub(crate) fn scan_commits(terms: &Terms, log: &str) -> Vec<Finding> {
                 });
             }
         }
+        last = Some(short);
     }
     findings
 }
@@ -306,7 +353,18 @@ pub(crate) fn run(arguments: &[String]) -> Result<()> {
 /// many commits it has.
 fn look(dir: &Path, range: &Range, terms: &Terms) -> Result<(Vec<Finding>, usize)> {
     let git = |arguments: &[&str]| git(dir, arguments);
-    let (diff_from, commits) = if range.is_first_push() {
+    let has_base = !range.is_first_push()
+        && git(&["cat-file", "-e", &format!("{}^{{commit}}", range.base)]).is_ok();
+    if !range.is_first_push() && !has_base {
+        // A force push leaves its old head on no branch, and the fetch does
+        // not bring it.
+        println!(
+            "owner guard: the base {} is not in this repository (a force push?): the head \
+             commit alone is checked",
+            range.base
+        );
+    }
+    let (diff_from, commits) = if !has_base {
         // The head commit alone, against its parent or against nothing.
         let parent = format!("{}^", range.head);
         let base = if git(&["rev-parse", "--verify", "--quiet", &parent]).is_ok() {
@@ -342,16 +400,32 @@ fn look(dir: &Path, range: &Range, terms: &Terms) -> Result<(Vec<Finding>, usize
     let log_arguments: Vec<&str> = log_arguments.iter().map(String::as_str).collect();
     let log = git(&log_arguments)?;
 
-    let mut findings = scan_diff(terms, &diff);
+    let names = git(&[
+        "diff",
+        "--name-only",
+        "-z",
+        "--no-renames",
+        "--diff-filter=d",
+        &diff_from,
+        &range.head,
+    ])?;
+    let mut findings = scan_paths(terms, &names);
+    findings.extend(scan_diff(terms, &diff));
     findings.extend(scan_commits(terms, &log));
     let commits = log.split('\u{1e}').filter(|r| !r.trim().is_empty()).count();
     Ok((findings, commits))
 }
 
-/// Runs git and returns what it printed. Its error output is passed on: git
-/// prints revisions and paths, never the terms.
+/// Runs git in `dir` and returns what it printed, with any bytes that are
+/// not UTF-8 replaced: a binary file's diff is text that matches no term.
+/// Its error output is passed on: git prints revisions and paths there,
+/// never the terms. A repository named by the environment is not used.
 fn git(dir: &Path, arguments: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    for variable in GIT_LOCATION {
+        command.env_remove(variable);
+    }
+    let output = command
         .args(arguments)
         .current_dir(dir)
         .output()
@@ -363,12 +437,22 @@ fn git(dir: &Path, arguments: &[&str]) -> Result<String> {
             String::from_utf8_lossy(&output.stderr).trim_end()
         ));
     }
-    String::from_utf8(output.stdout).map_err(|_| "git printed text that is not UTF-8".to_owned())
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
+
+/// The variables that point git at another repository than the directory's:
+/// a hook exports them.
+const GIT_LOCATION: [&str; 5] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_COMMON_DIR",
+];
 
 #[cfg(test)]
 mod tests {
-    use super::{Finding, Range, Terms, look, scan_commits, scan_diff};
+    use super::{Finding, GIT_LOCATION, Range, Terms, look, scan_commits, scan_diff, scan_paths};
 
     /// Made-up terms of the kinds the secret holds: a name, a phrase, an
     /// email and a home path.
@@ -392,6 +476,10 @@ mod tests {
         assert!(!terms.matches("quentin2"));
         // A later occurrence that is a word is found after one that is not.
         assert!(terms.matches("Quentinx and Quentin"));
+        // An occurrence that starts inside one that is not a word.
+        let overlapping = Terms::parse("x x");
+        assert!(overlapping.matches("yx x x"));
+        assert!(!overlapping.matches("yx xy"));
     }
 
     #[test]
@@ -399,7 +487,11 @@ mod tests {
         let terms = terms();
         assert!(terms.matches("by example PERSON, today"));
         assert!(!terms.matches("an example personal note"));
-        assert!(!terms.matches("example  person"));
+        // White space of any kind and length between its words, as a
+        // wrapped line has.
+        assert!(terms.matches("example  person"));
+        assert!(terms.matches("by Example\n  Person."));
+        assert!(terms.matches("Example\tPerson"));
     }
 
     #[test]
@@ -458,7 +550,7 @@ deleted file mode 100644
 ";
 
     #[test]
-    fn a_diff_is_read_for_its_added_lines_and_its_paths() {
+    fn a_diff_is_read_for_its_added_lines() {
         let findings = scan_diff(&terms(), DIFF);
         assert_eq!(
             findings,
@@ -467,7 +559,7 @@ deleted file mode 100644
                     path: Some("docs/notes.md".to_owned()),
                     line: 5
                 },
-                Finding::Path { file: 2 },
+                // A path that matches is not printed beside its line.
                 Finding::Line {
                     path: None,
                     line: 1
@@ -506,6 +598,37 @@ diff --git a/a.md b/a.md
                     line: 3
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn every_path_the_change_adds_or_changes_is_read() {
+        // As `git diff --name-only -z` prints them: an empty new file, a
+        // path with a space and one with a tab are paths like any other.
+        let names = "docs/notes.md\0fixtures/Quentin/.gitkeep\0a b.txt\0dir\tQuentin\0";
+        assert_eq!(
+            scan_paths(&terms(), names),
+            [Finding::Path { file: 2 }, Finding::Path { file: 4 }]
+        );
+        assert_eq!(scan_paths(&terms(), ""), []);
+        let printed = Finding::Path { file: 2 }.to_string();
+        assert!(printed.ends_with("matches a protected term"), "{printed}");
+        assert!(!terms().matches(&printed));
+    }
+
+    #[test]
+    fn a_message_that_holds_the_separators_prints_nothing_of_itself() {
+        let hash = "e".repeat(40);
+        let log = format!(
+            "{hash}\u{1f}A\u{1f}a@x.invalid\u{1f}A\u{1f}a@x.invalid\u{1f}Start\u{1e}Quentin \
+             here\u{1f}::error::x\u{1e}\n"
+        );
+        assert_eq!(
+            scan_commits(&terms(), &log),
+            [Finding::Commit {
+                commit: "e".repeat(12),
+                field: "message"
+            }]
         );
     }
 
@@ -615,13 +738,20 @@ diff --git a/a.md b/a.md
         let config = dir.with_extension("gitconfig");
         std::fs::write(&config, "").unwrap();
         let git = |arguments: &[&str], who: &str| {
-            let status = std::process::Command::new("git")
-                .args([
-                    "-c",
-                    &format!("user.name={who}"),
-                    "-c",
-                    "user.email=x@example.invalid",
-                ])
+            let mut command = std::process::Command::new("git");
+            for variable in GIT_LOCATION {
+                command.env_remove(variable);
+            }
+            for (variable, value) in [
+                ("GIT_AUTHOR_NAME", who),
+                ("GIT_COMMITTER_NAME", who),
+                ("GIT_AUTHOR_EMAIL", "x@example.invalid"),
+                ("GIT_COMMITTER_EMAIL", "x@example.invalid"),
+                ("GIT_CONFIG_NOSYSTEM", "1"),
+            ] {
+                command.env(variable, value);
+            }
+            let status = command
                 .args([
                     "-c",
                     "commit.gpgsign=false",
@@ -631,7 +761,6 @@ diff --git a/a.md b/a.md
                 .args(arguments)
                 .current_dir(&dir)
                 .env("GIT_CONFIG_GLOBAL", &config)
-                .env("GIT_CONFIG_NOSYSTEM", "1")
                 .output()
                 .unwrap();
             assert!(status.status.success(), "{status:?}");
@@ -690,6 +819,30 @@ diff --git a/a.md b/a.md
                 line: 1
             }]
         );
+
+        // A base this repository does not have, as after a force push: the
+        // head commit alone.
+        let gone = Range {
+            base: "1".repeat(40),
+            head: head.clone(),
+        };
+        let (findings, commits) = look(&dir, &gone, &terms()).unwrap();
+        assert_eq!(commits, 1);
+        assert_eq!(findings.len(), 3, "{findings:?}");
+
+        // A binary file and a new empty file whose path matches.
+        std::fs::write(dir.join("logo.png"), [0x89u8, 0xff, 0xfe, 0x00, 0x80]).unwrap();
+        std::fs::create_dir_all(dir.join("quentin")).unwrap();
+        std::fs::write(dir.join("quentin/.gitkeep"), "").unwrap();
+        git(&["add", "."], "Someone");
+        git(&["commit", "-q", "-m", "Third"], "Someone");
+        let third = git(&["rev-parse", "HEAD"], "Someone").trim().to_owned();
+        let range = Range {
+            base: head,
+            head: third,
+        };
+        let (findings, _) = look(&dir, &range, &terms()).unwrap();
+        assert_eq!(findings, [Finding::Path { file: 2 }]);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&config);
     }
