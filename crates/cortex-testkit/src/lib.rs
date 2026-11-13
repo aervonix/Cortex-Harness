@@ -18,9 +18,8 @@
 //! | [`server`] | [`SseServer`]: a provider's HTTP endpoint on the loopback interface. For tests of the real HTTP client, and of the real binary. |
 //! | [`fixtures`] | Made-up models with every shape of speed tier, and requests to them. |
 //! | [`fixture`] | Recorded provider responses: [`Fixture`](fixture::Fixture), the files one is made of, and [`Scrubber`](fixture::Scrubber), which takes credentials and identifiers out of a recording and refuses one that holds the key. |
-//!
-//! The virtual terminal and the pseudo-terminal driver arrive with the
-//! steps that first need them.
+//! | [`vterm`] | [`VTerm`]: a virtual terminal, and a [`Report`](vterm::Report) of what each frame did to it. For tests of the presenter, and to parse a program's output. |
+//! | [`pty`] | [`pty::Session`]: a program run in a pseudo-terminal (ConPTY on Windows), its output recorded and parsed, keys typed into it. |
 //!
 //! # No real waiting
 //!
@@ -44,12 +43,14 @@ pub mod fixtures;
 pub mod gate;
 pub mod protocol;
 pub mod provider;
+pub mod pty;
 pub mod schema;
 pub mod scratch;
 pub mod seed;
 pub mod server;
 pub mod timer;
 pub mod transport;
+pub mod vterm;
 
 pub use canary::{Printed, assert_never_printed};
 pub use cortex_base::{Clock, FakeClock, Rng, SeededRng};
@@ -61,3 +62,4 @@ pub use scratch::Scratch;
 pub use server::{ReceivedRequest, ServerReply, SseServer};
 pub use timer::FakeTimer;
 pub use transport::{Reply, ScriptedTransport};
+pub use vterm::VTerm;

@@ -15,7 +15,8 @@ cortex-base.workspace = true
 # The types and traits only. A test of the real HTTP transport turns the
 # `http` feature on in the crate that owns it.
 cortex-llm.workspace = true
-cortex-term.workspace = true
+# With `pty`: the pseudo-terminal under the driver in `pty`.
+cortex-term = { workspace = true, features = ["pty"] }
 serde_json.workspace = true
 
 [lints]

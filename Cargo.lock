@@ -321,6 +321,9 @@ name = "cortex-term"
 version = "0.0.0"
 dependencies = [
  "cortex-base",
+ "cortex-testkit",
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
