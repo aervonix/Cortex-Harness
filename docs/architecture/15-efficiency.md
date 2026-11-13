@@ -109,23 +109,21 @@ Built in step 7, in the loop ([03-agent-loop.md](03-agent-loop.md), "Streaming" 
 
 ## Prefetch
 
-"Likely reads are fetched ahead", in three steps of increasing ambition.
+"Likely reads are fetched ahead", in three steps of increasing ambition. The owner settled the first two on 2026-11-13, in step 7, as that step had built them.
 
 | Step | What | When |
 |---|---|---|
-| 1 | Start a `read` as soon as its `path` argument is complete in the stream, before the block ends. Warm the file cache for files the user names with `@`. | First release. |
-| 2 | Keep a small result cache for read-only calls, keyed by tool, arguments and file state, so a repeated or predicted call is instant. | First release. |
-| 3 | Predict context from history: which files are read together, which test file goes with which source file. Attach outlines or excerpts before the model asks, inside a token budget. | Later. It needs statistics from real sessions, and a wrong prediction costs tokens. |
+| 1 | Start a call that only reads as soon as its block ends in the stream, while the model is still writing the rest of the response ("Starting tools early", above). | First release. Built in step 7. |
+| 2 | Keep what ran early when a response fails and is retried, and use it again if the retried response asks for the same call. | First release. Built in step 7. |
+| 3 | Warm the file cache for files the user names with `@`. | First release, with the editor's attachments (step 24), which is where a named file is known before the prompt is sent. |
+| 4 | Predict context from history: which files are read together, which test file goes with which source file. Attach outlines or excerpts before the model asks, inside a token budget. | Later. It needs statistics from real sessions, and a wrong prediction costs tokens. |
 
-Local reads are fast, so steps 1 and 2 save milliseconds. Step 3 is the one that saves whole round trips, which is why it must be driven by evidence.
+Local reads are fast, so steps 1 to 3 save milliseconds. Step 4 is the one that saves whole round trips, which is why it must be driven by evidence.
 
-**What step 7 built of steps 1 and 2, and what it left, each for a reason the owner should see** (the step's report raises both):
+**Two things an earlier draft of this table promised are not built, by decision:**
 
-| The table says | Built | Why it differs |
-|---|---|---|
-| A `read` starts when its `path` argument is complete, before the block ends. | A call starts when its block ends. | Arguments are untrusted partial JSON until the block ends, and are parsed once ([03-agent-loop.md](03-agent-loop.md)). Starting on a half-read object means a second, tolerant parser, and a run that has not seen `offset`, `limit` or `fresh` yet and may have to be thrown away. A `read` call's arguments are a few dozen bytes, so the gap between "path complete" and "block ended" is a few milliseconds of stream. |
-| A result cache keyed by tool, arguments and file state, for repeated or predicted calls. | A cache for one request: what ran early for a response that failed is reused when the retried response asks for the same call. | A repeated `read` is already cheap, and cheaper in tokens than a cached copy: the tool answers "unchanged" or sends a diff (above, "Changed-only re-reads"). A loop-level cache that returned the earlier full result would undo that. A cache for predicted calls belongs with step 3, which predicts them. |
-| Warm the file cache for files the user names with `@`. | Not built. | `@` is a front-end notion. The step that builds the editor's attachments (24) is where a named file is known before the prompt is sent. |
+- **A call does not start before its block ends.** The draft had a `read` start as soon as its `path` argument was complete. Arguments are untrusted partial JSON until the block ends, and are parsed once ([03-agent-loop.md](03-agent-loop.md)). Starting on a half-read object would mean a second, tolerant parser, and a run that has not seen `offset`, `limit` or `fresh` yet and may have to be thrown away. A `read` call's arguments are a few dozen bytes, so the gap between "path complete" and "block ended" is a few milliseconds of stream.
+- **There is no result cache across requests.** The draft had a cache for read-only calls keyed by tool, arguments and file state. A repeated `read` is already cheap, and cheaper in tokens than a cached copy: the tool answers "unchanged" or sends a diff ("Changed-only re-reads", above). A cache in the loop that returned the earlier full result would undo that. The cache of step 2 lives for one request and no longer. A cache for predicted calls belongs with step 4, which predicts them.
 
 ## Background compaction
 
@@ -246,7 +244,7 @@ Specified in [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md). The
 | Output compression | Stage 1. | Stage 2. | Costs tokens; wait for data. |
 | Early tool start | Read-only calls and approval prompts. | Side-effecting calls. | Needs partial-response recovery. |
 | Parallel tools | Yes. | | |
-| Prefetch | Steps 1 and 2. | Step 3. | Needs statistics. |
+| Prefetch | Steps 1 to 3: calls that only read start early, what ran early survives a retry, and `@` files are warmed. | Step 4: prediction from history. | Needs statistics. |
 | Background compaction | Yes. | | |
 | Automatic verification | Configured and learned commands, at the end of a turn. | Test-impact analysis. Speculative verification. | Per-ecosystem work. Speculative runs need the workspace manager and statistics that show they pay. |
 | Live usage view | Yes, with usage history for our own numbers. | Other tools' usage records. | Separate reader work. |
