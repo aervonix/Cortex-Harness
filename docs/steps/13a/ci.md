@@ -2,6 +2,42 @@
 
 Step 13a built `cortex-core` (about 7,000 lines of source with their unit tests, and 5,100 of integration and system tests: 29 unit and 66 integration and system tests), and added to four other crates what it needed: the logging subscriber, the secret filter, the `Timer` trait and git's flags to `cortex-base`; the second "kill now" token and the shell command's environment to `cortex-tools` and `cortex-agent`; the mark on an altered entry and the `plan` entry to `cortex-session`; one method to `cortex-policy`. It adds two direct dependencies, `tracing` and `tracing-core`, which every build already had, and no package to the workspace.
 
+## On the pull request
+
+Measured on pull request 30 on 2026-11-13, on main at `10ae61a` (steps 12 with its fixes, 14 and 31, and the tooling step). "Main" is main's own run at that commit.
+
+| Job | Main, `10ae61a` | First run | Second run | Third run |
+|---|---|---|---|---|
+| `lint-linux` | 43 s | 43 s | 40 s | 42 s |
+| `test-linux` | 90 s | 76 s | 82 s, failed | 70 s |
+| `lint-windows` | 47 s | 69 s, failed | 56 s | 68 s |
+| `test-windows` | 119 s | 135 s, failed | 162 s | 166 s |
+| **Wall time, Linux** | 90 s | 76 s | 82 s | 70 s |
+| **Wall time, Windows** | 119 s | 135 s | 162 s | 166 s |
+
+| | `test-linux` | `test-windows` |
+|---|---|---|
+| The job's command once `xtask` runs (main) | 57.6 s (build tests 34.6 s, run 23.1 s) | 70.0 s (build tests 43.8 s, run 26.3 s) |
+| The same (third run) | 42.6 s (build tests 30.8 s, run 11.8 s) | 113.5 s (build tests 71.6 s, run 41.9 s) |
+| Test time against the tier budgets (main) | tier 1: 12.9 s of 20 s. Tier 2: 21.2 s of 40 s. Tier 3: 20.6 s of 60 s | tier 1: 17.0 s of 20 s. Tier 2: 28.2 s of 40 s. Tier 3: 39.2 s of 90 s |
+| The same (first run) | tier 1: 11.9 s. Tier 2: 20.3 s. Tier 3: 5.5 s | tier 1: 19.3 s of 20 s. Tier 2: 35.0 s of 40 s. Tier 3: 48.8 s of 90 s |
+| The same (second run) | tier 1: 10.7 s. Tier 2: 26.7 s. Tier 3: 9.4 s | tier 1: **25.7 s of 20 s, a warning.** Tier 2: **47.5 s of 40 s, a warning.** Tier 3: 63.8 s of 90 s |
+| The same (third run) | tier 1: 10.8 s. Tier 2: 23.2 s. Tier 3: 10.0 s | tier 1: **25.8 s of 20 s, a warning.** Tier 2: **49.1 s of 40 s, a warning.** Tier 3: 65.4 s of 90 s |
+| Of which `cortex-core` (second run) | tier 1: 0.4 s. Tier 2: 1.4 s. Tier 3: 0.6 s | tier 1: 1.9 s. Tier 2: 6.1 s. Tier 3: 17.9 s |
+
+- **The blocking checks stay under five minutes on both OSes:** 70 s on Linux and 166 s on Windows in the third run.
+- **On Windows two tiers are over their budgets in two runs of three, as warnings.** A tier fails at one and a half times its budget, which is 30 s and 60 s; the worst so far is 25.8 s and 49.1 s.
+  - The unit tier was over its budget on main before this step (21.9 s and 22.8 s in the runs the fixes to step 12 recorded, 17.0 s in main's run at this commit). The core adds 1.9 s to it, of which 1.2 s is one test: the property that undo restores the workspace whatever the tools did, which was a test of step 10's that moved here with the adapter it tests.
+  - The integration tier was at 28.2 s to 39.7 s on main. The core adds 6.1 s, and no test of it stands out: 53 tests at a median of 0.11 s each, where the same tests take 0.03 s on Linux. **What costs is something every test does, which is to start a core and a session.** Which part of that is slow on Windows was not measured. The likely one is that a session's directories and files are made owner-only, which on Windows is a call to set an access list for each ([decision 0029](../../decisions/0029-owner-only-files-on-windows.md)).
+  - The system tier is inside its budget. The core's 17.9 s there is its nine tests that start PowerShell, at about a second and a half a start: the test of trust in the store runs three turns of three commands, and is 6 s by itself.
+  - **The times vary from run to run by more than this step adds.** The same tests gave 19.3 s, 25.7 s and 25.8 s in the unit tier, and 35.0 s, 47.5 s and 49.1 s in the integration tier.
+  - **Recommendation.** Two things, neither of them this step's to settle alone. The Windows budgets were set when a third of today's tests existed, and the job that is to look at Windows test times should take the integration tier with the unit tier. And what a session's start costs on Windows should be measured in a release build before step 13b's start-up budget is checked (100 ms from process start to the request, on a Windows runner): if it is near 0.1 s there too, it has to be found and cut, and if the access lists are it, setting one on a session's directory and letting its files inherit it would be the change to try.
+- **The first run failed on Windows twice, both in this step's tests and neither in its code.**
+  - The lint found three imports unused: they are used only by the test of the second interrupt, which is Unix only. The core cannot be linted for Windows at a desk, so CI was the first to see it.
+  - One test read the output of `echo` with two arguments as one line. PowerShell prints each argument on a line of its own. The command now quotes them.
+- **The second run failed on Linux, in a test with a race in it.** The test of a rewind and a prompt began a rewind and took for granted that its work on the blocking pool would not be over before the prompt was sent. On the runner it was over first, once. It had passed 300 runs at a desk. The test now holds the one blocking thread itself, so that the rewind is under way for as long as the test says, and passed 300 more.
+- **No `cmd.exe` test of step 11 stopped at its limit** in these three runs.
+
 ## Measured at a desk, before the pull request
 
 On the desktop, in cargo's `ci` profile, with the whole workspace (`cargo xtask ci --tiers`), on main with steps 12 (and its fixes), 14 and 31 and the tooling step in it:
