@@ -846,6 +846,8 @@ The last step. It reports and stops. It changes no code.
   - **Slow tests:** the slowest tests per crate and whether they are in the right tier; the blocking checks' time against the 5-minute limit.
   - **Stale docs:** every page under `docs/` against the code; generated artefacts against their sources.
   - **Test gaps:** behaviours in the docs with no test; platform-specific code tested on only one OS.
+  - **Left by earlier steps for this review:**
+    - **From step 10: whether a file is still the one that was read, on Windows.** Just before `write` or `edit` replaces a file, they check that it is still the file they opened (`crates/cortex-tools/src/change.rs`, `Stamp`). On Linux that compares the device and the inode as well as the length and the modification time. On Windows it compares the length and the modification time only, so another file of the same length, put under the name within one tick of the clock, would pass. Compare the volume serial number and the file index too, once the standard library exposes them stably, or read them through `cortex_base::private::windows`.
 - **Depends on.** Everything built so far. It can also be run before the first release at the owner's request.
 - **Done when.** A report lists findings ranked by severity, each with its location, evidence, and a suggested fix sized S, M or L. Performance numbers are given before and after. Nothing is changed.
 - **Must not change.** Anything.
