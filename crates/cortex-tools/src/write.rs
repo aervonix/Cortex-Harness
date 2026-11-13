@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::args;
-use crate::blocking::run_blocking;
+use crate::blocking::{BlockingError, run_blocking};
 use crate::change::{Env, Found, Target, payload_diff};
 use crate::checkpoint::Editing;
 use crate::context::{PlanCx, RunCx};
@@ -117,7 +117,23 @@ pub(crate) async fn run_change(
     }
     match run_blocking(&CancelToken::new(), move |_| work()).await {
         Ok(result) => result,
-        Err(error) => args::unfinished(error, tool),
+        Err(error) => lost(&error, tool),
+    }
+}
+
+/// The result of a change whose work did not report back: it panicked, or
+/// the runtime is shutting down and let go of it. Either can happen after
+/// the file was written, so the result must not say that it was not.
+pub(crate) fn lost(error: &BlockingError, tool: &str) -> ToolResult {
+    let unknown = "The file may or may not have been changed: read it again before relying on \
+                   what it holds.";
+    match error {
+        BlockingError::Cancelled => ToolResult::interrupted(format!(
+            "`{tool}` did not report back before the session shut down. {unknown}"
+        )),
+        BlockingError::Panicked(message) => {
+            ToolResult::error(format!("internal error in `{tool}`: {message}. {unknown}"))
+        }
     }
 }
 
@@ -224,5 +240,28 @@ pub(crate) fn lines_word(lines: usize) -> String {
         "1 line".to_owned()
     } else {
         format!("{} lines", count(lines))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_change_that_did_not_report_back_does_not_claim_that_nothing_changed() {
+        let shut = lost(&BlockingError::Cancelled, "edit");
+        assert_eq!(
+            shut.outcome(),
+            &cortex_protocol::item::ToolOutcome::Interrupted
+        );
+        let panicked = lost(&BlockingError::Panicked("oops".to_owned()), "write");
+        assert!(panicked.is_error());
+        for result in [shut, panicked] {
+            let text = result.text();
+            assert!(text.contains("may or may not have been changed"), "{text}");
+            assert!(!text.contains("Nothing was changed"), "{text}");
+        }
+        assert_eq!(lines_word(1), "1 line");
+        assert_eq!(lines_word(1200), "1,200 lines");
     }
 }

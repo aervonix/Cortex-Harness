@@ -29,7 +29,7 @@ mod limits;
 mod plan;
 mod retries;
 mod rounds;
-mod sessions;
+pub mod sessions;
 mod speed;
 mod steering;
 mod streaming;
@@ -59,7 +59,7 @@ use cortex_tools::{
 use serde_json::json;
 use tokio::sync::Notify;
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 

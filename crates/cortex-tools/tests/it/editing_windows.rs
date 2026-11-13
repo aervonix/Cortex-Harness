@@ -119,12 +119,9 @@ fn a_file_that_stays_open_elsewhere_is_retried_then_left_exactly_as_it_was() {
         ws.files.staleness(&file, &ContentHash::of(content)),
         Staleness::Current
     );
-    // The round was told the file would change and has no result for it:
-    // what it kept is what the file still holds.
-    let changes = ws.checkpoints.changes();
-    assert_eq!(changes.len(), 1);
-    assert_eq!(changes[0].before.as_deref(), Some(&content[..]));
-    assert_eq!(changes[0].after, None);
+    // The round was told the file would change, and then that it was left
+    // as it was: nothing changed, so nothing is listed.
+    assert!(ws.checkpoints.changes().is_empty());
 
     // `write` meets the same lock, and leaves the same file.
     let message = failed(&ws.call(

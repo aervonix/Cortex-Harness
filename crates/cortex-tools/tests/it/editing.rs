@@ -164,6 +164,18 @@ fn the_arguments_are_checked_when_the_call_is_planned() {
         )
         .contains("count")
     );
+    // A count is at most ten thousand: with a hundred edits to a call,
+    // that bounds what one call can be asked to replace.
+    for count in [10_001_u64, u64::MAX] {
+        assert!(
+            refused(
+                &e,
+                json!({"path": "a.txt", "edits": [{"old": "a", "new": "b", "count": count}]})
+            )
+            .contains("count"),
+            "a count of {count}"
+        );
+    }
     // Nothing was touched by any of it.
     assert!(ws.listing().is_empty());
     // A directory that exists is refused when the call runs.
@@ -642,8 +654,8 @@ impl Checkpoints for BrokenCheckpoints {
         Err(CheckpointError::new("the session's disk is full"))
     }
 
-    fn after(&self, _file: &AbsPath, _left: &FileSnapshot) {
-        panic!("nothing was written, so nothing was left");
+    fn after(&self, _file: &AbsPath, _left: Option<&FileSnapshot>) {
+        panic!("nothing was kept, so nothing was written, and there is nothing to report");
     }
 }
 
@@ -665,6 +677,11 @@ fn a_file_whose_earlier_content_cannot_be_kept_is_not_changed() {
             &WriteTool::new(broken.clone()),
             json!({"path": "new.txt", "content": "new\n"}),
         ),
+        // Not even the directories of a file that is not written are made.
+        ws.call(
+            &WriteTool::new(broken.clone()),
+            json!({"path": "made/for/nothing.txt", "content": "new\n"}),
+        ),
     ] {
         let message = failed(&result);
         assert!(
@@ -676,6 +693,60 @@ fn a_file_whose_earlier_content_cannot_be_kept_is_not_changed() {
     }
     assert_eq!(ws.read_bytes("a.txt"), b"as it was\n");
     assert_eq!(ws.listing(), ["a.txt"]);
+    assert!(!ws.root().join("made").exists(), "no directory was left");
+}
+
+#[test]
+fn files_at_the_edges_of_what_text_is_are_changed_exactly() {
+    let ws = Workspace::new("edit_edges");
+    // An empty file: nothing to match, and nothing to keep.
+    seen_file(&ws, "empty.txt", b"");
+    let message = failed(&ws.call(&edit(&ws), one_edit("empty.txt", "x", "y")));
+    assert!(message.contains("`old` was not found."), "{message}");
+    assert_eq!(ws.read_bytes("empty.txt"), b"");
+    ok(&ws.call(
+        &write(&ws),
+        json!({"path": "empty.txt", "content": "now\r\nwith text"}),
+    ));
+    assert_eq!(
+        ws.read_bytes("empty.txt"),
+        b"now\r\nwith text",
+        "there was no line ending to keep, so the content is as given"
+    );
+
+    // A carriage return that is not part of a line break is content.
+    seen_file(&ws, "cr.txt", b"one\rstill one\ntwo\n");
+    ok(&ws.call(&edit(&ws), one_edit("cr.txt", "two", "2")));
+    assert_eq!(ws.read_bytes("cr.txt"), b"one\rstill one\n2\n");
+    ok(&ws.call(
+        &edit(&ws),
+        one_edit("cr.txt", "one\rstill", "one\rstill and"),
+    ));
+    assert_eq!(ws.read_bytes("cr.txt"), b"one\rstill and one\n2\n");
+    // And one at the very end of what `write` is given stays where it is.
+    ok(&ws.call(&write(&ws), json!({"path": "cr.txt", "content": "a\nb\r"})));
+    assert_eq!(ws.read_bytes("cr.txt"), b"a\nb\r");
+
+    // One line with no line break, replaced whole and in part.
+    seen_file(&ws, "one.txt", "naïve café".as_bytes());
+    ok(&ws.call(&edit(&ws), one_edit("one.txt", "ï", "i")));
+    assert_eq!(ws.read_bytes("one.txt"), "naive café".as_bytes());
+    ok(&ws.call(
+        &edit(&ws),
+        one_edit("one.txt", "naive café", "日本語\nline two"),
+    ));
+    assert_eq!(ws.read_bytes("one.txt"), "日本語\nline two".as_bytes());
+
+    // Edits that leave the file as it is write nothing, and say so.
+    seen_file(&ws, "same.txt", b"  keep\n");
+    ws.checkpoints.clear();
+    let result = ws.call(&edit(&ws), one_edit("same.txt", "keep ", "keep"));
+    assert_eq!(
+        ok(&result),
+        "`same.txt` already has this text: with the edits made it would be exactly as it is. \
+         Nothing was written."
+    );
+    assert!(ws.checkpoints.changes().is_empty());
 }
 
 #[test]
@@ -722,11 +793,9 @@ mod unix {
         );
         assert_eq!(ws.read_bytes("locked.txt"), b"protected\n");
         assert_eq!(ws.listing(), ["locked.txt"], "no temporary file is left");
-        // The round was told the file would change, and it did not: the
-        // record has no result, and the file is as the record says.
-        let changes = ws.checkpoints.changes();
-        assert_eq!(changes[0].after, None);
-        assert_eq!(changes[0].before.as_deref(), Some(&b"protected\n"[..]));
+        // The round was told the file would change, and then that it was
+        // left as it was: nothing changed, so nothing is listed.
+        assert!(ws.checkpoints.changes().is_empty());
     }
 
     #[test]

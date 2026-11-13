@@ -115,11 +115,23 @@ pub struct RunCx {
     /// The number of the turn the call belongs to, counted from 1, so that
     /// a result can say when something was last seen. 0 when unknown.
     pub turn: u32,
+    /// The number of the tool round the call belongs to: the calls of one
+    /// response of the model. 0 when the caller does not say.
+    ///
+    /// Two calls with the same number were written by the model in one
+    /// response, so neither was written with the other's result in view. A
+    /// call with a higher number was written after the results of every
+    /// round with a lower one had been sent to the model: the loop moves
+    /// the number on only when a round's results are recorded. A request
+    /// that is sent again keeps its number. `plan` uses it to tell whether
+    /// the model has been shown what an earlier call was told
+    /// (`docs/architecture/05-tools.md`, "`plan`").
+    pub round: u64,
 }
 
 impl RunCx {
     /// A context with the default limits, an open gate, no outline source,
-    /// no image support, an unknown turn and a token of its own.
+    /// no image support, an unknown turn and round, and a token of its own.
     #[must_use]
     pub fn new(
         paths: Arc<PathResolver>,
@@ -136,6 +148,7 @@ impl RunCx {
             outliner: None,
             images: None,
             turn: 0,
+            round: 0,
         }
     }
 
@@ -181,6 +194,13 @@ impl RunCx {
         self
     }
 
+    /// Sets the number of the tool round.
+    #[must_use]
+    pub fn with_round(mut self, round: u64) -> Self {
+        self.round = round;
+        self
+    }
+
     /// The planning context for the same workspace.
     #[must_use]
     pub fn plan_cx(&self) -> PlanCx {
@@ -194,6 +214,7 @@ impl std::fmt::Debug for RunCx {
             .field("root", self.paths.root())
             .field("limits", &self.limits)
             .field("turn", &self.turn)
+            .field("round", &self.round)
             .field("cancelled", &self.cancel.is_cancelled())
             .finish_non_exhaustive()
     }

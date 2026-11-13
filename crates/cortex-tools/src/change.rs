@@ -22,8 +22,14 @@
 //! 7. **The checkpoint is given the bytes that were read.** If they cannot
 //!    be kept, the file is not changed.
 //! 8. **The write is atomic** and follows no link: a reader sees the old
-//!    file or the new one, and a write that fails leaves the old one.
+//!    file or the new one, and a write that fails leaves the old one. The
+//!    directories a new file needs are made here and not before, and are
+//!    removed again if the write does not go through: a call that says
+//!    "nothing was changed" has left nothing behind.
 //! 9. The table of seen files and the checkpoint are told what was left.
+//!    The checkpoint is told when the write failed, too: the file is then
+//!    as it was, and saying so now means that nobody else's later change
+//!    to it can be taken for this round's.
 //!
 //! A change is never abandoned half-way: the work runs to its end on the
 //! blocking pool whatever happens to the call's token, which is looked at
@@ -49,7 +55,7 @@ use cortex_base::{
 use crate::checkpoint::Editing;
 use crate::context::RunCx;
 use crate::files::{FileSnapshot, FileTable, Staleness};
-use crate::output::size;
+use crate::output::{count, size};
 use crate::result::ToolResult;
 use crate::textfile::{self, NotText};
 
@@ -57,6 +63,14 @@ use crate::textfile::{self, NotText};
 /// ends. A larger one is left out, and the payload says so: the payload is
 /// stored in the session log with the result.
 pub(crate) const MAX_PAYLOAD_DIFF: usize = 256 * 1024;
+
+/// The most lines a file may have for the editing tools to change it.
+///
+/// The size limit alone does not bound the work: a file of 16 MiB that is
+/// nothing but line breaks has sixteen million lines, and the tools keep a
+/// few words for each. Two million is far past any source file, and keeps
+/// what a call holds in memory to tens of megabytes.
+pub(crate) const MAX_LINES: usize = 2_000_000;
 
 /// What a change needs of the session, owned so that it can cross to the
 /// blocking pool.
@@ -154,7 +168,13 @@ impl Target {
         };
         match paths.resolve(self.path.abs().as_str()) {
             Ok(again) if again.abs() == self.path.abs() => Ok(()),
-            Ok(_) | Err(_) => Err(moved()),
+            Ok(_) => Err(moved()),
+            // A link to nothing, or a name the rules now refuse.
+            Err(error) => Err(ToolResult::error(format!(
+                "`{}` can no longer be reached as it was when this call was checked: {error}. \
+                 Nothing was changed.",
+                self.shown
+            ))),
         }
     }
 
@@ -236,6 +256,16 @@ impl Target {
     /// mark (step 3).
     pub(crate) fn text<'a>(&self, existing: &'a Existing) -> Result<(bool, &'a str), ToolResult> {
         let shown = &self.shown;
+        let lines = existing.bytes.iter().filter(|&&byte| byte == b'\n').count();
+        if lines > MAX_LINES {
+            return Err(ToolResult::error(format!(
+                "`{shown}` has {} lines, and the editing tools change files of up to {}. \
+                 Nothing was changed. To change it, use a shell command (for example `sed`, or \
+                 a short script).",
+                count(lines),
+                count(MAX_LINES)
+            )));
+        }
         textfile::decode(&existing.bytes).map_err(|not_text| {
             ToolResult::error(match not_text {
                 NotText::Binary(what) => format!(
@@ -267,18 +297,6 @@ impl Target {
                 "The call was interrupted before `{shown}` was written. Nothing was changed."
             )));
         }
-        if matches!(found, Found::Missing)
-            && let Some(parent) = self.fs_path.parent()
-        {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                ToolResult::error(format!(
-                    "The directory for `{shown}` could not be created: {error}. Nothing was \
-                     written."
-                ))
-            })?;
-            // The directories are new names on the way: look again.
-            self.still_leads_there(&env.paths)?;
-        }
         self.still_as_found(found)?;
 
         let abs = self.path.abs();
@@ -296,23 +314,107 @@ impl Target {
                 ))
             })?;
 
-        let options = AtomicWriteOptions {
-            sync: env.editing.sync,
-            // The location was resolved and checked. A link that appears
-            // there now must not carry the write anywhere else.
-            follow_links: false,
-            ..AtomicWriteOptions::default()
-        };
-        write_atomic(&self.fs_path, new, &options, env.editing.clock.as_ref())
-            .map_err(|error| ToolResult::error(self.not_written(&error)))?;
+        // From here on the round has been told that the file will change.
+        // Whatever stops the write, it is told that the file is as it was.
+        if let Err(refused) = self.put(env, found, new) {
+            let still = match found {
+                Found::Missing => None,
+                Found::File(existing) => Some(FileSnapshot {
+                    size: existing.bytes.len() as u64,
+                    modified: existing.stamp.modified,
+                    hash: existing.hash,
+                }),
+            };
+            env.editing.checkpoints.after(abs, still.as_ref());
+            return Err(refused);
+        }
 
         let modified = std::fs::symlink_metadata(&self.fs_path)
             .and_then(|metadata| metadata.modified())
             .ok();
         let snapshot = FileSnapshot::of_content(new, modified);
-        env.editing.checkpoints.after(abs, &snapshot);
+        env.editing.checkpoints.after(abs, Some(&snapshot));
         env.files.record_write(abs, snapshot.clone());
         Ok(snapshot)
+    }
+
+    /// Writes `new` at the target (step 8), making the directories a new
+    /// file needs. A failure leaves nothing behind: the file as it was, and
+    /// none of the directories this call made.
+    fn put(&self, env: &Env, found: &Found, new: &[u8]) -> Result<(), ToolResult> {
+        self.put_with(env, found, || {
+            let options = AtomicWriteOptions {
+                sync: env.editing.sync,
+                // The location was resolved and checked. A link that
+                // appears there now must not carry the write anywhere else.
+                follow_links: false,
+                ..AtomicWriteOptions::default()
+            };
+            write_atomic(&self.fs_path, new, &options, env.editing.clock.as_ref())
+                .map_err(|error| ToolResult::error(self.not_written(&error)))
+        })
+    }
+
+    /// [`put`](Self::put), with the write itself as `write`: the
+    /// directories are made before it and, if it fails, removed after it.
+    fn put_with(
+        &self,
+        env: &Env,
+        found: &Found,
+        write: impl FnOnce() -> Result<(), ToolResult>,
+    ) -> Result<(), ToolResult> {
+        let made = if matches!(found, Found::Missing) {
+            self.make_parents()?
+        } else {
+            Vec::new()
+        };
+        let written = if made.is_empty() {
+            write()
+        } else {
+            // The directories are new names on the way: look again.
+            self.still_leads_there(&env.paths).and_then(|()| write())
+        };
+        if written.is_err() {
+            // Deepest first. Each is removed only if it is empty, which it
+            // is unless someone else has put something in it since.
+            for directory in &made {
+                let _ = std::fs::remove_dir(directory);
+            }
+        }
+        written
+    }
+
+    /// Creates the directories a new file needs, and returns the ones it
+    /// made, deepest first.
+    fn make_parents(&self) -> Result<Vec<PathBuf>, ToolResult> {
+        let Some(parent) = self.fs_path.parent() else {
+            return Ok(Vec::new());
+        };
+        let mut missing = Vec::new();
+        let mut directory = parent;
+        while matches!(
+            std::fs::symlink_metadata(directory),
+            Err(error) if error.kind() == io::ErrorKind::NotFound
+        ) {
+            missing.push(directory.to_path_buf());
+            match directory.parent() {
+                Some(above) => directory = above,
+                None => break,
+            }
+        }
+        if missing.is_empty() {
+            return Ok(missing);
+        }
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            for directory in &missing {
+                let _ = std::fs::remove_dir(directory);
+            }
+            return Err(ToolResult::error(format!(
+                "The directory for `{}` could not be created: {error}. Nothing was changed.",
+                self.shown
+            )));
+        }
+        Ok(missing)
     }
 
     /// Whether the target is still what [`find`](Self::find) found
@@ -396,5 +498,284 @@ pub(crate) fn payload_diff(diff: Option<&crate::diff::Diff>) -> (serde_json::Val
             (serde_json::Value::String(diff.text.clone()), false)
         }
         _ => (serde_json::Value::Null, true),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cortex_base::{FakeClock, PathOptions, Rng, SystemRng};
+
+    use super::*;
+    use crate::checkpoint::MemoryCheckpoints;
+    use crate::files::Shown;
+
+    /// A workspace of one test, with what a change runs with.
+    struct Bench {
+        dir: PathBuf,
+        env: Env,
+        checkpoints: MemoryCheckpoints,
+    }
+
+    impl Bench {
+        fn new(test: &str) -> Self {
+            // A unit test has no directory of its own from Cargo: one in
+            // the system's, under a name no other run has.
+            let dir = std::env::temp_dir().join(format!(
+                "cortex-tools-change-{test}-{:016x}",
+                SystemRng::new().next_u64()
+            ));
+            std::fs::create_dir_all(&dir).expect("create the workspace");
+            let paths = PathResolver::new(&dir, PathOptions::new()).expect("a workspace");
+            let checkpoints = MemoryCheckpoints::new();
+            let editing = Editing::new(
+                Arc::new(checkpoints.clone()),
+                Arc::new(FakeClock::default()),
+            )
+            .with_sync(false);
+            Self {
+                env: Env {
+                    paths: Arc::new(paths),
+                    files: Arc::new(FileTable::new()),
+                    editing,
+                    cancel: CancelToken::new(),
+                },
+                dir,
+                checkpoints,
+            }
+        }
+
+        fn target(&self, name: &str) -> Target {
+            let path = self
+                .env
+                .paths
+                .resolve(name)
+                .expect("a path in the workspace");
+            match Target::new(&path, &self.env.paths) {
+                Ok(target) => target,
+                Err(refused) => panic!("{}", refused.text()),
+            }
+        }
+
+        /// A file the session has read.
+        fn seen(&self, name: &str, content: &[u8]) -> Target {
+            std::fs::write(self.dir.join(name), content).expect("write the file");
+            let target = self.target(name);
+            self.env.files.record_read(
+                target.path.abs(),
+                FileSnapshot::of_content(content, None),
+                Shown {
+                    hash: ContentHash::of(content),
+                    lines: crate::files::LineRanges::new(),
+                    total_lines: 0,
+                    turn: 1,
+                    kept: false,
+                },
+            );
+            target
+        }
+
+        fn read(&self, name: &str) -> Option<Vec<u8>> {
+            std::fs::read(self.dir.join(name)).ok()
+        }
+    }
+
+    impl Drop for Bench {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn refusal(outcome: Result<FileSnapshot, ToolResult>) -> ToolResult {
+        outcome.expect_err("the change must be refused")
+    }
+
+    /// Step 6. The file is read, and before the write someone else changes
+    /// it: the write must not happen, or their change is lost.
+    #[test]
+    fn a_file_that_changes_between_the_read_and_the_write_is_not_replaced() {
+        let bench = Bench::new("changed_between");
+        let target = bench.seen("notes.txt", b"as it was read\n");
+        let found = target
+            .find(&bench.env)
+            .unwrap_or_else(|_| panic!("it opens"));
+
+        // Another program rewrites the file: another length.
+        std::fs::write(bench.dir.join("notes.txt"), b"rewritten by someone else\n").unwrap();
+        let refused = refusal(target.commit(&bench.env, &found, b"the tool's version\n"));
+        assert_eq!(
+            refused.text(),
+            "`notes.txt` changed on disk while this call was working on it. Read it again and \
+             repeat the call. Nothing was changed."
+        );
+        assert_eq!(
+            bench.read("notes.txt").as_deref(),
+            Some(&b"rewritten by someone else\n"[..])
+        );
+        assert!(
+            bench.checkpoints.changes().is_empty(),
+            "nothing was announced"
+        );
+
+        // Another program replaces the file with one of the same length: it
+        // is another file all the same.
+        let target = bench.seen("same.txt", b"aaaa\n");
+        let found = target
+            .find(&bench.env)
+            .unwrap_or_else(|_| panic!("it opens"));
+        std::fs::remove_file(bench.dir.join("same.txt")).unwrap();
+        std::fs::write(bench.dir.join("other.txt"), b"x").unwrap();
+        std::fs::write(bench.dir.join("same.txt"), b"bbbb\n").unwrap();
+        let outcome = target.commit(&bench.env, &found, b"the tool's version\n");
+        if cfg!(unix) {
+            refusal(outcome);
+            assert_eq!(bench.read("same.txt").as_deref(), Some(&b"bbbb\n"[..]));
+        }
+    }
+
+    /// Step 6, for a file that was to be created: one that has appeared
+    /// since is not overwritten.
+    #[test]
+    fn a_file_that_appears_where_one_was_to_be_created_is_not_replaced() {
+        let bench = Bench::new("appeared");
+        let target = bench.target("new.txt");
+        let found = target
+            .find(&bench.env)
+            .unwrap_or_else(|_| panic!("nothing there"));
+        assert!(matches!(found, Found::Missing));
+        std::fs::write(bench.dir.join("new.txt"), b"made by someone else\n").unwrap();
+        refusal(target.commit(&bench.env, &found, b"the tool's version\n"));
+        assert_eq!(
+            bench.read("new.txt").as_deref(),
+            Some(&b"made by someone else\n"[..])
+        );
+        assert!(bench.checkpoints.changes().is_empty());
+    }
+
+    /// A new file's directories are made for the write, and a write that
+    /// does not go through takes them away again.
+    #[test]
+    fn directories_made_for_a_file_that_is_not_written_are_removed_again() {
+        let bench = Bench::new("parents");
+        std::fs::create_dir(bench.dir.join("there")).unwrap();
+        let target = bench.target("there/new/deep/file.txt");
+
+        // The write fails, for whatever reason a write fails.
+        let refused = target.put_with(&bench.env, &Found::Missing, || {
+            assert!(
+                bench.dir.join("there/new/deep").is_dir(),
+                "the directories are there for the write"
+            );
+            Err(ToolResult::error("the disk is full"))
+        });
+        assert_eq!(
+            refused.expect_err("the write failed").text(),
+            "the disk is full"
+        );
+        assert!(
+            !bench.dir.join("there/new").exists(),
+            "the directories the call made are gone"
+        );
+        assert!(bench.dir.join("there").is_dir(), "one that was there stays");
+
+        // A directory someone else has used in the meantime is left.
+        let refused = target.put_with(&bench.env, &Found::Missing, || {
+            std::fs::write(bench.dir.join("there/new/theirs.txt"), b"x").unwrap();
+            Err(ToolResult::error("the disk is full"))
+        });
+        assert!(refused.is_err());
+        assert!(!bench.dir.join("there/new/deep").exists());
+        assert_eq!(
+            bench.read("there/new/theirs.txt").as_deref(),
+            Some(&b"x"[..])
+        );
+
+        // The whole change, when the write goes through: the directories
+        // stay, with the file in them.
+        let found = target
+            .find(&bench.env)
+            .unwrap_or_else(|_| panic!("nothing there"));
+        target
+            .commit(&bench.env, &found, b"content\n")
+            .unwrap_or_else(|refused| panic!("{}", refused.text()));
+        assert_eq!(
+            bench.read("there/new/deep/file.txt").as_deref(),
+            Some(&b"content\n"[..])
+        );
+    }
+
+    #[test]
+    fn a_file_of_too_many_lines_is_refused_before_its_lines_are_listed() {
+        let bench = Bench::new("lines");
+        let target = bench.seen("blank.txt", &vec![b'\n'; MAX_LINES + 1]);
+        let Ok(Found::File(existing)) = target.find(&bench.env) else {
+            panic!("it opens");
+        };
+        let refused = target.text(&existing).expect_err("too many lines");
+        assert_eq!(
+            refused.text(),
+            "`blank.txt` has 2,000,001 lines, and the editing tools change files of up to \
+             2,000,000. Nothing was changed. To change it, use a shell command (for example \
+             `sed`, or a short script)."
+        );
+        // At the bound it is text like any other.
+        let target = bench.seen("fits.txt", &vec![b'\n'; MAX_LINES]);
+        let Ok(Found::File(existing)) = target.find(&bench.env) else {
+            panic!("it opens");
+        };
+        assert!(target.text(&existing).is_ok());
+    }
+
+    /// The token is asked once, before the write. A call cancelled while it
+    /// was reading and matching changes nothing, and says so.
+    #[test]
+    fn a_call_cancelled_before_the_write_changes_nothing() {
+        let bench = Bench::new("cancelled_between");
+        let target = bench.seen("notes.txt", b"as it was\n");
+        let found = target
+            .find(&bench.env)
+            .unwrap_or_else(|_| panic!("it opens"));
+        bench.env.cancel.cancel();
+        let refused = refusal(target.commit(&bench.env, &found, b"changed\n"));
+        assert_eq!(
+            refused.outcome(),
+            &cortex_protocol::item::ToolOutcome::Interrupted
+        );
+        assert_eq!(
+            refused.text(),
+            "The call was interrupted before `notes.txt` was written. Nothing was changed."
+        );
+        assert_eq!(
+            bench.read("notes.txt").as_deref(),
+            Some(&b"as it was\n"[..])
+        );
+        assert!(bench.checkpoints.changes().is_empty());
+        assert_eq!(
+            bench
+                .env
+                .files
+                .staleness(target.path.abs(), &ContentHash::of(b"as it was\n")),
+            Staleness::Current,
+            "the session still knows the file as it is"
+        );
+    }
+
+    /// A write that goes through tells the checkpoint and the table of seen
+    /// files the same thing: what the file now is.
+    #[test]
+    fn a_change_that_goes_through_is_recorded_as_what_the_file_now_is() {
+        let bench = Bench::new("committed");
+        let target = bench.seen("notes.txt", b"before\n");
+        let found = target
+            .find(&bench.env)
+            .unwrap_or_else(|_| panic!("it opens"));
+        let left = target
+            .commit(&bench.env, &found, b"after\n")
+            .unwrap_or_else(|refused| panic!("{}", refused.text()));
+        assert_eq!(left.hash, ContentHash::of(b"after\n"));
+        assert_eq!(bench.read("notes.txt").as_deref(), Some(&b"after\n"[..]));
+        let changes = bench.checkpoints.changes();
+        assert_eq!(changes[0].before.as_deref(), Some(&b"before\n"[..]));
+        assert_eq!(changes[0].after.as_ref(), Some(&left));
+        assert_eq!(bench.env.files.snapshot(target.path.abs()), Some(left));
     }
 }

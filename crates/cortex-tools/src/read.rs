@@ -12,8 +12,7 @@
     reason = "reading a file blocks; the tool runs this on the blocking pool"
 )]
 
-use std::io::{self, Read};
-use std::path::Path;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::Arc;
 
 use cortex_base::{
@@ -552,7 +551,9 @@ fn read_file(
     };
     let scan = match scan(&mut file, call, env.limits, cancel) {
         Ok(Scanned::Text(scan)) => scan,
-        Ok(Scanned::NotText(kind)) => return not_text(path, &fs_path, metadata.len(), kind, env),
+        Ok(Scanned::NotText(kind)) => {
+            return not_text(path, &mut file, metadata.len(), kind, env);
+        }
         Ok(Scanned::Cancelled) => {
             return ToolResult::interrupted(format!("Reading `{shown}` was interrupted."));
         }
@@ -852,7 +853,17 @@ fn changed_text(
 
 /// The result for a file that is not text: an image, if the model takes
 /// it, and otherwise a refusal with the size and the detected type.
-fn not_text(path: &ResolvedPath, fs_path: &Path, bytes: u64, kind: Kind, env: &Env) -> ToolResult {
+///
+/// An image is read from `file`, the handle that was opened and checked,
+/// and never from its path a second time: between two opens the name
+/// could have become a link to another file, or a FIFO.
+fn not_text(
+    path: &ResolvedPath,
+    file: &mut std::fs::File,
+    bytes: u64,
+    kind: Kind,
+    env: &Env,
+) -> ToolResult {
     let shown = path.display();
     let human = size(usize::try_from(bytes).unwrap_or(usize::MAX));
     match kind {
@@ -871,7 +882,7 @@ fn not_text(path: &ResolvedPath, fs_path: &Path, bytes: u64, kind: Kind, env: &E
                     size(usize::try_from(images.max_bytes).unwrap_or(usize::MAX))
                 ));
             }
-            let stored = std::fs::read(fs_path)
+            let stored = whole(file, bytes)
                 .map_err(StoreError::from)
                 .and_then(|content| env.store.put_artifact(&shown, media_type, &content));
             match stored {
@@ -891,6 +902,16 @@ fn not_text(path: &ResolvedPath, fs_path: &Path, bytes: u64, kind: Kind, env: &E
         )),
         Kind::Text => ToolError::Internal("text was taken for binary".to_owned()).into_result(),
     }
+}
+
+/// Everything an open file held when it was opened, from its start: no
+/// more than `len` bytes, the length it had then, however far it has been
+/// read already and however much it has grown since.
+fn whole(file: &mut std::fs::File, len: u64) -> io::Result<Vec<u8>> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut content = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
+    file.take(len).read_to_end(&mut content)?;
+    Ok(content)
 }
 
 fn read_artifact(id: &ArtifactId, call: &Call, env: &Env, cancel: &CancelToken) -> ToolResult {
@@ -1048,6 +1069,36 @@ fn edit_distance(first: &str, second: &str, limit: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An image is read from the handle that was opened and checked: all of
+    /// it, from the start, and no more than it held when it was opened.
+    #[test]
+    fn the_whole_of_an_open_file_is_what_it_held_when_it_was_opened() {
+        use std::io::Write as _;
+
+        let path = std::env::temp_dir().join(format!(
+            "cortex-tools-read-{:016x}",
+            cortex_base::Rng::next_u64(&mut cortex_base::SystemRng::new())
+        ));
+        std::fs::write(&path, b"what the file held").unwrap();
+        let (mut file, metadata) = cortex_base::open_regular(&path).unwrap();
+        // Some of it has been read already, to see what kind of file it is.
+        let mut start = [0u8; 4];
+        file.read_exact(&mut start).unwrap();
+        // And it grows, and then its name is given to another file.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b", and more")
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"another file under the same name").unwrap();
+
+        let content = whole(&mut file, metadata.len());
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(content.unwrap(), b"what the file held");
+    }
 
     fn call(first: u64, last: u64) -> Call {
         Call {

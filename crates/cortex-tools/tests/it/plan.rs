@@ -6,7 +6,7 @@ use std::sync::Arc;
 use cortex_protocol::ids::PlanItemId;
 use cortex_protocol::item::{PlanStatus, ToolOutcome};
 use cortex_protocol::project::{PlanAdd, PlanEdit, PlanItemRef, PlanReorder, PlanReword};
-use cortex_tools::{Concurrency, PlanBoard, PlanEditError, PlanTool};
+use cortex_tools::{Concurrency, PlanBoard, PlanEditError, PlanTool, ToolResult};
 use serde_json::{Value, json};
 
 use crate::{Workspace, failed, ok};
@@ -29,6 +29,12 @@ fn id(text: &str) -> PlanItemId {
 
 fn named(text: &str) -> PlanItemRef {
     PlanItemRef { id: id(text) }
+}
+
+/// A call in a tool round of the loop: the calls of one response share a
+/// number, and a later response has a higher one.
+fn in_round(ws: &Workspace, tool: &PlanTool, round: u64, args: Value) -> ToolResult {
+    ws.call_with(&ws.cx().with_round(round), tool, args)
 }
 
 /// The ids of the plan, in order, each with its status.
@@ -285,7 +291,7 @@ fn a_call_that_crosses_a_users_edit_replaces_nothing_and_returns_the_current_pla
     let ws = Workspace::new("plan_crossing");
     let board = Arc::new(PlanBoard::new());
     let tool = PlanTool::new(Arc::clone(&board));
-    ok(&ws.call(&tool, three()));
+    ok(&in_round(&ws, &tool, 1, three()));
 
     // The user removes an item and adds one, while the model works.
     let change = board
@@ -309,7 +315,7 @@ fn a_call_that_crosses_a_users_edit_replaces_nothing_and_returns_the_current_pla
         item("fix", "Fix the off-by-one", "done"),
         item("test", "Add a test", "active"),
     ]});
-    let result = ws.call(&tool, stale.clone());
+    let result = in_round(&ws, &tool, 2, stale.clone());
     assert_eq!(result.outcome(), &ToolOutcome::Error);
     assert_eq!(
         result.text(),
@@ -331,10 +337,30 @@ fn a_call_that_crosses_a_users_edit_replaces_nothing_and_returns_the_current_pla
     assert_eq!(payload["plan"]["items"][2]["id"], "u1");
     assert_eq!(payload["user_edits"].as_array().unwrap().len(), 2);
 
-    // The model now has the current plan, and its next call goes through,
-    // whatever it holds: the choice is the model's again.
-    let result = ws.call(
+    // A second call in the same response was written without the first
+    // one's result, so it crosses the edit just the same. The model sees
+    // neither result until the round is over.
+    let also_stale = json!({"items": [
+        item("read", "Read the parser", "done"),
+        item("test", "Add a test", "done"),
+    ]});
+    let result = in_round(&ws, &tool, 2, also_stale);
+    assert_eq!(result.outcome(), &ToolOutcome::Error);
+    assert!(
+        result.text().contains("- removed `test` (Add a test)"),
+        "told again: {}",
+        result.text()
+    );
+    assert_eq!(shape(&board), ["read:done", "fix:active", "u1:pending"]);
+    assert_eq!(board.get().revision, 2, "the user's edit still stands");
+
+    // The round is over and its results have gone to the model. A call of
+    // the next response goes through, whatever it holds: the choice is the
+    // model's again.
+    let result = in_round(
+        &ws,
         &tool,
+        3,
         json!({"items": [
             item("read", "Read the parser", "done"),
             item("fix", "Fix the off-by-one", "done"),
@@ -345,10 +371,12 @@ fn a_call_that_crosses_a_users_edit_replaces_nothing_and_returns_the_current_pla
     assert_eq!(shape(&board), ["read:done", "fix:done", "u1:active"]);
     assert_eq!(board.get().revision, 3);
 
-    // A call that already is the plan the user left crosses nothing.
+    // A call that already is the plan the user left changes nothing.
     board.apply(&[PlanEdit::Skip(named("u1"))]).unwrap();
-    let result = ws.call(
+    let result = in_round(
+        &ws,
         &tool,
+        4,
         json!({"items": [
             item("read", "Read the parser", "done"),
             item("fix", "Fix the off-by-one", "done"),
@@ -356,6 +384,79 @@ fn a_call_that_crosses_a_users_edit_replaces_nothing_and_returns_the_current_pla
         ]}),
     );
     assert!(ok(&result).starts_with("Plan unchanged"));
+    // It told the model the plan, which is the list it sent. But a second
+    // call beside it, in the same response, still crosses the edit.
+    let result = in_round(&ws, &tool, 4, json!({"items": []}));
+    assert_eq!(result.outcome(), &ToolOutcome::Error);
+    assert!(
+        result.text().contains("- skipped `u1`"),
+        "{}",
+        result.text()
+    );
+    assert_eq!(board.get().items.len(), 3);
+}
+
+/// What a call was told counts as shown only for the edits it was told of.
+/// An edit the user makes after that is news to the next call.
+#[test]
+fn an_edit_made_after_a_refusal_is_still_news_to_the_next_round() {
+    let ws = Workspace::new("plan_later_edit");
+    let board = Arc::new(PlanBoard::new());
+    let tool = PlanTool::new(Arc::clone(&board));
+    ok(&in_round(&ws, &tool, 1, three()));
+    let all_done = json!({"items": [
+        item("read", "Read the parser", "done"),
+        item("fix", "Fix the off-by-one", "done"),
+        item("test", "Add a test", "done"),
+    ]});
+
+    board.apply(&[PlanEdit::Skip(named("test"))]).unwrap();
+    let refused = in_round(&ws, &tool, 2, all_done.clone());
+    assert!(refused.text().contains("- skipped `test`"));
+    // While that result is on its way, the user edits again.
+    board.apply(&[PlanEdit::Remove(named("read"))]).unwrap();
+
+    let refused = in_round(&ws, &tool, 3, all_done.clone());
+    assert_eq!(refused.outcome(), &ToolOutcome::Error);
+    let text = refused.text();
+    assert!(
+        text.contains("- removed `read` (Read the parser)"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("skipped `test`"),
+        "the model was shown that one by the last round's result: {text}"
+    );
+    assert_eq!(shape(&board), ["fix:active", "test:skipped"]);
+
+    ok(&in_round(&ws, &tool, 4, all_done));
+    assert_eq!(shape(&board), ["read:done", "fix:done", "test:done"]);
+}
+
+/// A caller that gives no round number cannot say that one call came after
+/// the results of another. Nothing then counts as shown by a result: the
+/// user's edit stands until its notice is delivered.
+#[test]
+fn with_no_round_number_an_edit_stands_until_its_notice_is_delivered() {
+    let ws = Workspace::new("plan_no_round");
+    let board = Arc::new(PlanBoard::new());
+    let tool = PlanTool::new(Arc::clone(&board));
+    ok(&ws.call(&tool, three()));
+    let change = board.apply(&[PlanEdit::Remove(named("test"))]).unwrap();
+    let mine = json!({"items": [item("only", "Mine", "active")]});
+
+    for _ in 0..3 {
+        let refused = ws.call(&tool, mine.clone());
+        assert_eq!(refused.outcome(), &ToolOutcome::Error);
+        assert_eq!(shape(&board), ["read:done", "fix:active"]);
+    }
+    // Nor does a numbered call take an unnumbered one for an earlier round.
+    let refused = in_round(&ws, &tool, 9, mine.clone());
+    assert_eq!(refused.outcome(), &ToolOutcome::Error);
+
+    board.delivered(change.plan.revision);
+    ok(&ws.call(&tool, mine));
+    assert_eq!(shape(&board), ["only:active"]);
 }
 
 /// The model is also shown an edit by its notice. Once the core says the

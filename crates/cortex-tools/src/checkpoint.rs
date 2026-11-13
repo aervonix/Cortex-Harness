@@ -20,7 +20,7 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use cortex_base::{AbsPath, SharedClock};
+use cortex_base::{AbsPath, ContentHash, SharedClock};
 
 use crate::files::FileSnapshot;
 
@@ -50,8 +50,13 @@ impl CheckpointError {
 ///
 /// Both methods block, and are called on the blocking pool. They are
 /// called in pairs, in this order, for each file a tool changes: `before`,
-/// then the write, then `after`. A write that fails has no `after`, and the
-/// file is then as `before` recorded it.
+/// then the write, then `after`.
+///
+/// **A write that fails is reported too:** `after` is then given what the
+/// file still is, which is what `before` was given. The record of the round
+/// is so never left to be completed by a later look at the file, which
+/// could find a change somebody else made in the meantime and take it for
+/// the round's.
 pub trait Checkpoints: Send + Sync {
     /// Keeps what `file` held before a tool changes it: `content` is its
     /// bytes as the tool read them, or `None` for a file that does not
@@ -66,8 +71,10 @@ pub trait Checkpoints: Send + Sync {
     /// When the content cannot be kept. The tool does not change the file.
     fn before(&self, file: &AbsPath, content: Option<&[u8]>) -> Result<(), CheckpointError>;
 
-    /// Records what the tool left at `file`.
-    fn after(&self, file: &AbsPath, left: &FileSnapshot);
+    /// Records what the tool left at `file`: the file as it now is, or
+    /// `None` when there is no file (one that was to be created, and could
+    /// not be).
+    fn after(&self, file: &AbsPath, left: Option<&FileSnapshot>);
 }
 
 /// What `write` and `edit` are made with.
@@ -127,12 +134,16 @@ pub struct Change {
     /// What it held before the first change. `None`: it did not exist.
     pub before: Option<Vec<u8>>,
     /// What the last change left. `None`: a change was announced and no
-    /// result recorded, so the write did not happen.
+    /// result has been recorded for it yet.
     pub after: Option<FileSnapshot>,
 }
 
 /// Checkpoints kept in memory, for a session with no directory: tests of
 /// the tools and of the loop, and one-off runs that store nothing.
+///
+/// Like the session's own, it lists a file only while the file differs
+/// from what it was: a change that is reported as having left the file as
+/// it was (a write that failed) is forgotten.
 #[derive(Debug, Clone, Default)]
 pub struct MemoryCheckpoints {
     changes: Arc<Mutex<Vec<Change>>>,
@@ -176,13 +187,23 @@ impl Checkpoints for MemoryCheckpoints {
         Ok(())
     }
 
-    fn after(&self, file: &AbsPath, left: &FileSnapshot) {
+    fn after(&self, file: &AbsPath, left: Option<&FileSnapshot>) {
         let mut changes = self.lock();
-        if let Some(change) = changes
-            .iter_mut()
-            .find(|change| change.file.key() == file.key())
-        {
-            change.after = Some(left.clone());
+        let Some(at) = changes
+            .iter()
+            .position(|change| change.file.key() == file.key())
+        else {
+            return;
+        };
+        let unchanged = match (&changes[at].before, left) {
+            (None, None) => true,
+            (Some(before), Some(left)) => ContentHash::of(before) == left.hash,
+            _ => false,
+        };
+        if unchanged {
+            changes.remove(at);
+        } else {
+            changes[at].after = left.cloned();
         }
     }
 }
@@ -199,9 +220,9 @@ mod tests {
         let file = AbsPath::parse("/work/a.rs", PathStyle::Posix).unwrap();
         let other = AbsPath::parse("/work/new.rs", PathStyle::Posix).unwrap();
         checkpoints.before(&file, Some(b"one")).unwrap();
-        checkpoints.after(&file, &FileSnapshot::of_content(b"two", None));
+        checkpoints.after(&file, Some(&FileSnapshot::of_content(b"two", None)));
         checkpoints.before(&file, Some(b"two")).unwrap();
-        checkpoints.after(&file, &FileSnapshot::of_content(b"three", None));
+        checkpoints.after(&file, Some(&FileSnapshot::of_content(b"three", None)));
         checkpoints.before(&other, None).unwrap();
 
         let changes = checkpoints.changes();
@@ -213,6 +234,20 @@ mod tests {
         );
         assert_eq!(changes[1].before, None);
         assert_eq!(changes[1].after, None, "announced, and not yet written");
+
+        // A write that failed left the file as it was: nothing changed, so
+        // nothing is listed. The same for a file that was not created.
+        checkpoints.after(&other, None);
+        assert_eq!(checkpoints.changes().len(), 1);
+        let third = AbsPath::parse("/work/c.rs", PathStyle::Posix).unwrap();
+        checkpoints.before(&third, Some(b"kept")).unwrap();
+        checkpoints.after(&third, Some(&FileSnapshot::of_content(b"kept", None)));
+        assert_eq!(checkpoints.changes().len(), 1);
+        // A file that is changed and then changed back is not a change.
+        checkpoints.before(&file, Some(b"three")).unwrap();
+        checkpoints.after(&file, Some(&FileSnapshot::of_content(b"one", None)));
+        assert!(checkpoints.changes().is_empty());
+        checkpoints.before(&file, Some(b"one")).unwrap();
         checkpoints.clear();
         assert!(checkpoints.changes().is_empty());
     }
