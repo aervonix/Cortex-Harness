@@ -1,7 +1,8 @@
 # Every night: the checks that do not belong on a pull request. So far, the
 # advisory check, the unused-dependency check, a release build for every
 # release target, the property tests with many more cases than a pull
-# request runs, and coverage-guided fuzzing of the stream decoders. Later
+# request runs, the mutation driver's test against the real cargo, and
+# coverage-guided fuzzing of the stream decoders. Later
 # steps add the long-session memory test and the live smoke tests (tiers 5
 # and 6).
 #
@@ -135,6 +136,12 @@ jobs:
           tool: cargo-nextest@0.9.151
       - name: Tiers 1 and 2, with more property cases
         run: cargo run --locked --quiet --package xtask -- test --locked --profile properties
+      # `cargo xtask mutate` against the real cargo and nextest, on the small
+      # workspace kept for it (docs/testing-and-ci.md, "Breaking the code on
+      # purpose"). It builds that workspace about ten times over, which is
+      # why it is here and not in the blocking checks.
+      - name: The mutation driver, against the real cargo
+        run: cargo run --locked --quiet --package xtask -- test --locked -p xtask --run-ignored only sys_the_real
 
   # Coverage-guided fuzzing of the stream decoders (docs/testing-and-ci.md,
   # "Not blocking"): the parser of server-sent events and the decoder of
