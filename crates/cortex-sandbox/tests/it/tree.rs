@@ -452,7 +452,12 @@ fn sys_the_guard_is_told_of_each_tree_and_of_its_end() {
     first.end();
     drop(second);
     assert!(both[0].gone_within(LIMIT) && both[1].gone_within(LIMIT));
-    // The guard's pipe closes with its last handle, and it ends.
+    until(LIMIT, "the guard to be told that the other ended", || {
+        told() == format!("+{a}\n+{b}\n-{a}\n-{b}\n")
+    });
+    // The guard's pipe closes with its last handle, which a tree holds
+    // too, and the stand-in ends having been told nothing more.
+    drop(first);
     drop(guard);
     assert_eq!(told(), format!("+{a}\n+{b}\n-{a}\n-{b}\n"));
     let _ = std::fs::remove_dir_all(&directory);
