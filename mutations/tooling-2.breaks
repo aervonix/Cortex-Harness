@@ -1,0 +1,194 @@
+# The second tooling step: tier comparisons, the try command, stress under
+# load, the timeout report, mutate --jobs, and the edit and probe commands.
+# Written with the code, and run with `cargo xtask mutate tooling-2`.
+
+[break] compare-ignores-the-start
+rule: Each side of a comparison is held against its own process-start cost.
+file: xtask/src/compare.rs
+in: moved
+find: let above = (case.seconds - start).max(0.0);
+replace: let above = case.seconds;
+caught-by:
+    compare::tests::a_slower_runner_alone_moves_nothing
+    compare::tests::the_comparison_of_two_fixed_reports_is_exactly_this
+
+[break] compare-shows-noise-as-movement
+rule: A change smaller than half a millisecond is no change.
+file: xtask/src/compare.rs
+in: moved
+find: change.delta.abs() >= SAME
+replace: change.delta != 0.0
+caught-by:
+    compare::tests::the_comparison_of_two_fixed_reports_is_exactly_this
+
+[break] compare-forgets-gone-tests
+rule: A test on one side only counts its whole time.
+file: xtask/src/compare.rs
+in: moved
+find: let mut keys: Vec<&(String, String)> = now.keys().chain(before.keys()).collect();
+replace: let mut keys: Vec<&(String, String)> = now.keys().collect();
+caught-by:
+    compare::tests::the_comparison_of_two_fixed_reports_is_exactly_this
+
+[break] crate-split-in-the-wrong-tier
+rule: Each crate's time goes to the tier of each test.
+file: xtask/src/tiers.rs
+in: by_crate
+find: crates[index].1[Tier::of(&case.binary, &case.name).index()]
+replace: crates[index].1[0]
+caught-by:
+    tiers::tests::a_tier_is_split_by_crate_above_the_start
+
+[break] github-time-off-by-a-day
+rule: A time as GitHub writes it is read as seconds since 1970.
+file: xtask/src/runs.rs
+in: seconds_of
+find: let of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+replace: let of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day;
+caught-by:
+    runs::tests::github_times_are_read
+    runs::tests::a_run_is_read_from_what_gh_prints
+
+[break] ci-times-mixes-the-runs-starts
+rule: Each column of the tier table is held against its own run's start cost.
+file: xtask/src/runs.rs
+in: tables
+find: tiers::total(cases, tier, *start).above_start
+replace: tiers::total(cases, tier, starts[0]).above_start
+caught-by:
+    runs::tests::the_tables_are_those_of_a_steps_ci_page
+
+[break] try-passes-a-quote
+rule: A try run passes on no word with a character a shell would read.
+file: xtask/src/try_run.rs
+in: plain
+find: b"_-:./=,()|&!~*+@#".contains(&byte)
+replace: b"_-:./=,()|&!~*+@#;$' ".contains(&byte)
+caught-by:
+    try_run::tests::what_a_try_run_does_not_run_is_refused
+
+[break] try-runs-any-command
+rule: A try run runs only test, stress, startup, perf or ci.
+file: xtask/src/try_run.rs
+in: Inputs::command
+find: if !COMMANDS.contains(&verb.as_str())
+replace: if verb.is_empty()
+caught-by:
+    try_run::tests::what_a_try_run_does_not_run_is_refused
+
+[break] try-count-is-ignored
+rule: A count makes a test run a stress run.
+file: xtask/src/try_run.rs
+in: Inputs::command
+find: "test" | "stress" if verb == "stress" || self.count.is_some() =>
+replace: "test" | "stress" if verb == "stress" =>
+caught-by:
+    try_run::tests::a_count_makes_a_test_run_a_stress_run
+
+[break] script-may-paste-an-input
+rule: No workflow input is pasted into the text of a run script.
+file: xtask/src/rules/workflows.rs
+in: pastes_a_typed_value
+find: ["${{inputs.", "${{github.event.", "${{github.head_ref"]
+replace: ["${{github.head_ref"]
+caught-by:
+    rules::workflows::tests::a_typed_value_is_never_pasted_into_a_script
+
+[break] script-ends-at-its-key
+rule: The lines of a block script are checked, not only its key's line.
+file: xtask/src/rules/workflows.rs
+in: check
+find: script = Some(key);
+replace: script = None;
+caught-by:
+    rules::workflows::tests::a_typed_value_is_never_pasted_into_a_script
+
+[break] pin-takes-the-wrong-cores
+rule: A squeeze pins the run to the first K cores the process may use.
+file: xtask/src/load.rs
+in: first_cores
+find: cores[..count]
+replace: cores[cores.len() - count..]
+caught-by:
+    load::tests::the_first_cores_of_a_list_are_chosen
+
+[break] stress-forgets-the-squeeze
+rule: --load and --cores are this command's, not nextest's.
+file: xtask/src/stress.rs
+in: Request::parse
+find: if request.squeeze.take(argument, &mut arguments)? {
+replace: if false && request.squeeze.take(argument, &mut arguments)? {
+caught-by:
+    stress::tests::a_squeeze_is_this_commands_and_not_nextests
+
+[break] startup-passes-any-profile
+rule: Nothing reaches cargo as a profile that is not a profile's name.
+file: xtask/src/startup.rs
+in: build
+find: if profile.is_empty()
+replace: if false
+caught-by:
+    startup::tests::startup_needs_one_binary_or_one_profile
+
+[break] jobs-lose-a-piece
+rule: Every piece of work is done once, by one job or another.
+file: xtask/src/mutate/jobs.rs
+in: for_each
+find: let index = next.fetch_add(1, Ordering::SeqCst);
+replace: let index = next.fetch_add(2, Ordering::SeqCst);
+caught-by:
+    mutate::drive::tests::three_jobs_judge_the_breaks_as_one_does
+
+[break] jobs-ignore-the-time
+rule: No job starts a piece of work once the time is up.
+file: xtask/src/mutate/jobs.rs
+in: for_each
+find: if failure.is_none() && !halt.load(Ordering::SeqCst) && out_of_time() {
+replace: if failure.is_none() && !halt.load(Ordering::SeqCst) && out_of_time() && false {
+caught-by:
+    mutate::drive::tests::jobs_start_nothing_once_the_time_is_up_and_the_next_run_carries_on
+
+[break] jobs-share-one-copy
+rule: Each job works in a copy of the tree of its own.
+file: xtask/src/mutate/jobs.rs
+in: copy
+find: scratch.join(numbered("tree", job))
+replace: scratch.join("tree")
+caught-by:
+    mutate::drive::tests::three_jobs_judge_the_breaks_as_one_does
+
+[break] jobs-share-one-build
+rule: Each job builds in a directory of its own.
+file: xtask/src/mutate/drive.rs
+in: CargoRunner::new
+find: target: scratch.join(jobs::numbered("target", job)),
+replace: target: scratch.join("target"),
+caught-by:
+    mutate::drive::tests::each_job_has_a_build_directory_and_a_log_of_its_own
+
+[break] watch-limit-of-a-system-test
+rule: The watch gives a system test the 60 s nextest gives it.
+file: crates/cortex-testkit/src/watch.rs
+in: limit_of
+find: (_, true) => 60,
+replace: (_, true) => 10,
+caught-by:
+    watch::tests::the_limits_are_those_nextest_is_given
+
+[break] watch-keeps-a-finished-wait
+rule: A wait is reported only while it lasts.
+file: crates/cortex-testkit/src/watch.rs
+in: Doing::drop
+find: lock().retain(|entry| entry.id != self.id);
+replace:
+caught-by:
+    watch::tests::a_wait_is_reported_while_it_lasts
+
+[break] gate-forgets-where-it-was-made
+rule: A gate is known by where the test made it.
+file: crates/cortex-testkit/src/gate.rs
+in: Gate::name
+find: format!("the gate made at {}", self.inner.made_at)
+replace: "the gate made at somewhere".to_owned()
+caught-by:
+    gate::tests::a_gate_is_named_by_where_it_was_made
