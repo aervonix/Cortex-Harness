@@ -549,8 +549,8 @@ caught-by:
 rule: A `~` the shell does not take as the home directory is a name, in a folder named `~`.
 file: crates/cortex-policy/src/engine.rs
 in: Engine::judge_named
-find: let as_name = (text.starts_with('~') && !home_written).then(|| format!("./{text}"));
-replace: let as_name = None::<String>.filter(|_| home_written);
+find: (text.starts_with('~') && (!home_written || self.shell == ShellSyntax::PowerShell))
+replace: (false)
 caught-by:
     bypasses::patterns_and_lost_directories_hold_against_the_second_review
 
@@ -788,7 +788,7 @@ caught-by:
 rule: A quoted `~` in a redirection is a name, in a folder named `~`.
 file: crates/cortex-policy/src/engine.rs
 in: Engine::texts_of
-find: if word.text.starts_with('~') && !word.home
+find: if word.text.starts_with('~') && (!word.home || self.shell == ShellSyntax::PowerShell)
 replace: if false
 caught-by:
     bypasses::the_final_review_of_the_fixes_holds
@@ -828,5 +828,14 @@ file: crates/cortex-policy/src/command/pattern.rs
 in: raw_words
 find: .filter(|word| seen.insert(word.clone()))
 replace: .filter(|word| seen.insert(word.clone()) || !word.is_empty())
+caught-by:
+    bypasses::the_final_review_of_the_fixes_holds
+
+[break] powershell-bare-tilde-only-home
+rule: In PowerShell a word that begins with `~` is judged both as the home directory and as a name, quoted or not: Windows PowerShell passes a bare one to a native program as it is.
+file: crates/cortex-policy/src/engine.rs
+in: Engine::judge_named
+find: (!home_written || self.shell == ShellSyntax::PowerShell)
+replace: !home_written
 caught-by:
     bypasses::the_final_review_of_the_fixes_holds

@@ -1754,6 +1754,17 @@ fn the_final_review_of_the_fixes_holds() {
     let outcome = shell(&tilde_folder, "cat \"~/notes\"");
     assert_ne!(said(&outcome), ReadOnly, "{}", reason(&outcome));
     assert_eq!(said(&shell(&tilde_folder, "echo x > ~/notes")), Allow);
+    // In PowerShell a bare `~` is both: Windows PowerShell passes it to a
+    // native program as it is.
+    let powershell_tilde = engine_with(|parts| {
+        parts.level = Level::Unrestricted;
+        parts.shell = ShellSyntax::PowerShell;
+        parts.rules = vec![user(Effect::Write, "**/~/**", RuleAction::Deny)];
+    });
+    for command in ["xcopy.exe evil ~/notes", "Set-Content ~/notes x"] {
+        let outcome = shell(&powershell_tilde, command);
+        assert_ne!(said(&outcome), Allow, "{command:?}");
+    }
     // Ordinary lines are not asked about for the work of checking them: a
     // `cd` in each of several groups, and a long text whose words repeat
     // (found by the last review of the fixes to step 12).
