@@ -277,6 +277,9 @@ struct Scan {
     total_lines: u64,
     /// The wanted lines that fit, numbered.
     lines: Vec<(u64, String)>,
+    /// The numbers of the lines that are shown shortened, over the line
+    /// limit. The model has not seen them in full.
+    shortened: Vec<u64>,
     /// The first wanted line that did not fit the output limits.
     stopped_at: Option<u64>,
     /// Whether a line shown was not valid UTF-8.
@@ -308,6 +311,7 @@ struct Lines {
     line_bytes: usize,
     line_chars: usize,
     lines: Vec<(u64, String)>,
+    shortened: Vec<u64>,
     stopped_at: Option<u64>,
     invalid: bool,
 }
@@ -326,6 +330,7 @@ impl Lines {
             line_bytes: 0,
             line_chars: 0,
             lines: Vec::new(),
+            shortened: Vec::new(),
             stopped_at: None,
             invalid: false,
         }
@@ -399,13 +404,19 @@ impl Lines {
                     String::from_utf8_lossy(bytes)
                 }
             };
-            let text = if whole {
-                self.limits.clip(&text).into_owned()
+            let (text, shortened) = if whole {
+                match self.limits.clip(&text) {
+                    std::borrow::Cow::Borrowed(text) => (text.to_owned(), false),
+                    std::borrow::Cow::Owned(text) => (text, true),
+                }
             } else {
-                self.limits.clip_start(&text, chars)
+                (self.limits.clip_start(&text, chars), true)
             };
             if self.budget.take(&text) {
                 self.lines.push((self.number, text));
+                if shortened {
+                    self.shortened.push(self.number);
+                }
                 // Only a line that is shown can make the result say the
                 // file is not UTF-8.
                 self.invalid |= invalid;
@@ -489,6 +500,7 @@ fn scan(
         size,
         total_lines,
         lines: lines.lines,
+        shortened: lines.shortened,
         stopped_at: lines.stopped_at,
         invalid: lines.invalid,
         full,
@@ -614,12 +626,23 @@ fn read_file(
     }
 
     // The content. What the model has now is what it had of this version,
-    // and the lines just sent.
+    // and the lines just sent: those sent whole. A line shown shortened has
+    // not been seen, and a later read of it must not be answered with
+    // "unchanged".
     let mut lines = match &earlier {
         Some(prior) if prior.hash == scan.hash => prior.lines.clone(),
         _ => LineRanges::new(),
     };
-    lines.insert(content.first, content.last);
+    let mut from = content.first;
+    for &number in scan
+        .shortened
+        .iter()
+        .filter(|number| (content.first..=content.last).contains(number))
+    {
+        lines.insert(from, number - 1);
+        from = number + 1;
+    }
+    lines.insert(from, content.last);
     let kept = keep_version(&scan, env);
     *seen = Some((
         abs.clone(),

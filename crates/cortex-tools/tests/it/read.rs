@@ -466,6 +466,45 @@ fn a_diff_is_not_sent_in_place_of_lines_that_moved_into_the_range_unseen() {
 }
 
 #[test]
+fn a_line_shown_shortened_does_not_count_as_seen() {
+    // Line 3 is longer than the line limit, so it is shown cut, with a
+    // marker. The model has not seen it: reading the file again must send
+    // the content again, never "unchanged".
+    let ws = Workspace::new("reread_shortened");
+    let long = "word ".repeat(1000);
+    ws.file("a.txt", &format!("one\ntwo\n{long}\nfour\nfive\n"));
+    let tool = ReadTool::new();
+    let first = ok(&ws.call(&tool, json!({"path": "a.txt"})));
+    assert!(
+        first.starts_with("a.txt (5 lines)\none\ntwo\nword word"),
+        "{first}"
+    );
+    assert!(first.contains("characters]\nfour\nfive"), "{first}");
+
+    let again = ok(&ws.call(&tool, json!({"path": "a.txt"})));
+    assert_eq!(again, first, "the content is sent again");
+    let line = ok(&ws.call(&tool, json!({"path": "a.txt", "offset": 3, "limit": 1})));
+    assert!(line.starts_with("a.txt (line 3 of 5)\nword word"), "{line}");
+
+    // The lines that were shown whole are seen, and a read of those alone
+    // is answered in one line that names them.
+    assert_eq!(
+        ok(&ws.call(&tool, json!({"path": "a.txt", "limit": 2}))),
+        "a.txt: unchanged since you read lines 1-2, 4-5 (5 lines in all). The content is not \
+         sent again: pass `fresh: true` if you need it."
+    );
+    assert!(
+        ok(&ws.call(&tool, json!({"path": "a.txt", "offset": 4})))
+            .starts_with("a.txt: unchanged since you read lines 1-2, 4-5 ")
+    );
+
+    // A file with no line over the limit is unaffected.
+    ws.file("b.txt", "one\ntwo\n");
+    ok(&ws.call(&tool, json!({"path": "b.txt"})));
+    assert!(ok(&ws.call(&tool, json!({"path": "b.txt"}))).starts_with("b.txt: unchanged"));
+}
+
+#[test]
 fn an_empty_file_read_again_is_said_to_be_still_empty() {
     let ws = Workspace::new("reread_empty");
     ws.file("empty.txt", "");
