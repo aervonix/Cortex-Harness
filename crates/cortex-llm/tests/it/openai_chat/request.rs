@@ -1107,6 +1107,7 @@ fn recorded_request(name: &str) -> Option<ModelRequest> {
     };
     Some(match scenario {
         "text" | "error-authentication" => scenario::text(server),
+        "toolbox" => crate::toolbox::request(server.provider),
         "reasoning" => scenario::reasoning(server),
         "tool-call" => scenario::tool_call(server),
         "tool-calls" => scenario::tool_calls(server),

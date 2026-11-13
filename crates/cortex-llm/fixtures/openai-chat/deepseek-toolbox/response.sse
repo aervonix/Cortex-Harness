@@ -1,0 +1,8 @@
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794590293,"model":"deepseek-flash","system_fingerprint":"bc19ba97cbe016479903222bb1578db6","choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794590293,"model":"deepseek-flash","system_fingerprint":"bc19ba97cbe016479903222bb1578db6","choices":[{"index":0,"delta":{"content":"ready"},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"id_fixture0001","object":"chat.completion.chunk","created":1794590293,"model":"deepseek-flash","system_fingerprint":"bc19ba97cbe016479903222bb1578db6","choices":[{"index":0,"delta":{"content":""},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":3282,"completion_tokens":1,"total_tokens":3283,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":3282}}
+
+data: [DONE]
+
