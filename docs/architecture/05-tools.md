@@ -20,32 +20,66 @@ pub trait Tool: Send + Sync {
 }
 
 pub struct Plan {
-    pub effects: Vec<Effect>,          // Read(path) | Write(path) | Exec(command) | Network(host)
+    pub effects: Vec<Effect>,          // Read | ReadTree | Write | Exec | Network | Ext
     pub concurrency: Concurrency,      // ReadOnly | Keyed(paths) | Exclusive
     pub summary: String,               // one line for approval prompts and the UI
     // plus the validated arguments, private to the tool
 }
+
+/// The only way a tool is run: `run`, then the output policy.
+pub async fn execute(tool: &dyn Tool, plan: Plan, cx: &RunCx, out: &mut dyn ToolOutput)
+    -> ToolResult;
 ```
 
-The two phases exist so the permission engine, the sandbox and the scheduler can act on declared effects before anything runs (see [03-agent-loop.md](03-agent-loop.md)). Built-in tools, extension tools and MCP tools all implement this trait, so one pipeline applies to all three.
+The two phases exist so the permission engine, the sandbox and the scheduler can act on declared effects before anything runs (see [03-agent-loop.md](03-agent-loop.md)). Built-in tools, extension tools and MCP tools all implement this trait, so one pipeline applies to all three. It was built in step 6, in `cortex-tools`.
+
+**Planning.** `plan` checks the arguments against the tool's schema, resolves every path through the one resolver (below), and returns the plan or an error written for the model. It changes nothing. It may ask the file system where a path leads, which blocks for a few system calls, so the loop calls it through the blocking helper. `PlanCx` holds the path resolver and nothing else.
+
+**Effects.** Each is one thing the call would do, and the permission engine decides each ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)).
+
+| Effect | What it carries | Declared by |
+|---|---|---|
+| `Read` | A resolved path: one file, or the names in one directory | `read`, `list` of one level, `search` of one file |
+| `ReadTree` | A resolved path: the tree under a directory | `search` of a directory, `list` with a glob or a depth |
+| `Write` | A resolved path | `write`, `edit` |
+| `Exec` | The command line and its working directory | `shell` |
+| `Network` | A host, or any | `fetch`, MCP over HTTP |
+| `Ext` | The full name of an extension or MCP tool | `tool_call`, beside whatever effects the tool itself declares |
+
+- A path in an effect is the resolver's result: the real location, with every link followed, and whether it is inside the workspace. A rule is matched against that, never against what the model wrote.
+- A plan with no effect but reads has no side effects, and is what the loop may start early ([15-efficiency.md](15-efficiency.md)). A call of an extension or MCP tool is never one.
+- **A walk is checked twice.** `ReadTree` is decided once, before the walk. But a rule can protect one file inside an allowed tree, and the tree cannot be listed in advance. So a walk asks a gate (`ReadGate`, which the permission engine supplies) about each entry it meets, steps past what it may not read, and says in its result how many entries that was. Walks do not follow links, so they stay under the path they declared.
+
+**Concurrency.** A tool's spec has a class, and each plan says how that call is scheduled, with the paths of a keyed call. `Plan::conflicts_with` is the rule the scheduler applies: an exclusive call conflicts with every call; two keyed calls conflict when they share a path; a keyed call conflicts with a read-only call that reads one of its paths or walks a tree that holds one, so that `edit a.rs` followed by `read a.rs` sees the edit; two read-only calls never conflict. Calls that conflict run in the model's order.
+
+**Running.** `RunCx` is what one call runs with: its cancellation token, the resolver, the session's content store and table of seen files, the output limits, the walk gate, and what a session may or may not have (an outline source, the images the model accepts, the turn number). Everything in it is shared by handle, so a tool moves what it needs onto the blocking pool: file reads, walks, searches and diffs all run there, through one helper that takes the token and returns as soon as the token fires.
+
+- A tool is run with `execute`, never by calling `run`: `execute` is where the output policy applies, so every result that reaches the loop is bounded.
+- A cancelled call still ends with a result, whose outcome is `interrupted`. A failure is a result too. A plan handed to a tool that did not make it is an error result, not a panic.
 
 ## What every tool shares
 
-**The result.** A tool returns content for the model, an optional structured payload for front ends (a diff, an exit code, match counts), and an error flag. Failures are results with `is_error`, written so the model can correct itself: what was wrong, and what to try.
+**The result.** A tool returns content for the model, an optional structured payload for front ends (a diff, an exit code, match counts), and how the call ended: success, error, denied or interrupted. Anything but success is an error to the model. Failures are written so the model can correct itself: what was wrong, and what to try.
+
+**Arguments are checked before a tool sees them,** against the tool's JSON Schema. The validator is our own and covers the part of JSON Schema that tool definitions use (types, required and unknown properties, enumerations, bounds, lengths, items, `anyOf`, `oneOf`, `allOf`, `not`, and references inside the schema). A mismatch names the argument and says what it should have been, and several are reported together. A keyword the validator does not know is ignored, not refused: the schemas of MCP and extension tools are written by others, and a call must not be refused for a keyword we have not heard of.
 
 **One output policy.** Every result passes through the same truncation step before it enters the context.
 
 | Limit | Default | Notes |
 |---|---|---|
-| Size of model-visible content | 32 KiB | Configurable. |
-| Lines of model-visible content | 800 | Whichever limit is hit first applies. |
-| Line length | 2,000 characters | Longer lines are cut with a marker. |
+| Size of model-visible content | 32 KiB | Configurable, and never under 4 KiB. |
+| Lines of model-visible content | 800 | Whichever limit is hit first applies. Never under 8. |
+| Line length | 2,000 characters | Longer lines are cut with a marker that says how many characters are missing. Never under 256, and never so long that one line could take more than a quarter of the size limit. |
 
-- **Compression comes first.** Before the limits apply, control sequences are removed, progress redraws collapse to their final state, and runs of repeated lines collapse to one line and a count. For commands the project profile knows as builds or tests, failure and error lines are kept ahead of routine ones. Details in [15-efficiency.md](15-efficiency.md).
-- Truncation always happens at line boundaries.
-- What is kept depends on the tool: the head for file reads, the head and the tail for command output, the first matches for search.
-- When content is cut, the full output is written to an artifact file in the session directory, and the result ends with a notice that states what was cut and how to get the rest (the artifact path, which the read and search tools accept). In the TUI the full output is one key press away.
-- Truncation happens once, when the result is created. A stored result is never shortened later (invariant 1).
+- **Compression comes first, for output that was produced.** Before the limits apply to the output of a command or of an extension or MCP tool, control sequences are removed, progress redraws collapse to their final state, and runs of identical lines collapse to one line and a count. Runs of lines that differ only in their numbers collapse to their first and last line and a count, but only in output that is over the limits, because that loses text. For commands the project profile knows as builds or tests, failure and error lines are kept ahead of routine ones. Details in [15-efficiency.md](15-efficiency.md).
+- **Content that was asked for is never compressed.** A file read returns the lines exactly as they are in the file.
+- Truncation always happens at line boundaries. A line is kept whole or left out, and where lines are left out a marker stands in their place with their number. The one cut inside a line is the line-length limit, which is announced on the line itself, and falls between characters, never inside one.
+- What is kept depends on the tool: the head for file reads, the head and the tail (a quarter and three quarters) for command output and for whatever a tool returns unshaped, the first matches for search.
+- When content is cut, the full output is stored as an artifact in the session directory, and the result ends with a notice that states what was cut and how to get the rest: the artifact's id, which `read` and `search` accept in their `artifact` argument. In the TUI the full output is one key press away.
+- **An artifact is named by its id, never by a path.** Its file is in the session directory, outside the workspace: a path to it would be long, would show the user's home directory, and would look like any other outside path to the permission check. And a made-up path form could be the name of a real file, which is the ambiguity the path rules refuse. So `read` and `search` take either a `path` or an `artifact`, and never both.
+- A tool that knows its own output shapes it itself and says what it left out in its own terms: `read` gives the next `offset`, `search` and `list` say how many more there are. These store no artifact, because the rest is one call away.
+- Truncation happens once, when the result is created. A result within the limits passes unchanged, so applying the policy twice changes nothing, and a stored result is never shortened later (invariant 1).
+- An image a tool returns is checked against what the model takes. One it does not take (no image support, another type, too large) is replaced by a line that says so.
 
 **Paths.** Tools take paths relative to the workspace root, absolute paths, or paths that begin with `~` for the home directory. One resolver in `cortex-base` reads all of them, by the rules below. It was built in step 4.
 
@@ -80,9 +114,14 @@ The Windows rows apply on Windows only. On Linux `notes:2026` and `name.` are or
 - **That one file has one path.** A file with a second hard link has two, and both are real. And Linux is taken to compare names exactly: on a mount that ignores case there (a FAT or NTFS volume, a directory with case folding on), two spellings of one file resolve to two paths. A rule that protects a file by name does not protect its other names.
 - **That its case folding is exactly Windows's.** Windows compares names by a table of its own. The harness folds case by the same rule with the Rust standard library's tables, which differ for a few letters outside ASCII. Inside or outside the workspace does not depend on it: that is decided on the file system's own spelling, compared exactly. Rule matching does depend on it ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)), so there a deny may match a little too much and an allow must not.
 
-**Text files.** Tools read and write UTF-8. A file that is not valid UTF-8 is refused by the editing tools with a message that says so. Line endings and a byte-order mark are detected on read and preserved on write.
+- **A directory walk names every entry through the same resolver.** An entry whose name the rules refuse (one that is not valid Unicode, and on Windows a device name or a name that ends with a dot, which exist on disk when something made them through an extended-length path) is stepped past, with everything under it if it is a directory, and the result says how many entries were skipped and why the first was. The walk never stops for one name.
+- **A walk does not follow links.** It reports a link and goes on. `search` counts the links it left, and `list` shows a link as what it leads to, found by the resolver's rules, without going in. A link named as the `path` of a call is followed by the resolver like any other.
 
-**File snapshots.** When a tool reads or writes a file it records the file's size, modification time and content hash in the session's table of seen files. The editing tools use it for the staleness guard below.
+**Text files.** Tools read and write UTF-8. A file that is not valid UTF-8 is refused by the editing tools with a message that says so. `read` shows such a file with the bytes that are not UTF-8 replaced, and a note that the editing tools will refuse it. Line endings and a byte-order mark are detected on read and preserved on write, and are not part of a line as `read` shows it.
+
+**File snapshots.** When a tool reads or writes a file it records the file's size, modification time and content hash in the session's table of seen files. The hash is what decides whether a file has changed: it is `ContentHash` of `cortex-base` (SHA-256). The editing tools use the table for the staleness guard below, and `read` for changed-only re-reads. The table also remembers which lines of each file the model has been shown in the current context epoch; a new epoch forgets that and keeps the snapshots, because the guard is about the session.
+
+**The content store.** Artifacts and file versions go through one trait, which the session implements. An artifact is written in pieces, so output still arriving never has to be held in memory. A file version is the content of a file as the model last saw it, kept under its hash, so that a later read can send a diff. Only files of up to 1 MiB are kept as versions.
 
 **Checkpoints.** Before a tool changes or creates a file, the previous content (or the fact that the file did not exist) is saved in the session's checkpoint store. The checkpoints of one turn form that turn's snapshot. This is what lets edits apply without asking: every one of them can be undone (see [07-sessions-and-context.md](07-sessions-and-context.md)).
 
@@ -100,17 +139,22 @@ Reads a text file, or part of it.
 | Argument | Type | Meaning |
 |---|---|---|
 | `path` | string | The file. |
+| `artifact` | string | In place of `path`: the id of a stored full output, from the notice of a cut result. |
 | `offset` | integer, optional | First line to return, counted from 1. |
 | `limit` | integer, optional | Number of lines. |
 | `fresh` | boolean, optional | Return the content even if it was already read. |
 
+- Exactly one of `path` and `artifact` is given.
 - Returns a one-line header (path, the line range returned, the total line count) and then the lines, without line-number prefixes. Search results carry line numbers, and `offset` takes one, so the model can target a range without paying for a prefix on every line or copying prefixes into edits.
-- Reads from disk as a stream. A large file never has to fit in memory.
+- Reads from disk as a stream, once: the same pass hashes the file, counts its lines and keeps the lines asked for. A large file never has to fit in memory, and neither does a very long line, of which only as much is kept as the line limit can show.
 - When the range is cut by the output policy, the notice gives the next `offset`.
-- **A large file is introduced by its outline.** When a file is over the output limit and no range was asked for, the result is the file's outline with line numbers ([15-efficiency.md](15-efficiency.md)) followed by the first lines, so the model can ask for the part it needs.
-- **A re-read sends only what changed.** If the model has already been given this range in the current context epoch: an unchanged file returns one line saying so; a changed file returns a diff against what the model last saw, when the diff is smaller than the content. `fresh: true` forces the content.
-- A binary file is refused with its size and detected type. Images in formats the model accepts are returned as image parts when the model takes images and the file is under the provider's size limit. Resizing is out of scope for the first release.
-- A missing file returns an error that lists close matches in the same directory.
+- **A large file is introduced by its outline.** When a file is over the output limit and no range was asked for, the result is the file's outline with line numbers ([15-efficiency.md](15-efficiency.md)) followed by the first lines, so the model can ask for the part it needs. The outline takes at most a quarter of the room. It comes from the repository index through a trait; until the index exists, such a file is returned as its first lines.
+- **A re-read sends only what changed.** If the model has already been given these lines in the current context epoch: an unchanged file returns one line saying so, with the lines it has and when it read them; a changed file returns a diff against what the model last saw, when the diff is smaller than the content. `fresh: true` forces the content. The exact rules are in [15-efficiency.md](15-efficiency.md).
+- A binary file is refused with its size and detected type: a file is binary when its first 8 KiB have a NUL byte or begin as a known binary format. Images in formats the model accepts (PNG, JPEG, GIF, WebP) are returned as image parts when the model takes images and the file is under the provider's size limit. The image is stored as an artifact and the part refers to it, so that the session log does not carry it. Resizing is out of scope for the first release.
+- A missing file returns an error that lists close matches in the same directory: the same name in another case, a name a few letters away, or the same name with another extension. When a directory on the way is what is missing, the error says which.
+- A directory, and anything that is not a regular file, is refused with what to use in its place.
+- An artifact is read with the same ranges and limits. It is not a seen file: reading it twice sends it twice.
+- Effects: one read of the resolved file. None for an artifact, which is the session's own record of what a tool already returned.
 - Concurrency: read-only.
 
 ## `write`
@@ -202,16 +246,22 @@ Searches file contents with a regular expression.
 |---|---|---|
 | `pattern` | string | Regular expression (Rust regex syntax). |
 | `path` | string, optional | File or directory to search. Defaults to the workspace root. |
+| `artifact` | string, optional | In place of `path`: the id of a stored full output to search. |
 | `glob` | string, optional | Only files matching this glob. |
 | `ignore_case` | boolean, optional | |
 | `context` | integer, optional | Lines of context around each match (default 0, maximum 5). |
-| `mode` | `"lines"`, `"files"` or `"count"`, optional | Matching lines (default), names of files with matches, or match counts per file. |
-| `max_results` | integer, optional | Default 100. |
+| `mode` | `"lines"`, `"files"` or `"count"`, optional | Matching lines (default), names of files with matches, or matching lines per file. |
+| `max_results` | integer, optional | Default 100, at most 2,000. Matches in `lines` mode, files in the other two. |
 
-- Implemented in-process with the ripgrep libraries (`ignore`, `grep-searcher`, `grep-regex`). No external program is needed, which matters on Windows. See [decision 0014](../decisions/0014-search-in-process.md).
-- Honours `.gitignore`, `.ignore` and hidden-file rules. Skips binary files.
-- Output is grouped by file, with line numbers, in path order so results are deterministic. When the cap is hit, the result says how many more matches exist.
-- Runs on the blocking pool with a parallel directory walk, and stops when cancelled.
+- Implemented in-process with the ripgrep libraries (`ignore`, `grep-searcher`, `grep-regex`, `grep-matcher`, `globset`). No external program is needed, which matters on Windows. See [decision 0014](../decisions/0014-search-in-process.md).
+- A pattern is matched within one line, and `^` and `$` are the start and end of a line with either line ending. A pattern that is not a regular expression, or that could only match across lines, is refused when the call is planned, with the reason.
+- Honours `.gitignore`, `.ignore`, `.git/info/exclude` and hidden-file rules, at every level, including ignore files above the directory searched. A `.gitignore` counts whether or not the tree is a git repository. The user's global git ignore file is not read: it is the machine's, not the project's. Skips binary files (a file with a NUL byte). A file named as `path` is searched even where a walk would leave it out.
+- **A glob with no `/` matches a name at any depth** (`*.rs`). One with a `/` matches the path below the directory searched (`src/**/*.rs`). `*` stops at a separator and `**` does not. On Windows a glob may be written with either separator and ignores case.
+- Output is grouped by file, with line numbers, in path order so results are deterministic whatever order the walk's threads find files in. A match is a matching line. A line of context is marked with `-` after its number where a match has `:`. When the cap is hit, the result says how many more matches exist: the search goes on counting past what it shows. The header gives the totals.
+- **Memory does not grow with the number of matches.** Only as many matches as the result can show are kept, in path order, while the search runs; the rest are counted.
+- Runs on the blocking pool with a parallel directory walk, and stops when cancelled: each thread checks before each file, and the call returns at once.
+- A walk steps past what it may not use and says so (above, "Paths"): refused names, entries the permission rules protect, files that cannot be opened, and links.
+- Effects: a walk of the tree for a directory, a read for a file, none for an artifact.
 - Concurrency: read-only.
 
 ## `list`
@@ -223,11 +273,15 @@ Lists a directory, or finds files by glob.
 | `path` | string, optional | Directory. Defaults to the workspace root. |
 | `glob` | string, optional | For example `**/*.rs`. Without it, the directory's entries are listed. |
 | `depth` | integer, optional | Maximum depth. Default 1 without a glob, unlimited with one. |
-| `max_results` | integer, optional | Default 200. |
+| `max_results` | integer, optional | Default 200, at most 5,000. |
+| `include_ignored` | boolean, optional | Also list hidden files and files that ignore files leave out. |
 
-- Returns relative paths, one per line, directories marked with a trailing `/`, sorted by path.
-- Honours the same ignore rules as `search`. A flag includes ignored files.
+- Returns relative paths, one per line, directories marked with a trailing `/`, sorted by path. A path is relative to the workspace, not to the directory listed, so that it can be passed to another tool as it is. A header line gives the number of entries, and when the cap or the output limit is reached, a note says how many more there are.
+- Honours the same ignore rules as `search`, and reads a glob the same way. `include_ignored` includes ignored and hidden files.
+- A glob matches directories as well as files.
 - One tool covers both listing and finding, so the model has one less choice to make.
+- A link is listed as what it leads to (a directory gets its `/`), and is not gone into.
+- Effects: a read of the directory for one level, and a walk of its tree for more.
 - Concurrency: read-only.
 
 ## `outline`
@@ -278,9 +332,13 @@ Tools that are not built in (MCP tools and extension tools) are not declared to 
 | `tool_search` | `query` (words, or a `source/` prefix), `limit` | Matching tools: full name, description and argument schema. |
 | `tool_call` | `tool` (full name), `arguments` (object) | The tool's result. |
 
-- Arguments are validated against the tool's schema before the call. A mismatch is an error result that includes the schema.
-- The call is planned, checked by the permission engine and bounded by the output policy exactly like a built-in tool.
-- A new tool, including one the user just asked the harness to write, is usable immediately, with no change to the request prefix.
+- **The registry.** MCP servers and extensions register their tools with the dynamic-tool registry, each under the name of its source. A tool's full name is `source/tool`. A source is replaced whole, so a server whose tool list changes is never seen half-updated.
+- **`tool_search` is a ranked match done in the harness,** with no model call. A tool matches when every word of the query is in its name, its source's name or its description, and a word in the name counts for more. `limit` is 8 unless given, at most 25. A search that finds nothing lists the sources.
+- Descriptions and schemas in a search result are third-party text. The result says so, and a description is cut at 2 KiB.
+- Arguments are validated against the tool's schema before the call. A mismatch is an error result that includes the schema, and the tool is not run.
+- The call is planned, checked by the permission engine and bounded by the output policy exactly like a built-in tool. The plan of a `tool_call` carries the tool's own effects and its own scheduling, and besides them an `ext` effect that names the tool, which is what a rule on `source/tool` matches. `tool_call` asks by default; `tool_search` touches nothing.
+- A tool that is not there is an error with the closest names.
+- A new tool, including one the user just asked the harness to write, is usable immediately, with no change to the request prefix. The definitions of the pair are fixed text: nothing in them depends on what is registered.
 - A source can be set to expose chosen tools directly instead. See [13-mcp.md](13-mcp.md) and [12-extensions.md](12-extensions.md).
 
 ## In the first usable release, and after it
@@ -317,6 +375,8 @@ Tools that are not built in (MCP tools and extension tools) are not declared to 
 | Network paths | Rejected unless the server and share are allowed in configuration. |
 | Junctions and directory links | Resolved like symbolic links. The check applies to the target. |
 | Short (8.3) names | Resolved to the long name. |
+| Names on disk that the rules refuse (made through an extended-length path) | A walk steps past them and says so in its result. |
+| Globs | Either separator accepted. Matching ignores case. |
 | Script shims (`.cmd`, `.bat`) | Never executed directly with untrusted arguments. See [12-extensions.md](12-extensions.md). |
 
 Each row has tests that run on the Windows CI job (see [../testing-and-ci.md](../testing-and-ci.md)).

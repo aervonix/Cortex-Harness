@@ -121,7 +121,7 @@ The size budget is where the vision's features meet the footprint goal most dire
 | Open a session with 10,000 entries | ≤ 50 ms | To be measured in step 8. |
 | List 1,000 sessions | ≤ 10 ms | To be measured in step 8. Reads the index only. |
 | Append one entry, including the flush | ≤ 2 ms on an SSD | To be measured in step 8. |
-| Search a 100,000-file tree for a literal | ≤ 1 s on a desktop | To be measured in step 6. |
+| Search a 100,000-file tree for a literal | ≤ 1 s on a desktop | Measured in step 6: 43 ms on the desktop with every core (the walker uses 12 threads), 81 ms pinned to 4 cores, 239 ms on one thread. The tree is 100,000 files of a kilobyte each in 1,000 directories, with the literal in one file in a hundred, read from a warm file cache. A pattern that matches all 1.2 million lines takes 143 ms, because only the matches a result can show are kept. Run it with `cargo test --release -p cortex-tools --test it perf_ -- --ignored --nocapture`. |
 | Warm repository map (cached outlines, few changes) | ≤ 150 ms | To be measured in the index step. |
 | Cold repository index, 20,000 files | ≤ 2 s of background time per pass | To be measured in the index step. |
 | Open the usage view, any range, with a year of history | ≤ 16 ms (one frame) from the aggregates | To be measured in step 24. It reads kilobytes and scans no raw history. |

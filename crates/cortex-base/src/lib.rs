@@ -12,6 +12,7 @@
 //! | [`path`] | [`AbsPath`], [`RelPath`] and [`PathResolver`]: paths read, checked and resolved by one set of rules, with the Windows rules. |
 //! | [`text`] | Width in terminal columns, wrapping and truncation, by grapheme cluster. |
 //! | [`atomic`] | [`write_atomic`]: replace a file's content in one step. |
+//! | [`hash`] | [`ContentHash`]: the hash a piece of content is known by. |
 //! | [`framing`] | The newline-delimited JSON reader and writer of the RPC protocol. |
 //! | [`watch`] | [`WatchList`]: the modification-time check behind hot-reload. |
 //!
@@ -36,6 +37,7 @@ pub mod cancel;
 pub mod clock;
 pub mod error;
 pub mod framing;
+pub mod hash;
 pub mod id;
 pub mod path;
 pub mod rng;
@@ -53,6 +55,7 @@ pub use cancel::CancelToken;
 pub use clock::{Clock, FakeClock, SharedClock, SystemClock};
 pub use error::{Classified, ErrorKind, Retry};
 pub use framing::{FrameDecoder, FrameError, FrameReader, FrameWriter, StreamError};
+pub use hash::{ContentHash, ContentHasher};
 pub use id::{IdCounter, IdGenerator};
 pub use path::{AbsPath, PathError, PathOptions, PathResolver, PathStyle, RelPath, ResolvedPath};
 pub use rng::{Rng, SeededRng, SystemRng};

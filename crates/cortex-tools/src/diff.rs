@@ -1,0 +1,364 @@
+//! Line diffs between two versions of a file, for changed-only re-reads
+//! (`docs/architecture/15-efficiency.md`).
+//!
+//! The diffing itself is the `similar` crate's. This module turns its result
+//! into the text a model is shown, and into the answer to a question only
+//! this harness asks: after seeing this diff, which lines of the new version
+//! has the model seen?
+
+use std::fmt::Write as _;
+
+use similar::{Algorithm, DiffOp, capture_diff_slices, group_diff_ops};
+
+use crate::files::LineRanges;
+
+/// How many unchanged lines are shown around each change.
+const CONTEXT: usize = 3;
+
+/// Two versions with more lines than this between them are not diffed: the
+/// file has "changed a lot", and its content is sent.
+const MAX_LINES: usize = 50_000;
+
+/// The difference between two versions of a text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Diff {
+    /// The hunks, in unified form: `@@ -a,b +c,d @@` and the lines under
+    /// it. Empty when the versions have the same lines, which happens when
+    /// only line endings or the final line break changed.
+    pub(crate) text: String,
+    /// How many lines the new version has that the old did not.
+    pub(crate) added: usize,
+    /// How many lines the old version had that the new does not.
+    pub(crate) removed: usize,
+    ops: Vec<DiffOp>,
+    hunks: Vec<Vec<DiffOp>>,
+}
+
+/// The lines of a text as `read` numbers them: split at line feeds, without
+/// the carriage return of a CRLF ending, and with a final line break ending
+/// the last line, not starting another.
+pub(crate) fn lines_of(text: &str) -> Vec<&str> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    text.strip_suffix('\n')
+        .unwrap_or(text)
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .collect()
+}
+
+/// Diffs `old` against `new`, line by line. `None` when the two are too
+/// large to diff.
+pub(crate) fn diff(old: &str, new: &str) -> Option<Diff> {
+    let old_lines = lines_of(old);
+    let new_lines = lines_of(new);
+    if old_lines.len() + new_lines.len() > MAX_LINES {
+        return None;
+    }
+    let ops = capture_diff_slices(Algorithm::Myers, &old_lines, &new_lines);
+    let hunks = group_diff_ops(ops.clone(), CONTEXT);
+
+    let mut text = String::new();
+    let mut added = 0;
+    let mut removed = 0;
+    for hunk in &hunks {
+        let (Some(first), Some(last)) = (hunk.first(), hunk.last()) else {
+            continue;
+        };
+        let old_range = first.old_range().start..last.old_range().end;
+        let new_range = first.new_range().start..last.new_range().end;
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        // Writing to a string cannot fail.
+        let _ = write!(
+            text,
+            "@@ -{} +{} @@",
+            hunk_range(old_range.start, old_range.len()),
+            hunk_range(new_range.start, new_range.len())
+        );
+        for op in hunk {
+            match *op {
+                DiffOp::Equal { old_index, len, .. } => {
+                    push_lines(&mut text, ' ', &old_lines[old_index..old_index + len]);
+                }
+                DiffOp::Delete {
+                    old_index, old_len, ..
+                } => {
+                    push_lines(&mut text, '-', &old_lines[old_index..old_index + old_len]);
+                    removed += old_len;
+                }
+                DiffOp::Insert {
+                    new_index, new_len, ..
+                } => {
+                    push_lines(&mut text, '+', &new_lines[new_index..new_index + new_len]);
+                    added += new_len;
+                }
+                DiffOp::Replace {
+                    old_index,
+                    old_len,
+                    new_index,
+                    new_len,
+                } => {
+                    push_lines(&mut text, '-', &old_lines[old_index..old_index + old_len]);
+                    push_lines(&mut text, '+', &new_lines[new_index..new_index + new_len]);
+                    removed += old_len;
+                    added += new_len;
+                }
+            }
+        }
+    }
+    Some(Diff {
+        text,
+        added,
+        removed,
+        ops,
+        hunks,
+    })
+}
+
+/// A range in a hunk header, counted from 1: `12,3`, or `12` for one line,
+/// or `11,0` for none, after line 11.
+fn hunk_range(start: usize, len: usize) -> String {
+    match len {
+        0 => format!("{start},0"),
+        1 => format!("{}", start + 1),
+        _ => format!("{},{len}", start + 1),
+    }
+}
+
+fn push_lines(text: &mut String, sign: char, lines: &[&str]) {
+    for line in lines {
+        text.push('\n');
+        text.push(sign);
+        text.push_str(line);
+    }
+}
+
+impl Diff {
+    /// Whether the two versions have the same lines.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.hunks.is_empty()
+    }
+
+    /// The lines of the new version that a model has seen, once it has been
+    /// shown this diff and had earlier seen `seen` of the old version:
+    ///
+    /// - every line it had seen that is still there, at its new number;
+    /// - every line that was added, because the diff shows it;
+    /// - the unchanged lines the diff shows around each change.
+    pub(crate) fn seen_after(&self, seen: &LineRanges) -> LineRanges {
+        let mut after = LineRanges::new();
+        for op in &self.ops {
+            match *op {
+                DiffOp::Equal {
+                    old_index,
+                    new_index,
+                    len,
+                } => {
+                    // Lines `old_index + 1 ..= old_index + len` of the old
+                    // version are lines `new_index + 1 ..` of the new.
+                    let first = old_index as u64 + 1;
+                    let last = (old_index + len) as u64;
+                    for (start, end) in seen.iter() {
+                        let (start, end) = (start.max(first), end.min(last));
+                        if start <= end {
+                            let moved = |line: u64| line - first + new_index as u64 + 1;
+                            after.insert(moved(start), moved(end));
+                        }
+                    }
+                }
+                DiffOp::Insert {
+                    new_index, new_len, ..
+                }
+                | DiffOp::Replace {
+                    new_index, new_len, ..
+                } => after.insert(new_index as u64 + 1, (new_index + new_len) as u64),
+                DiffOp::Delete { .. } => {}
+            }
+        }
+        for op in self.hunks.iter().flatten() {
+            if let DiffOp::Equal { new_index, len, .. } = *op {
+                after.insert(new_index as u64 + 1, (new_index + len) as u64);
+            }
+        }
+        after
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cortex_base::Rng;
+
+    use super::*;
+    use crate::cases::{self, ensure};
+
+    fn numbered(count: usize) -> String {
+        (1..=count).map(|n| format!("line {n}\n")).collect()
+    }
+
+    #[test]
+    fn a_change_is_shown_with_the_lines_around_it() {
+        let old = numbered(10);
+        let new = old.replace("line 5\n", "line five\n");
+        let diff = diff(&old, &new).expect("small enough");
+        assert_eq!(
+            diff.text,
+            "@@ -2,7 +2,7 @@\n line 2\n line 3\n line 4\n-line 5\n+line five\n line 6\n line 7\n line 8"
+        );
+        assert_eq!((diff.added, diff.removed), (1, 1));
+        assert!(!diff.is_empty());
+    }
+
+    #[test]
+    fn changes_far_apart_are_separate_hunks() {
+        let old = numbered(30);
+        let new = old
+            .replace("line 3\n", "")
+            .replace("line 25\n", "line 25\nextra\n");
+        let diff = diff(&old, &new).expect("small enough");
+        assert_eq!(
+            diff.text,
+            "@@ -1,6 +1,5 @@\n line 1\n line 2\n-line 3\n line 4\n line 5\n line 6\n\
+             @@ -23,6 +22,7 @@\n line 23\n line 24\n line 25\n+extra\n line 26\n line 27\n line 28"
+        );
+        assert_eq!((diff.added, diff.removed), (1, 1));
+    }
+
+    #[test]
+    fn additions_at_the_ends_and_to_an_empty_file_have_the_right_headers() {
+        let appended = diff("a\nb\n", "a\nb\nc\n").expect("small");
+        assert_eq!(appended.text, "@@ -1,2 +1,3 @@\n a\n b\n+c");
+        let created = diff("", "a\nb\n").expect("small");
+        assert_eq!(created.text, "@@ -0,0 +1,2 @@\n+a\n+b");
+        let emptied = diff("a\n", "").expect("small");
+        assert_eq!(emptied.text, "@@ -1 +0,0 @@\n-a");
+    }
+
+    #[test]
+    fn a_change_of_line_endings_alone_is_no_change_of_lines() {
+        let unix = "one\ntwo\n";
+        for other in ["one\r\ntwo\r\n", "one\ntwo", "one\ntwo\n"] {
+            let diff = diff(unix, other).expect("small");
+            assert!(diff.is_empty(), "{other:?}");
+            assert_eq!(diff.text, "");
+        }
+        assert_eq!(lines_of("a\r\nb\r\n"), ["a", "b"]);
+        assert_eq!(lines_of("a\n\n"), ["a", ""]);
+        assert_eq!(lines_of("\n"), [""]);
+        assert!(lines_of("").is_empty());
+    }
+
+    #[test]
+    fn versions_too_large_to_diff_are_not_diffed() {
+        let old = "x\n".repeat(MAX_LINES / 2);
+        let new = "y\n".repeat(MAX_LINES / 2 + 1);
+        assert!(diff(&old, &new).is_none());
+    }
+
+    #[test]
+    fn seen_lines_move_with_the_text_and_added_lines_count_as_seen() {
+        // Twenty lines, of which the model saw 5 to 10. Two lines are added
+        // after line 2, and line 8 is rewritten.
+        let old = numbered(20);
+        let new = old
+            .replace("line 2\n", "line 2\nnew a\nnew b\n")
+            .replace("line 8\n", "line eight\n");
+        let diff = diff(&old, &new).expect("small");
+        let after = diff.seen_after(&LineRanges::of(5, 10));
+        // Old 5-10 are new 7-12. The added lines are 3-4, and the diff
+        // shows the lines around both changes: 1-2 and 5-6, and 7-9, 11-13.
+        assert_eq!(after.to_string(), "1-13");
+
+        // With nothing seen before, only what the diff shows is seen: here
+        // two hunks far apart, and nothing of the lines between them.
+        let old = numbered(30);
+        let new = old
+            .replace("line 3\n", "")
+            .replace("line 25\n", "line 25\nextra\n");
+        let diff = super::diff(&old, &new).expect("small");
+        assert_eq!(
+            diff.seen_after(&LineRanges::new()).to_string(),
+            "1-5, 22-28"
+        );
+        // Lines seen before, between the hunks, are still seen, one line up.
+        assert_eq!(
+            diff.seen_after(&LineRanges::of(10, 12)).to_string(),
+            "1-5, 9-11, 22-28"
+        );
+    }
+
+    #[test]
+    fn a_seen_line_is_one_the_model_was_really_shown() {
+        // The property that makes "unchanged, you have seen it" safe to say:
+        // every line counted as seen is a line the model saw before, or a
+        // line the diff shows.
+        cases::check(
+            "diff_seen_after",
+            300,
+            |rng| {
+                let mut old: Vec<String> = (0..rng.below(40)).map(|n| format!("l{n}")).collect();
+                let mut new = old.clone();
+                for _ in 0..rng.below(6) {
+                    let at = rng.below(new.len() as u64 + 1) as usize;
+                    match rng.below(3) {
+                        0 => new.insert(at, format!("added{}", rng.below(1000))),
+                        1 if at < new.len() => {
+                            new.remove(at);
+                        }
+                        _ if at < new.len() => new[at] = format!("changed{}", rng.below(1000)),
+                        _ => {}
+                    }
+                }
+                // Sometimes a repeated line, which a diff may match either way.
+                if rng.below(4) == 0 && !old.is_empty() {
+                    let copy = old[0].clone();
+                    old.push(copy.clone());
+                    new.push(copy);
+                }
+                let first = rng.below(old.len() as u64 + 1) + 1;
+                let last = first + rng.below(15);
+                (old, new, first, last)
+            },
+            |(old, new, first, last)| {
+                let old_text: String = old.iter().map(|line| format!("{line}\n")).collect();
+                let new_text: String = new.iter().map(|line| format!("{line}\n")).collect();
+                let Some(diff) = diff(&old_text, &new_text) else {
+                    return Err("small versions were not diffed".into());
+                };
+                let seen = LineRanges::of(*first, (*last).min(old.len() as u64));
+                let after = diff.seen_after(&seen);
+                let shown: Vec<&str> = diff
+                    .text
+                    .lines()
+                    .filter(|line| line.starts_with(' ') || line.starts_with('+'))
+                    .map(|line| &line[1..])
+                    .collect();
+                for (start, end) in after.iter() {
+                    ensure!(
+                        end <= new.len() as u64,
+                        "line {end} is past the end of the new version"
+                    );
+                    for number in start..=end {
+                        let line = new[number as usize - 1].as_str();
+                        let seen_before = seen
+                            .iter()
+                            .any(|(a, b)| (a..=b).any(|n| old[n as usize - 1] == line));
+                        ensure!(
+                            seen_before || shown.contains(&line),
+                            "line {number} ({line:?}) counts as seen and was never shown"
+                        );
+                    }
+                }
+                // And the whole file counts as seen when all of it was.
+                let all = diff.seen_after(&LineRanges::of(1, old.len() as u64));
+                ensure!(
+                    all.covers(1, new.len() as u64),
+                    "all of the old version was seen, and {all} of the new counts as seen"
+                );
+                Ok(())
+            },
+        );
+    }
+}
