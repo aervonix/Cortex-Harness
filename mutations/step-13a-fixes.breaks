@@ -76,24 +76,26 @@ caught-by:
 
 # ------------------------------------------------- R7: the stored keys
 
-[break] credentials-file-left-readable
-rule: The credentials file is closed to reading wherever it is kept.
+[break] credentials-folder-left-readable
+rule: The stored keys are closed to reading wherever they are kept: their folder whole (the configuration directory on Linux, a folder of their own on Windows), with the file, its lock and a temporary file a write that was killed left behind.
 file: crates/cortex-core/src/assemble.rs
 in: engine_parts
-find: protected = protected.closed(file);
-occurrence: 1
+find:
+    if let Some(folder) = dirs.credentials.as_deref().and_then(resolve_dir) {
+        protected = protected.closed(folder);
+    }
 replace:
 caught-by:
     cortex-core::it start::the_stored_keys_are_closed_to_the_tools_in_each_systems_layout
 
-[break] credentials-lock-left-readable
-rule: The credentials file's lock is closed with it.
-file: crates/cortex-core/src/assemble.rs
-in: credential_files
-find: vec![file, PathBuf::from(lock)]
-replace: vec![file]
+[break] windows-credentials-beside-the-sessions
+rule: On Windows the credentials file has a folder of its own in the local folder, not the local folder itself, which the tools may read.
+file: crates/cortex-config/src/dirs.rs
+in: Dirs::from_env
+find: local.as_ref().map(|local| local.join(CREDENTIALS_DIR))
+replace: local
 caught-by:
-    cortex-core::it start::the_stored_keys_are_closed_to_the_tools_in_each_systems_layout
+    cortex-config dirs::tests::*
 
 # --------------------------------------- R1: the table of seen files
 

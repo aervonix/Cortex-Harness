@@ -260,7 +260,7 @@ The schema, in outline. The full list, generated from the declarations, is the [
 
 | OS | Default | Alternative |
 |---|---|---|
-| Windows | Windows Credential Manager | A file, `credentials.toml` in `%LOCALAPPDATA%\cortex-harness`: the local folder, not the roaming one beside the configuration, so that a stored key stays on its machine. Windows copies a roaming profile to every machine the user signs in to. |
+| Windows | Windows Credential Manager | A file, `credentials.toml` in `%LOCALAPPDATA%\cortex-harness\credentials`: in the local folder, not the roaming one beside the configuration, so that a stored key stays on its machine (Windows copies a roaming profile to every machine the user signs in to); and in a folder of its own there, which the harness closes whole to its tools. |
 | Linux | A file, `credentials.toml` in the configuration directory, with owner-only permissions | The Secret Service keychain, with the `keychain` build feature and `credentials.store = "keychain"`. **Not built yet:** the value gives an error that says so and names the file store. |
 
 On Linux the keychain is not the default because it depends on a desktop session service that is absent on servers, in containers and over SSH, and because the client library for it is a large dependency. See [decision 0018](../decisions/0018-credential-storage.md).
@@ -307,18 +307,18 @@ Nothing in the state directory is needed to run. Deleting it loses convenience, 
 
 ## Where each system keeps the harness's files
 
-Each folder beside what the permission engine closes in it ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md), "The built-in protection"). The layouts differ, and what is closed has to be read against both: on Windows the stored keys are in the data directory, which is otherwise closed only to writing, and nothing closed them to reading until the review of step 13a found it. `Dirs::from_env` in `cortex-config` works the folders out; a test of the core gives it each system's layout on every system (`start::the_stored_keys_are_closed_to_the_tools_in_each_systems_layout`).
+Each folder beside what the permission engine closes in it ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md), "The built-in protection"). The layouts differ, and what is closed has to be read against both: on Windows the stored keys were in the data directory, which is otherwise closed only to writing, and nothing closed them to reading until the review of step 13a found it. They are now in a folder of their own there, closed whole. `Dirs::from_env` in `cortex-config` works the folders out; a test of the core gives it each system's layout on every system (`start::the_stored_keys_are_closed_to_the_tools_in_each_systems_layout`).
 
 | What | Linux | Windows | Closed by the engine |
 |---|---|---|---|
 | The configuration directory: `config.toml` | `$XDG_CONFIG_HOME/cortex-harness`, usually `~/.config/cortex-harness` | `%APPDATA%\cortex-harness`, the roaming folder | Reading and writing, the whole directory. |
 | The user's configuration file, when `CORTEX_CONFIG` names one elsewhere | Where it names | Where it names | Reading and writing, the file by name, and where it leads when it is a link (a dotfiles repository), here and in the configuration directory alike (since the review of the fixes to step 13a): it holds the level and the rules the next session starts with. A file it names inside the workspace (a team's configuration, committed) is closed there too, so a search over the workspace (`rg`, `grep -r`) is asked about at every level, as one over any tree with a closed file in it is. |
-| The stored keys: `credentials.toml` and its lock, `credentials.toml.lock` | In the configuration directory | In `%LOCALAPPDATA%\cortex-harness`, which is the data directory | Reading and writing, the two files by name, wherever they are kept. |
+| The stored keys: `credentials.toml`, its lock `credentials.toml.lock`, and a write's temporary file | In the configuration directory | In `%LOCALAPPDATA%\cortex-harness\credentials`, a folder of their own in the data directory | Reading and writing, the folder whole (on Windows its own; on Linux the configuration directory). A write's temporary file (`.cortex-<hex>.tmp`), which a write that was killed leaves behind holding every key, is in the folder, and closed with it (since the review of the fixes to step 13a). |
 | The state directory: trust, stored approvals, `shells.json`, logs | `$XDG_STATE_HOME/cortex-harness`, usually `~/.local/state/cortex-harness` | `%LOCALAPPDATA%\cortex-harness\state`, inside the data directory | Reading and writing, the whole directory. |
 | The data directory: sessions | `$XDG_DATA_HOME/cortex-harness`, usually `~/.local/share/cortex-harness`, or `session.data_dir` | `%LOCALAPPDATA%\cortex-harness`, or `session.data_dir` | Writing, the whole directory; and reading, the sessions of other projects. |
 | The managed file | `/etc/cortex-harness/config.toml` | `%ProgramData%\cortex-harness\config.toml` | Not closed: only an administrator writes it, and it holds an administrator's policy, not a key. |
 
-`session.data_dir` moves the sessions and not the stored keys: on Windows these stay in the local folder, and are closed there by name.
+`session.data_dir` moves the sessions and not the stored keys: on Windows these stay in their folder in the local folder, and are closed there.
 
 ## Windows notes
 
