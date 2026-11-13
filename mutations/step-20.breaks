@@ -211,3 +211,28 @@ find:
 replace:
 caught-by:
     rules::crate_graph::tests::pseudo_terminals_are_turned_on_by_tests_and_the_test_kit_only
+
+[break] win32-record-modifiers-wrong
+rule: A win32 input record's modifier state is decoded bit for bit: Shift as Shift.
+file: crates/cortex-term/src/input.rs
+in: record_mods
+find:
+    if state & SHIFT != 0 {
+        mods = mods | Mods::SHIFT;
+    }
+replace:
+    if state & SHIFT != 0 {
+        mods = mods | Mods::CTRL;
+    }
+caught-by:
+    input::tests::win32_input_records_carry_every_modifier
+    system::sys_keys_arrive_with_their_modifiers
+
+[break] win32-mode-never-asked-for
+rule: The win32 input mode is turned on when the terminal says it has it.
+file: crates/cortex-term/src/caps.rs
+in: Capabilities::apply
+find: Reply::Mode { mode: 9001, state } => self.win32_input = matches!(state, 1..=3),
+replace: Reply::Mode { mode: 9001, .. } => {}
+caught-by:
+    terminal::tests::a_terminal_that_has_the_win32_input_mode_gets_it_until_the_end

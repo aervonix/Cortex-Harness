@@ -204,6 +204,8 @@ pub struct Modes {
     pub alternate: bool,
     /// Automatic wrap at the right margin.
     pub autowrap: bool,
+    /// Windows Terminal's win32 input mode (9001).
+    pub win32_input: bool,
 }
 
 /// A virtual terminal. See the [module documentation](self).
@@ -256,6 +258,7 @@ impl VTerm {
                 focus: false,
                 alternate: false,
                 autowrap: true,
+                win32_input: false,
             },
             keyboard: Vec::new(),
             state: State::Ground,
@@ -889,6 +892,7 @@ impl VTerm {
             1004 => self.modes.focus = on,
             2004 => self.modes.bracketed_paste = on,
             2026 => self.modes.sync = on,
+            9001 => self.modes.win32_input = on,
             47 | 1047 | 1049 => {
                 if on && !self.modes.alternate {
                     let screen =
@@ -1043,7 +1047,9 @@ pub fn answer(query: Query, term: &VTerm) -> Vec<u8> {
     match query {
         Query::DeviceAttributes => b"\x1b[?62;22c".to_vec(),
         Query::Mode(mode) => {
-            let state = if mode == 2026 { 2 } else { 0 };
+            // Synchronized updates and the win32 input mode are known and
+            // off; anything else is not known.
+            let state = if mode == 2026 || mode == 9001 { 2 } else { 0 };
             format!("\x1b[?{mode};{state}$y").into_bytes()
         }
         Query::Keyboard => b"\x1b[?0u".to_vec(),

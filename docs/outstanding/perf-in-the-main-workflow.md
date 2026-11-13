@@ -1,0 +1,3 @@
+| Item | Who | When |
+|---|---|---|
+| **`cargo xtask perf` in the `main` workflow, on both systems, with stored baselines.** Step 20 built the command and the measurement ([testing-and-ci.md](../testing-and-ci.md), "Testing the TUI"); [testing-and-ci.md](../testing-and-ci.md), "Not blocking", plans tier 4 performance checks after each merge that compare with the run before and open an issue on a miss. Workflows were another step's to change while step 20 ran. A hosted Windows runner's ConPTY adds 10 to 20 ms to a key's echo when idle ([steps/20/answered.md](../steps/20/answered.md)), so a Windows baseline there measures ConPTY more than the terminal layer. | A tooling step, or step 33 (the performance pass) | Before the first release |

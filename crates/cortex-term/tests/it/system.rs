@@ -13,7 +13,7 @@ use cortex_testkit::VTerm;
 use cortex_testkit::pty::Session;
 
 use super::demo::STATUS_MARK;
-use super::{NOT_RESTORED, RESTORED, SHELL, STARTING, child_arguments, this_binary};
+use super::{DEMO, NOT_RESTORED, RESTORED, SHELL, STARTING, child_arguments, this_binary};
 
 /// A bound on every wait, which only a broken test reaches.
 const LIMIT: Duration = Duration::from_secs(20);
@@ -142,7 +142,9 @@ fn sys_the_terminal_is_put_back_after_a_panic() {
     // break would not have returned the cursor there.
     let screen = session.screen().screen();
     assert!(
-        screen.iter().any(|row| row.starts_with("demo panic on request")),
+        screen
+            .iter()
+            .any(|row| row.starts_with("demo panic on request")),
         "the panic's message was printed in raw mode:\n{}",
         session.screen().dump()
     );
@@ -155,4 +157,59 @@ fn sys_the_terminal_is_put_back_after_a_signal_or_console_event() {
     first_frame(&mut session);
     session.send(b"T");
     restored(&mut session);
+}
+
+/// Waits until the status line names `key` as the last key read.
+fn last_key(session: &mut Session, key: &str) {
+    let want = format!("last key {key}");
+    session.wait_for(LIMIT, &want.clone(), |t| {
+        t.screen().iter().any(|row| row.trim_end().ends_with(&want))
+    });
+}
+
+/// `CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _`: one key as Windows Terminal's win32
+/// input mode reports it, pressed and released.
+fn record(vk: u32, unit: u32, state: u32) -> Vec<u8> {
+    let mut bytes = format!("\x1b[{vk};0;{unit};1;{state};1_").into_bytes();
+    bytes.extend(format!("\x1b[{vk};0;{unit};0;{state};1_").into_bytes());
+    bytes
+}
+
+#[test]
+fn sys_keys_arrive_with_their_modifiers() {
+    let mut session =
+        Session::start(&this_binary(), &child_arguments(DEMO, "rate=400"), 100, 30).answering();
+    session.wait_for(LIMIT, "the first frame", |t| t.shows(STATUS_MARK));
+
+    // A lone Escape is the Escape key once nothing follows it; with a key
+    // right after it, Alt with that key.
+    session.send(b"\x1b");
+    last_key(&mut session, "Esc");
+    session.send(b"\x1bx");
+    last_key(&mut session, "Alt+x");
+    session.send(b"\x1b[1;5A");
+    last_key(&mut session, "Ctrl+Up");
+
+    // Windows Terminal's win32 input mode, which the demo turns on when the
+    // terminal says it has it (this driver says so, as Windows Terminal
+    // does). Each key is told apart from the one plain bytes merge it with.
+    if cfg!(unix) {
+        session.wait_for(LIMIT, "the win32 input mode", |t| t.modes().win32_input);
+    }
+    const SHIFT: u32 = 0x10;
+    const LEFT_CTRL: u32 = 0x08;
+    const LEFT_ALT: u32 = 0x02;
+    for (bytes, name) in [
+        (record(0x0d, 13, SHIFT), "Shift+Enter"),
+        (record(0x0d, 13, LEFT_CTRL), "Ctrl+Enter"),
+        (record(0x09, 9, LEFT_CTRL), "Ctrl+Tab"),
+        (record(0x41, 1, LEFT_CTRL | SHIFT), "Ctrl+Shift+a"),
+        (record(0x58, u32::from('x'), LEFT_ALT), "Alt+x"),
+        (record(0x20, 0, LEFT_CTRL), "Ctrl+Space"),
+    ] {
+        session.send(&bytes);
+        last_key(&mut session, name);
+    }
+    session.send(b"\x03");
+    session.wait_exit(LIMIT);
 }

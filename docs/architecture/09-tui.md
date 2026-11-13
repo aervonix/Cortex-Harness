@@ -83,9 +83,11 @@ Properties this gives, each checked by tests ([../testing-and-ci.md](../testing-
 - No scroll-region or cursor-position queries are needed, which avoids the terminals and multiplexers that mishandle them.
 - Nothing above the live region is touched.
 
-**Live region height.** At most half the window, and at least the editor and the status line. Content that would exceed it is clipped with a marker (for example a tool's output tail shows fewer lines).
+**Live region height.** At most half the window, and at least the editor and the status line. Content that would exceed it is clipped with a marker (for example a tool's output tail shows fewer lines). The presenter itself only refuses a region taller than the screen: it keeps the region's bottom rows, because rows that had scrolled away could not be reached again.
 
-**Resize.** On a width change the live region is erased and redrawn at the new width. Because the terminal may have re-wrapped the old live region itself, a few stale lines can be left in the scrollback after a shrink. `Ctrl+L` redraws the live region. The full-screen presenter has no such limit.
+**The last column stays empty.** A line may use every column but the last (`Inline::width`). A row that filled the last column would leave the terminal waiting to wrap, which terminals handle differently (some wrap at once, and the next line break then leaves a blank row), and the erase after it would take its last character. Lines are cut to that width by the renderer, between grapheme clusters, so a line is always one row.
+
+**Resize.** On a width change the live region is redrawn at the new width, row over row, and whatever is left below it is erased. Because the terminal may have re-wrapped the old live region itself, a few stale lines can be left in the scrollback after a shrink. `Ctrl+L` redraws the live region. The full-screen presenter has no such limit.
 
 ### Frame scheduling
 
@@ -347,7 +349,7 @@ Custom commands (markdown files, see [12-extensions.md](12-extensions.md)) and e
 
 ## Terminal layer (`cortex-term`)
 
-- **Library.** crossterm for raw mode, input decoding and Windows console set-up, behind a small trait so it can be replaced. Output is written by our renderer, not through the library's buffered writer.
+- **No terminal library** ([decision 0002](../decisions/0002-tui-rendering.md), "Amended in step 20"). Raw mode, the window's size, waiting for input and the handlers that put the terminal back are a module for each system (`sys::unix` on `libc`, `sys::windows` on `windows-sys`), the only `unsafe` code in the crate, behind a small trait (`Device`) so that they can be replaced and so that the layer's own logic is tested without a terminal. Input is decoded by our own decoder, the same on both systems. Output is written by our renderer, one write a frame.
 - **Start-up.** The first frame is drawn at once with conservative assumptions. Capability queries go out with it, and their replies upgrade behaviour in later frames. Start-up never waits for a terminal to answer.
 - **Capabilities, each detected and each with an override in `[terminal]`:**
 
@@ -363,17 +365,34 @@ Custom commands (markdown files, see [12-extensions.md](12-extensions.md)) and e
 
 - **Restoring the terminal.** Raw mode, cursor visibility, keyboard mode, paste mode and the alternate screen are restored on normal exit, on a panic, and on termination signals.
 - **Suspend and resume** (`Ctrl+Z` on Linux) restore the terminal on suspend and redraw on resume.
-- **Sanitising.** All text from models, tools and files passes through one function that removes or makes visible every control character except newline and tab. Only the renderer emits control sequences.
+- **Sanitising.** All text from models, tools and files passes through one function (`cortex_term::sanitize`) that makes visible every control character except newline and tab. Only the renderer emits control sequences, and it shows every control character that reaches it in a line, newline and tab included, as a symbol one column wide: C0 characters as their Control Pictures (`␛`), DEL as `␡`, and C1 characters (`U+0080` to `U+009F`, which some terminals obey like `ESC [`) as `�`. A link's address is used only when it is printable ASCII.
+
+### The terminal layer as built (step 20)
+
+What steps 21 to 25 build on. Its public items are documented in the crate.
+
+| Part | What it is |
+|---|---|
+| `Line`, `Span`, `Style`, `Color` | The styled-line model. A span is text, a style (two colours, bold, dim, italic, underline, reverse) and perhaps a link. A colour is brought down to what the terminal shows: true colour, 256, 16, or none (`NO_COLOR`). Nothing here names a colour, glyph or layout. |
+| `Inline` | The inline presenter. `draw(&Frame { commit, live, cursor }, &caps, &mut sink)` writes one frame in one call to a `Sink`, or nothing when the screen would not change. `resize`, `redraw` (Ctrl+L), `restart` (after a suspension), `finish` (erase the live region before exit), `width` (the columns a line may use). |
+| `Scheduler` | When to draw: `input()` draws at once, `stream()` at most 60 times a second, `animate(every)` ticks, and `wake(now)` says `Now`, `At(time)` or `Idle`. It holds no clock: the loop gives it the time. |
+| `Terminal` | Raw mode on `enter`, the start sequences (bracketed paste, focus events) and the capability queries, then `next(timeout)` for events, and `leave` (or dropping it) to put everything back. It is the `Sink` a presenter writes to. `waker()` wakes `next` from another thread; `suspend()` is Ctrl+Z. |
+| `Decoder`, `Event`, `Key` | Keys with modifiers, pastes (one event, whatever they hold), focus changes, replies to queries, resizes and resumptions. The same bytes decode the same way however reads split them. |
+| `Capabilities`, `Overrides` | Detected from the environment, upgraded by replies, overridden by settings. The `[terminal]` section that holds the overrides is step 23's to declare; the layer takes a plain `Overrides`. |
+| `sanitize` | The one function content passes through. |
+
+**What the design round must respect.** The presenter draws rows of styled text, one row a line, and nothing else: no cell is addressed on its own, no region scrolls, and nothing above the live region can change once committed. What is cheap: a live region of a few rows, rewritten every frame; changing one row (only the changed rows are written when nothing was committed and the height is the same); colour, the five attributes and links on any span. What costs more: a tall live region (30 rows measured at 0.14 to 0.5 ms a frame and about 4 KB, the size at which a frame no longer fits one read of a pseudo-terminal), and anything that changes the region's height every frame, which redraws all of it. What it cannot do: draw in the last column, re-wrap or restyle anything already committed, place things side by side except as text laid out in a row, or keep a region taller than the screen.
 
 ### Windows
 
 | Topic | Handling |
 |---|---|
-| Console set-up | UTF-8 code pages and virtual-terminal processing are enabled at start and restored at exit. |
-| Key events | Windows reports key releases as well as presses. Releases are dropped. |
+| Console set-up | UTF-8 code pages, virtual-terminal processing for output, and virtual-terminal input are turned on at start; line input, echo and Ctrl+C as a signal are turned off. The modes and code pages found are put back on a normal exit, a panic and a console control event (Ctrl+Break, closing the window, logging off, shutting down). A console that refuses virtual-terminal processing, as consoles before Windows 10 do, is refused with a message. |
+| Key events | With virtual-terminal input, keys arrive as the same sequences a Linux terminal sends, and one decoder reads both. Key releases are not reported in that mode; a release that the enhanced keyboard protocol reports is dropped. What the mode cannot tell apart is in the next row. |
+| Keys the mode merges | `Shift+Enter` arrives as `Enter`, `Ctrl+Enter` as `Ctrl+J`, `Ctrl+Tab` as `Tab`, and `Ctrl+Shift` with a letter as `Ctrl` with it, unless the terminal has the enhanced keyboard protocol. A lone `Esc` waits 50 ms for the rest of a sequence before it is the Escape key. Windows Terminal's own way to report every key with its modifiers (its "win32 input mode") is not used yet. |
 | `Shift+Enter` | Not distinguishable in every Windows terminal. `Alt+Enter` (where the terminal does not reserve it) and `Ctrl+J` always work. |
 | Ctrl+C | Read as a key in raw mode, not as a signal, so a turn can be interrupted without ending the process. |
-| Legacy console host | Works without synchronized updates and with ASCII glyphs. Windows Terminal is the supported target. |
+| Legacy console host | Taken to be the terminal when none of `WT_SESSION`, `TERM_PROGRAM` and `TERM` is set: no synchronized updates, ASCII glyphs, 16 colours. The checklist found it printing every escape sequence as text because nothing turned virtual-terminal processing on; the terminal layer now does. The system tests run the demo with that mode turned off first, as the old console host has it, under ConPTY (which is the console host without its window), and the demo draws correctly. A real window of the old console host is not seen by CI: whether it draws correctly now is for the owner to check by eye. Windows Terminal is the supported target. |
 | Inline drawing under the console layer | Confirmed in Windows Terminal 1.24 by the manual checklist in [../measurements/windows-terminal-checklist.md](../measurements/windows-terminal-checklist.md) ([decision 0002](../decisions/0002-tui-rendering.md), "Checked on Windows"). If inline drawing misbehaves in a terminal, the full-screen presenter is the fallback. |
 
 ## Structure of `cortex-tui`
