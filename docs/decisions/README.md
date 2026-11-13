@@ -38,7 +38,7 @@ One record per significant choice. Each says what the options were, what was cho
 | [0030](0030-process-tree-control-in-cortex-sandbox.md) | Process trees are controlled from `cortex-sandbox`, and a guard process kills what a dead harness left | Accepted by the owner on 2026-11-13 |
 | [0031](0031-command-analysis-by-allow-list.md) | Shell commands are analysed by hand-written allow-list tokenizers, and `cmd.exe` and unknown shells are not analysed | Accepted by the owner on 2026-11-13 |
 
-The owner's answers are dated 2026-11-12 unless a row says otherwise, and are recorded together in the [build plan](../build-plan.md).
+The owner's answers are dated 2026-11-12 unless a row says otherwise, and are recorded in the [build plan](../build-plan.md) and, from step 4 on, in each step's [records](../steps/README.md).
 
 ## Format of a record
 
