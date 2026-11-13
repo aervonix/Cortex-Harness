@@ -2,7 +2,7 @@
 
 `cortex-llm` gives the agent loop one way to talk to any model. The design goal is an abstraction that loses nothing a provider needs to get back, while keeping every mapping a pure, fixture-testable function.
 
-The provider facts on this page were read from the providers' public documentation in November 2026. The research notes list the sources. They change often: each provider step in the build plan starts by re-reading the current docs.
+The provider facts on this page were read from the providers' public documentation in November 2026. The research notes list the sources. They change often: each provider step in the build plan starts by re-reading the current docs. **Anthropic's were read again on 2026-11-13, in step 14**, which built the first protocol; what had moved is listed in "The `anthropic-messages` protocol", at the end of the page.
 
 The neutral types this page describes (messages, parts, stop reasons, usage, model info) are defined in `cortex-protocol`, because front ends and the session log use them too. `cortex-llm` adds the request and the stream events, which nothing outside the provider layer sees.
 
@@ -63,6 +63,7 @@ pub trait Timer: Send + Sync + Debug {
 ```
 
 - `build`, `feed` and `classify` are tested from files: a request snapshot per scenario, and recorded response streams replayed with every possible chunk boundary.
+- **The first protocol changed none of these traits.** Step 14 added one thing beside them: `ImageSource`, through which an image that is stored as an artifact reaches a request ("Images", below).
 - **The request carries the model.** `ModelRequest` holds the catalog entry of the model it is for, so `build` and `decoder` take the request and the provider and no third argument. A client is for one provider; which client a role's requests go to is decided where the core is assembled.
 - **`classify` and `decoder` are given the request as it was sent**, because one thing cannot be told without it: whether a refusal belongs to the speed tier the request was sent at ("Speed tiers", below).
 - **A decoder writes to an `EventSink`, not to a list of events.** The sink has one method per thing a response can say (`start`, `text_delta`, `tool_call_start`, `block_end`, `usage`, `end`, `error`, `served_at`, `limits`, `request_id`). It is the one place that turns "the response reported this speed" into "the request ran at this speed", so no adapter can get that rule wrong.
@@ -87,10 +88,35 @@ Neutral types in `cortex-protocol`. A message is a role and an ordered list of p
 
 **Raw blocks are kept beside the neutral view.** Every assistant message stores, for each part, the provider's own JSON for that block, byte for byte, with the protocol, provider, model and account scope that produced it. In the protocol types a raw block is **a string that holds the JSON text**, not a nested JSON value: a value would be re-ordered, re-escaped or re-rounded by the first parser it passed through, in our code or in a client's, and "byte for byte" would stop being true. Replay follows one rule:
 
-- Same protocol and a model that can read the block: send the raw block unchanged.
+- A message that the **same provider** produced through the **same protocol**, sent to a model that can read its blocks: send each raw block unchanged.
 - Anything else: send the neutral projection. Text, tool calls and tool results carry over. Reasoning and provider blocks are dropped, not translated.
 
-This is what keeps signatures, encrypted reasoning items and thought signatures valid, and it means a block type added by a provider next month is preserved without a code change. The catalog records which models can read which models' reasoning.
+This is what keeps signatures, encrypted reasoning items and thought signatures valid, and it means a block type added by a provider next month is preserved without a code change.
+
+**Which models can read a block is the provider's to say, in one of two ways** (settled in step 14, with the owner, on 2026-11-13).
+
+| The provider's entry says | What is replayed raw after a change of model | For |
+|---|---|---|
+| The server leaves out what a model cannot read (`replay_reasoning = "all"`) | Every block of that provider's own messages, whatever model wrote it and whatever model is asked. | Anthropic's own API. Its built-in entry says so. |
+| Nothing | Only to the model that wrote the message, or to one whose catalog entry lists that model in `reads_reasoning_from`. For any other model the message is sent as its neutral projection. | Every other server, including an Anthropic-shaped one that does not drop blocks itself. |
+
+- **Why Anthropic gets every block.** Its documentation asks for it ("Preserved thinking", read 2026-11-13): keep sending the whole conversation after a change of model; the API leaves out, unbilled, the reasoning the new model cannot read; "reasoning is lost permanently only if your code removes it". And leaving blocks out ourselves would break something. On its current models each reasoning block is tied to everything that came before it, and a block sent back after a change to earlier content fails a check. Take a conversation that goes from model A to model B and back. If the harness strips A's reasoning for B, then B's own reasoning is tied to a history without A's blocks. Back on A, the harness sends A's blocks again, B's reasoning no longer matches what is before it, and the request is answered with a 400. Sending every block every time keeps both models' blocks valid: what the server leaves out does not count as a change.
+- **The catalog still records which models read which models' reasoning** (`reads_reasoning_from`). For Anthropic it is information for a front end, which can say before a switch that the next model will work without the earlier reasoning. For a server without the flag it is the rule.
+- **A stored block that is not one JSON object is never written into a request.** A session log can be damaged, or doctored: a "block" that closes the message it is in and opens another would otherwise put words in a user's mouth. Such a part is sent from its neutral fields, or left out when it has none.
+
+**Images.** A tool that reads an image does not put the image in the conversation. It stores it and returns a reference: an image part with an artifact id and no data. The conversation, the session log and every front end carry the reference. A provider needs the bytes, a protocol is pure and reads no files, and `cortex-llm` cannot see the crate that owns the store. So the store is reached through a trait:
+
+```rust
+/// Where the bytes of a stored image come from.
+pub trait ImageSource: Send + Sync + Debug {
+    fn load<'a>(&'a self, artifact: &'a ArtifactId) -> BoxFuture<'a, Result<Vec<u8>, ImageError>>;
+}
+```
+
+- **Who does what.** `cortex-core` implements it over the session's content store and gives it to the client (`ProviderClientBuilder::images`); step 13 wires it. Before a request is built, the client replaces every reference in its own copy of the request with the image's bytes in base64, once for all attempts. The conversation the loop holds keeps the references.
+- **The prefix does not move.** An artifact's content never changes, so the same reference gives the same bytes in every request.
+- **A reference that cannot be loaded fails the request before anything is sent,** with the code `image_unavailable`. A protocol that meets a reference nobody loaded refuses the request: a reference is never sent as it is.
+- **A model that takes no images** is sent a line of text in the image's place that says an image was there.
 
 **Ordering constraints** are the protocol adapter's job, not the loop's. The loop always produces the same neutral shape (assistant message with calls, then one results message in call order). Each adapter arranges it as its dialect requires, for example results first and adjacent for Anthropic, or all calls then all results for Gemini.
 
@@ -123,6 +149,7 @@ Rules for decoders:
 - Unknown provider event types are skipped, never an error.
 - An error event after a successful status is an `Error`, classified like any other.
 - The decoder reads until the provider's terminal event. Some providers deliver required data (a signature, the usage) in the last chunk.
+- **Where a provider never sends a block whole, the decoder puts it together.** A streamed block arrives as the block when it starts and then what is added to it. The decoder keeps each member of the starting block as the text the provider sent, and when the block stops it writes them back in their order, with the streamed member replaced by what was added. No member is parsed and written again, so a number, an escape or the order of keys cannot change on the way. The result is the block as the provider would have sent it without streaming.
 
 **SSE parsing** is a small parser of our own over the byte stream: event name, data lines, comments, blank-line terminator, all three line endings, no reconnection logic. The available crates are unmaintained and do more than is wanted here. It is tested with every chunk split: each fixture cut at every byte, one byte at a time, and at every pair of cuts for the short ones; and with bytes that are not a stream at all, cut at random, which must give the same events however they are cut. It keeps one event's worth of memory and refuses an event over 32 MiB.
 
@@ -132,7 +159,7 @@ Rules for decoders:
 - Schemas for built-in tools are written to the strict subset the providers share: objects with `additionalProperties: false`, every property listed as required, optional values expressed as nullable, no recursion, no numeric or length constraints. Strict mode is requested where the provider has it.
 - Tool order in a request is fixed for the context epoch and sorted deterministically.
 - The harness never forces a specific tool. Several current models reject forced tool choice. Where a fixed output shape is needed (compaction summaries, titles), the request uses the provider's structured-output feature or plain instructions.
-- Streaming of tool arguments is requested in fine-grained mode where the provider offers it, so large arguments (file contents) appear as they are generated. The harness then owns validation, as described in [03-agent-loop.md](03-agent-loop.md).
+- Streaming of tool arguments is requested in fine-grained mode where the provider offers it, so large arguments (file contents) appear as they are generated. The harness then owns validation, as described in [03-agent-loop.md](03-agent-loop.md). A call whose arguments are not a JSON object when the response ends (cut off by the output limit, or nonsense) is stored with the text the model wrote inside an object, so that the block can be sent back; the loop is handed the model's own text.
 
 ## Roles and per-model variants
 
@@ -143,7 +170,7 @@ Which model serves a request, and in which style it is addressed, are decided ab
 
 ## Speed tiers
 
-Some providers will run the same model faster, or slower and cheaper, at a different price. The design is in [decision 0027](../decisions/0027-speed-tiers.md). The provider facts in this section were read on 2026-11-12.
+Some providers will run the same model faster, or slower and cheaper, at a different price. The design is in [decision 0027](../decisions/0027-speed-tiers.md). The provider facts in this section were read on 2026-11-12, and Anthropic's again on 2026-11-13, when its fast mode was also tried against the real API.
 
 **A speed is a named tier that a model offers.** `standard` is what every model has. `fast` is the well-known name for a tier that produces output faster at a higher price. Any other tier keeps the provider's own name. There is no scale: what a tier is comes from its catalog entry, never from its name.
 
@@ -159,7 +186,7 @@ Some providers will run the same model faster, or slower and cheaper, at a diffe
 
 **The setting.** A session has a speed, which is what the `main` role runs at, and a role may have its own. The utility roles (`fast`, `judge`) do not inherit the session's speed: they run at `standard` unless the user sets theirs, so that a fast session does not also pay double for its summaries.
 
-**In a request.** The loop passes the speed in effect for the role. Each adapter maps it to its provider's mechanism: a body field (`speed` at Anthropic, `service_tier` at OpenAI and Google), an extra header, or, where a platform sells the tier as a separate deployment, another model id. A provider-side default such as `auto` is never relied on: the adapter sends an explicit tier, so that what was asked for is known.
+**In a request.** The loop passes the speed in effect for the role. Each adapter maps it to its provider's mechanism: a body field (`speed` at Anthropic, `service_tier` at OpenAI and Google), an extra header, or, where a platform sells the tier as a separate deployment, another model id. A provider-side default such as `auto` is never relied on: the adapter sends an explicit tier, so that what was asked for is known. **That holds for a model that offers a tier.** A model that offers none is not told a speed at all: Anthropic answers a request that names a speed, even `standard`, with a 400 on a model that has no fast mode (recorded in step 14, in the fixture `error-speed-not-offered`).
 
 **In a response.** The adapter reads the tier that served the request wherever the provider reports it (`usage.speed`, a top-level `service_tier`, a response header) and passes it on. It never fills it in from the request. The event sink then applies one rule for every protocol: **a request is recorded at the speed the response reports, and at the speed it was sent at only when the response reports none.** That, not the setting, is what the request is priced at. When the two differ the usage carries both, and the stream carries a `SpeedFallback` event marked as the provider's doing, once. "Asked for fast, served standard" is never silent.
 
@@ -178,7 +205,8 @@ The numbers, settled in step 5 ([decision 0027](../decisions/0027-speed-tiers.md
 |---|---|---|
 | Fall back | on | Whether a refused tier's request is sent at `standard`. Off makes the refusal an ordinary rate limit. |
 | Short wait | 20 s | How long **one request** may wait in place for its tier, in total. While what it has waited stays within this, it waits as long as the provider asked and is sent again at the same speed. The first wait that would go over it is a fallback instead. A refusal that names no wait is a fallback at once. Zero never waits in place. |
-| Cooldown | 10 minutes | How long a cooldown lasts when the provider did not say when the tier is available again. When it did, the cooldown ends at that time. |
+| Cooldown | 10 minutes | How long a cooldown lasts when the provider did not say when the tier is available again. When it did, the cooldown ends at that time, or after the shortest cooldown, whichever is later. |
+| Shortest cooldown | 1 minute | The least a cooldown lasts when the provider named a time. A provider's wait says when one more request would get through, not when the pressure on the tier is over; a minute is the window its limits are counted in. Settled in step 14 ([decision 0027](../decisions/0027-speed-tiers.md)). It is a setting of the retry policy; its configuration key is step 13's to add. |
 
 - **A fallback is not a retry of a failure.** The refused attempt is not counted against the request's attempts, so `standard` gets a send of its own even when the tier was refused on the last attempt.
 - **A cooldown is kept per provider, model and tier**, in memory, for the life of the process, on the monotonic clock. The loop reads the same table to show the speed in effect and the cooldown's end.
@@ -200,7 +228,7 @@ Three things are kept apart because providers keep them apart.
 |---|---|
 | **Depth** | Each model's catalog entry lists its control: an ordered set of effort levels with a default, a token budget range, or none. Configuration names a level from that model's own set. A portable alias (`minimal`, `low`, `medium`, `high`, `max`) is mapped to the nearest level the model has, and the UI shows the level in effect. There is no numeric slider. |
 | **Visibility** | A separate setting: `summary` (default, where the provider can give one), `none`. Providers differ in what they can show: a summary, nothing, or raw text on local servers under several field names. |
-| **Continuity** | Opaque reasoning payloads are stored and replayed as raw blocks under the rule above. On a model switch they are dropped. The loop never edits them. |
+| **Continuity** | Opaque reasoning payloads are stored and replayed as raw blocks under the rule above ("The conversation model"). After a switch to another provider or protocol they are dropped. After a switch between models of one provider, the provider's entry decides: Anthropic's own API is sent every block and leaves out what the new model cannot read. The loop never edits them. |
 
 Changing depth in the middle of a context epoch uses the provider's append-only mechanism where one exists. Otherwise the change takes effect at the next epoch, and the UI says so.
 
@@ -214,12 +242,13 @@ Caching is treated as a property of request shape, not a switch.
 - History is append-only (invariant 1).
 - Serialisation is deterministic: stable key order, stable tool order, no timestamps or random ids in the prefix.
 - A debug-build check, and a test in every provider's suite, compares each request with the previous one in the epoch and fails if the shared prefix is not byte-identical.
+- **On Anthropic's current models a changed prefix is more than a cache miss.** Each reasoning block is tied to the system prompt, the tools and every message before it, and a block that is sent back after any of them changed fails a check: on some models with a 400, on others silently. An append-only history is therefore a matter of correctness there, and the same discipline that keeps the cache keeps the reasoning valid.
 
 **The adapter's part: place markers.** The request carries neutral cache hints: "end of the stable prefix" and "end of history so far". Each adapter turns them into its provider's feature.
 
 | Protocol | Mapping |
 |---|---|
-| Anthropic Messages | An explicit breakpoint after the tools and system prompt, plus the automatic moving breakpoint for the conversation. A second explicit breakpoint when one round adds more blocks than the lookback window. The one-hour lifetime is a configuration choice. |
+| Anthropic Messages | An explicit breakpoint after the tools and system prompt, plus the automatic moving breakpoint for the conversation. A second explicit breakpoint when one round adds more blocks than the lookback window. The one-hour lifetime is a configuration choice. As built: "The `anthropic-messages` protocol", below. |
 | OpenAI Responses and Chat | Implicit caching, with a session-derived cache key where the model uses one, or explicit breakpoints where the model supports them. |
 | Gemini | Implicit caching. Nothing to place. |
 | Local servers | Nothing. Their prefix reuse is automatic. |
@@ -240,7 +269,7 @@ One normalised record per request, with the provider's raw usage object kept bes
 
 Beside the token counts the record carries the provider, the model, the role, and **the speed the request ran at**, with the speed that was asked for when the two differ ("Speed tiers", above).
 
-Providers disagree on what "input" includes, so each adapter documents and tests its normalisation (for example, subtracting cached tokens where the provider's input count includes them). Streaming usage may be cumulative, final-only, or absent after an abort; the adapter reports what it has, and `End.usage` is authoritative.
+Providers disagree on what "input" includes, so each adapter documents and tests its normalisation (for example, subtracting cached tokens where the provider's input count includes them). Streaming usage may be cumulative, final-only, or absent after an abort; the adapter reports what it has, and `End.usage` is authoritative. Anthropic's input count already leaves the cache out, so nothing is subtracted; its usage arrives twice, at the start of a response and with the stop reason, and a later count replaces an earlier one while a missing count leaves it standing.
 
 **Cost** is computed when the request is recorded: tokens × the catalog prices in force **for the speed the request ran at**, with context-size tiers and lifetime-class multipliers. A size tier is chosen by every input token the request sent (fresh, cache reads and cache writes together) and prices the whole request. Cache writes the provider did not put in a lifetime class are priced at the first class the rate card lists. A token class that was used and has no price gives no cost at all, never a guess. Money is kept as whole nano-dollars, so that sums are exact. The entry stores the cost and the catalog version, so later price changes do not rewrite history. A provider that reports cost itself overrides the calculation. A model with no price data shows tokens only.
 
@@ -256,7 +285,7 @@ Providers disagree on what "input" includes, so each adapter documents and tests
 - **Per entry:** id, display name, protocol, context window, maximum output, prices (input, output, cache read, cache write by class, tiers), reasoning control, which models' reasoning it can read, modalities, capability flags (strict tools, mid-conversation system messages, structured output, minimum cacheable size), and the speed tiers it offers besides standard, each with its own rate card. No provider's model list reports tier support, so this part of an entry is maintained by hand from the providers' documentation.
 - **User overlay.** Configuration can add or override entries. This is how local and private models are described. An overlaid entry replaces the built-in one for the same provider and model whole: nothing is merged field by field, so an entry says everything about its model.
 - **Variant defaults.** Each entry names the default at each variant point ([14-adaptation.md](14-adaptation.md)). Left out, they are the `replace` edit format, strict tool schemas where the model has them, and the `concise` prompt style.
-- **Flags.** What a model's or a provider's protocol needs to know that the neutral fields do not say is a named flag on the entry. Each protocol documents the flags it reads.
+- **Flags.** What a model's or a provider's protocol needs to know that the neutral fields do not say is a named flag on the entry. Each protocol documents the flags it reads. The ones `anthropic-messages` reads are listed with it, below.
 - **Runtime discovery, on request.** `cortex models refresh` queries the provider's list endpoint and overlays limits and capabilities in the user's state directory. It never runs on its own.
 - **Local servers** are asked at connect time for the loaded context size, because it differs from the model's trained size.
 
@@ -297,11 +326,13 @@ Each protocol implements `classify` as a table from (transport error, status, pr
 
 **A code that names the failure wins over the status it came with.** A spending cap is not retried because it arrived as a 429. Each protocol reads its provider's codes into one of a few signals (rate limit, quota, overload, server failure, context length, credential), and one shared function applies the table.
 
-**A refusal can belong to a speed tier.** A classified error says whether it was a rate limit or an overload, and names the tier whose own limit or capacity turned the request away, when it was a tier's and not the model's. Only the protocol can tell, from the provider's headers and codes and the speed the request was sent at.
+**A refusal can belong to a speed tier.** A classified error says whether it was a rate limit or an overload, and names the tier whose own limit or capacity turned the request away, when it was a tier's and not the model's. Only the protocol can tell, from the provider's headers and codes and the speed the request was sent at. How Anthropic's adapter tells is in "The `anthropic-messages` protocol", below.
 
 Failures that are not HTTP responses have codes of their own: `connection_failed`, `connection_lost`, `timeout`, `idle_timeout`, `first_event_timeout`, `incomplete_stream` (the stream ended before the provider's terminal event), `malformed_stream`. All are `Transient`.
 
 The provider's request id is attached to every error and written to the log.
+
+**A spending cap is a hard stop.** Anthropic reports a monthly spending cap as a 429 with the same error type as a rate limit and no wait. Its detail code says what it is, and that wins: the error is reported at once, the request is never sent again, and it is never taken for a speed tier's refusal, so it starts no fallback and no cooldown.
 
 ## Transport
 
@@ -317,7 +348,7 @@ The provider's request id is attached to every error and written to the log.
 
 | Protocol | Covers | When |
 |---|---|---|
-| `anthropic-messages` | Anthropic. Also Anthropic-shaped endpoints on other servers. | First. |
+| `anthropic-messages` | Anthropic. Also Anthropic-shaped endpoints on other servers. | First. **Built in step 14.** |
 | `openai-chat` | OpenAI Chat Completions, OpenRouter, Ollama, llama.cpp, vLLM, LM Studio and other compatible servers, with capability flags for their differences. | Second, before the first release, because a second protocol is what proves the abstraction. |
 | `openai-responses` | OpenAI's current API, needed for its newest models' tool calling. | After the first release. |
 | `gemini-generate` | Google's `generateContent` API. Google now also documents a newer stateful API; which one to target is decided when that step starts. | After the first release. |
@@ -335,3 +366,85 @@ A checklist for reviewing any change to the neutral types.
 7. Reasoning depth as a per-model set, and visibility as a separate setting.
 8. The difference between protocol, provider and model.
 9. Speed tiers as a per-model set with their own prices and failure modes, and the difference between the speed that was asked for and the speed that ran.
+
+## The `anthropic-messages` protocol
+
+As built in step 14 (`crates/cortex-llm/src/anthropic`). The provider's documentation was read again on 2026-11-13: the Messages API reference, and the pages on streaming, prompt caching, thinking, preserved thinking, effort, tool use, fast mode, errors and rate limits. Its fixtures are in `crates/cortex-llm/fixtures/anthropic-messages/`, and its classification table is in the module that implements it, `anthropic/classify.rs`.
+
+**What had moved since this page and the catalog were written.**
+
+| What | Before | Now |
+|---|---|---|
+| The API version | Not stated here. | `2026-10-21`, which every request names. It removed the sampling parameters (`temperature`, `top_p`, `top_k`), which the harness never sent. |
+| Reasoning after a change of model | Dropped unless the catalog said the model could read it. | Sent back unchanged to Anthropic's own API, which leaves out what the model cannot read ("The conversation model", above). |
+| Which models read which models' reasoning | "Not documented." | Documented, as a table. It is in the catalog as `reads_reasoning_from`. |
+| System messages in the middle of a conversation | "Not documented." | Documented for all four models. The catalog's capability says so. The neutral message model has no such role yet; step 15 decides whether it needs one. |
+| A spending cap | One row of the shared table: "429 with a spending, credit or quota code". | It has a detail code of its own, `enforced_spend_limit_reached`, in `error.details.error_code`. A second detail code, `ramp_limit_exceeded`, marks a 429 for usage that grew too fast; it is a rate limit like any other, with a wait. |
+| Stop reasons | Six. | A seventh, `model_context_window_exceeded`: the response filled what was left of the context window. |
+| A speed on a model with no fast mode | Not stated. | A 400, for `standard` as well. Found by asking the real API. |
+| The catalog's prices, limits, effort levels and fast-mode offers for the four models | | All still as written. No price or limit changed. |
+
+**The request.** `POST <base URL>/v1/messages`, with `anthropic-version`, and `anthropic-beta` only where a model's or a provider's flag asks for one. The body is written by hand, in this order, and not through a JSON value:
+
+```text
+{"model", "max_tokens", "stream", "thinking", "output_config", "speed",
+ "cache_control", "tools", "system", "messages": [ … ]}
+```
+
+- **Everything before the messages is the same bytes for every request of a context epoch, and the messages only grow at the end.** So one request's body, without its two closing brackets, is the beginning of the next one's. A test checks it over a conversation recorded from the real API, and fails when earlier content is edited on purpose.
+- **Reasoning.** A model whose control is a set of levels is sent adaptive thinking, with the level as the effort; no level leaves the model's default. A model whose control is a token budget is sent the budget. The visibility is always sent (`summarized` or `omitted`), so what a response shows does not rest on a model's default. A level the model does not have is refused before anything is sent.
+- **Tools** carry `strict` when the variant in effect is strict schemas, and ask for their arguments to be streamed as they are written. No tool is ever forced: the current models refuse it.
+- **An output schema** is the provider's structured output.
+- **`max_tokens`** is the request's limit, or the model's maximum when it has none.
+- **Messages.** One wire message for each neutral message. A tool's results are a user message of result blocks, in call order, right after the calls. An assistant message with nothing to send is left out, because the provider refuses empty content.
+
+**Cache markers.**
+
+| Hint | Marker |
+|---|---|
+| The stable prefix | `cache_control` on the system prompt, which covers the tools before it. On the last tool when there is no system prompt. |
+| The history | `cache_control` at the top level. The provider then marks the last block of each request itself, so nothing inside the messages moves from one request to the next. |
+| The history, after a long round | One more marker, on the block the request before this one ended with. |
+
+The provider writes a cache entry only where a marker is, and when it reads it looks back 20 positions from a marker for an entry an earlier request wrote. A run of tool calls counts as one position, and so does a run of results. When one round adds more positions than that, the entry the request before wrote would be missed and the whole conversation written again, so the block it was written at is marked as well. That marker is the only one that is ever inside the messages. It is not content: the provider's cache and its check of reasoning blocks both ignore markers. So "the prefix is byte-identical" is checked on the body without it (`AnthropicMessages::stable_prefix`), which for every ordinary round is the body itself.
+
+**Stop reasons.**
+
+| The provider's | Neutral | |
+|---|---|---|
+| `end_turn` | `end` | |
+| `stop_sequence` | `end` | The sequence is the stop's detail. The harness sends none. |
+| `tool_use` | `tool_calls` | |
+| `max_tokens` | `max_output` | |
+| `model_context_window_exceeded` | `context_overflow` | The loop compacts and asks again, as for a request that did not fit. |
+| `pause_turn` | `paused` | |
+| `refusal` | `refusal` | The category is the stop's detail. |
+| anything else | passed on under its own name | Never guessed at. |
+
+**Usage.** `input_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens` are the three neutral input classes as they are. Cache writes are split by lifetime from `cache_creation`. The reasoning count is `output_tokens_details.thinking_tokens`. The speed that served the request is `usage.speed`, read only where the response has it.
+
+**Errors.** The table from `error.type`, `error.details.error_code` and the status to a kind is in `anthropic/classify.rs`, and is tested row by row. Two rows stand out:
+
+- **A prompt that is too long has no code of its own.** The provider documents it as a 400 whose message says "prompt is too long". That phrase is the one place where a message is read to classify a failure, because nothing else tells this 400 from any other and the loop answers it differently: it compacts.
+- **A request that is too large in bytes** (413) is answered the same way, so it is classified the same way.
+
+**A refusal by the fast tier.** A request at fast speed is counted against the fast tier's own token limits and its own ramp limit; the number of requests a minute is counted for the model whatever the speed. A recorded fast response shows it: it carries the model's request limit and the tier's two token limits, and no token limit of the model's. So:
+
+| A request sent at fast is refused with | And the headers say | The refusal is |
+|---|---|---|
+| A rate limit or an overload | The tier has no tokens left | The tier's. |
+| A rate limit or an overload | The tier has tokens left or says nothing, and the model's own limit has nothing left | The model's. |
+| A rate limit or an overload | Anything else | The tier's. |
+| A spending cap, a server failure, a refused request, a refused key | | Never the tier's. |
+
+An error after a successful status has no headers; at fast speed a rate limit or an overload there is the tier's.
+
+**Flags.**
+
+| On | Flag | Meaning |
+|---|---|---|
+| a provider | `replay_reasoning` | `"all"`: every block of the provider's own messages is sent back whatever the model. Absent: only what the model can read. |
+| a provider | `eager_tool_streaming` | Off for a server that does not know the field. On when absent. |
+| a provider | `api_version` | Another `anthropic-version` than the built-in one. |
+| a provider | `beta` | Names for the `anthropic-beta` header, sent with every request. |
+| a model | `speed_beta` | The beta name a request must carry to name a speed on this model: the models whose fast mode is a preview. None of the four in the catalog needs it. |

@@ -25,6 +25,8 @@ Everything goes through the `xtask` crate: `cargo xtask <command>`, or `./x <com
 | `cargo xtask schema` | Regenerates the protocol's JSON Schema and TypeScript declarations in `docs/protocol/` from the types in `cortex-protocol`. Run it after any change to those types and commit the result. `--check` only compares. |
 | `cargo xtask gen` | Regenerates every generated file: what `schema` writes, and the configuration schema and reference in `docs/configuration/`, from the settings in `cortex-config`. Run it after adding or changing a configuration key. |
 | `cargo xtask size`, `unused`, `advisories` | What the non-blocking workflows run: the `dist` build with its binary size and crate count, the unused-dependency check (needs [cargo-machete](https://github.com/bnjbvr/cargo-machete)), and the advisory check. |
+| `cargo xtask fuzz` | Coverage-guided fuzzing of the stream decoders, each target for a fixed time (`--seconds N`, 60 when not given). What the nightly workflow's `fuzz` job runs. Needs a nightly toolchain and [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz). The targets are in `fuzz/`. |
+| `cargo xtask live`, `cargo xtask record [SCENARIO…]` | By hand only, against a real provider, and never in CI: the live smoke test, and the recorder of provider fixtures. Both need `CORTEX_LIVE_ANTHROPIC_KEY_FILE` set to the path of a file that holds the API key. The key is never given on a command line or in the environment, and a recording that still holds it is refused ([docs/testing-and-ci.md](docs/testing-and-ci.md), "Fixtures"). They cost money: a few hundredths of a cent for the smoke test, about a cent and a half to record everything. |
 | `cargo xtask alias` | Builds `cortex` and puts its alias `cx` beside it in the target directory. |
 
 ## Layout
@@ -34,6 +36,7 @@ crates/cortex-*    the product, one crate per job (docs/architecture/01-workspac
 crates/cortex-cli  the `cortex` binary; `cx` is a link to it
 catalog/           the model catalog, embedded in the binary by cortex-llm's build script
 xtask/             developer commands; not shipped
+fuzz/              fuzz targets for the stream decoders; a package of its own, outside the workspace
 docs/              the specification
 docs/protocol/     generated: the protocol's JSON Schema and TypeScript declarations
 docs/configuration/  generated: the configuration file's JSON Schema and reference
