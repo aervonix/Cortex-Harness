@@ -67,7 +67,8 @@ settings! {
         [enforced]
         pub limits: LimitSettings,
         /// Where stored credentials are kept. Never the credentials
-        /// themselves: no key of this file takes a secret.
+        /// themselves: no key of this file is meant for a key, and a
+        /// provider's literal header, which may hold one, is redacted.
         [nested]
         pub credentials: CredentialSettings,
         /// Where sessions are stored.
@@ -148,27 +149,30 @@ settings! {
 settings! {
     /// Models by role, the reasoning level and the speed tier.
     pub struct ModelSettings {
-        /// The model for the agent's own turns. Needed to run a turn.
-        [Preference, NextEpoch]
+        /// The model for the agent's own turns. Needed to run a turn. A
+        /// project's file may choose one once the project is trusted: a
+        /// model can cost more than the user's.
+        [RaisesCost, NextEpoch]
         pub main: Option<String>,
         /// The model for utility calls: summaries, titles. Without one, the
-        /// main model is used.
-        [Preference, NextEpoch]
+        /// main model is used. From a project, after trust.
+        [RaisesCost, NextEpoch]
         pub fast: Option<String>,
         /// The model for model-graded comparisons. Without one, the main
-        /// model is used.
-        [Preference, NextEpoch]
+        /// model is used. From a project, after trust.
+        [RaisesCost, NextEpoch]
         pub judge: Option<String>,
         /// The reasoning level of the main role: one of the model's own
-        /// levels, or `minimal`, `low`, `medium`, `high` or `max`.
-        [Preference, NextEpoch]
+        /// levels, or `minimal`, `low`, `medium`, `high` or `max`. From a
+        /// project, after trust: more reasoning is more output.
+        [RaisesCost, NextEpoch]
         pub effort: Option<String>,
         /// How much of the model's reasoning is shown.
         [Preference, NextEpoch]
         pub reasoning: ReasoningVisibility = ReasoningVisibility::Summary,
         /// The most output tokens one response may have. Without it, the
-        /// model's own limit applies.
-        [Preference, NextEpoch, 1..=10_000_000]
+        /// model's own limit applies. From a project, after trust.
+        [RaisesCost, NextEpoch, 1..=10_000_000]
         pub max_output: Option<u64>,
         /// The session's speed tier, which the main role runs at:
         /// `standard`, `fast` where the model offers it, or a provider's own
@@ -200,12 +204,13 @@ settings! {
     /// The settings of one model role.
     pub struct RoleSettings {
         /// The provider that serves the role's model. Needed only when two
-        /// providers have a model with the same name.
-        [Preference, NextEpoch]
+        /// providers have a model with the same name. From a project, after
+        /// trust: it chooses the model as much as the name does.
+        [RaisesCost, NextEpoch]
         pub provider: Option<String>,
         /// The role's reasoning level. For `main` it overrides
-        /// `model.effort`.
-        [Preference, NextEpoch]
+        /// `model.effort`. From a project, after trust.
+        [RaisesCost, NextEpoch]
         pub effort: Option<String>,
         /// The role's speed tier. For `main` it overrides `model.speed`.
         /// From a project's file, a tier other than `standard` waits for
@@ -234,6 +239,9 @@ settings! {
         pub key_env: Option<String>,
         /// Extra headers for every request. A value is text, or
         /// `{ env = "NAME" }` to read an environment variable when used.
+        /// Text may be a key (some gateways take one in a header), so it is
+        /// held as a secret and `cortex config show` prints it as
+        /// `[redacted]`; a variable's name is shown.
         [UserOnly, Now]
         pub headers: Headers,
         /// How long a response stream may be silent before the request
@@ -253,8 +261,9 @@ settings! {
 settings! {
     /// How a request that failed is tried again.
     pub struct RetrySettings {
-        /// The most attempts for one request, the first included.
-        [Preference, Now, 1..=20]
+        /// The most attempts for one request, the first included. From a
+        /// project, after trust: each attempt can be paid for.
+        [RaisesCost, Now, 1..=20]
         pub attempts: u32 = 5,
         /// The wait before the second attempt. Each later wait is this
         /// multiplied by `backoff_factor` again, up to `backoff_cap`.

@@ -391,13 +391,7 @@ pub(crate) fn load_layers(options: &LoadOptions) -> Result<(Loaded, Vec<FileLaye
             });
         }
     }
-    let loaded = merge_layers(
-        options,
-        &layers,
-        files,
-        diagnostics,
-        MissingProfile::Error,
-    )?;
+    let loaded = merge_layers(options, &layers, files, diagnostics, MissingProfile::Error)?;
     Ok((loaded, layers))
 }
 
@@ -1050,8 +1044,7 @@ impl Loaded {
     /// when each change takes effect.
     #[must_use]
     pub fn changes_since(&self, earlier: &Self) -> Vec<Change> {
-        let before: BTreeMap<KeyPath, Value> =
-            earlier.effective_unredacted().into_iter().collect();
+        let before: BTreeMap<KeyPath, Value> = earlier.effective_unredacted().into_iter().collect();
         let after: BTreeMap<KeyPath, Value> = self.effective_unredacted().into_iter().collect();
         let mut changed: Vec<KeyPath> = before
             .iter()

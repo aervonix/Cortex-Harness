@@ -23,7 +23,9 @@ use crate::{Machine, write};
 const KEY: &str = "sk-test-canary-config-0001";
 
 fn header(name: &str) -> String {
-    format!("[providers.{name}]\nheaders = {{ api-key = \"{KEY}\", X-Team = {{ env = \"TEAM\" }} }}\n")
+    format!(
+        "[providers.{name}]\nheaders = {{ api-key = \"{KEY}\", X-Team = {{ env = \"TEAM\" }} }}\n"
+    )
 }
 
 #[test]
@@ -31,10 +33,7 @@ fn no_debug_or_display_form_holds_a_key() {
     let mut machine = Machine::new("printing_canary");
     machine.options.env.set("ANTHROPIC_API_KEY", KEY);
     machine.options.overrides.push(
-        Override::parse(&format!(
-            "providers.cli.headers={{ api-key = \"{KEY}\" }}"
-        ))
-        .unwrap(),
+        Override::parse(&format!("providers.cli.headers={{ api-key = \"{KEY}\" }}")).unwrap(),
     );
     machine
         .layer(LayerKind::User, &header("azure"))
@@ -90,9 +89,12 @@ fn no_debug_or_display_form_holds_a_key() {
         store: &store,
     };
     let from_flag = credentials::resolve(lookup).unwrap().unwrap();
-    let from_env = credentials::resolve(Lookup { flag: None, ..lookup })
-        .unwrap()
-        .unwrap();
+    let from_env = credentials::resolve(Lookup {
+        flag: None,
+        ..lookup
+    })
+    .unwrap()
+    .unwrap();
     let from_store = credentials::resolve(Lookup {
         provider: "example",
         flag: None,
@@ -101,19 +103,29 @@ fn no_debug_or_display_form_holds_a_key() {
     .unwrap()
     .unwrap();
     assert_eq!(
-        [from_flag.secret.expose(), from_env.secret.expose(), from_store.secret.expose()],
+        [
+            from_flag.secret.expose(),
+            from_env.secret.expose(),
+            from_store.secret.expose()
+        ],
         [KEY; 3]
     );
     let status = credentials::status(lookup).unwrap();
 
     // A credentials file with the key on a line that does not parse.
     let broken_path = machine.home().join("broken").join("credentials.toml");
-    write(&broken_path, &format!("[providers.example]\nkey = \"{KEY}\n"));
+    write(
+        &broken_path,
+        &format!("[providers.example]\nkey = \"{KEY}\n"),
+    );
     let broken = FileStore::new(&broken_path, clock);
     let error = broken.get("example").unwrap_err();
 
     // A configuration file with the key on a line that does not parse.
-    machine.layer(LayerKind::User, &format!("[providers.azure]\nheaders = {{ api-key = \"{KEY}\" \n"));
+    machine.layer(
+        LayerKind::User,
+        &format!("[providers.azure]\nheaders = {{ api-key = \"{KEY}\" \n"),
+    );
     let failure = machine.try_load().unwrap_err();
 
     let headers = KeyPath::parse("providers.azure.headers").unwrap();

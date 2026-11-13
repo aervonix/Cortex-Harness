@@ -7,7 +7,7 @@ Every key a Cortex-Harness configuration file may hold. The design is in [archit
 **How to read the tables.**
 
 - **Type.** A length of time is text such as `"20s"`, `"10m"` or `"1h30m"` (units `ms`, `s`, `m`, `h`, `d`). A list marked *joined* is added to by every layer; any other list, like any other value, is replaced by a higher layer.
-- **From a project.** What happens to the key in a project's `.cortex/config.toml` or `.cortex/config.local.toml`. *preference*: applied always. *runs code* and *widens access*: applied only after the user has trusted the project, and listed for the user until then. *user only*: ignored, with a warning. A few keys depend on the value, and say how.
+- **From a project.** What happens to the key in a project's `.cortex/config.toml` or `.cortex/config.local.toml`. *preference*: applied always. *runs code*, *widens access* and *raises cost*: applied only after the user has trusted the project, and listed for the user until then; until then the user's own value applies. *user only*: ignored, with a warning. A few keys depend on the value, and say how.
 - **Takes effect.** When a change to the key reaches a running harness: *at once*, at the *next epoch* (it shapes the prompt, the tool list or the model), or after a *restart*.
 - **Enforced.** In `[permissions]`, `[sandbox]` and `[limits]` an unknown key or value is an error and the file is refused: a restriction this version does not understand is never skipped. Everywhere else an unknown key is a warning.
 
@@ -28,18 +28,18 @@ Every key a Cortex-Harness configuration file may hold. The design is in [archit
 
 | Key | Type | Default | From a project | Takes effect | What it is |
 |---|---|---|---|---|---|
-| `model.main` | text | not set | preference | next epoch | The model for the agent's own turns. Needed to run a turn. |
-| `model.fast` | text | not set | preference | next epoch | The model for utility calls: summaries, titles. Without one, the main model is used. |
-| `model.judge` | text | not set | preference | next epoch | The model for model-graded comparisons. Without one, the main model is used. |
-| `model.effort` | text | not set | preference | next epoch | The reasoning level of the main role: one of the model's own levels, or `minimal`, `low`, `medium`, `high` or `max`. |
+| `model.main` | text | not set | raises cost | next epoch | The model for the agent's own turns. Needed to run a turn. A project's file may choose one once the project is trusted: a model can cost more than the user's. |
+| `model.fast` | text | not set | raises cost | next epoch | The model for utility calls: summaries, titles. Without one, the main model is used. From a project, after trust. |
+| `model.judge` | text | not set | raises cost | next epoch | The model for model-graded comparisons. Without one, the main model is used. From a project, after trust. |
+| `model.effort` | text | not set | raises cost | next epoch | The reasoning level of the main role: one of the model's own levels, or `minimal`, `low`, `medium`, `high` or `max`. From a project, after trust: more reasoning is more output. |
 | `model.reasoning` | `"summary"`, `"none"` | `"summary"` | preference | next epoch | How much of the model's reasoning is shown. |
-| `model.max_output` | whole number, 1 to 10000000 | not set | preference | next epoch | The most output tokens one response may have. Without it, the model's own limit applies. |
+| `model.max_output` | whole number, 1 to 10000000 | not set | raises cost | next epoch | The most output tokens one response may have. Without it, the model's own limit applies. From a project, after trust. |
 | `model.speed` | text | `"standard"` | by value: `standard` is a preference, any other tier raises cost | at once | The session's speed tier, which the main role runs at: `standard`, `fast` where the model offers it, or a provider's own tier name. The utility roles do not follow it: they run at `standard` unless `model.roles.<role>.speed` says otherwise. A project's file may set `standard`; any other tier costs more, and waits for the user to trust the project. |
 | `model.speed_fallback` | `true` or `false` | `true` | preference | at once | Whether a request that a speed tier refuses is sent again at `standard`. When off, such a refusal is an ordinary rate limit. |
 | `model.speed_wait` | length of time | `"20s"` | preference | at once | The longest one request waits in place for a speed tier before it falls back to `standard`. `"0s"` never waits. |
 | `model.speed_cooldown` | length of time | `"10m"` | preference | at once | How long requests stay at `standard` after a fallback, when the provider does not say when the tier is available again. |
-| `model.roles.*.provider` | text | not set | preference | next epoch | The provider that serves the role's model. Needed only when two providers have a model with the same name. |
-| `model.roles.*.effort` | text | not set | preference | next epoch | The role's reasoning level. For `main` it overrides `model.effort`. |
+| `model.roles.*.provider` | text | not set | raises cost | next epoch | The provider that serves the role's model. Needed only when two providers have a model with the same name. From a project, after trust: it chooses the model as much as the name does. |
+| `model.roles.*.effort` | text | not set | raises cost | next epoch | The role's reasoning level. For `main` it overrides `model.effort`. From a project, after trust. |
 | `model.roles.*.speed` | text | not set | by value: `standard` is a preference, any other tier raises cost | at once | The role's speed tier. For `main` it overrides `model.speed`. From a project's file, a tier other than `standard` waits for trust. |
 
 ## `[providers]`
@@ -50,7 +50,7 @@ Every key a Cortex-Harness configuration file may hold. The design is in [archit
 | `providers.*.protocol` | text | not set | user only | next epoch | The wire protocol the endpoint speaks. |
 | `providers.*.base_url` | text | not set | user only | next epoch | The endpoint's base URL. |
 | `providers.*.key_env` | text | not set | user only | at once | The environment variable that holds the provider's API key. It is looked at before the credential store. |
-| `providers.*.headers` | table of text, or `{ env = "NAME" }` | not set | user only | at once | Extra headers for every request. A value is text, or `{ env = "NAME" }` to read an environment variable when used. |
+| `providers.*.headers` | table of text, or `{ env = "NAME" }` | not set | user only | at once | Extra headers for every request. A value is text, or `{ env = "NAME" }` to read an environment variable when used. Text may be a key (some gateways take one in a header), so it is held as a secret and `cortex config show` prints it as `[redacted]`; a variable's name is shown. |
 | `providers.*.idle_timeout` | length of time | not set | user only | at once | How long a response stream may be silent before the request fails. Overrides `retry.idle_timeout` for this provider. |
 | `providers.*.first_event_timeout` | length of time | not set | user only | at once | How long to wait for the first event of a response. Overrides `retry.first_event_timeout` for this provider. |
 
@@ -58,7 +58,7 @@ Every key a Cortex-Harness configuration file may hold. The design is in [archit
 
 | Key | Type | Default | From a project | Takes effect | What it is |
 |---|---|---|---|---|---|
-| `retry.attempts` | whole number, 1 to 20 | `5` | preference | at once | The most attempts for one request, the first included. |
+| `retry.attempts` | whole number, 1 to 20 | `5` | raises cost | at once | The most attempts for one request, the first included. From a project, after trust: each attempt can be paid for. |
 | `retry.backoff_base` | length of time | `"1s"` | preference | at once | The wait before the second attempt. Each later wait is this multiplied by `backoff_factor` again, up to `backoff_cap`. |
 | `retry.backoff_factor` | number, 1 to 10 | `2.0` | preference | at once | What the wait is multiplied by after each attempt. |
 | `retry.backoff_cap` | length of time | `"30s"` | preference | at once | The longest wait between two attempts. |

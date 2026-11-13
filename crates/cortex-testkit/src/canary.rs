@@ -42,7 +42,10 @@ impl Printed {
     pub fn debug(name: impl Into<String>, value: &(impl Debug + ?Sized)) -> Self {
         Self {
             name: name.into(),
-            forms: vec![("{:?}", format!("{value:?}")), ("{:#?}", format!("{value:#?}"))],
+            forms: vec![
+                ("{:?}", format!("{value:?}")),
+                ("{:#?}", format!("{value:#?}")),
+            ],
         }
     }
 

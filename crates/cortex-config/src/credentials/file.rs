@@ -248,9 +248,9 @@ impl CredentialStore for FileStore {
     }
 
     fn warning(&self, env: &Env) -> Option<String> {
-        if let Err(error) = Self::refuse_link(&self.path).and_then(|()| {
-            Self::refuse_link(&self.lock_path())
-        }) {
+        if let Err(error) =
+            Self::refuse_link(&self.path).and_then(|()| Self::refuse_link(&self.lock_path()))
+        {
             return Some(format!("the credential store cannot be used: {error}"));
         }
         match self.is_private() {

@@ -189,9 +189,7 @@ impl ProjectLocator {
             Err(PathError::ShareNotAllowed { server, share, .. }) => {
                 PathResolver::new(root, PathOptions::new().allow_share(server, share)).map(Some)
             }
-            Err(PathError::Io { source, .. })
-                if source.kind() == std::io::ErrorKind::NotFound =>
-            {
+            Err(PathError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
                 Ok(None)
             }
             Err(error) => Err(error),
@@ -264,9 +262,8 @@ fn find_root(start: &Path, user: &CurrentUser) -> PathBuf {
         reason = "a stat call per level, at start-up, before any session exists"
     )]
     let ours = |candidate: PathBuf, folder_only: bool| {
-        std::fs::symlink_metadata(&candidate).is_ok_and(|found| {
-            (!folder_only || found.is_dir()) && user.owns(&candidate, &found)
-        })
+        std::fs::symlink_metadata(&candidate)
+            .is_ok_and(|found| (!folder_only || found.is_dir()) && user.owns(&candidate, &found))
     };
     start
         .ancestors()
@@ -522,10 +519,8 @@ mod tests {
         )]
         use std::os::unix::fs::MetadataExt;
 
-        let base = std::env::temp_dir().join(format!(
-            "cortex-config-root-owner-{}",
-            std::process::id()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("cortex-config-root-owner-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("ws").join(".git")).unwrap();
         std::fs::create_dir_all(base.join("ws").join("sub")).unwrap();

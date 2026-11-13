@@ -76,6 +76,9 @@ max_wait = "5m"
 
 fn machine(test: &str) -> Machine {
     let mut machine = Machine::new(test);
+    // Trusted, so that the project's choice of model, which waits for
+    // trust, shows where it came from as the design page does.
+    machine.trusted();
     machine
         .layer(LayerKind::Managed, MANAGED)
         .layer(LayerKind::User, USER)

@@ -133,6 +133,14 @@ Step 9 built `cortex-config`, and owner-only files on Windows in `cortex-base`. 
 | **The Linux keychain.** The Secret Service backend cannot be run in the blocking CI. | **Not shipped untested.** The store selection, the feature name and a clear error are built. The backend is outstanding, below. | [Decision 0018](decisions/0018-credential-storage.md) |
 | **The Credential Manager wrapper.** | **`windows-native-keyring-store` with `keyring-core`,** and local-machine persistence for stored keys. | [dependencies.md](dependencies.md) |
 
+Added on 2026-11-13, with the fixes that followed the review of step 9:
+
+| Question | The owner's answer, 2026-11-13 | Recorded in |
+|---|---|---|
+| **Which keys raise cost.** Only a speed tier other than `standard` waited for trust; a project could still choose a dearer model, more reasoning, more output or more attempts. | **An untrusted repository must not raise what its user spends.** The model, for the main role and each other role, with a role's provider; the reasoning level, for the main role and each other role; `model.max_output`; and `retry.attempts` are "raises cost", whatever their value. They apply only once the project is trusted, and until then the user's own values apply. | [architecture/08-configuration.md](architecture/08-configuration.md), "Trust and what a project may set" |
+| **Whose `.git` or `.cortex` counts for the workspace root on Windows.** An elevated process creates objects owned by the Administrators group, not the user. | **The current user's, or the Administrators group's** (`S-1-5-32-544`), read with the owner check `cortex-base` already has, so no new `unsafe`. Only an administrator can create an object the group owns. A link at `.git` is passed over on Windows and counts by its own owner on Linux. | [architecture/08-configuration.md](architecture/08-configuration.md), "Layers" |
+| **The check for changed files and a link that appears after the load.** The check asks the file system, which follows links. | **The project's files are found again through the path resolver before each check**, and on any difference the configuration is reloaded through the resolver. The moment between that look and the check's own is a residual, listed for the whole-repo review. | [architecture/08-configuration.md](architecture/08-configuration.md), "Reloading without a restart" |
+
 ### Answered in step 8, on 2026-11-13
 
 Step 8 built `cortex-session`. These are the choices it put to the owner before building, each accepted as recommended unless the row says otherwise.
@@ -840,7 +848,7 @@ Three tracks start here and touch different crates, so they can run in separate 
 
 ### Step 56: macOS
 
-- **Goal and scope.** Only if the owner makes macOS a target: a Seatbelt sandbox backend, Keychain credential storage, terminal checks, release binaries for both architectures under both command names, and CI.
+- **Goal and scope.** Only if the owner makes macOS a target: a Seatbelt sandbox backend, Keychain credential storage, terminal checks, release binaries for both architectures under both command names, and CI. One known gap to close: `cortex-config` reads the effective user id from `/proc/self/status` to judge whose a `.git` or `.cortex` is when it looks for the workspace root ([architecture/08-configuration.md](architecture/08-configuration.md), "Layers"). macOS has no `/proc`, so there no candidate counts and the root is always the working directory, until the user id is read another way.
 - **Depends on.** 34.
 - **Done when.** The whole test suite passes on a macOS runner. The sandbox tests from step 26 pass with the macOS backend. The blocking checks on macOS are within the 5-minute limit, or run in a non-blocking tier if the owner prefers.
 - **Must not change.** Linux and Windows behaviour.

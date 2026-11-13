@@ -41,16 +41,33 @@ fn the_documented_classes_hold() {
     };
     // Harmless preferences.
     for key in [
-        "model.main",
-        "model.effort",
+        "model.reasoning",
         "model.speed_fallback",
-        "retry.attempts",
+        "model.speed_wait",
+        "retry.backoff_base",
+        "retry.max_wait",
+        "shell.timeout",
     ] {
         assert_eq!(class_of(key), Trust::Preference, "{key}");
     }
     // A speed tier other than `standard` raises what the user spends.
     assert_eq!(class_of("model.speed"), Trust::BySpeed);
     assert_eq!(class_of("model.roles.*.speed"), Trust::BySpeed);
+    // So do the model, for each role and the provider that serves it, the
+    // reasoning level, the most output and the number of attempts, at any
+    // value (the owner's decision, 2026-11-13).
+    for key in [
+        "model.main",
+        "model.fast",
+        "model.judge",
+        "model.roles.*.provider",
+        "model.effort",
+        "model.roles.*.effort",
+        "model.max_output",
+        "retry.attempts",
+    ] {
+        assert_eq!(class_of(key), Trust::RaisesCost, "{key}");
+    }
     // Can run code.
     for key in ["hooks.*", "extensions.*", "mcp.*", "verify.*"] {
         assert_eq!(class_of(key), Trust::RunsCode, "{key}");
@@ -177,7 +194,6 @@ fn an_untrusted_project_gets_its_preferences_and_nothing_that_could_hurt() {
     let loaded = machine.load();
 
     // Preferences apply, and so do the restrictions it adds.
-    assert_eq!(value(&loaded, "model.main"), "\"project-model\"");
     assert_eq!(value(&loaded, "sandbox.protect"), "[\"vendor\"]");
     let rules: Vec<(String, &str)> = loaded
         .settings
@@ -212,8 +228,10 @@ fn an_untrusted_project_gets_its_preferences_and_nothing_that_could_hurt() {
         ("usage.refresh", "(not set)"),
         ("log.level", "(not set)"),
         ("compat.mcp", "true"),
-        // A fast tier costs about twice as much per token.
+        // A fast tier costs about twice as much per token, and a model may
+        // cost more than the user's.
         ("model.speed", "\"standard\""),
+        ("model.main", "(not set)"),
     ] {
         assert_eq!(value(&loaded, key), default, "{key}");
         assert_eq!(layer_of(&loaded, key), "default", "{key}");
@@ -241,6 +259,7 @@ fn an_untrusted_project_gets_its_preferences_and_nothing_that_could_hurt() {
                 TrustClass::RunsCode,
                 Some(48)
             ),
+            ("model.main".to_owned(), TrustClass::RaisesCost, Some(3)),
             ("model.speed".to_owned(), TrustClass::RaisesCost, Some(4)),
             (
                 "permissions.rules".to_owned(),
@@ -260,7 +279,7 @@ fn an_untrusted_project_gets_its_preferences_and_nothing_that_could_hurt() {
         ]
     );
     assert_eq!(
-        loaded.withheld[3]
+        loaded.withheld[4]
             .value
             .get("match")
             .and_then(|m| m.as_str()),
@@ -305,6 +324,7 @@ fn trust_turns_on_what_needs_trust_and_never_what_is_the_users_alone() {
 
     assert!(loaded.withheld.is_empty(), "{:?}", loaded.withheld);
     assert_eq!(value(&loaded, "model.speed"), "\"fast\"");
+    assert_eq!(value(&loaded, "model.main"), "\"project-model\"");
     assert_eq!(value(&loaded, "sandbox.network"), "\"full\"");
     assert_eq!(value(&loaded, "sandbox.write"), "[\"/\"]");
     assert_eq!(loaded.settings.permissions.rules.len(), 3);
@@ -338,14 +358,16 @@ fn the_local_project_file_and_a_projects_profile_are_held_to_the_same_rules() {
         .layer(
             LayerKind::Project,
             "# theirs\n[profiles.theirs]\nsandbox.network = \"full\"\n\
-             sandbox.enabled = false\nmodel.main = \"profile-model\"\n",
+             sandbox.enabled = false\nmodel.main = \"profile-model\"\n\
+             model.reasoning = \"none\"\n",
         )
         .layer(
             LayerKind::ProjectLocal,
             "[sandbox]\nwrite = [\"/var\"]\n[providers.x]\nbase_url = \"http://h\"\n",
         );
     let loaded = machine.load();
-    assert_eq!(value(&loaded, "model.main"), "\"profile-model\"");
+    assert_eq!(value(&loaded, "model.reasoning"), "\"none\"");
+    assert_eq!(value(&loaded, "model.main"), "(not set)");
     assert_eq!(value(&loaded, "sandbox.network"), "\"off\"");
     assert_eq!(value(&loaded, "sandbox.enabled"), "true");
     assert_eq!(value(&loaded, "sandbox.write"), "[]");
@@ -359,6 +381,7 @@ fn the_local_project_file_and_a_projects_profile_are_held_to_the_same_rules() {
         held,
         [
             "sandbox.write from project-local: ~/work/app/.cortex/config.local.toml:2",
+            "model.main from profile theirs (project: ~/work/app/.cortex/config.toml:5)",
             "sandbox.network from profile theirs (project: ~/work/app/.cortex/config.toml:3)",
         ]
     );
@@ -523,6 +546,72 @@ fn a_project_raises_the_speed_only_when_trusted() {
     let loaded = machine.load();
     assert_eq!(value(&loaded, "model.speed"), "\"standard\"");
     assert_eq!(layer_of(&loaded, "model.speed"), "project");
+}
+
+/// The owner's decision of 2026-11-13: an untrusted repository must not
+/// raise what its user spends. The model, for the main role and for each
+/// other role with the provider that serves it, the reasoning level, the
+/// most output and the number of attempts all wait for trust, whatever
+/// their value: whether one costs more than another depends on the model
+/// catalog. Until then the user's own values apply.
+#[test]
+fn a_project_chooses_what_costs_money_only_when_trusted() {
+    const USER: &str = "[model]\nmain = \"mine\"\neffort = \"low\"\n[retry]\nattempts = 2\n";
+    const PROJECT: &str = "[model]\nmain = \"theirs-main\"\nfast = \"theirs-fast\"\n\
+                           judge = \"theirs-judge\"\neffort = \"max\"\nmax_output = 500000\n\
+                           [model.roles.fast]\nprovider = \"theirs\"\neffort = \"max\"\n\
+                           [retry]\nattempts = 20\n";
+    // The key, the user's value, the project's value.
+    let keys = [
+        ("model.effort", "\"low\"", "\"max\""),
+        ("model.fast", "(not set)", "\"theirs-fast\""),
+        ("model.judge", "(not set)", "\"theirs-judge\""),
+        ("model.main", "\"mine\"", "\"theirs-main\""),
+        ("model.max_output", "(not set)", "500000"),
+        ("model.roles.fast.effort", "(not set)", "\"max\""),
+        ("model.roles.fast.provider", "(not set)", "\"theirs\""),
+        ("retry.attempts", "2", "20"),
+    ];
+    for layer in [LayerKind::Project, LayerKind::ProjectLocal] {
+        let mut machine = Machine::new(&format!("trust_cost_{layer}"));
+        machine.layer(LayerKind::User, USER).layer(layer, PROJECT);
+        let loaded = machine.load();
+        for (key, users, _) in keys {
+            assert_eq!(value(&loaded, key), users, "{layer}: {key}");
+        }
+        let mut held: Vec<(String, TrustClass)> = loaded
+            .withheld
+            .iter()
+            .map(|held| (held.key.to_string(), held.class))
+            .collect();
+        held.sort();
+        let expected: Vec<(String, TrustClass)> = keys
+            .iter()
+            .map(|(key, ..)| ((*key).to_owned(), TrustClass::RaisesCost))
+            .collect();
+        assert_eq!(held, expected, "{layer}");
+        assert!(loaded.diagnostics.is_empty(), "{:?}", machine.said(&loaded));
+
+        let loaded = machine.trusted().load();
+        for (key, _, theirs) in keys {
+            assert_eq!(value(&loaded, key), theirs, "{layer}, trusted: {key}");
+        }
+        assert!(loaded.withheld.is_empty());
+    }
+
+    // The same through a profile the project defines and the user selects.
+    let machine = Machine::new("trust_cost_profile");
+    machine
+        .layer(LayerKind::User, &format!("profile = \"theirs\"\n{USER}"))
+        .layer(
+            LayerKind::Project,
+            "[profiles.theirs]\nmodel.main = \"theirs-main\"\nretry.attempts = 20\n",
+        );
+    let loaded = machine.load();
+    assert_eq!(loaded.profile.as_deref(), Some("theirs"));
+    assert_eq!(value(&loaded, "model.main"), "\"mine\"");
+    assert_eq!(value(&loaded, "retry.attempts"), "2");
+    assert_eq!(loaded.withheld.len(), 2);
 }
 
 /// The sandbox's writable paths are joined across layers, and joining must

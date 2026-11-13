@@ -12,8 +12,12 @@
 //!
 //! # What this crate does not do
 //!
-//! - **It holds no secret.** No key of the configuration file takes one. A
-//!   credential is a [`cortex_base::Secret`] from the moment it is read.
+//! - **It prints no secret.** No key of the configuration file is meant
+//!   for one, but a provider's literal header can hold a gateway's key, so
+//!   it is a [`cortex_base::Secret`] from the moment it is read and every
+//!   view of the configuration shows it redacted. A credential is a
+//!   `Secret` too, and the environment's `Debug` form names its variables
+//!   without their values.
 //! - **It does not decide trust.** Whether a project is trusted is an input
 //!   ([`ProjectTrust`]). The trust store and its hashes belong to
 //!   `cortex-policy`.
