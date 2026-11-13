@@ -516,12 +516,112 @@ pub struct FileChange {
     /// The file: relative to the workspace root with `/` between names, or
     /// an absolute path for a file outside it.
     pub path: String,
-    /// The file before the round. `null`: it did not exist.
+    /// What the file was before the round. A line without it is read as
+    /// [`Before::Unknown`], never as "did not exist".
     #[serde(default)]
-    pub before: Option<FileVersion>,
+    pub before: Before,
     /// The file as the round left it. `null`: the round removed it.
     #[serde(default)]
     pub after: Option<FileVersion>,
+}
+
+/// What a file was before a tool round changed it.
+///
+/// On disk: `null` for [`Absent`](Self::Absent), a version object for
+/// [`Version`](Self::Version), and the string `"unknown"` for
+/// [`Unknown`](Self::Unknown). A missing `before`, and any other string,
+/// read as `Unknown`: only an explicit `null` says that a file did not
+/// exist, because undoing that change removes the file. A build from
+/// before `"unknown"` existed cannot read such a checkpoint at all, and so
+/// skips it rather than undo it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Before {
+    /// The file did not exist. Undoing the change removes it.
+    Absent,
+    /// This version. Undoing the change puts it back when its content was
+    /// kept ([`FileVersion::kept`]).
+    Version(FileVersion),
+    /// Not known: the change was seen only after it was made, as with a
+    /// shell command, and what the file held before could not be
+    /// recovered. A rewind cannot put it back, and never removes or
+    /// overwrites the file.
+    #[default]
+    Unknown,
+}
+
+impl Before {
+    /// The version, when there was a file and it is known.
+    #[must_use]
+    pub fn version(&self) -> Option<&FileVersion> {
+        match self {
+            Self::Version(version) => Some(version),
+            Self::Absent | Self::Unknown => None,
+        }
+    }
+
+    /// Whether `now` is this state: no file for [`Absent`](Self::Absent),
+    /// the same content for [`Version`](Self::Version). Never for
+    /// [`Unknown`](Self::Unknown).
+    #[must_use]
+    pub fn is(&self, now: Option<&FileVersion>) -> bool {
+        match (self, now) {
+            (Self::Absent, None) => true,
+            (Self::Version(before), Some(now)) => before.hash == now.hash,
+            _ => false,
+        }
+    }
+}
+
+impl From<Option<FileVersion>> for Before {
+    /// A file that was read: `None` when there was no file.
+    fn from(version: Option<FileVersion>) -> Self {
+        version.map_or(Self::Absent, Self::Version)
+    }
+}
+
+impl Serialize for Before {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Absent => serializer.serialize_unit(),
+            Self::Version(version) => version.serialize(serializer),
+            Self::Unknown => serializer.serialize_str("unknown"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Before {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct BeforeVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for BeforeVisitor {
+            type Value = Before;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("null, a file version, or \"unknown\"")
+            }
+
+            fn visit_unit<E>(self) -> Result<Before, E> {
+                Ok(Before::Absent)
+            }
+
+            fn visit_none<E>(self) -> Result<Before, E> {
+                Ok(Before::Absent)
+            }
+
+            fn visit_str<E>(self, _: &str) -> Result<Before, E> {
+                // "unknown", or a state a later build added: either way not
+                // one this build can put back.
+                Ok(Before::Unknown)
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Before, A::Error> {
+                FileVersion::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(Before::Version)
+            }
+        }
+
+        deserializer.deserialize_any(BeforeVisitor)
+    }
 }
 
 /// One version of a file: its hash, its size, and whether its content is
@@ -911,10 +1011,17 @@ pub(crate) fn decode(line: &[u8]) -> Result<Entry, NotAnEntry> {
     let turn = text(&mut fields, "turn")?;
     let kind = text(&mut fields, "kind")?.ok_or_else(|| NotAnEntry("no kind".to_owned()))?;
 
-    let body = if version > FORMAT_VERSION {
-        Body::Unknown { kind, fields }
-    } else {
+    let body = if version <= FORMAT_VERSION {
         decode_body(kind, fields)
+    } else if kind == Kind::Lease.as_str() {
+        // A newer build's lease: skipping it could leave an older, wider
+        // lease in force, so it is refused, never read and never skipped.
+        Body::LeaseRefused(lease_refusal(format!(
+            "it was written in format version {version}, and this version reads up to \
+             {FORMAT_VERSION}"
+        )))
+    } else {
+        Body::Unknown { kind, fields }
     };
     Ok(Entry {
         id: EntryId(id),
@@ -968,17 +1075,7 @@ fn decode_body(kind: String, fields: Map<String, Value>) -> Body {
 /// one this build knows, and the lease through the protocol's strict
 /// decoder. Anything else refuses the record whole.
 fn decode_lease(mut fields: Map<String, Value>) -> Result<LeaseRecord, Box<ErrorData>> {
-    let refuse = |what: String| {
-        Box::new(ErrorData::new(
-            WireKind::Permission,
-            code::LEASE_NOT_UNDERSTOOD,
-            format!(
-                "The lease record was refused: {what}. A lease is enforced, so a record that \
-                 this version does not understand in full is refused whole, never applied in \
-                 part."
-            ),
-        ))
-    };
+    let refuse = lease_refusal;
     let event = fields
         .remove("event")
         .ok_or_else(|| refuse("it has no `event`".to_owned()))?;
@@ -997,6 +1094,18 @@ fn decode_lease(mut fields: Map<String, Value>) -> Result<LeaseRecord, Box<Error
     }
     let lease = Lease::from_wire(lease)?;
     Ok(LeaseRecord { event, lease })
+}
+
+/// The refusal of a lease record, saying what was wrong with it.
+fn lease_refusal(what: String) -> Box<ErrorData> {
+    Box::new(ErrorData::new(
+        WireKind::Permission,
+        code::LEASE_NOT_UNDERSTOOD,
+        format!(
+            "The lease record was refused: {what}. A lease is enforced, so a record that this \
+             version does not understand in full is refused whole, never applied in part."
+        ),
+    ))
 }
 
 /// An artifact id this build made: `a_` and digits. Anything else could
@@ -1057,7 +1166,7 @@ mod tests {
             files: vec![
                 FileChange {
                     path: "src/a.rs".into(),
-                    before: None,
+                    before: Before::Absent,
                     after: Some(FileVersion {
                         hash,
                         bytes: 1,
@@ -1066,11 +1175,16 @@ mod tests {
                 },
                 FileChange {
                     path: "big.bin".into(),
-                    before: Some(FileVersion {
+                    before: Before::Version(FileVersion {
                         hash,
                         bytes: 1 << 30,
                         kept: false,
                     }),
+                    after: None,
+                },
+                FileChange {
+                    path: "made-by-a-command.txt".into(),
+                    before: Before::Unknown,
                     after: None,
                 },
             ],
@@ -1130,6 +1244,53 @@ mod tests {
     }
 
     #[test]
+    fn only_an_explicit_null_says_a_file_did_not_exist_before() {
+        let hash = ContentHash::of(b"x");
+        let line = |files: Value| {
+            let mut line = json!({"v": 1, "id": "e_0003", "parent": "e_0002",
+                "ts": "2026-11-12T10:15:02Z", "kind": "checkpoint"});
+            line["files"] = files;
+            serde_json::to_vec(&line).unwrap()
+        };
+        let version = json!({"hash": hash, "bytes": 1});
+        let read = decode(&line(json!([
+            // As step 8 wrote them, and as this build still does.
+            {"path": "new.txt", "before": null, "after": version},
+            {"path": "old.txt", "before": version, "after": null},
+            // What a shell command changed, earlier content not known.
+            {"path": "seen.txt", "before": "unknown", "after": version},
+            // No `before` at all, and a state from a later build.
+            {"path": "bare.txt", "after": version},
+            {"path": "later.txt", "before": "in_git", "after": version},
+        ])))
+        .unwrap();
+        let Body::Checkpoint(checkpoint) = read.body else {
+            panic!("{:?}", read.body)
+        };
+        let befores: Vec<Before> = checkpoint.files.iter().map(|file| file.before).collect();
+        let kept = FileVersion {
+            hash,
+            bytes: 1,
+            kept: true,
+        };
+        assert_eq!(
+            befores,
+            [
+                Before::Absent,
+                Before::Version(kept),
+                Before::Unknown,
+                Before::Unknown,
+                Before::Unknown
+            ]
+        );
+        // Written back explicitly, so that no reader has to guess.
+        let written = round_trip(Body::Checkpoint(checkpoint));
+        assert_eq!(written["files"][0]["before"], Value::Null);
+        assert_eq!(written["files"][2]["before"], json!("unknown"));
+        assert_eq!(written["files"][3]["before"], json!("unknown"));
+    }
+
+    #[test]
     fn an_unknown_kind_and_unknown_fields_are_skipped_and_kept() {
         let line = br#"{"v":1,"id":"e_0004","parent":"e_0003","ts":"2026-11-12T10:15:02Z","kind":"hologram","beam":2}"#;
         let entry = decode(line).unwrap();
@@ -1154,6 +1315,27 @@ mod tests {
     fn a_line_from_a_newer_format_is_not_interpreted() {
         let line = br#"{"v":2,"id":"e_0004","parent":null,"ts":"2026-11-12T10:15:02Z","kind":"meta","title":"t"}"#;
         assert!(matches!(decode(line).unwrap().body, Body::Unknown { .. }));
+    }
+
+    #[test]
+    fn a_lease_from_a_newer_format_is_refused_not_skipped() {
+        // Even one this build could read: a newer format may give its
+        // fields another meaning.
+        let mut line: Value = serde_json::from_slice(&lease_line(
+            json!({"event": "ended", "lease": lease_json()}),
+        ))
+        .unwrap();
+        line["v"] = json!(FORMAT_VERSION + 1);
+        let body = decode(&serde_json::to_vec(&line).unwrap()).unwrap().body;
+        let Body::LeaseRefused(error) = body else {
+            panic!("a newer lease was read or skipped: {body:?}")
+        };
+        assert_eq!(error.code, code::LEASE_NOT_UNDERSTOOD);
+        assert!(
+            error.message.contains("format version 2"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]

@@ -186,3 +186,79 @@ fn the_redactor_sees_entries_and_text_artifacts_but_not_raw_blocks_or_contents()
         "file contents are exact"
     );
 }
+
+fn redacting_session(world: &World) -> cortex_session::Session {
+    let options = SessionOptions {
+        redactor: Arc::new(MaskHunter),
+        ..world.options()
+    };
+    cortex_session::Session::create(&world.project, SessionId::new("s_1"), &world.root, options)
+        .unwrap()
+}
+
+fn has_secret(bytes: &[u8]) -> bool {
+    bytes.windows(7).any(|window| window == b"hunter2")
+}
+
+/// One byte that is not UTF-8 anywhere in a write used to send every line
+/// written with it to the disk unredacted.
+#[test]
+fn a_text_artifact_with_a_byte_that_is_not_utf8_is_still_redacted() {
+    let world = World::new("redact_latin1");
+    let session = redacting_session(&world);
+    let store = session.store();
+    let mut file = store.begin_artifact("output", "text/plain").unwrap();
+    file.write_all(b"password=hunter2\nlatin-1 caf\xe9 hunter2\n")
+        .unwrap();
+    let reference = file.finish().unwrap();
+    let content = read_all(&store, &reference.id);
+    assert!(
+        !has_secret(&content),
+        "{}",
+        String::from_utf8_lossy(&content)
+    );
+    assert_eq!(
+        content, b"password=[redacted]\nlatin-1 caf\xe9 [redacted]\n",
+        "the byte that is not text is kept as it was"
+    );
+}
+
+/// A long line arriving in pieces from a pipe used to be cut inside a
+/// character, and that piece was written unredacted.
+#[test]
+fn a_long_line_arriving_in_pieces_is_still_redacted() {
+    let world = World::new("redact_split");
+    let session = redacting_session(&world);
+    let store = session.store();
+    let mut text = String::from("hunter2  ");
+    text.push_str(&"é".repeat(40_000));
+    text.push('\n');
+    let mut file = store.begin_artifact("output", "text/plain").unwrap();
+    for piece in text.as_bytes().chunks(4096) {
+        file.write_all(piece).unwrap();
+    }
+    let reference = file.finish().unwrap();
+    let content = read_all(&store, &reference.id);
+    assert!(!has_secret(&content), "written unredacted");
+    let content = String::from_utf8(content).expect("no character was split");
+    assert_eq!(content, text.replace("hunter2", "[redacted]"));
+}
+
+/// Opening a FIFO to read it waits for a writer that may never come: one is
+/// refused before it is opened.
+#[cfg(unix)]
+#[test]
+fn sys_a_fifo_is_refused_before_it_is_opened() {
+    let world = World::new("sys_store_fifo");
+    let session = world.create("s_1");
+    let fifo = world.file("pipe");
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+    if !made.is_ok_and(|status| status.success()) {
+        assert!(!crate::in_ci(), "mkfifo is needed in CI");
+        return;
+    }
+    assert!(matches!(
+        session.store().put_file(&fifo, cortex_session::KEEP_LIMIT),
+        Err(SessionError::NotARegularFile { .. })
+    ));
+}

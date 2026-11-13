@@ -48,8 +48,8 @@ pub struct OpenReport {
     /// Why the session cannot be written to, when it cannot.
     pub read_only: Option<String>,
     /// Tool calls that had no result, for which a resume appended an
-    /// "interrupted" result.
-    pub repaired_calls: Vec<CallId>,
+    /// "interrupted" result, with the ids of those results.
+    pub repaired: Vec<crate::snapshot::Repaired>,
     /// Files and directories of the session that other users can open: on
     /// a file system without permissions, or made private by hand and
     /// opened up since.
@@ -482,16 +482,25 @@ impl Log {
     /// # Errors
     ///
     /// The refusal, with the code `lease_not_understood`, when **any** lease
-    /// record is one this build does not understand in full. The leases are
-    /// then unknown, and a lease is never read in part, so none is given.
-    /// Reading the file can fail too, as an internal error.
+    /// line is one this build does not understand in full, a line written
+    /// in a newer format among them. The leases are then unknown, and a
+    /// lease is never read in part, so none is given. Reading the file can
+    /// fail too, as an internal error.
     pub fn lease_in_force(&self) -> std::result::Result<Option<Lease>, Box<ErrorData>> {
-        let records = self
-            .records(&Kind::Lease)
+        // Every line of the kind, record or not: a lease this build cannot
+        // place is still a lease it must not ignore.
+        let lines = self
+            .scan
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.kind == Kind::Lease)
+            .map(|(index, _)| self.read_index(u32::try_from(index).unwrap_or(u32::MAX)))
+            .collect::<Result<Vec<Entry>>>()
             .map_err(|error| Box::new(cortex_base::Classified::to_error_data(&error)))?;
         let mut in_force: Vec<Lease> = Vec::new();
-        for record in records {
-            match record.body {
+        for line in lines {
+            match line.body {
                 Body::Lease(record) => {
                     in_force.retain(|lease| lease.id != record.lease.id);
                     if record.event != LeaseEvent::Ended {
@@ -540,9 +549,14 @@ impl Log {
         Ok(None)
     }
 
-    /// The tool calls at the end of the active branch that have no result:
-    /// a crash during a tool round, or a rewind to a response that asked
-    /// for tools. With the turn of the response, and the calls' names.
+    /// The tool calls of the last response on the active branch that have
+    /// no result: a crash during a tool round, or a rewind to a response
+    /// that asked for tools. With the turn of the response, and the calls'
+    /// names.
+    ///
+    /// A message appended in the middle of a round (a steering note from
+    /// the user, or a notice from the harness) does not end the round: the
+    /// calls before it still need their results.
     pub(crate) fn dangling_calls(&self) -> Result<Option<Dangling>> {
         let Some(active) = self.active_index() else {
             return Ok(None);
@@ -573,10 +587,8 @@ impl Log {
                         .collect();
                     return Ok((!missing.is_empty()).then_some((entry.turn, missing)));
                 }
-                // Anything that can only come after a round is complete.
-                Kind::User | Kind::Notice | Kind::Summary | Kind::Epoch | Kind::Session => {
-                    return Ok(None);
-                }
+                // The start of an epoch, which never falls inside a round.
+                Kind::Summary | Kind::Epoch | Kind::Session => return Ok(None),
                 _ => {}
             }
         }

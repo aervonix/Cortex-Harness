@@ -5,7 +5,7 @@ use std::fs;
 use cortex_protocol::error::code;
 use cortex_protocol::event::{TurnCompleted, TurnOutcome};
 use cortex_protocol::ids::{CallId, ItemId, SessionId, TurnId};
-use cortex_protocol::item::{Item, ToolOutcome};
+use cortex_protocol::item::{Item, NoticeItem, NoticeSource, ToolOutcome};
 use cortex_protocol::lease::Lease;
 use cortex_session::entry::{
     Body, EntryId, Kind, LeaseEvent, LeaseRecord, Meta, Outcome, Reverted, RewindReason,
@@ -69,10 +69,12 @@ fn dangling_tool_calls_are_repaired_on_resume_and_never_run_again() {
     drop(session); // a crash during the round
 
     let (session, report) = world.resume("s_1");
-    assert_eq!(
-        report.repaired_calls,
-        vec![CallId::new("c_1"), CallId::new("c_3")]
-    );
+    let reported: Vec<(&str, &str)> = report
+        .repaired
+        .iter()
+        .map(|repaired| (repaired.call.as_str(), repaired.item.as_str()))
+        .collect();
+    assert_eq!(reported, [("c_1", "i_4"), ("c_3", "i_5")]);
     let items = session.items().unwrap();
     let repaired: Vec<_> = items
         .iter()
@@ -96,7 +98,7 @@ fn dangling_tool_calls_are_repaired_on_resume_and_never_run_again() {
     assert_eq!(last.turn, Some(turn));
     drop(session);
     let (_, report) = world.resume("s_1");
-    assert!(report.repaired_calls.is_empty(), "repaired once only");
+    assert!(report.repaired.is_empty(), "repaired once only");
 }
 
 #[test]
@@ -178,7 +180,7 @@ fn a_rewind_starts_a_sibling_branch_and_keeps_everything() {
         && matches!(&entry.body, Body::Outcome(o) if o.reverted == Some(Reverted::Rewound))));
 
     // Switching back, and the position survives a reopen.
-    let switched = session.switch(&old_leaf).unwrap();
+    let switched = session.switch(&old_leaf).unwrap().entry;
     assert_eq!(session.parent_of(&switched), Some(&old_leaf));
     drop(session);
     let (log, _) = Log::open(&world.project.session(&SessionId::new("s_1")).unwrap()).unwrap();
@@ -203,7 +205,12 @@ fn a_rewind_into_a_tool_round_answers_the_open_calls() {
     let done = session
         .rewind(&plan, &Restore::conversation_only())
         .unwrap();
-    assert_eq!(done.repaired_calls, vec![CallId::new("c_1")]);
+    let calls: Vec<&CallId> = done
+        .repaired
+        .iter()
+        .map(|repaired| &repaired.call)
+        .collect();
+    assert_eq!(calls, [&CallId::new("c_1")]);
 }
 
 #[test]
@@ -356,4 +363,122 @@ fn the_lease_in_force_is_read_strictly() {
     let refused = log.read(&EntryId::new("e_0009")).unwrap().body;
     let (mut session, _) = world.resume("s_1");
     assert!(session.append(None, refused).is_err());
+}
+
+/// A newer build resumed the session and ended the lease, writing its own
+/// format version. Skipping that line as a kind this build does not know
+/// would leave the ended lease in force.
+#[test]
+fn a_lease_record_in_a_newer_format_refuses_the_lease_in_force() {
+    let world = World::new("lease_newer_format");
+    let mut session = world.create("s_1");
+    session.append(None, user("hi")).unwrap();
+    session
+        .append(None, lease_body(json!("granted"), lease_json()))
+        .unwrap();
+    drop(session);
+    let dir = world.project.session(&SessionId::new("s_1")).unwrap();
+    let mut content = fs::read(dir.log()).unwrap();
+    content.extend(
+        serde_json::to_vec(&json!({"v": 2, "id": "e_0003", "parent": null,
+            "ts": "2026-11-12T10:00:00Z", "kind": "lease", "event": "ended",
+            "lease": lease_json()}))
+        .unwrap(),
+    );
+    content.push(b'\n');
+    fs::write(dir.log(), content).unwrap();
+
+    let (log, report) = Log::open(&dir).unwrap();
+    assert!(
+        log.writable().is_ok(),
+        "this build may still write the session"
+    );
+    assert_eq!(report.newer_entries, 1);
+    assert!(report.unknown_kinds.is_empty(), "{report:?}");
+    let refusal = log.lease_in_force().unwrap_err();
+    assert_eq!(refusal.code, code::LEASE_NOT_UNDERSTOOD);
+    assert!(
+        refusal.message.contains("format version 2"),
+        "{}",
+        refusal.message
+    );
+    let (session, _) = world.resume("s_1");
+    assert!(session.lease_in_force().is_err(), "nor after a resume");
+}
+
+#[test]
+fn a_switch_reports_the_results_it_added_with_their_ids() {
+    let world = World::new("switch_reports");
+    let mut session = world.create("s_1");
+    session.append(None, user("go")).unwrap();
+    let asked = session
+        .append(None, assistant("i_2", "", &["c_1", "c_2"]))
+        .unwrap();
+    session.append(None, tool_result("i_3", "c_1")).unwrap();
+    session.append(None, tool_result("i_4", "c_2")).unwrap();
+    // Back to the response, which answers its calls; then back to where
+    // the results were, and to the response again.
+    let rewound = session
+        .rewind(
+            &session.plan_rewind(&asked).unwrap(),
+            &Restore::conversation_only(),
+        )
+        .unwrap();
+    assert_eq!(rewound.repaired.len(), 2);
+    let done = session.switch(&asked).unwrap();
+    let reported: Vec<(&str, &str)> = done
+        .repaired
+        .iter()
+        .map(|repaired| (repaired.call.as_str(), repaired.item.as_str()))
+        .collect();
+    assert_eq!(reported, [("c_1", "i_7"), ("c_2", "i_8")]);
+    for repaired in &done.repaired {
+        let entry = session.read(&repaired.entry).unwrap();
+        assert!(
+            matches!(&entry.body, Body::ToolResult(result) if result.id == repaired.item && result.call_id == repaired.call)
+        );
+    }
+    // An owner that makes its own ids goes on after them.
+    assert_eq!(session.last_ids().1, 8);
+    assert_eq!(session.next_item_id().as_str(), "i_9");
+}
+
+/// A message appended in the middle of a round (the user steering, or a
+/// notice from the harness) does not end it: after a crash, the calls
+/// before it still get their results.
+#[test]
+fn calls_left_open_before_a_steering_message_are_answered_on_resume() {
+    let notice = Body::Notice(NoticeItem {
+        id: ItemId::new("i_9"),
+        source: NoticeSource::Harness,
+        text: "The user added: use the other file.".into(),
+        created_at: None,
+    });
+    for (name, steering) in [("notice", notice), ("user", user("use the other file"))] {
+        let world = World::new(&format!("steered_round_{name}"));
+        let mut session = world.create("s_1");
+        let turn = TurnId::new("t_1");
+        session.append(Some(&turn), user("look")).unwrap();
+        session
+            .append(Some(&turn), assistant("i_2", "", &["c_1", "c_2"]))
+            .unwrap();
+        session
+            .append(Some(&turn), tool_result("i_3", "c_1"))
+            .unwrap();
+        session.append(Some(&turn), steering).unwrap();
+        drop(session); // a crash with c_2 running
+
+        let (session, report) = world.resume("s_1");
+        let calls: Vec<&str> = report
+            .repaired
+            .iter()
+            .map(|repaired| repaired.call.as_str())
+            .collect();
+        assert_eq!(calls, ["c_2"], "after a {name}");
+        let last = session.read(session.active().unwrap()).unwrap();
+        assert!(
+            matches!(&last.body, Body::ToolResult(result) if result.outcome == ToolOutcome::Interrupted),
+            "after a {name}: {last:?}"
+        );
+    }
 }

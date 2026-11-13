@@ -26,7 +26,11 @@
 //!   disk. A failed write leaves both as they were.
 //! - **A lease is never read in part.** Lease records go through the
 //!   protocol's strict decoder, and one this build does not understand in
-//!   full is refused whole (`docs/decisions/0028-enforced-values-fail-closed.md`).
+//!   full, or that a newer format wrote, is refused whole
+//!   (`docs/decisions/0028-enforced-values-fail-closed.md`).
+//! - **Undo never guesses.** A file whose earlier state is not known is
+//!   reported as one that cannot be put back, and is never removed or
+//!   overwritten.
 //! - **Private files.** Everything it creates can be opened by the current
 //!   user alone, on Linux and on Windows ([`cortex_base::private`]). On a
 //!   file system that keeps no permissions it still writes, and says so.
@@ -49,6 +53,7 @@ pub mod error;
 pub mod file;
 pub mod index;
 pub mod layout;
+mod lock;
 pub mod log;
 pub mod redact;
 mod scan;
@@ -57,7 +62,7 @@ pub mod snapshot;
 pub mod store;
 
 pub use base::{BaseCapture, BaseLimits, BaseState, Git, SystemGit};
-pub use entry::{Body, Entry, EntryId, FORMAT_VERSION, Kind};
+pub use entry::{Before, Body, Entry, EntryId, FORMAT_VERSION, Kind};
 pub use error::{Result, SessionError};
 pub use file::Durability;
 pub use index::{IndexRecord, SessionIndex};
@@ -66,5 +71,7 @@ pub use log::{Log, OpenReport};
 pub use redact::{NoRedaction, Redactor};
 pub use scan::CutTail;
 pub use session::{Session, SessionOptions};
-pub use snapshot::{FileRestore, FileStatus, Restore, RewindDone, RewindPlan, RoundCheckpoint};
+pub use snapshot::{
+    FileRestore, FileStatus, Repaired, Restore, RewindDone, RewindPlan, RoundCheckpoint, SwitchDone,
+};
 pub use store::{ArtifactFile, DiskStore, KEEP_LIMIT};

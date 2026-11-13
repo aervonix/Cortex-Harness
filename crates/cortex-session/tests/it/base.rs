@@ -1,6 +1,6 @@
 //! The workspace's starting state.
 
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -9,7 +9,7 @@ use std::time::Duration;
 use cortex_protocol::ids::SessionId;
 use cortex_session::base::{GIT_HARDENING, GitOutput, OmitReason, capture};
 use cortex_session::entry::{Body, Kind};
-use cortex_session::{BaseCapture, BaseLimits, Git, Log, SystemGit};
+use cortex_session::{BaseCapture, BaseLimits, Git, Log, SessionError, SystemGit};
 use cortex_testkit::Gate;
 
 use crate::{World, assistant, in_ci, user};
@@ -409,4 +409,246 @@ fn sys_the_base_state_is_recorded_in_the_log_from_a_real_capture() {
     // matters is that a state was taken and recorded.
     assert!(base.git.is_some() || base.files.is_some());
     assert_eq!(log.records(&Kind::Base).unwrap().len(), 1);
+}
+
+/// A scripted repository whose top is the test's workspace, with no
+/// changes to tracked files and these untracked ones.
+fn untracked_repository(world: &World, untracked: &[&str]) -> ScriptedGit {
+    let mut git = ScriptedGit::repository("abc123");
+    git.answers[0].1 = format!("{}\n", world.workspace.to_string_lossy()).into_bytes();
+    git.answers[3].1 = Vec::new();
+    git.answers[5].1 = untracked
+        .iter()
+        .flat_map(|name| [name.as_bytes(), b"\0"].concat())
+        .collect();
+    git
+}
+
+#[test]
+fn untracked_files_past_a_limit_on_the_whole_are_recorded_once() {
+    let world = World::new("base_overflow");
+    let names = ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"];
+    for name in names {
+        world.write(name, b"four");
+    }
+    let session = world.create("s_1");
+    let git = untracked_repository(&world, &names);
+    for (limits, reason) in [
+        (
+            BaseLimits {
+                files: 2,
+                ..BaseLimits::default()
+            },
+            OmitReason::TooMany,
+        ),
+        (
+            BaseLimits {
+                total_bytes: 10,
+                ..BaseLimits::default()
+            },
+            OmitReason::TotalLimit,
+        ),
+    ] {
+        let base = capture(
+            &world.root,
+            true,
+            &session.store(),
+            &git,
+            &world.clock,
+            &limits,
+        );
+        assert!(!base.complete, "{base:?}");
+        let kept: Vec<&str> = base
+            .git
+            .as_ref()
+            .unwrap()
+            .untracked
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect();
+        assert_eq!(kept, ["a.txt", "b.txt"], "{reason:?}");
+        let omitted: Vec<(&str, &OmitReason)> = base
+            .omitted
+            .iter()
+            .map(|omitted| (omitted.path.as_str(), &omitted.reason))
+            .collect();
+        assert_eq!(omitted, [("*", &reason)], "one entry, not one a file");
+    }
+}
+
+#[test]
+fn without_the_whole_list_of_changed_files_no_patch_is_taken() {
+    let world = World::new("base_no_name_list");
+    let session = world.create("s_1");
+    let mut git = ScriptedGit::repository("abc123");
+    git.answers.remove(3); // `diff --name-only` fails
+    let base = capture(
+        &world.root,
+        true,
+        &session.store(),
+        &git,
+        &world.clock,
+        &BaseLimits::default(),
+    );
+    assert!(!base.complete, "{base:?}");
+    assert!(
+        base.git.unwrap().patch.is_none(),
+        "no patch without its exclusions"
+    );
+    let note = base.note.unwrap();
+    assert!(note.contains("could not list the changed files"), "{note}");
+    assert!(note.contains("no patch was taken"), "{note}");
+    assert!(
+        !git.asked()
+            .iter()
+            .any(|args| args[0] == "diff" && args[1] == "--no-ext-diff"),
+        "the patch was not even asked for"
+    );
+}
+
+/// What a session's store kept before its first prompt goes when the
+/// session ends without one, but not while a write is still under way,
+/// and nothing new is stored after it ended.
+#[test]
+fn an_unborn_sessions_store_is_cleared_when_its_last_write_ends() {
+    let world = World::new("base_unborn_in_flight");
+    let session = world.create("s_1");
+    let store = session.store();
+    store.put_blob(b"kept while unborn").unwrap();
+    let mut patch = store.begin_artifact("patch", "text/x-diff").unwrap();
+    patch.write_all(b"diff --git").unwrap();
+    let dir = session.dir().path().to_path_buf();
+    drop(session);
+    assert!(dir.exists(), "a write is still under way");
+    assert!(matches!(
+        store.put_blob(b"more"),
+        Err(SessionError::ReadOnly { .. })
+    ));
+    assert!(store.begin_artifact("more", "text/plain").is_err());
+    patch.finish().unwrap();
+    assert!(!dir.exists(), "the last write took the directory with it");
+    assert!(world.project.index().list().unwrap().is_empty());
+
+    // A session that got its prompt keeps everything when it ends.
+    let mut born = world.create("s_2");
+    born.append(None, user("hello")).unwrap();
+    let store = born.store();
+    let hash = store.put_blob(b"kept").unwrap();
+    drop(born);
+    assert!(store.has_blob(&hash));
+    store.put_blob(b"and more").unwrap();
+}
+
+/// A link to a file outside the workspace used to be followed, and that
+/// file's content kept in the session, past the list of likely secrets.
+#[cfg(unix)]
+#[test]
+fn sys_an_untracked_link_is_recorded_as_a_link_and_never_followed() {
+    if !has_git() {
+        return;
+    }
+    let world = World::new("sys_base_link_out");
+    let dir = world.workspace.clone();
+    git(&dir, &["init", "--quiet"]);
+    world.write("src/lib.rs", b"pub fn one() {}\n");
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "--quiet", "-m", "start"]);
+    let outside = world.scratch.dir.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let token = outside.join("token.json");
+    std::fs::write(&token, b"{\"token\":\"s3cr3t-from-outside\"}").unwrap();
+    std::os::unix::fs::symlink(&token, dir.join("settings.json")).unwrap();
+
+    let session = world.create("s_1");
+    let store = session.store();
+    let base = capture(
+        &world.root,
+        true,
+        &store,
+        &SystemGit,
+        &world.clock,
+        &BaseLimits::default(),
+    );
+    assert!(base.complete, "{base:?}");
+    let state = base.git.unwrap();
+    assert!(state.untracked.is_empty(), "{state:?}");
+    assert_eq!(state.links.len(), 1, "{state:?}");
+    assert_eq!(state.links[0].path, "settings.json");
+    assert_eq!(state.links[0].target, token.to_string_lossy());
+    assert!(!store.has_blob(&cortex_base::ContentHash::of(
+        b"{\"token\":\"s3cr3t-from-outside\"}"
+    )));
+}
+
+/// A link to a device used to be read for as long as the device gave
+/// bytes: forever, for `/dev/zero`.
+#[cfg(unix)]
+#[test]
+fn sys_an_untracked_link_to_a_device_does_not_stall_the_capture() {
+    if !has_git() {
+        return;
+    }
+    let world = World::new("sys_base_link_device");
+    let dir = world.workspace.clone();
+    git(&dir, &["init", "--quiet"]);
+    world.write("src/lib.rs", b"pub fn one() {}\n");
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "--quiet", "-m", "start"]);
+    std::os::unix::fs::symlink("/dev/zero", dir.join("zeros")).unwrap();
+
+    let session = world.create("s_1");
+    let capture = BaseCapture::start(
+        world.root.clone(),
+        true,
+        session.store(),
+        Arc::new(SystemGit),
+        Arc::new(world.clock.clone()),
+        BaseLimits::default(),
+    )
+    .unwrap();
+    // A bound on a failure, not a wait: the state comes as soon as git
+    // has answered.
+    let base = capture
+        .wait_for(Duration::from_secs(30))
+        .expect("the base state is still being taken (reading /dev/zero)");
+    let links = base.git.unwrap().links;
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].target, "/dev/zero");
+}
+
+/// The base state is taken from when a session starts, and a session that
+/// never gets a prompt used to keep it, in a directory with no log.
+#[test]
+fn sys_a_session_that_never_got_a_prompt_leaves_nothing_behind() {
+    if !has_git() {
+        return;
+    }
+    let world = World::new("sys_base_unborn");
+    let dir = world.workspace.clone();
+    git(&dir, &["init", "--quiet"]);
+    world.write("src/lib.rs", b"pub fn one() {}\n");
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "--quiet", "-m", "start"]);
+    world.write("src/lib.rs", b"pub fn two() {}\n");
+    world.write("notes.txt", b"untracked notes");
+    let session = world.create("s_1");
+    let base = capture(
+        &world.root,
+        true,
+        &session.store(),
+        &SystemGit,
+        &world.clock,
+        &BaseLimits::default(),
+    );
+    assert!(base.complete, "{base:?}");
+    let git_state = base.git.unwrap();
+    assert!(git_state.patch.is_some() && !git_state.untracked.is_empty());
+    let session_dir = session.dir().path().to_path_buf();
+    assert!(session_dir.exists(), "the state was stored meanwhile");
+    drop(session);
+    assert!(
+        !session_dir.exists(),
+        "a session with no prompt left its files"
+    );
+    assert!(world.project.index().list().unwrap().is_empty());
 }

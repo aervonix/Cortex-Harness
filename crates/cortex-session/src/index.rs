@@ -10,7 +10,7 @@
 //! dropped. A missing or unreadable index is rebuilt.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io;
 
 use cortex_base::{AtomicWriteOptions, SystemClock, UtcTime, private, write_atomic};
@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, SessionError};
 use crate::layout::{ProjectSessions, is_plain_name};
+use crate::lock;
 use crate::log::Log;
 
 /// The version of the index file. Another version is rebuilt.
@@ -278,26 +279,12 @@ impl SessionIndex {
     /// The lock that keeps two writers of the index apart. Released when
     /// the file is dropped, or by the OS if the process dies.
     fn lock(&self) -> Result<File> {
-        let path = self.project.index_lock();
-        let open = || OpenOptions::new().read(true).write(true).open(&path);
-        let file = match open() {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                match private::create_new(&path) {
-                    Ok(_) => {}
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                    Err(error) => {
-                        return Err(SessionError::io("create the index lock", path)(error));
-                    }
-                }
-                open().map_err(SessionError::io("open the index lock", path.clone()))?
-            }
-            Err(error) => return Err(SessionError::io("open the index lock", path)(error)),
-        };
-        // Held for one read and one write of a small file.
-        file.lock()
-            .map_err(SessionError::io("lock the session index", path))?;
-        Ok(file)
+        // Held for one read and one write of a small file. On a file system
+        // that cannot lock, as for a session's lock, there is none to hold.
+        match lock::take(&self.project.index_lock(), lock::Wait::Yes)? {
+            lock::Taken::Held(file) => Ok(file),
+            lock::Taken::Busy => unreachable!("a lock that is waited for is never busy"),
+        }
     }
 }
 
