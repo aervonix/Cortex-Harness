@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use cortex_base::rng::{Rng, SystemRng};
-use cortex_base::{ContentHash, ContentHasher, private};
+use cortex_base::{ContentHash, ContentHasher, OpenError, private};
 use cortex_protocol::ids::ArtifactId;
 use cortex_protocol::item::ArtifactRef;
 
@@ -343,8 +343,10 @@ impl DiskStore {
     /// and [`FileVersion::kept`] is false. `None` when there is no file.
     ///
     /// **Only a regular file is read, and never more than it held.** A link
-    /// is not followed, and a device, a FIFO or a directory is refused
-    /// before anything is opened. The read is bounded by the length the
+    /// is not followed, and a device, a FIFO or a directory is refused, by
+    /// the open itself ([`cortex_base::open_regular`]): the path is not
+    /// looked at and then opened, so nothing swapped in between the two can
+    /// be followed or waited on. The read is bounded by the length the
     /// file had when it was opened, not by `limit`: up to `limit` bytes are
     /// copied, and the hash and size cover that whole length, so that a
     /// file over the limit is still known by its hash. A file that grows
@@ -366,28 +368,20 @@ impl DiskStore {
         limit: u64,
         opened: impl FnOnce(),
     ) -> Result<Option<FileVersion>> {
-        let not_regular = || SessionError::NotARegularFile {
-            path: path.to_path_buf(),
+        // The open is the check: what it returns is a regular file, by the
+        // handle's own account, whatever the path was a moment ago.
+        let (source, opened_as) = match cortex_base::open_regular(path) {
+            Ok(regular) => regular,
+            Err(OpenError::NotFound) => return Ok(None),
+            Err(OpenError::Link | OpenError::Directory | OpenError::NotAFile) => {
+                return Err(SessionError::NotARegularFile {
+                    path: path.to_path_buf(),
+                });
+            }
+            Err(OpenError::Io(error)) => {
+                return Err(SessionError::io("read the file", path.to_path_buf())(error));
+            }
         };
-        match fs::symlink_metadata(path) {
-            Ok(found) if found.is_file() => {}
-            Ok(_) => return Err(not_regular()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(SessionError::io("read the file", path.to_path_buf())(error)),
-        }
-        let source = match File::open(path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(SessionError::io("read the file", path.to_path_buf())(error)),
-        };
-        // What was opened, which a change between the look and the open
-        // could have made something else.
-        let opened_as = source
-            .metadata()
-            .map_err(SessionError::io("read the file", path.to_path_buf()))?;
-        if !opened_as.is_file() {
-            return Err(not_regular());
-        }
         opened();
         self.store_stream(&mut source.take(opened_as.len()), limit, path)
             .map(Some)

@@ -534,6 +534,7 @@ impl Tool for ToolCall {
         // engine decides by name.
         let summary = format!("{name}: {}", inner.summary);
         let effects = inner.effects.clone();
+        let changes_session = inner.changes_session;
         // A tool from outside runs alone unless it declares otherwise, and
         // the declaration is its spec: a plan that left the scheduling at
         // its default does not make an exclusive tool run beside others.
@@ -548,6 +549,7 @@ impl Tool for ToolCall {
             })
             .with_concurrency(concurrency);
         plan.effects.extend(effects);
+        plan.changes_session = changes_session;
         Ok(plan)
     }
 

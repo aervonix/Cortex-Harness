@@ -108,6 +108,112 @@ fn a_call_with_side_effects_waits_for_the_response_to_end() {
     );
 }
 
+/// `plan` and `remember` touch nothing outside the session: no effect, and
+/// scheduled as read-only. What keeps them from starting while the model
+/// is still writing is the marker on their plan.
+#[test]
+fn a_call_that_changes_the_session_waits_for_the_response_to_end() {
+    let more = Gate::new();
+    let response = Response::new()
+        .tool_call("c1", "plain", &json!({"id": "plan", "session": true}))
+        // The same tool without the marker: free to start at once.
+        .tool_call("c2", "plain", &json!({"id": "look"}))
+        .wait(&more)
+        .end(StopReason::ToolCalls);
+    let (world, rig) = Rig::one("session_change_waits", [response, says("Done.")]);
+    world.run(async {
+        rig.prompt("go");
+        // The unmarked call is after the marked one, so it could only
+        // start once the marked one was planned and had its chance.
+        world.log.has("end plain look").await;
+        assert_eq!(world.log.count("start plain plan"), 0);
+        assert!(!rig.events.labels().contains(&"assistant".to_owned()));
+        more.open();
+        rig.events.turns(1).await;
+    });
+    assert_eq!(
+        world.log.lines(),
+        [
+            "start plain look",
+            "end plain look",
+            "start plain plan",
+            "end plain plan"
+        ]
+    );
+}
+
+#[test]
+fn a_session_change_is_not_made_for_a_response_that_is_thrown_away() {
+    // The response fails for good after the call was planned.
+    let fails = Gate::new();
+    let failing = Response::new()
+        .tool_call("c1", "plain", &json!({"id": "plan", "session": true}))
+        .tool_call("c2", "plain", &json!({"id": "look"}))
+        .wait(&fails)
+        .error(refused());
+    let (world, rig) = Rig::one("session_change_failed", [failing]);
+    world.run(async {
+        rig.prompt("go");
+        world.log.has("end plain look").await;
+        fails.open();
+        rig.events.turns(1).await;
+    });
+    assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Failed);
+    assert_eq!(world.log.count("start plain plan"), 0);
+
+    // The response is retried and no longer asks for it.
+    let fails = Gate::new();
+    let retried = Response::new()
+        .tool_call("c1", "plain", &json!({"id": "plan", "session": true}))
+        .tool_call("c2", "plain", &json!({"id": "look"}))
+        .wait(&fails)
+        .event(retry(2))
+        .event(start())
+        .text("No plan needed.")
+        .end(StopReason::End);
+    let (world, rig) = Rig::one("session_change_retried", [retried]);
+    world.run(async {
+        rig.prompt("go");
+        world.log.has("end plain look").await;
+        fails.open();
+        rig.events.turns(1).await;
+    });
+    assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Completed);
+    assert_eq!(world.log.count("start plain plan"), 0);
+}
+
+/// Two calls that change the session run one at a time, in the model's
+/// order: of two `plan` calls the second is the one that stands.
+#[test]
+fn two_calls_that_change_the_session_run_in_the_models_order() {
+    let response = Response::new()
+        .tool_call(
+            "c1",
+            "plain",
+            &json!({"id": "first", "session": true, "gate": "first"}),
+        )
+        .tool_call("c2", "plain", &json!({"id": "second", "session": true}))
+        // Unmarked, and after both: it runs beside the first.
+        .tool_call("c3", "plain", &json!({"id": "look"}))
+        .end(StopReason::ToolCalls);
+    let (world, rig) = Rig::one("session_changes_in_order", [response, says("Done.")]);
+    world.run(async {
+        rig.prompt("go");
+        world.log.has("start plain first").await;
+        world.log.has("end plain look").await;
+        assert_eq!(
+            world.log.count("start plain second"),
+            0,
+            "the second waits for the first"
+        );
+        world.gates.open("first");
+        rig.events.turns(1).await;
+    });
+    let lines = world.log.lines();
+    let at = |line: &str| lines.iter().position(|found| found == line).unwrap();
+    assert!(at("end plain first") < at("start plain second"), "{lines:?}");
+}
+
 #[test]
 fn a_side_effecting_call_does_not_start_early_even_when_a_later_read_does() {
     let more = Gate::new();

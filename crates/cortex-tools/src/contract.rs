@@ -258,6 +258,12 @@ pub struct Plan {
     pub concurrency: Concurrency,
     /// One line for approval prompts and the UI: `Read src/main.rs`.
     pub summary: String,
+    /// Whether the call changes the session itself: the plan the user sees,
+    /// the proposals waiting for review. Such a call touches nothing
+    /// outside the session, so it has no effects, and it is still not safe
+    /// to run for a response that may be thrown away, or beside another
+    /// call that changes the session. See [`Plan::changes_session`].
+    pub changes_session: bool,
     args: Box<dyn Any + Send + Sync>,
 }
 
@@ -269,6 +275,7 @@ impl Plan {
             effects: Vec::new(),
             concurrency: Concurrency::ReadOnly,
             summary: summary.into(),
+            changes_session: false,
             args: Box::new(args),
         }
     }
@@ -284,6 +291,13 @@ impl Plan {
     #[must_use]
     pub fn with_concurrency(mut self, concurrency: Concurrency) -> Self {
         self.concurrency = concurrency;
+        self
+    }
+
+    /// Marks the call as one that changes the session.
+    #[must_use]
+    pub fn with_session_change(mut self) -> Self {
+        self.changes_session = true;
         self
     }
 
@@ -315,10 +329,33 @@ impl Plan {
         self.effects.iter().any(|effect| !effect.is_read())
     }
 
+    /// Whether the call changes the session itself, as `plan` and
+    /// `remember` do.
+    ///
+    /// The loop reads this beside [`has_side_effects`](Self::has_side_effects)
+    /// (`docs/architecture/03-agent-loop.md`, "Tool rounds"):
+    ///
+    /// - such a call never starts before its response has ended. A response
+    ///   can fail half-way and be sent again, and a plan that was replaced,
+    ///   or a memory that was proposed, for a message that no longer exists
+    ///   would stay behind;
+    /// - two such calls [conflict](Self::conflicts_with), so they run one at
+    ///   a time in the model's order: of two `plan` calls in one response
+    ///   the second is the one that stands.
+    ///
+    /// It is not an [`Effect`]: nothing outside the session is touched, so
+    /// there is nothing for the permission engine to decide.
+    #[must_use]
+    pub fn changes_session(&self) -> bool {
+        self.changes_session
+    }
+
     /// Whether this call and `other` must not run at the same time, so that
     /// the scheduler runs them in the model's order.
     ///
     /// - An exclusive call conflicts with every call.
+    /// - Two calls that both [change the session](Self::changes_session)
+    ///   conflict.
     /// - Two keyed calls conflict when they share a path, or when a path of
     ///   one is inside a path of the other.
     /// - A keyed call conflicts with a read-only call that reads one of its
@@ -328,6 +365,9 @@ impl Plan {
     /// - Two read-only calls never conflict.
     #[must_use]
     pub fn conflicts_with(&self, other: &Self) -> bool {
+        if self.changes_session && other.changes_session {
+            return true;
+        }
         match (&self.concurrency, &other.concurrency) {
             (Concurrency::Exclusive, _) | (_, Concurrency::Exclusive) => true,
             (Concurrency::ReadOnly, Concurrency::ReadOnly) => false,
@@ -363,6 +403,7 @@ impl std::fmt::Debug for Plan {
             .field("summary", &self.summary)
             .field("effects", &self.effects)
             .field("concurrency", &self.concurrency)
+            .field("changes_session", &self.changes_session)
             .finish_non_exhaustive()
     }
 }
@@ -492,6 +533,28 @@ mod tests {
         assert!(keyed(&a).conflicts_with(&keyed(&dir)));
         assert!(keyed(&dir).conflicts_with(&reads(&a)));
         assert!(!keyed(&dir).conflicts_with(&keyed(&elsewhere)));
+    }
+
+    #[test]
+    fn a_call_that_changes_the_session_conflicts_only_with_another_that_does() {
+        let a = resolved("no-such-dir-for-tests/a.txt");
+        let session = || Plan::new("plan", ()).with_session_change();
+        assert!(!Plan::new("nothing", ()).changes_session());
+        assert!(session().changes_session());
+        // It has no effect outside the session, and is scheduled as
+        // read-only: the marker is what says it is not free to repeat.
+        assert!(!session().has_side_effects());
+        assert_eq!(session().concurrency, Concurrency::ReadOnly);
+        // Two of them run in the model's order.
+        assert!(session().conflicts_with(&session()));
+        // Beside anything else they run as any read-only call does.
+        assert!(!session().conflicts_with(&reads(&a)));
+        assert!(!reads(&a).conflicts_with(&session()));
+        assert!(!session().conflicts_with(&keyed(&a)));
+        assert!(!keyed(&a).conflicts_with(&session()));
+        assert!(!session().conflicts_with(&Plan::new("nothing", ())));
+        let exclusive = Plan::new("shell", ()).with_concurrency(Concurrency::Exclusive);
+        assert!(session().conflicts_with(&exclusive));
     }
 
     #[test]

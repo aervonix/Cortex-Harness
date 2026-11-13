@@ -18,6 +18,7 @@
 )]
 
 mod atomic;
+mod nofollow;
 mod paths;
 #[cfg(unix)]
 mod paths_unix;

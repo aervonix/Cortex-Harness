@@ -133,12 +133,16 @@ impl Footprint {
         let mut shadow =
             Plan::new(plan.summary.clone(), ()).with_concurrency(plan.concurrency.clone());
         shadow.effects.clone_from(&plan.effects);
+        shadow.changes_session = plan.changes_session;
         let mut footprint = Self {
             shadow,
             // A call that is not scheduled as read-only is taken to change
             // something, whatever effects it declares: a tool whose author
-            // never said what it does must not start early.
+            // never said what it does must not start early. And a call that
+            // changes the session (`plan`, `remember`) has no effect to
+            // declare and is scheduled as read-only, so it says so itself.
             side_effects: plan.has_side_effects()
+                || plan.changes_session()
                 || !matches!(plan.concurrency, Concurrency::ReadOnly),
             paths: Vec::new(),
             reads: Vec::new(),

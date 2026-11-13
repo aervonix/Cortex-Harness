@@ -25,6 +25,13 @@
 //!   or a pipe under the target's name is refused, not swapped for a file.
 //! - **A symbolic link is written through:** the file it points to is
 //!   replaced and the link stays. A link to nothing is an error.
+//! - **Unless the write says the target must not be a link.** With
+//!   [`follow_links`](AtomicWriteOptions::follow_links) off, a link under
+//!   the target's name is refused, and nothing on the way to the rename
+//!   follows one: the editing tools write to a location the path resolver
+//!   has checked, and a link that appears there afterwards must not carry
+//!   the write somewhere else. A rename replaces a name and never follows
+//!   it, so a link swapped in at the last moment is itself replaced.
 //! - **A file in use is retried.** On Windows another program can hold a
 //!   file open in a way that forbids replacing it. The replace is tried
 //!   again for about half a second and then fails with
@@ -75,6 +82,13 @@ pub struct AtomicWriteOptions {
     /// Without it, a new file gets the default permissions and an existing
     /// one keeps its mode.
     pub owner_only: bool,
+    /// Write through a symbolic link under the target's name: replace the
+    /// file it points to, and keep the link. On by default.
+    ///
+    /// Off, a link there is refused with [`AtomicWriteError::IsALink`], and
+    /// the write never follows one. For a caller that has already resolved
+    /// the path and must write exactly there.
+    pub follow_links: bool,
     /// How long to wait before each new attempt to replace a file that
     /// another program holds open. Their sum is the longest the write waits.
     /// Used on Windows only: elsewhere a file in use can be replaced.
@@ -82,12 +96,13 @@ pub struct AtomicWriteOptions {
 }
 
 impl Default for AtomicWriteOptions {
-    /// Synced, default permissions for new files, and six retries over half
-    /// a second: 10, 20, 40, 80, 150 and 200 ms.
+    /// Synced, default permissions for new files, links written through,
+    /// and six retries over half a second: 10, 20, 40, 80, 150 and 200 ms.
     fn default() -> Self {
         Self {
             sync: true,
             owner_only: false,
+            follow_links: true,
             retry_waits: [10, 20, 40, 80, 150, 200]
                 .into_iter()
                 .map(Duration::from_millis)
@@ -103,6 +118,13 @@ pub enum AtomicWriteError {
     /// The target is marked read-only, or this user may not write to it.
     #[error("`{path}` is read-only, so it was not replaced")]
     ReadOnly {
+        /// The target.
+        path: String,
+    },
+    /// The target is a symbolic link, and the write was told not to follow
+    /// one ([`AtomicWriteOptions::follow_links`]).
+    #[error("`{path}` is a link, so it was not written through")]
+    IsALink {
         /// The target.
         path: String,
     },
@@ -167,16 +189,30 @@ pub fn write_atomic(
     };
 
     // What is there now, and where the bytes really go.
-    let target = match fs::symlink_metadata(path) {
-        Ok(found) if found.file_type().is_symlink() => {
-            fs::canonicalize(path).map_err(io_error("follow the symbolic link"))?
-        }
-        _ => path.to_path_buf(),
-    };
-    let existing = match fs::metadata(&target) {
-        Ok(found) => Some(found),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(io_error("look at the file")(error)),
+    let (target, existing) = if options.follow_links {
+        let target = match fs::symlink_metadata(path) {
+            Ok(found) if found.file_type().is_symlink() => {
+                fs::canonicalize(path).map_err(io_error("follow the symbolic link"))?
+            }
+            _ => path.to_path_buf(),
+        };
+        let existing = match fs::metadata(&target) {
+            Ok(found) => Some(found),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(io_error("look at the file")(error)),
+        };
+        (target, existing)
+    } else {
+        // The name itself is looked at, and nothing below follows it.
+        let existing = match fs::symlink_metadata(path) {
+            Ok(found) if found.file_type().is_symlink() => {
+                return Err(AtomicWriteError::IsALink { path: shown });
+            }
+            Ok(found) => Some(found),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(io_error("look at the file")(error)),
+        };
+        (path.to_path_buf(), existing)
     };
     if let Some(found) = &existing {
         if found.is_dir() {
@@ -325,12 +361,13 @@ fn sync_directory(_: &Path) {}
 
 /// Whether this user may open the file for writing, which is what writing
 /// it in place would have needed. Opening changes nothing.
+///
+/// The open follows no link and waits for nothing: the look at the target
+/// was a moment ago, and a FIFO put there since would otherwise hold the
+/// write until some program read from it.
 #[cfg(unix)]
 fn may_write(target: &Path) -> bool {
-    match OpenOptions::new().write(true).open(target) {
-        Ok(_) => true,
-        Err(error) => error.kind() != io::ErrorKind::PermissionDenied,
-    }
+    crate::nofollow::may_open_for_writing(target)
 }
 
 /// On Windows the read-only attribute is the whole check. Opening the file

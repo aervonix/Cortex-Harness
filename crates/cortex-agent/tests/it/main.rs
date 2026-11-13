@@ -379,6 +379,7 @@ pub enum Kind {
 /// - `record`: note in the table of seen files, as `read` does, that the
 ///   path was shown;
 /// - `fail`: end with an error result;
+/// - `session`: the call changes the session, as `plan` and `remember` do;
 /// - `bad`: refuse the arguments when the call is planned.
 pub struct Probe {
     spec: ToolSpec,
@@ -461,6 +462,9 @@ impl Tool for Probe {
                     });
             }
             _ => {}
+        }
+        if args.get("session").is_some() {
+            plan = plan.with_session_change();
         }
         Ok(plan)
     }

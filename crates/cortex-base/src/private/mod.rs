@@ -77,6 +77,9 @@ mod windows;
 #[cfg(windows)]
 pub use windows::{AccessEntry, AccessKind, AccessList, FULL_CONTROL, access_list};
 
+#[cfg(windows)]
+pub(crate) use windows::reparse_tag;
+
 #[cfg(not(any(unix, windows)))]
 compile_error!("owner-only files are implemented for Unix and for Windows");
 

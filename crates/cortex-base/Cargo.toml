@@ -18,9 +18,18 @@ thiserror.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
 
+# The no-follow open: the two flags of `open` that the standard library has
+# no names for, `O_NOFOLLOW` and `O_NONBLOCK`. Used by one module,
+# `nofollow`, through the standard library's safe `custom_flags`: no
+# `unsafe`.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 # Owner-only files: an access list can only be set through the Windows API
 # (docs/decisions/0029-owner-only-files-on-windows.md). Used by one module,
 # `private::windows`, the only place in this crate where `unsafe` is allowed.
+# The no-follow open (`nofollow`) uses the flag constants of the last family
+# but one, and that module's one function that reads a reparse tag.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
