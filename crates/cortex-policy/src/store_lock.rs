@@ -15,9 +15,10 @@
 //! - **It is the operating system's lock on an open file,** so it goes with
 //!   its holder however that ends, and there is no stale lock to clear.
 //!   The credentials file is kept the same way (`cortex-config`).
-//! - **A file system that cannot lock gives no lock,** and the change goes
-//!   ahead: two writers are then the user's to keep apart, as they were
-//!   before there was a lock, and nothing stops working.
+//! - **A file system that says it cannot lock gives no lock,** and the
+//!   change goes ahead: two writers are then the user's to keep apart, as
+//!   they were before there was a lock, and nothing stops working. Any other
+//!   failure to lock is an error, and nothing is written.
 //! - **Readers take no lock.** A store is replaced in one step, so a reader
 //!   sees the old file or the new one.
 

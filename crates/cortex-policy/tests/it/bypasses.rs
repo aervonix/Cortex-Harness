@@ -1133,6 +1133,9 @@ fn a_search_that_reaches_hidden_and_ignored_files_is_asked_about() {
         "git grep --no-index API_TOKEN",
         "git grep --untracked API_TOKEN",
         "git diff --no-index src .",
+        // Outside a repository, two paths to compare are `--no-index`.
+        "git diff src .",
+        "git diff -- a b",
     ] {
         let outcome = shell(&engine, command);
         assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
@@ -1237,6 +1240,7 @@ fn a_deny_is_not_dodged_by_splitting_the_programs_name() {
             "g\\it push origin main",
             "gi''t push origin $BRANCH",
             "git 'pu'sh origin",
+            "g\\\nit push origin main",
         ] {
             assert_eq!(
                 said(&shell(&engine, command)),
@@ -1374,4 +1378,154 @@ fn nested_build_configuration_is_protected_at_any_depth() {
         parts.rules = vec![user(Effect::Write, "web/.npmrc", RuleAction::Allow)];
     });
     assert_eq!(said(&crate::write(&allowed, "/work/app/web/.npmrc")), Allow);
+}
+
+/// A pattern the shell expands names every file it could match: `cp evil
+/// .gi?/hooks/pre-commit` writes `.git/hooks/pre-commit`. One that could
+/// match a protected path or a file that looks like a secret is asked about
+/// as that path would be, as an argument, as a redirection's file, and
+/// after a `cd` to a pattern. Found during the fixes to step 12.
+#[test]
+fn a_pattern_names_every_path_it_could_match() {
+    let flagged = [
+        "cp evil .gi?/hooks/pre-commit",
+        "cp evil .git/hook[s]/pre-commit",
+        "cp evil .g*/config",
+        "cp evil sub/.gi*/config",
+        "cp evil .git/*",
+        "cp evil -t.gi?/hooks",
+        "cp x .github/work*/ci.yml",
+        "cp x .cort?x/config.toml",
+        "cp x .ca*/config.toml",
+        "cp x crates/a/.cargo/conf*",
+        "cp x web/.np?rc",
+        "cp x keys/*.pem",
+        "cp x .e*",
+        "mv x .baSHrc*",
+        "rm *",
+        "echo x > .gi?/config",
+        "echo x >> .github/workflows/*.yml",
+        "cat < .en?",
+        "cd .gi? && cp evil hooks/pre-commit",
+        "cd .g* && cd hooks && cp evil pre-commit",
+        "cd sub; cd .gi? && echo x > config",
+    ];
+    let ordinary = [
+        "rm *.o",
+        "rm src/*.rs",
+        "cp *.txt out",
+        "rm -f build/*.tmp",
+        "echo x > out/*.log",
+        "cd sr? && make",
+    ];
+    // Where every command runs unasked, and under an allow rule for the
+    // command where commands ask.
+    let autonomous = at(Level::Autonomous);
+    let allowed = with_rules(vec![
+        user(Effect::Exec, "cp *", RuleAction::Allow),
+        user(Effect::Exec, "mv *", RuleAction::Allow),
+        user(Effect::Exec, "rm *", RuleAction::Allow),
+        user(Effect::Exec, "echo *", RuleAction::Allow),
+        user(Effect::Exec, "cat *", RuleAction::Allow),
+    ]);
+    for (engine, level) in [(&autonomous, "autonomous"), (&allowed, "allow rules")] {
+        for command in flagged {
+            let outcome = shell(engine, command);
+            assert_eq!(
+                said(&outcome),
+                Ask,
+                "{command:?} with {level}: {}",
+                reason(&outcome)
+            );
+        }
+    }
+    for command in ordinary {
+        let outcome = shell(&autonomous, command);
+        assert_eq!(said(&outcome), Allow, "{command:?}: {}", reason(&outcome));
+    }
+    for command in ["rm *.o", "rm src/*.rs", "cp *.txt out"] {
+        assert_eq!(said(&shell(&allowed, command)), Allow, "{command:?}");
+    }
+    // A redirection to a pattern, or a `cd` to one, is on no safe list:
+    // where commands ask, it is asked about.
+    for command in ["echo x > out/*.log", "ls > *.txt", "cd sr? && ls"] {
+        assert_eq!(said(&shell(&allowed, command)), Ask, "{command:?}");
+    }
+    // The harness's own files stay refused under a pattern, and a pattern
+    // that starts above them is asked about, at every level.
+    let unrestricted = at(Level::Unrestricted);
+    for engine in [&autonomous, &unrestricted] {
+        assert_eq!(
+            said(&shell(engine, "cat ~/.config/cortex-harness/cred*")),
+            Deny
+        );
+        assert_eq!(
+            said(&shell(engine, "cat ~/.c*/cortex-harness/credentials.toml")),
+            Ask
+        );
+    }
+    // At `unrestricted` the level asks nothing about protected paths.
+    assert_eq!(
+        said(&shell(&unrestricted, "cp evil .gi?/hooks/pre-commit")),
+        Allow
+    );
+    // PowerShell's own commands expand a pattern, a hidden name included.
+    let powershell = engine_with(|parts| {
+        parts.level = Level::Autonomous;
+        parts.shell = ShellSyntax::PowerShell;
+    });
+    for command in [
+        r"Copy-Item evil .gi?\hooks\pre-commit",
+        "Copy-Item evil *.pem",
+        "Copy-Item evil .e*",
+    ] {
+        assert_eq!(said(&shell(&powershell, command)), Ask, "{command:?}");
+    }
+    // With no rule for hidden names, `*.o` could be `.env.o`; a pattern
+    // that starts with a name cannot.
+    assert_eq!(said(&shell(&powershell, "Copy-Item evil *.o")), Ask);
+    assert_eq!(
+        said(&shell(&powershell, r"Copy-Item evil src\main*.rs")),
+        Allow
+    );
+}
+
+/// A `cd` given options is read past them: `--` and `-L` change nothing,
+/// and `-P` takes `..` through links, so it is not followed. After a `cd`
+/// that is not followed, every later `cd` still says where a part may be,
+/// one with options or a redirection of its own included. Found by the
+/// independent review of the fixes to step 12: `cd -- .git/hooks && cp
+/// evil pre-commit` ran unasked at `autonomous`.
+#[test]
+fn a_cd_with_options_or_a_redirection_still_says_where_it_leads() {
+    let supervised = engine();
+    for command in [
+        "cd -- ./src && cat main.rs",
+        "cd -L ./src && ls",
+        "cd -L -- ./src && ls",
+    ] {
+        let outcome = shell(&supervised, command);
+        assert_eq!(
+            said(&outcome),
+            ReadOnly,
+            "{command:?}: {}",
+            reason(&outcome)
+        );
+    }
+    for command in ["cd -P ./src && ls", "cd -x ./src && ls", "cd - && ls"] {
+        assert_eq!(said(&shell(&supervised, command)), Ask, "{command:?}");
+    }
+    let autonomous = at(Level::Autonomous);
+    for command in [
+        "cd -- .git/hooks && cp evil pre-commit",
+        "cd -P .git/hooks && cp evil pre-commit",
+        "cd -L .git/hooks && cp evil pre-commit",
+        "cd -P ./sub/.cargo && echo x > config.toml",
+        "cd sub && cd .cargo 2>&1 && echo x > config.toml",
+        "cd sub && cd .git > log && cp evil config",
+        "cd -- /etc && echo x >> hosts",
+    ] {
+        let outcome = shell(&autonomous, command);
+        assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
+    }
 }

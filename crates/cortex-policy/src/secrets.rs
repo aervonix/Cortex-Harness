@@ -77,6 +77,18 @@ pub fn looks_secret(file_name: &str) -> bool {
         || LOGIN_FILES.contains(&name.as_str())
 }
 
+/// The names [`looks_secret`] recognises, as patterns for one name: for
+/// asking whether a pattern a shell expands could match one. Wider than
+/// the function, which is the safe side: a template's name
+/// (`.env.example`) matches `.env.*` here.
+pub(crate) fn secret_patterns() -> impl Iterator<Item = String> {
+    [".env".to_owned(), ".env.*".to_owned()]
+        .into_iter()
+        .chain(KEY_EXTENSIONS.iter().map(|ending| format!("*{ending}")))
+        .chain(SSH_KEYS.iter().map(|name| (*name).to_owned()))
+        .chain(LOGIN_FILES.iter().map(|name| (*name).to_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

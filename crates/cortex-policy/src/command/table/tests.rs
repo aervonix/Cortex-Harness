@@ -106,9 +106,18 @@ fn commands_that_only_read_are_on_the_table_with_what_they_name() {
         ("git diff --stat HEAD~1", &["HEAD~1"]),
         ("git diff --cached -- src/main.rs", &["src/main.rs"]),
         ("git diff main..feature --name-only", &["main..feature"]),
-        ("git diff -U5 --no-ext-diff a b", &["a", "b"]),
+        ("git diff HEAD~1 HEAD", &["HEAD~1", "HEAD"]),
+        (
+            "git diff abc1234 HEAD~2 -- src",
+            &["abc1234", "HEAD~2", "src"],
+        ),
+        ("git diff -- src", &["src"]),
+        (
+            "git diff -U5 --no-ext-diff HEAD~2 HEAD",
+            &["HEAD~2", "HEAD"],
+        ),
         ("git diff --unified=5 --relative=src", &[]),
-        ("git diff -U a b", &["a", "b"]),
+        ("git diff -U HEAD~1", &["HEAD~1"]),
         ("git log", &[]),
         ("git log --oneline -20", &[]),
         ("git log -n 5 --format=%H --since=2.weeks -- src", &["src"]),
@@ -296,6 +305,14 @@ fn a_command_with_anything_unlisted_is_not_on_the_table() {
         "git grep --no-index API_TOKEN",
         "git grep --untracked API_TOKEN",
         "git diff --no-index src .",
+        // Two paths to compare: outside a repository `git diff a b` is
+        // `git diff --no-index a b`, and reads every file under them.
+        "git diff src .",
+        "git diff -- a b",
+        "git diff --stat a b",
+        "git diff main feature",
+        "git diff HEAD -- src",
+        "git diff a b c",
         // Shell builtins that evaluate their arguments.
         "printf '%s\\n' a b",
         "printf -v x %s 1",

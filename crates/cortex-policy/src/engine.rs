@@ -75,10 +75,11 @@ use cortex_protocol::methods::{ApprovalChoice, StoredApproval};
 use crate::approvals::{ApprovalError, ApprovalStore, SessionApprovals};
 use crate::command::pattern::words_of;
 use crate::command::{Analysis, Joiner, Part, Redirect, ShellSyntax, Word, analyse, table};
+use crate::expansion::{NamePattern, has_wildcards};
 use crate::lease::{StandingTerms, standing_lease};
 use crate::level::{self, Decider, LevelError, Matter, SandboxState};
 use crate::rules::{By, Hit, Protected, RuleContext, RuleError, RuleSet, RuleSource, SourcedRule};
-use crate::secrets::looks_secret;
+use crate::secrets::{looks_secret, secret_patterns};
 
 /// One thing a planned call would do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -426,6 +427,10 @@ struct Lost {
     /// Where the shell would believe it is, had every `cd` gone where its
     /// text says. `None` once one could not be read.
     guess: Option<AbsPath>,
+    /// Where a `cd` to a pattern may have led: the directory it started
+    /// from, and the pattern with any `cd` after it joined on (`.gi?`,
+    /// then `.gi?/hooks`). A path a later part names is tried under each.
+    patterns: Vec<(AbsPath, String)>,
 }
 
 impl Lost {
@@ -438,6 +443,7 @@ impl Lost {
         let mut lost = Self {
             places,
             guess: Some(directory.logical.clone()),
+            patterns: Vec::new(),
         };
         lost.moved_by(engine, part);
         lost
@@ -445,14 +451,51 @@ impl Lost {
 
     /// Adds where the `cd` of `part` would lead.
     fn moved_by(&mut self, engine: &Engine, part: &Part) {
-        let target = match part.arguments() {
-            [target] if target.is_fixed() && !target.text.starts_with('-') => Some(target),
-            _ => None,
+        let (target, physical) = match cd_operand(part) {
+            CdOperand::Directory { target, physical } => (Some(target), physical),
+            CdOperand::Home | CdOperand::Unknown => (None, false),
         };
+        // `cd -P` takes `..` through links: where the file system leads
+        // from the real directory is a place too.
+        if physical
+            && let (Some(target), Some(from)) = (target, self.guess.as_ref())
+            && let Some(real) = engine
+                .locate
+                .locate(from, from.as_str())
+                .and_then(|from| engine.locate.locate(&from, &target.text))
+            && !self.places.contains(&real)
+        {
+            self.places.push(real);
+        }
+        let starts_anywhere =
+            |target: &Word| target.home || starts_elsewhere(&target.text, engine.workspace.style());
         self.guess = match (self.guess.take(), target) {
+            // A pattern: it may lead to any directory it matches.
+            (Some(from), Some(target)) if !target.is_fixed() => {
+                let base = engine.locate.locate(&from, from.as_str()).unwrap_or(from);
+                self.patterns.push((base, target.text.clone()));
+                None
+            }
             (Some(from), Some(target)) => engine.cd_target(&from, target, false),
-            // `cd` alone goes home.
-            (Some(_), None) if part.arguments().is_empty() => engine.home.clone(),
+            // After a pattern, a `cd` that does not start anywhere of its
+            // own goes on from wherever the pattern led.
+            (None, Some(target)) if !starts_anywhere(target) && !self.patterns.is_empty() => {
+                if let Some((_, pattern)) = self.patterns.last_mut() {
+                    pattern.push('/');
+                    pattern.push_str(&target.text);
+                }
+                None
+            }
+            (None, Some(target)) if !target.is_fixed() => {
+                self.patterns
+                    .push((engine.workspace.clone(), target.text.clone()));
+                None
+            }
+            (None, Some(target)) if starts_anywhere(target) => {
+                engine.cd_target(&engine.workspace, target, false)
+            }
+            // `cd` alone, or with only options, goes home.
+            (_, None) if matches!(cd_operand(part), CdOperand::Home) => engine.home.clone(),
             _ => None,
         };
         if let Some(real) = self
@@ -463,6 +506,64 @@ impl Lost {
         {
             self.places.push(real);
         }
+    }
+}
+
+/// What a `cd` is given, past its options.
+#[derive(Debug)]
+enum CdOperand<'a> {
+    /// No directory: the home directory.
+    Home,
+    /// One directory, and whether `-P` asks for `..` to be taken through
+    /// links.
+    Directory { target: &'a Word, physical: bool },
+    /// Anything else: an option this does not know, `-` (the directory
+    /// before), several directories.
+    Unknown,
+}
+
+/// Reads a `cd`'s arguments the way the shells do: `-L`, `-P`, `-e` and
+/// `-@` (alone or together, the last of `-L` and `-P` counting), then `--`
+/// or the directory. Found by the independent review of the fixes to step
+/// 12: `cd -- .git/hooks && …` was not followed, and neither was the
+/// directory it led to looked in.
+fn cd_operand(part: &Part) -> CdOperand<'_> {
+    let mut physical = false;
+    let mut words = part.arguments().iter();
+    let mut operands: Vec<&Word> = Vec::new();
+    while let Some(word) = words.next() {
+        let text = word.text.as_str();
+        if text == "--" {
+            operands.extend(words.by_ref());
+            break;
+        }
+        if text.len() > 1 && text.starts_with('-') {
+            let options = &text[1..];
+            if !word.is_fixed()
+                || !options
+                    .chars()
+                    .all(|option| matches!(option, 'L' | 'P' | 'e' | '@'))
+            {
+                return CdOperand::Unknown;
+            }
+            for option in options.chars() {
+                match option {
+                    'P' => physical = true,
+                    'L' => physical = false,
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        operands.push(word);
+        operands.extend(words.by_ref());
+        break;
+    }
+    match operands.as_slice() {
+        [] => CdOperand::Home,
+        [target] if target.text == "-" => CdOperand::Unknown,
+        [target] => CdOperand::Directory { target, physical },
+        _ => CdOperand::Unknown,
     }
 }
 
@@ -945,10 +1046,11 @@ impl Engine {
             let changes_directory = is_change_of_directory(part, self.shell);
             let later = parts.get(index + 1..).unwrap_or(&[]);
             if let Some(lost) = &mut lost {
-                if changes_directory && part.redirects.is_empty() {
+                // A `cd`'s own redirections are opened before it moves, and
+                // its target is not itself a path it reads or writes.
+                findings.extend(self.judge_lost(rules, part, lost, !changes_directory));
+                if changes_directory {
                     lost.moved_by(self, part);
-                } else {
-                    findings.extend(self.judge_lost(rules, part, &lost.places));
                 }
                 continue;
             }
@@ -1053,13 +1155,18 @@ impl Engine {
     /// `logical` is the directory the shell believes it is in. The answer is
     /// where it believes it is after the `cd`, and where that really is.
     fn follow_cd(&self, part: &Part, later: &[Part], logical: &AbsPath) -> Option<Directory> {
-        let [target] = part.arguments() else {
+        // `cd -- dir` and `cd -L dir` are `cd dir`. `cd -P dir` takes `..`
+        // through links, and is not followed.
+        let CdOperand::Directory {
+            target,
+            physical: false,
+        } = cd_operand(part)
+        else {
             return None;
         };
         let certain = self.shell == ShellSyntax::Posix
             && !matches!(part.joiner, Joiner::Pipe | Joiner::Or)
             && target.is_fixed()
-            && !target.text.starts_with('-')
             && later.first().is_none_or(|next| next.joiner == Joiner::And)
             && later
                 .iter()
@@ -1129,7 +1236,13 @@ impl Engine {
     /// the part names or redirects to, tried from each place it may be
     /// running in, for a protected path, a file that looks like a secret,
     /// or a path a rule holds back.
-    fn judge_lost(&self, rules: &RuleSet, part: &Part, places: &[AbsPath]) -> Vec<Finding> {
+    fn judge_lost(
+        &self,
+        rules: &RuleSet,
+        part: &Part,
+        lost: &Lost,
+        arguments: bool,
+    ) -> Vec<Finding> {
         let shown = words_of(part).join(" ");
         let mut findings = Vec::new();
         let mut relative = Vec::new();
@@ -1142,7 +1255,9 @@ impl Engine {
             if target.text == "/dev/null" && self.shell == ShellSyntax::Posix {
                 continue;
             }
-            if target.home || starts_elsewhere(&target.text, self.workspace.style()) {
+            if !target.is_fixed() {
+                relative.push((target.text.as_str(), true));
+            } else if target.home || starts_elsewhere(&target.text, self.workspace.style()) {
                 match self.locate.locate(&self.workspace, &target.text) {
                     Some(path) => {
                         findings.push(self.judge_path(rules, &effect, &path, Some(&shown)));
@@ -1154,35 +1269,76 @@ impl Engine {
                     ))),
                 }
             } else {
-                relative.push(target.text.as_str());
+                relative.push((target.text.as_str(), false));
             }
         }
-        for text in relative {
-            if let Some(found) = self.judge_name(rules, text, places, &shown) {
+        for (text, pattern) in relative {
+            let found = if pattern {
+                self.judge_pattern(rules, text, &lost.places, &shown)
+            } else {
+                self.judge_name(rules, text, &lost.places, &shown)
+            };
+            if let Some(found) = found.or_else(|| self.judge_under(rules, text, lost, &shown)) {
                 findings.push(found);
             }
         }
-        findings.extend(self.judge_named(rules, part, places, &shown));
+        if arguments {
+            findings.extend(self.judge_named(rules, part, &lost.places, Some(lost), &shown));
+        }
         findings
+    }
+
+    /// Judges a path a part names, after a `cd` to a pattern, as the pattern
+    /// joined to it: `hooks/pre-commit` after `cd .gi?` is
+    /// `.gi?/hooks/pre-commit`. A path that starts at a root or at `~` does
+    /// not depend on where the part runs.
+    fn judge_under(
+        &self,
+        rules: &RuleSet,
+        text: &str,
+        lost: &Lost,
+        shown: &str,
+    ) -> Option<Finding> {
+        if text.starts_with('~') || starts_elsewhere(text, self.workspace.style()) {
+            return None;
+        }
+        lost.patterns.iter().find_map(|(base, pattern)| {
+            self.judge_pattern(
+                rules,
+                &format!("{pattern}/{text}"),
+                std::slice::from_ref(base),
+                shown,
+            )
+        })
     }
 
     /// Judges the paths among a command's arguments that a rule holds back,
     /// that are protected or that look like secrets, and `git config`: the
     /// checks that hold whatever allows the command. Each path is tried
     /// from every place in `places`.
+    ///
+    /// A word the shell expands as a pattern names every path it could
+    /// match ([`judge_pattern`](Self::judge_pattern)). After a `cd` to a
+    /// pattern, a path is also tried under the pattern (`lost`).
     fn judge_named(
         &self,
         rules: &RuleSet,
         part: &Part,
         places: &[AbsPath],
+        lost: Option<&Lost>,
         shown: &str,
     ) -> Vec<Finding> {
         let mut findings = Vec::new();
-        for word in part.arguments().iter().filter(|word| word.is_fixed()) {
-            if let Some(found) = may_name(&word.text)
-                .into_iter()
-                .find_map(|text| self.judge_name(rules, text, places, shown))
-            {
+        for word in part.arguments() {
+            let found = may_name(&word.text).into_iter().find_map(|text| {
+                let here = if !word.is_fixed() && has_wildcards(text) {
+                    self.judge_pattern(rules, text, places, shown)
+                } else {
+                    self.judge_name(rules, text, places, shown)
+                };
+                here.or_else(|| lost.and_then(|lost| self.judge_under(rules, text, lost, shown)))
+            });
+            if let Some(found) = found {
                 findings.push(found);
             }
         }
@@ -1209,25 +1365,143 @@ impl Engine {
     ) -> Option<Finding> {
         places.iter().find_map(|place| {
             let path = self.locate.locate(place, text)?;
-            if let Some(hit) = held_back(rules, &path) {
-                let reason = format!(
-                    "`{shown}` names `{path}`, which is protected by {}.",
-                    hit.describe()
-                );
-                return Some(match hit.by {
-                    By::Builtin(_) => Finding::Deny {
-                        reason,
-                        built_in: true,
-                    },
-                    By::Rule(_) => Finding::ask(reason),
-                });
+            self.judge_named_path(rules, &path, shown)
+        })
+    }
+
+    /// The finding for one path a command names: `None` when nothing holds
+    /// it back.
+    fn judge_named_path(&self, rules: &RuleSet, path: &AbsPath, shown: &str) -> Option<Finding> {
+        if let Some(hit) = held_back(rules, path) {
+            let reason = format!(
+                "`{shown}` names `{path}`, which is protected by {}.",
+                hit.describe()
+            );
+            return Some(match hit.by {
+                By::Builtin(_) => Finding::Deny {
+                    reason,
+                    built_in: true,
+                },
+                By::Rule(_) => Finding::ask(reason),
+            });
+        }
+        self.is_sensitive(rules, path).then(|| {
+            self.beyond(format!(
+                "`{shown}` names `{path}`, which is a protected path or looks like a file that \
+                 holds secrets. Whoever can write a protected path can run code later."
+            ))
+        })
+    }
+
+    /// The finding for a pattern a command gives where a path goes, which
+    /// the shell replaces with the names of the files it matches: `None`
+    /// when nothing it could match is held back. Found during the fixes to
+    /// step 12: `cp evil .gi?/hooks/pre-commit` ran unasked at `autonomous`.
+    ///
+    /// The pattern names every path it could match ([`crate::expansion`]),
+    /// tried from each place:
+    ///
+    /// - **What it starts under** (the part before its first name with a
+    ///   wildcard) is judged as a path the command names, so a pattern under
+    ///   `.git` or under one of the harness's own directories is held back
+    ///   as the directory is. One that starts above one of the harness's own
+    ///   directories (`~/.c*/cortex-harness/…`) is asked about.
+    /// - **What it could match**, name by name, is asked about at every
+    ///   level that asks about protected paths: a name that could be `.git`,
+    ///   a last name that could be `HEAD`, a file that looks like a secret,
+    ///   or build configuration read from where a build starts, and a path
+    ///   that could be one of the protected paths. A name that begins with
+    ///   `.` is matched only by a pattern that begins with a `.` written out,
+    ///   as in the shells (not in PowerShell, whose own commands expand
+    ///   patterns), so `rm *.o` runs and `rm *` is asked about, since it
+    ///   could match `HEAD` or `id_rsa`.
+    ///
+    /// A rule is matched against a pattern only through the directory it
+    /// starts under; an allow rule never lifts the question.
+    fn judge_pattern(
+        &self,
+        rules: &RuleSet,
+        text: &str,
+        places: &[AbsPath],
+        shown: &str,
+    ) -> Option<Finding> {
+        let separators: &[char] = if self.shell == ShellSyntax::PowerShell {
+            &['/', '\\']
+        } else {
+            &['/']
+        };
+        let hidden_rule = self.shell == ShellSyntax::Posix;
+        let first = text.find(['*', '?', '['])?;
+        let cut = text.get(..first)?.rfind(separators).map_or(0, |at| at + 1);
+        let (prefix, rest) = text.split_at(cut);
+        let names: Vec<&str> = rest
+            .split(separators)
+            .filter(|name| !name.is_empty() && *name != ".")
+            .collect();
+        let patterns: Vec<NamePattern> =
+            names.iter().map(|name| NamePattern::parse(name)).collect();
+        let could = |pattern: &NamePattern, name: &str| pattern.could_match_name(name, hidden_rule);
+        let flagged = || {
+            self.beyond(format!(
+                "`{shown}` names `{text}`, a pattern the shell may expand to a protected path or \
+                 a file that looks like a secret. Whoever can write a protected path can run \
+                 code later."
+            ))
+        };
+        places.iter().find_map(|place| {
+            let base = if prefix.is_empty() {
+                place.clone()
+            } else {
+                let trimmed = prefix.trim_end_matches(separators);
+                if trimmed.is_empty() {
+                    AbsPath::parse(prefix, place.style()).ok()?
+                } else {
+                    self.locate.locate(place, trimmed)?
+                }
+            };
+            if let Some(found) = self.judge_named_path(rules, &base, shown) {
+                return Some(found);
             }
-            self.is_sensitive(rules, &path).then(|| {
-                self.beyond(format!(
-                    "`{shown}` names `{path}`, which is a protected path or looks like a file \
-                     that holds secrets. Whoever can write a protected path can run code later."
-                ))
-            })
+            if let Some(hit) = rules.protected_under(&base) {
+                return Some(Finding::ask(format!(
+                    "`{shown}` names `{text}`, a pattern the shell may expand to a path protected \
+                     by {}.",
+                    hit.describe()
+                )));
+            }
+            if level::decider(self.level(), Matter::WriteBeyond) == Decider::Holder {
+                return None;
+            }
+            // A `..` after a pattern could lead anywhere.
+            if names.contains(&"..") {
+                return Some(flagged());
+            }
+            let last = patterns.last()?;
+            let repository = patterns.iter().any(|pattern| could(pattern, ".git"));
+            let secret = std::iter::once("HEAD".to_owned())
+                .chain(secret_patterns())
+                .chain([".yarnrc".to_owned(), ".yarnrc.yml".to_owned()])
+                .any(|name| last.could_match(&NamePattern::parse(&name), hidden_rule));
+            let in_cargo = |at: usize| match at.checked_sub(1) {
+                Some(before) => could(&patterns[before], ".cargo"),
+                None => base
+                    .file_name()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(".cargo")),
+            };
+            let cargo = patterns.iter().enumerate().any(|(at, pattern)| {
+                (could(pattern, "config") || could(pattern, "config.toml")) && in_cargo(at)
+            });
+            let guarded = self.guarded.iter().any(|guard| {
+                guard.strip_prefix(&base).is_some_and(|below| {
+                    let below: Vec<&str> = below.names().collect();
+                    below.len() <= patterns.len()
+                        && below
+                            .iter()
+                            .zip(&patterns)
+                            .all(|(name, pattern)| could(pattern, name))
+                })
+            });
+            (repository || secret || cargo || guarded).then(flagged)
         })
     }
 
@@ -1237,6 +1511,7 @@ impl Engine {
         let shown = words_of(part).join(" ");
         let mut findings = Vec::new();
         let mut writes = false;
+        let mut to_pattern = false;
         for redirect in &part.redirects {
             let null_device = |target: &crate::command::Word| {
                 target.text == "/dev/null" && self.shell == ShellSyntax::Posix
@@ -1252,6 +1527,19 @@ impl Engine {
                     (target, Effect::Write)
                 }
             };
+            if !target.is_fixed() {
+                // A pattern: the shell may put any file's name it matches in
+                // its place. The part is on no safe list, and what the
+                // pattern could match is checked as for an argument.
+                to_pattern = true;
+                writes = true;
+                if let Some(found) =
+                    self.judge_pattern(rules, &target.text, std::slice::from_ref(here), &shown)
+                {
+                    findings.push(found);
+                }
+                continue;
+            }
             match self.locate.locate(here, &target.text) {
                 Some(path) => findings.push(self.judge_path(rules, &effect, &path, Some(&shown))),
                 None => findings.push(Finding::ask(format!(
@@ -1259,6 +1547,12 @@ impl Engine {
                     target.text
                 ))),
             }
+        }
+        if to_pattern {
+            findings.push(self.other_command(format!(
+                "`{shown}` redirects to or from a pattern, which the shell may replace with any \
+                 file's name it matches, so no rule and no safe list applies to it."
+            )));
         }
 
         let named = table::read_only(part, self.shell, self.trusted);
@@ -1318,7 +1612,13 @@ impl Engine {
             // secret makes the command one to ask about, whatever allows
             // the command. The harness's own files stay refused.
             None => {
-                findings.extend(self.judge_named(rules, part, std::slice::from_ref(here), &shown));
+                findings.extend(self.judge_named(
+                    rules,
+                    part,
+                    std::slice::from_ref(here),
+                    None,
+                    &shown,
+                ));
             }
         }
         (standing, findings)
@@ -1421,17 +1721,23 @@ impl Engine {
     /// When the project's file cannot be rewritten. The session's own
     /// approvals have been removed all the same.
     pub fn revoke(&self, ids: &[ApprovalId]) -> Result<usize, ApprovalError> {
-        let mut rules = self.rules.write().unwrap_or_else(PoisonError::into_inner);
-        let mut removed = rules.session.remove(ids);
-        self.recompile(&mut rules);
-        if rules
-            .approved
-            .iter()
-            .any(|approval| ids.contains(&approval.id))
-        {
+        let (mut removed, stored) = {
+            let mut rules = self.rules.write().unwrap_or_else(PoisonError::into_inner);
+            let removed = rules.session.remove(ids);
+            self.recompile(&mut rules);
+            let stored = rules
+                .approved
+                .iter()
+                .any(|approval| ids.contains(&approval.id));
+            (removed, stored)
+        };
+        if stored {
+            // The file is changed without the rules held, so that deciding
+            // a call does not wait on another session's lock on the file.
             if let Some(store) = &self.store {
                 store.remove(ids)?;
             }
+            let mut rules = self.rules.write().unwrap_or_else(PoisonError::into_inner);
             let before = rules.approved.len();
             rules
                 .approved
@@ -1756,7 +2062,7 @@ fn is_change_of_directory(part: &Part, shell: ShellSyntax) -> bool {
 ///   can send anything.
 /// - Windows programs and PowerShell commands that start or schedule
 ///   others, or download.
-const EXACT_LINE: [&str; 119] = [
+const EXACT_LINE: [&str; 136] = [
     // Wrappers that run what follows them.
     "sudo",
     "doas",
@@ -1883,6 +2189,27 @@ const EXACT_LINE: [&str; 119] = [
     "invoke-command",
     "invoke-webrequest",
     "invoke-restmethod",
+    // Programs with an option that runs another (found by the independent
+    // review of the fixes to step 12): `rg --pre`, `fd -x`, `man -P`, a
+    // pager's `!`, `zip -TT`; more interpreters; and cloud tools, which
+    // reach the network.
+    "rg",
+    "fd",
+    "fdfind",
+    "man",
+    "less",
+    "more",
+    "ts-node",
+    "tsx",
+    "pypy",
+    "pypy3",
+    "zip",
+    "aws",
+    "rclone",
+    "gsutil",
+    "gcloud",
+    "az",
+    "s3cmd",
 ];
 
 /// Programs that do their work through subcommands, each with the
@@ -1983,6 +2310,12 @@ fn approval_rule(part: &Part) -> Option<Rule> {
         .unwrap_or(&program.text)
         .to_ascii_lowercase();
     let name = name.strip_suffix(".exe").unwrap_or(&name);
+    // `python3.12` is `python`, and `ruby3.2` is `ruby`: a version after
+    // the name changes nothing about what the program does with its
+    // arguments.
+    let unversioned =
+        name.trim_end_matches(|character: char| character.is_ascii_digit() || character == '.');
+    let listed = |list: &[&str]| list.contains(&name) || list.contains(&unversioned);
     // A second word is a subcommand when it reads like one: `test` in
     // `cargo test`, not `-la` or `src/main.rs`.
     let subcommand = part.words.get(1).filter(|word| {
@@ -1997,10 +2330,10 @@ fn approval_rule(part: &Part) -> Option<Rule> {
                 character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
             })
     });
-    let exact_line = EXACT_LINE.contains(&name)
+    let exact_line = listed(&EXACT_LINE)
         || SUBCOMMANDS
             .iter()
-            .find(|(program, _)| *program == name)
+            .find(|(program, _)| *program == name || *program == unversioned)
             .is_some_and(|(_, covered)| {
                 !subcommand.is_some_and(|subcommand| covered.contains(&subcommand.text.as_str()))
             });
@@ -2101,6 +2434,15 @@ mod tests {
             ("nc host 80", Some("nc host 80")),
             ("vim file", Some("vim file")),
             ("java Main", Some("java Main")),
+            // A version after the name is the same program, and programs
+            // with an option that runs another. Found by the independent
+            // review of the fixes to step 12.
+            ("python3.12 x.py", Some("python3.12 x.py")),
+            ("pip3.12 install x", Some("pip3.12 install x")),
+            ("rg foo", Some("rg foo")),
+            ("fd -x ls", Some("fd -x ls")),
+            ("man ls", Some("man ls")),
+            ("aws s3 ls", Some("aws s3 ls")),
             (
                 "CURL.EXE http://x.example",
                 Some("CURL.EXE http://x.example"),

@@ -477,6 +477,17 @@ impl RuleSet {
         })
     }
 
+    /// The protection of the harness's own files somewhere below the
+    /// directory `tree`, if any: what a pattern that starts there could
+    /// reach without naming it.
+    #[must_use]
+    pub fn protected_under(&self, tree: &AbsPath) -> Option<Hit<'_>> {
+        self.protected.guards_under(tree).map(|what| Hit {
+            action: RuleAction::Deny,
+            by: By::Builtin(what),
+        })
+    }
+
     /// The strongest `deny` or `ask` rule on a command line, if any. The
     /// raw line is matched loosely, and each analysed part strictly.
     #[must_use]
