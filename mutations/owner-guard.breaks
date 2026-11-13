@@ -1,0 +1,65 @@
+# The owner guard (docs/testing-and-ci.md, "The owner guard"; step 2's
+# records): how a change is searched for the owner's protected terms.
+
+[break] a-word-matches-inside-a-longer-word
+rule: A plain term is matched only as a whole word.
+file: xtask/src/owner_guard.rs
+in: Term::is_in
+find: !before.is_some_and(is_word) && !after.is_some_and(is_word)
+replace: true
+caught-by:
+    owner_guard::tests::a_plain_term_is_a_whole_word_in_any_case
+
+[break] case-is-not-ignored
+rule: A term is matched whatever its case.
+file: xtask/src/owner_guard.rs
+in: Terms::matches
+find: let lowered = text.to_lowercase();
+replace: let lowered = text.to_owned();
+caught-by:
+    owner_guard::tests::a_plain_term_is_a_whole_word_in_any_case
+
+[break] an-email-is-a-word
+rule: A term with `@` or `/` in it is matched anywhere, not only as a word.
+file: xtask/src/owner_guard.rs
+in: Terms::parse
+find: anywhere: line.contains(['@', '/'])
+replace: anywhere: false
+caught-by:
+    owner_guard::tests::an_email_or_a_path_is_matched_anywhere
+
+[break] deleted-lines-are-searched
+rule: Only what a change adds is searched; a removed line is not a finding.
+file: xtask/src/owner_guard.rs
+in: scan_diff
+find: text.strip_prefix('+').filter(|_| !in_header)
+replace: text.strip_prefix('+').or_else(|| text.strip_prefix('-')).filter(|_| !in_header)
+caught-by:
+    owner_guard::tests::a_diff_is_read_for_its_added_lines_and_its_paths
+
+[break] the-author-is-not-searched
+rule: A commit's author is searched as well as its message.
+file: xtask/src/owner_guard.rs
+in: scan_commits
+find: for (field, value) in FIELDS.iter().zip(parts)
+replace: for (field, value) in FIELDS.iter().zip(parts).skip(2)
+caught-by:
+    owner_guard::tests::a_commit_is_read_for_its_people_and_its_message
+
+[break] a-matching-path-is-printed-beside-its-line
+rule: A path that matches a term is never printed.
+file: xtask/src/owner_guard.rs
+in: scan_diff
+find: (!matched).then(|| path.clone())
+replace: Some(path.clone())
+caught-by:
+    owner_guard::tests::a_diff_is_read_for_its_added_lines_and_its_paths
+
+[break] the-guard-reads-another-secret
+rule: A workflow that runs on pull requests reads no secret but the owner's terms, under their own name.
+file: xtask/src/rules/workflows.rs
+in: uses_a_secret_other_than_the_owners_terms
+find: line.contains("secrets.") && line.trim() != OWNER_TERMS_LINE
+replace: line.contains("secrets.") && !line.contains("OWNER_TERMS")
+caught-by:
+    rules::workflows::tests::the_owners_terms_are_the_one_secret_a_pull_request_may_read
