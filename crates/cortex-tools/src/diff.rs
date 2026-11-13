@@ -59,6 +59,156 @@ pub(crate) fn diff(old: &str, new: &str) -> Option<Diff> {
         return None;
     }
     let ops = capture_diff_slices(Algorithm::Myers, &old_lines, &new_lines);
+    Some(render(&old_lines, &new_lines, ops))
+}
+
+/// Between two versions that an editing tool has just made, the lines that
+/// differ may take this many lines of work to compare, once the lines the
+/// versions share at their start and at their end are set aside. Past it,
+/// everything between is shown as replaced.
+///
+/// The comparison's worst case grows with the square of this, and it is
+/// met by a file that was written again from top to bottom: at 4,000 lines
+/// that is some tens of milliseconds, on the path of a tool call.
+const MIDDLE_MAX_LINES: usize = 4_000;
+
+/// [`diff`] for a change the harness made itself, with a bound on the work.
+///
+/// The lines two versions share at their start and their end are found
+/// first, which costs one pass and is all there is to find in most edits.
+/// Only what lies between is compared in full, and only when it is small.
+/// `None` when the versions are too large to show a diff of at all.
+pub(crate) fn diff_bounded(old: &str, new: &str) -> Option<Diff> {
+    let old_lines = lines_of(old);
+    let new_lines = lines_of(new);
+    if old_lines.len() + new_lines.len() > MAX_LINES {
+        return None;
+    }
+    let ops = bounded_ops(&old_lines, &new_lines);
+    Some(render(&old_lines, &new_lines, ops))
+}
+
+/// The runs of lines `old` and `new` have in common, by the comparison of
+/// [`diff_bounded`]: for each, where it starts in `old`, where in `new`,
+/// and how many lines it has.
+pub(crate) fn common_runs(old: &[&str], new: &[&str]) -> Vec<(usize, usize, usize)> {
+    bounded_ops(old, new)
+        .into_iter()
+        .filter_map(|op| match op {
+            DiffOp::Equal {
+                old_index,
+                new_index,
+                len,
+            } => Some((old_index, new_index, len)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn bounded_ops(old: &[&str], new: &[&str]) -> Vec<DiffOp> {
+    let shortest = old.len().min(new.len());
+    let head = old
+        .iter()
+        .zip(new)
+        .take_while(|(first, second)| first == second)
+        .count();
+    let tail = old
+        .iter()
+        .rev()
+        .zip(new.iter().rev())
+        .take(shortest - head)
+        .take_while(|(first, second)| first == second)
+        .count();
+    let old_middle = &old[head..old.len() - tail];
+    let new_middle = &new[head..new.len() - tail];
+
+    let mut ops = Vec::new();
+    if head > 0 {
+        ops.push(DiffOp::Equal {
+            old_index: 0,
+            new_index: 0,
+            len: head,
+        });
+    }
+    match (old_middle.len(), new_middle.len()) {
+        (0, 0) => {}
+        (old_len, 0) => ops.push(DiffOp::Delete {
+            old_index: head,
+            old_len,
+            new_index: head,
+        }),
+        (0, new_len) => ops.push(DiffOp::Insert {
+            old_index: head,
+            new_index: head,
+            new_len,
+        }),
+        (old_len, new_len) if old_len + new_len > MIDDLE_MAX_LINES => ops.push(DiffOp::Replace {
+            old_index: head,
+            old_len,
+            new_index: head,
+            new_len,
+        }),
+        _ => {
+            let middle = capture_diff_slices(Algorithm::Myers, old_middle, new_middle);
+            ops.extend(middle.into_iter().map(|op| shifted(op, head)));
+        }
+    }
+    if tail > 0 {
+        ops.push(DiffOp::Equal {
+            old_index: old.len() - tail,
+            new_index: new.len() - tail,
+            len: tail,
+        });
+    }
+    ops
+}
+
+/// An operation on the middle of two versions, as one on the whole of them.
+fn shifted(op: DiffOp, by: usize) -> DiffOp {
+    match op {
+        DiffOp::Equal {
+            old_index,
+            new_index,
+            len,
+        } => DiffOp::Equal {
+            old_index: old_index + by,
+            new_index: new_index + by,
+            len,
+        },
+        DiffOp::Delete {
+            old_index,
+            old_len,
+            new_index,
+        } => DiffOp::Delete {
+            old_index: old_index + by,
+            old_len,
+            new_index: new_index + by,
+        },
+        DiffOp::Insert {
+            old_index,
+            new_index,
+            new_len,
+        } => DiffOp::Insert {
+            old_index: old_index + by,
+            new_index: new_index + by,
+            new_len,
+        },
+        DiffOp::Replace {
+            old_index,
+            old_len,
+            new_index,
+            new_len,
+        } => DiffOp::Replace {
+            old_index: old_index + by,
+            old_len,
+            new_index: new_index + by,
+            new_len,
+        },
+    }
+}
+
+/// The text of a diff, from the operations that make it.
+fn render(old_lines: &[&str], new_lines: &[&str], ops: Vec<DiffOp>) -> Diff {
     let hunks = group_diff_ops(ops.clone(), CONTEXT);
 
     let mut text = String::new();
@@ -111,13 +261,13 @@ pub(crate) fn diff(old: &str, new: &str) -> Option<Diff> {
             }
         }
     }
-    Some(Diff {
+    Diff {
         text,
         added,
         removed,
         ops,
         hunks,
-    })
+    }
 }
 
 /// A range in a hunk header, counted from 1: `12,3`, or `12` for one line,
@@ -255,6 +405,117 @@ mod tests {
         assert_eq!(lines_of("a\n\n"), ["a", ""]);
         assert_eq!(lines_of("\n"), [""]);
         assert!(lines_of("").is_empty());
+    }
+
+    #[test]
+    fn a_bounded_diff_is_the_same_diff_for_a_change_in_the_middle() {
+        let old = numbered(30);
+        let new = old
+            .replace("line 3\n", "")
+            .replace("line 25\n", "line 25\nextra\n");
+        let whole = diff(&old, &new).expect("small");
+        let bounded = diff_bounded(&old, &new).expect("small");
+        assert_eq!(bounded.text, whole.text);
+        assert_eq!(
+            (bounded.added, bounded.removed),
+            (whole.added, whole.removed)
+        );
+        // Nothing in common, one side empty, and nothing changed.
+        assert_eq!(
+            diff_bounded("a\nb\n", "c\n").expect("small").text,
+            diff("a\nb\n", "c\n").expect("small").text
+        );
+        assert_eq!(
+            diff_bounded("", "a\nb\n").expect("small").text,
+            "@@ -0,0 +1,2 @@\n+a\n+b"
+        );
+        assert_eq!(
+            diff_bounded("a\nb\n", "a\n").expect("small").text,
+            "@@ -1,2 +1 @@\n a\n-b"
+        );
+        assert!(diff_bounded("a\nb\n", "a\r\nb").expect("small").is_empty());
+        let old = "x\n".repeat(MAX_LINES / 2);
+        let new = "y\n".repeat(MAX_LINES / 2 + 1);
+        assert!(diff_bounded(&old, &new).is_none());
+    }
+
+    #[test]
+    fn a_middle_too_large_to_compare_is_shown_as_replaced() {
+        // Two versions with the same first and last line and nothing else
+        // in common, each longer than the bound.
+        let middle = |word: &str| -> String {
+            (0..MIDDLE_MAX_LINES)
+                .map(|n| format!("{word} {n}\n"))
+                .collect()
+        };
+        let old = format!("first\n{}last\n", middle("old"));
+        let new = format!("first\n{}last\n", middle("new"));
+        let diff = diff_bounded(&old, &new).expect("within the line limit");
+        assert_eq!(
+            (diff.added, diff.removed),
+            (MIDDLE_MAX_LINES, MIDDLE_MAX_LINES)
+        );
+        assert!(diff.text.starts_with(&format!(
+            "@@ -1,{0} +1,{0} @@\n first\n-old 0\n",
+            MIDDLE_MAX_LINES + 2
+        )));
+        let old_lines = lines_of(&old);
+        let new_lines = lines_of(&new);
+        assert_eq!(
+            common_runs(&old_lines, &new_lines),
+            [(0, 0, 1), (MIDDLE_MAX_LINES + 1, MIDDLE_MAX_LINES + 1, 1)]
+        );
+    }
+
+    #[test]
+    fn common_runs_cover_exactly_the_lines_two_versions_share() {
+        cases::check(
+            "diff_common_runs",
+            300,
+            |rng| {
+                let old: Vec<String> = (0..rng.below(30)).map(|n| format!("l{n}")).collect();
+                let mut new = old.clone();
+                for _ in 0..rng.below(5) {
+                    let at = rng.below(new.len() as u64 + 1) as usize;
+                    match rng.below(3) {
+                        0 => new.insert(at, format!("added{}", rng.below(1000))),
+                        1 if at < new.len() => {
+                            new.remove(at);
+                        }
+                        _ if at < new.len() => new[at] = format!("changed{}", rng.below(1000)),
+                        _ => {}
+                    }
+                }
+                (old, new)
+            },
+            |(old, new)| {
+                let old: Vec<&str> = old.iter().map(String::as_str).collect();
+                let new: Vec<&str> = new.iter().map(String::as_str).collect();
+                let runs = common_runs(&old, &new);
+                let (mut old_at, mut new_at) = (0, 0);
+                for &(old_index, new_index, len) in &runs {
+                    ensure!(
+                        old_index >= old_at && new_index >= new_at && len > 0,
+                        "runs out of order: {runs:?}"
+                    );
+                    ensure!(
+                        old[old_index..old_index + len] == new[new_index..new_index + len],
+                        "a run of lines that differ: {runs:?}"
+                    );
+                    old_at = old_index + len;
+                    new_at = new_index + len;
+                }
+                // Every line of `old` is distinct, so a line that is still
+                // in `new` and has not moved past another must be in a run.
+                let kept = new.iter().filter(|line| old.contains(line)).count();
+                let covered: usize = runs.iter().map(|run| run.2).sum();
+                ensure!(
+                    covered == kept,
+                    "{covered} of {kept} shared lines: {runs:?}"
+                );
+                Ok(())
+            },
+        );
     }
 
     #[test]

@@ -134,6 +134,7 @@ name = "cortex-base"
 version = "0.0.0"
 dependencies = [
  "cortex-protocol",
+ "libc",
  "serde",
  "serde_json",
  "sha2",

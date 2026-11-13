@@ -26,6 +26,7 @@
 mod early;
 mod interrupt;
 mod limits;
+mod plan;
 mod retries;
 mod rounds;
 mod sessions;
