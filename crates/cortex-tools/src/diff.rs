@@ -34,10 +34,12 @@ pub(crate) struct Diff {
     hunks: Vec<Vec<DiffOp>>,
 }
 
-/// The lines of a text as `read` numbers them: split at line feeds, without
-/// the carriage return of a CRLF ending, and with a final line break ending
-/// the last line, not starting another.
+/// The lines of a text as `read` numbers and shows them: split at line
+/// feeds, without the carriage return of a CRLF ending or a byte-order mark
+/// at the start, and with a final line break ending the last line, not
+/// starting another.
 pub(crate) fn lines_of(text: &str) -> Vec<&str> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     if text.is_empty() {
         return Vec::new();
     }
@@ -239,7 +241,12 @@ mod tests {
     #[test]
     fn a_change_of_line_endings_alone_is_no_change_of_lines() {
         let unix = "one\ntwo\n";
-        for other in ["one\r\ntwo\r\n", "one\ntwo", "one\ntwo\n"] {
+        for other in [
+            "one\r\ntwo\r\n",
+            "one\ntwo",
+            "one\ntwo\n",
+            "\u{feff}one\ntwo\n",
+        ] {
             let diff = diff(unix, other).expect("small");
             assert!(diff.is_empty(), "{other:?}");
             assert_eq!(diff.text, "");

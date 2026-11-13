@@ -319,30 +319,40 @@ impl Plan {
     /// the scheduler runs them in the model's order.
     ///
     /// - An exclusive call conflicts with every call.
-    /// - Two keyed calls conflict when they share a path.
+    /// - Two keyed calls conflict when they share a path, or when a path of
+    ///   one is inside a path of the other.
     /// - A keyed call conflicts with a read-only call that reads one of its
-    ///   paths, or walks a tree that holds one: `edit a.rs` then
-    ///   `read a.rs` must see the edit.
+    ///   paths, a directory that holds one, or something inside one:
+    ///   `edit a.rs` then `read a.rs` must see the edit, and `write
+    ///   src/new.rs` then `list src` must see the file.
     /// - Two read-only calls never conflict.
     #[must_use]
     pub fn conflicts_with(&self, other: &Self) -> bool {
         match (&self.concurrency, &other.concurrency) {
             (Concurrency::Exclusive, _) | (_, Concurrency::Exclusive) => true,
             (Concurrency::ReadOnly, Concurrency::ReadOnly) => false,
-            (Concurrency::Keyed(mine), Concurrency::Keyed(theirs)) => {
-                mine.iter().any(|path| theirs.contains(path))
-            }
+            (Concurrency::Keyed(mine), Concurrency::Keyed(theirs)) => mine
+                .iter()
+                .any(|path| theirs.iter().any(|other| related(path, other))),
             (Concurrency::Keyed(keys), Concurrency::ReadOnly) => reads_any(other, keys),
             (Concurrency::ReadOnly, Concurrency::Keyed(keys)) => reads_any(self, keys),
         }
     }
 }
 
-/// Whether a plan reads any of `keys`, directly or inside a walked tree.
+/// Whether one path is the other, or lies inside it.
+fn related(first: &AbsPath, second: &AbsPath) -> bool {
+    first.starts_with(second) || second.starts_with(first)
+}
+
+/// Whether a plan reads any of `keys`, a directory one of them is in, or
+/// something inside one of them. A read of a directory is its listing, which
+/// a write below it can change, so it is treated like a walk.
 fn reads_any(plan: &Plan, keys: &[AbsPath]) -> bool {
     plan.effects.iter().any(|effect| match effect {
-        Effect::Read(path) => keys.contains(path.abs()),
-        Effect::ReadTree(tree) => keys.iter().any(|key| key.starts_with(tree.abs())),
+        Effect::Read(path) | Effect::ReadTree(path) => {
+            keys.iter().any(|key| related(key, path.abs()))
+        }
         _ => false,
     })
 }
@@ -473,6 +483,15 @@ mod tests {
         assert!(walk(&dir).conflicts_with(&keyed(&a)));
         assert!(keyed(&a).conflicts_with(&walk(&dir)));
         assert!(!keyed(&a).conflicts_with(&walk(&elsewhere)));
+        // And a listing of the directory it is in: a new file must show.
+        assert!(keyed(&a).conflicts_with(&reads(&dir)));
+        assert!(reads(&dir).conflicts_with(&keyed(&a)));
+        assert!(!keyed(&a).conflicts_with(&reads(&elsewhere)));
+        // A keyed call on a directory conflicts with calls on what is in it.
+        assert!(keyed(&dir).conflicts_with(&keyed(&a)));
+        assert!(keyed(&a).conflicts_with(&keyed(&dir)));
+        assert!(keyed(&dir).conflicts_with(&reads(&a)));
+        assert!(!keyed(&dir).conflicts_with(&keyed(&elsewhere)));
     }
 
     #[test]

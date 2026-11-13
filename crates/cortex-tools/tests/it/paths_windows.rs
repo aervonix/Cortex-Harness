@@ -11,7 +11,7 @@ use std::fs;
 use cortex_tools::{Effect, ListTool, ReadTool, SearchTool, Tool};
 use serde_json::json;
 
-use crate::{Workspace, failed, ok};
+use crate::{Workspace, failed, ok, skipped};
 
 fn project(test: &str) -> Workspace {
     let ws = Workspace::new(test);
@@ -237,7 +237,7 @@ fn a_walk_steps_past_a_name_the_rules_refuse_and_says_so() {
     let made = fs::write(verbatim.join("trailing."), "needle\n").is_ok()
         && fs::write(verbatim.join("aux"), "needle\n").is_ok();
     if !made {
-        println!("skipped: this volume refuses the names the test needs");
+        skipped("this volume refuses the names the test needs");
         return;
     }
 
@@ -250,7 +250,7 @@ fn a_walk_steps_past_a_name_the_rules_refuse_and_says_so() {
     );
     assert_eq!(lines.len(), 3, "{text}");
     assert!(
-        lines[2].starts_with("[Skipped 2 entries whose path cannot be used. The first: "),
+        lines[2].starts_with("[Skipped 2 entries whose path cannot be used. For example: "),
         "{text}"
     );
     assert!(

@@ -564,15 +564,31 @@ impl Chosen<'_> {
     }
 }
 
+/// How the policy treats the text of a result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Treatment {
+    /// The text is what a tool of the harness wrote. It is checked against
+    /// the limits and left exactly as it is when it fits: a file read must
+    /// reach the model unchanged.
+    AsReturned,
+    /// The text was produced outside the harness, by an extension or MCP
+    /// tool. It is compressed whether or not it fits: control sequences
+    /// removed, redrawn lines collapsed, repeated lines counted.
+    Produced,
+}
+
 /// Applies the policy to a result: what [`execute`](crate::execute) does to
 /// whatever a tool returned.
 ///
-/// - Text within the limits passes as it is.
+/// - Text within the limits passes: as it is, or compressed, by `treatment`.
 /// - Text over them is shaped as produced output (compressed, beginning and
 ///   end kept), the whole of it goes to an artifact, and the closing notice
 ///   names the artifact.
 /// - An image the model cannot take (no image support, a type it does not
 ///   read, too large) is replaced by a line saying so.
+/// - A result holds text and images. Any other kind of part is left out,
+///   with a line saying so, and a provider's raw block on a text part is
+///   dropped: neither is counted by the limits, so neither may pass.
 ///
 /// It blocks when it has to store an artifact.
 #[must_use]
@@ -582,6 +598,7 @@ pub fn enforce(
     limits: &OutputLimits,
     images: Option<&ImageSupport>,
     store: &dyn ContentStore,
+    treatment: Treatment,
 ) -> ToolResult {
     if result.is_bounded() {
         return result;
@@ -589,6 +606,8 @@ pub fn enforce(
     let mut dropped = Vec::new();
     let mut kept_images = Vec::new();
     let mut texts = 0;
+    let mut plain = true;
+    let mut foreign = 0;
     for part in result.content() {
         match part {
             Part::Image(image) => {
@@ -612,9 +631,23 @@ pub fn enforce(
                     ));
                 }
             }
-            Part::Text(_) => texts += 1,
-            _ => {}
+            Part::Text(text) => {
+                texts += 1;
+                plain &= text.raw.is_none();
+            }
+            _ => foreign += 1,
         }
+    }
+    if foreign > 0 {
+        dropped.push(format!(
+            "[{} of this result {} left out: a tool result holds text and images only.]",
+            if foreign == 1 {
+                "A part".to_owned()
+            } else {
+                format!("{} parts", count(foreign))
+            },
+            if foreign == 1 { "was" } else { "were" }
+        ));
     }
 
     let mut text = result.text();
@@ -624,8 +657,8 @@ pub fn enforce(
         }
         text.push_str(line);
     }
-    if limits.fits(&text) {
-        if dropped.is_empty() && texts <= 1 {
+    if treatment == Treatment::AsReturned && limits.fits(&text) {
+        if dropped.is_empty() && texts <= 1 && plain {
             let content = result.content().to_vec();
             return result.bounded_with(content, None);
         }

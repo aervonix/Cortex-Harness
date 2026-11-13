@@ -58,8 +58,9 @@ The `read` tool remembers what it returned ([05-tools.md](05-tools.md)). When th
 Built in step 6. What "already seen" means, exactly:
 
 - **The table of seen files keeps, per file, the lines the model has been shown** of the version it last saw, as ranges. A read of lines that are all among them, of an unchanged file, is the one-line result. A read that reaches past them returns the content and adds its lines.
-- **A diff answers a read only when the model has seen, of the old version, the lines it is asking for now.** A model that saw lines 100 to 150 and asks for 200 to 250 of the changed file gets those lines, not a diff.
 - **After a diff, the model has seen** the lines it had seen that are still there, at their new numbers, every added line, and the unchanged lines the diff shows around each change. Nothing else counts as seen: a later "unchanged" must never be said of a line the model was not shown.
+- **A diff answers a read only when, with the diff, the model has seen every line the read would have returned.** The lines are counted in the file as it is now. A model that saw lines 100 to 150 and asks for 200 to 250 of the changed file gets those lines, not a diff. So does one that saw lines 1 to 10 and asks for them again after the first five were deleted: five lines it never saw have moved into the range, and a diff would not show them.
+- **The table is written when the result is delivered.** A read that is cancelled at the last moment returns "interrupted" and leaves the table as it was.
 - "Smaller than the content" compares the diff, with its one-line preface, against the result the content would have been. A change of line endings or of the final line break alone is said in one line.
 - A file's version is kept for diffing only up to 1 MiB, and two versions are diffed only up to 50,000 lines between them. Beyond either, a changed file is sent as content.
 - Whether a file changed is decided by its content hash, never by its modification time.

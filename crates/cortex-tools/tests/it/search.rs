@@ -316,6 +316,18 @@ fn a_long_matching_line_is_shortened_with_a_marker() {
     let text = ok(&ws.call(&SearchTool::new(), json!({"pattern": "needle"})));
     let line = text.lines().nth(2).unwrap();
     assert!(line.starts_with("  1: var a=1;xxxx"));
+    // The marker counts what is missing of the whole line, not of the part
+    // the search kept while it ran.
+    let (kept, marker) = line.rsplit_once("… [+").expect("a marker");
+    let missing: usize = marker
+        .trim_end_matches(" characters]")
+        .replace(',', "")
+        .parse()
+        .expect("a number");
+    assert_eq!(
+        kept.chars().count() + missing,
+        "  1: ".len() + 8 + 5000 + 6 + 5000
+    );
     assert!(
         line.ends_with("characters]"),
         "{}",

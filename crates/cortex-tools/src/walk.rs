@@ -118,13 +118,15 @@ pub(crate) struct Found<'a> {
 pub(crate) struct Skipped {
     /// Entries whose names the path rules refuse.
     pub(crate) refused: usize,
-    /// The reason the first of them was refused.
+    /// Why one of them was refused: the reason that sorts first, so that
+    /// the result is the same whatever order the walk's threads met them
+    /// in.
     pub(crate) first_refusal: Option<String>,
     /// Entries the permission rules do not let the call read.
     pub(crate) denied: usize,
     /// Entries the file system would not give.
     pub(crate) unreadable: usize,
-    /// What it said about the first of them.
+    /// What it said about one of them: the message that sorts first.
     pub(crate) first_error: Option<String>,
     /// Links the caller did not follow.
     pub(crate) links: usize,
@@ -138,7 +140,7 @@ impl Skipped {
         let entries = |number: usize| if number == 1 { "entry" } else { "entries" };
         if self.refused > 0 {
             notes.push(format!(
-                "[Skipped {} {} whose path cannot be used. The first: {}]",
+                "[Skipped {} {} whose path cannot be used. For example: {}]",
                 count(self.refused),
                 entries(self.refused),
                 self.first_refusal.as_deref().unwrap_or("no reason given")
@@ -153,7 +155,7 @@ impl Skipped {
         }
         if self.unreadable > 0 {
             notes.push(format!(
-                "[Skipped {} {} that could not be read. The first: {}]",
+                "[Skipped {} {} that could not be read. For example: {}]",
                 count(self.unreadable),
                 entries(self.unreadable),
                 self.first_error.as_deref().unwrap_or("no reason given")
@@ -170,18 +172,39 @@ impl Skipped {
         notes
     }
 
-    fn refuse(&mut self, reason: String) {
+    /// Counts an entry whose name was refused, with the reason.
+    pub(crate) fn refuse(&mut self, reason: String) {
         self.refused += 1;
-        self.first_refusal.get_or_insert(reason);
+        keep_smallest(&mut self.first_refusal, reason);
     }
 
-    fn unreadable(&mut self, reason: &str) {
+    /// Counts an entry that could not be read, with what was said of it.
+    pub(crate) fn unreadable(&mut self, reason: &str) {
         self.unreadable += 1;
-        if self.first_error.is_none() {
-            // One line, and not a long one: it goes into a result.
-            let line = reason.lines().next().unwrap_or("");
-            self.first_error = Some(line.chars().take(200).collect());
+        // One line, and not a long one: it goes into a result.
+        let line = reason.lines().next().unwrap_or("");
+        keep_smallest(&mut self.first_error, line.chars().take(200).collect());
+    }
+
+    /// Adds what another count holds to this one.
+    pub(crate) fn absorb(&mut self, other: Self) {
+        self.refused += other.refused;
+        self.denied += other.denied;
+        self.unreadable += other.unreadable;
+        self.links += other.links;
+        if let Some(reason) = other.first_refusal {
+            keep_smallest(&mut self.first_refusal, reason);
         }
+        if let Some(reason) = other.first_error {
+            keep_smallest(&mut self.first_error, reason);
+        }
+    }
+}
+
+/// Keeps whichever of two texts sorts first.
+fn keep_smallest(kept: &mut Option<String>, candidate: String) {
+    if kept.as_ref().is_none_or(|kept| candidate < *kept) {
+        *kept = Some(candidate);
     }
 }
 
@@ -421,10 +444,9 @@ mod tests {
         assert_eq!(
             skipped.notes(),
             [
-                "[Skipped 2 entries whose path cannot be used. The first: the path `a/\u{fffd}` \
-                 is not valid Unicode]",
+                "[Skipped 2 entries whose path cannot be used. For example: another]",
                 "[Skipped 1 entry that the permission rules do not let this call read.]",
-                "[Skipped 1 entry that could not be read. The first: Permission denied (os \
+                "[Skipped 1 entry that could not be read. For example: Permission denied (os \
                  error 13)]",
                 "[Skipped 1,200 symbolic links: a walk does not follow links. Name one as \
                  `path` to use what it points to.]",

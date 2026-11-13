@@ -319,6 +319,7 @@ fn the_artifact_holds_everything() {
                 limits,
                 None,
                 &store,
+                Treatment::AsReturned,
             );
             ensure!(result.is_bounded(), "the result is not marked as passed");
             ensure!(
@@ -355,7 +356,14 @@ fn the_artifact_holds_everything() {
                 more => return Err(format!("{} artifacts for one result", more.len()).into()),
             }
             // Passing it again changes nothing, and stores nothing.
-            let again = enforce(result.clone(), "demo", limits, None, &store);
+            let again = enforce(
+                result.clone(),
+                "demo",
+                limits,
+                None,
+                &store,
+                Treatment::AsReturned,
+            );
             ensure!(again == result, "a second pass changed the result");
             Ok(())
         },
@@ -714,6 +722,7 @@ fn a_result_over_the_limits_is_cut_stored_and_says_so() {
         &limits,
         None,
         &store,
+        Treatment::AsReturned,
     );
     assert_eq!(result.outcome(), &ToolOutcome::Success);
     let shown = result.text();
@@ -753,6 +762,7 @@ fn an_error_result_is_bounded_like_any_other() {
         &limits,
         None,
         &store,
+        Treatment::AsReturned,
     );
     assert_eq!(result.outcome(), &ToolOutcome::Error);
     assert!(result.is_bounded());
@@ -771,6 +781,7 @@ fn a_store_that_fails_still_leaves_a_cut_result_that_says_why() {
         &limits,
         None,
         &store,
+        Treatment::AsReturned,
     );
     assert!(result.is_bounded());
     assert!(result.artifacts().is_empty());
@@ -796,6 +807,7 @@ fn a_result_that_fits_passes_unchanged() {
         &OutputLimits::default(),
         None,
         &store,
+        Treatment::AsReturned,
     );
     assert!(passed.is_bounded());
     assert_eq!(passed.content(), result.content());
@@ -817,7 +829,14 @@ fn an_image_the_model_cannot_take_is_replaced_by_a_line_saying_so() {
     let result = ToolResult::success("a chart").with_part(image("image/png", &"A".repeat(4000)));
 
     // A model that takes no images.
-    let none = enforce(result.clone(), "plot", &limits, None, &store);
+    let none = enforce(
+        result.clone(),
+        "plot",
+        &limits,
+        None,
+        &store,
+        Treatment::AsReturned,
+    );
     assert_eq!(
         none.text(),
         "a chart\n[An image was left out (image/png, 2.9 KiB): the model in use does not take it.]"
@@ -829,7 +848,14 @@ fn an_image_the_model_cannot_take_is_replaced_by_a_line_saying_so() {
         media_types: vec!["image/png".to_owned()],
         max_bytes: 3000,
     };
-    let kept = enforce(result.clone(), "plot", &limits, Some(&support), &store);
+    let kept = enforce(
+        result.clone(),
+        "plot",
+        &limits,
+        Some(&support),
+        &store,
+        Treatment::AsReturned,
+    );
     assert_eq!(kept.content(), result.content());
 
     // One that takes smaller ones, or other types.
@@ -838,17 +864,99 @@ fn an_image_the_model_cannot_take_is_replaced_by_a_line_saying_so() {
         max_bytes: 2999,
     };
     assert_eq!(
-        enforce(result, "plot", &limits, Some(&small), &store)
-            .content()
-            .len(),
+        enforce(
+            result,
+            "plot",
+            &limits,
+            Some(&small),
+            &store,
+            Treatment::AsReturned
+        )
+        .content()
+        .len(),
         1
     );
     let other = ToolResult::success("a chart").with_part(image("image/tiff", "AAAA"));
     assert!(
-        enforce(other, "plot", &limits, Some(&support), &store)
-            .text()
-            .contains("image/tiff, 3 bytes")
+        enforce(
+            other,
+            "plot",
+            &limits,
+            Some(&support),
+            &store,
+            Treatment::AsReturned
+        )
+        .text()
+        .contains("image/tiff, 3 bytes")
     );
+}
+
+#[test]
+fn only_text_and_images_pass_and_nothing_rides_along_uncounted() {
+    use cortex_protocol::ids::RawJson;
+    use cortex_protocol::message::{ProviderBlockPart, ReasoningPart, TextPart};
+    let store = MemoryStore::new();
+    let limits = OutputLimits::default();
+    let huge = "x".repeat(200_000);
+
+    // A provider's raw block on a text part is not counted by the limits,
+    // so it does not pass.
+    let result = ToolResult::success("").with_part(Part::Text(TextPart {
+        text: "the text".to_owned(),
+        raw: Some(RawJson::new(huge.clone())),
+    }));
+    let passed = enforce(result, "odd", &limits, None, &store, Treatment::AsReturned);
+    assert_eq!(passed.content(), [Part::text("the text")]);
+
+    // Neither do parts that are not text or an image, whatever they hold.
+    let result = ToolResult::success("the text")
+        .with_part(Part::ProviderBlock(ProviderBlockPart {
+            block_type: None,
+            raw: RawJson::new(huge.clone()),
+        }))
+        .with_part(Part::Reasoning(ReasoningPart {
+            text: huge,
+            raw: None,
+        }));
+    let passed = enforce(result, "odd", &limits, None, &store, Treatment::AsReturned);
+    assert_eq!(
+        passed.content(),
+        [Part::text(
+            "the text\n[2 parts of this result were left out: a tool result holds text and \
+             images only.]"
+        )]
+    );
+    assert!(passed.is_bounded());
+}
+
+#[test]
+fn produced_output_is_compressed_whether_or_not_it_fits() {
+    let store = MemoryStore::new();
+    let limits = OutputLimits::default();
+    let noisy = "\u{1b}[31mred\u{1b}[0m\n10%\r100%\nsame\nsame\nsame\nsame\n";
+    let produced = enforce(
+        ToolResult::success(noisy),
+        "ext",
+        &limits,
+        None,
+        &store,
+        Treatment::Produced,
+    );
+    assert_eq!(
+        produced.text(),
+        "red\n100%\nsame\n[the line above repeats 3 more times]"
+    );
+    assert_eq!(store.artifact_count(), 0, "nothing was lost");
+    // The harness's own tools are taken at their word.
+    let returned = enforce(
+        ToolResult::success(noisy),
+        "read",
+        &limits,
+        None,
+        &store,
+        Treatment::AsReturned,
+    );
+    assert_eq!(returned.text(), noisy);
 }
 
 #[test]

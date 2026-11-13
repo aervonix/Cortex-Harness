@@ -274,13 +274,13 @@ fn in_path(path: &str, cx: &PlanCx) -> Result<(Target, Option<Effect>, String), 
     Ok((Target::Path(resolved), Some(effect), place))
 }
 
-/// One line of a file's results.
+/// One line of a file's results, as the result will show it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Hit {
-    /// A matching line, with its number.
-    Match(u64, String),
-    /// A line of context, with its number.
-    Context(u64, String),
+    /// A matching line: `  12: text`.
+    Match(String),
+    /// A line of context: `  11- text`.
+    Context(String),
     /// A gap between two groups of lines.
     Break,
 }
@@ -300,21 +300,43 @@ struct FileHits {
 struct FileSink<'a> {
     mode: Mode,
     keep: usize,
-    line_bytes: usize,
+    limits: OutputLimits,
     cancel: &'a CancelToken,
     found: FileHits,
+    /// How many bytes of lines are kept. No result can show more than the
+    /// output limit, so no more than that is kept of one file.
+    kept_bytes: usize,
     /// A match was counted without being kept. Nothing after it is kept.
     overflowed: bool,
     binary: bool,
 }
 
 impl FileSink<'_> {
-    fn line(&self, bytes: &[u8]) -> String {
+    /// A line as the result shows it: its number, a sign (`:` for a match,
+    /// `-` for context) and its text, shortened if it is over the line
+    /// limit, with a marker that counts what is missing from the whole line.
+    fn line(&mut self, number: Option<u64>, sign: char, bytes: &[u8]) -> String {
         let bytes = bytes.strip_suffix(b"\n").unwrap_or(bytes);
         let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
-        // No more of a line is kept than the line limit can show.
-        let bytes = &bytes[..bytes.len().min(self.line_bytes)];
-        String::from_utf8_lossy(bytes).into_owned()
+        let prefix = format!("  {}{sign} ", number.unwrap_or(0));
+        // No more of a line is looked at than the line limit can show: a
+        // minified file is one line of megabytes. A character is one byte
+        // that is not a continuation byte.
+        let room = self.limits.max_line_chars() * 4 + 8;
+        let line = if bytes.len() <= room {
+            let text = String::from_utf8_lossy(bytes);
+            self.limits.clip(&format!("{prefix}{text}")).into_owned()
+        } else {
+            let chars = bytes.iter().filter(|&&byte| byte & 0xc0 != 0x80).count();
+            let text = String::from_utf8_lossy(&bytes[..room]);
+            self.limits
+                .clip_start(&format!("{prefix}{text}"), prefix.chars().count() + chars)
+        };
+        self.kept_bytes += line.len() + 1;
+        if self.kept_bytes > self.limits.max_bytes() {
+            self.overflowed = true;
+        }
+        line
     }
 }
 
@@ -327,15 +349,15 @@ impl Sink for FileSink<'_> {
         }
         self.found.matches += 1;
         match self.mode {
-            // One match is enough to name the file.
+            // One match is enough to name the file. The search stops here, so
+            // a NUL byte further on is never met: a file can be named in this
+            // mode and left out as binary by the modes that read on.
             Mode::Files => return Ok(false),
             Mode::Count => {}
             Mode::Lines => {
-                if self.found.kept < self.keep {
-                    let line = self.line(found.bytes());
-                    self.found
-                        .hits
-                        .push(Hit::Match(found.line_number().unwrap_or(0), line));
+                if self.found.kept < self.keep && !self.overflowed {
+                    let line = self.line(found.line_number(), ':', found.bytes());
+                    self.found.hits.push(Hit::Match(line));
                     self.found.kept += 1;
                 } else {
                     self.overflowed = true;
@@ -351,10 +373,8 @@ impl Sink for FileSink<'_> {
         context: &SinkContext<'_>,
     ) -> Result<bool, io::Error> {
         if self.mode == Mode::Lines && !self.overflowed {
-            let line = self.line(context.bytes());
-            self.found
-                .hits
-                .push(Hit::Context(context.line_number().unwrap_or(0), line));
+            let line = self.line(context.line_number(), '-', context.bytes());
+            self.found.hits.push(Hit::Context(line));
         }
         Ok(true)
     }
@@ -422,9 +442,10 @@ fn sink<'a>(call: &Call, limits: &OutputLimits, cancel: &'a CancelToken) -> File
     FileSink {
         mode: call.mode,
         keep: call.max_results,
-        line_bytes: limits.max_line_chars() * 4 + 8,
+        limits: *limits,
         cancel,
         found: FileHits::default(),
+        kept_bytes: 0,
         overflowed: false,
         binary: false,
     }
@@ -586,23 +607,20 @@ fn search_tree(
                         }
                     }
                     Err(error) => {
-                        let mut extra = extra.lock().unwrap_or_else(PoisonError::into_inner);
-                        extra.unreadable += 1;
-                        extra.first_error.get_or_insert_with(|| {
-                            format!("{}: {error}", walk::shown_path(root_shown, entry.relative))
-                        });
+                        extra
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .unreadable(&format!(
+                                "{}: {error}",
+                                walk::shown_path(root_shown, entry.relative)
+                            ));
                     }
                 }
             })
         },
     );
     *merged = shared.into_inner().unwrap_or_else(PoisonError::into_inner);
-    let extra = extra.into_inner().unwrap_or_else(PoisonError::into_inner);
-    skipped.links += extra.links;
-    skipped.unreadable += extra.unreadable;
-    if skipped.first_error.is_none() {
-        skipped.first_error = extra.first_error;
-    }
+    skipped.absorb(extra.into_inner().unwrap_or_else(PoisonError::into_inner));
     skipped
 }
 
@@ -675,11 +693,10 @@ fn render(
                 let mut named = false;
                 for hit in &file.hits {
                     let line = match hit {
-                        Hit::Match(number, text) => format!("  {number}: {text}"),
-                        Hit::Context(number, text) => format!("  {number}- {text}"),
+                        Hit::Match(line) | Hit::Context(line) => line.clone(),
                         Hit::Break => "  --".to_owned(),
                     };
-                    waiting.push(limits.clip(&line).into_owned());
+                    waiting.push(line);
                     if !matches!(hit, Hit::Match(..)) {
                         continue;
                     }
@@ -798,7 +815,7 @@ mod tests {
     fn hits(matches: usize) -> FileHits {
         FileHits {
             hits: (1..=matches as u64)
-                .map(|n| Hit::Match(n, format!("match {n}")))
+                .map(|n| Hit::Match(format!("  {n}: match {n}")))
                 .collect(),
             kept: matches,
             matches: matches as u64,

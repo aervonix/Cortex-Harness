@@ -230,12 +230,30 @@ impl Tool for ReadTool {
                 images: cx.images.clone(),
                 turn: cx.turn,
             };
-            run_blocking(&cx.cancel, move |cancel| match &call.source {
-                Source::File(path) => read_file(path, &call, &env, cancel),
-                Source::Artifact(id) => read_artifact(id, &call, &env, cancel),
+            let files = Arc::clone(&cx.files);
+            let done = run_blocking(&cx.cancel, move |cancel| {
+                let mut seen = None;
+                let result = match &call.source {
+                    Source::File(path) => read_file(path, &call, &env, cancel, &mut seen),
+                    Source::Artifact(id) => read_artifact(id, &call, &env, cancel),
+                };
+                (result, seen)
             })
-            .await
-            .unwrap_or_else(|error| args::unfinished(error, "read"))
+            .await;
+            match done {
+                Ok((result, seen)) => {
+                    // What the model has seen is recorded here, with the
+                    // result in hand, and not by the blocking work: a call
+                    // cancelled at the last moment returns "interrupted",
+                    // and must not leave the table saying the lines were
+                    // shown.
+                    if let Some((path, snapshot, shown)) = seen {
+                        files.record_read(&path, snapshot, shown);
+                    }
+                    result
+                }
+                Err(error) => args::unfinished(error, "read"),
+            }
         })
     }
 }
@@ -283,6 +301,8 @@ struct Lines {
     number: u64,
     /// Whether the line being read has any content yet.
     open: bool,
+    /// Whether the last byte of the line so far is a carriage return.
+    ends_with_cr: bool,
     /// The start of the line being read, if it is wanted.
     kept: Vec<u8>,
     line_bytes: usize,
@@ -301,6 +321,7 @@ impl Lines {
             last,
             number: 1,
             open: false,
+            ends_with_cr: false,
             kept: Vec::new(),
             line_bytes: 0,
             line_chars: 0,
@@ -335,6 +356,7 @@ impl Lines {
             return;
         }
         self.open = true;
+        self.ends_with_cr = bytes.last() == Some(&b'\r');
         if !self.wanted() {
             return;
         }
@@ -350,11 +372,16 @@ impl Lines {
     fn end_line(&mut self) {
         if self.wanted() {
             let whole = self.line_bytes == self.kept.len();
+            let mut invalid = false;
             let mut bytes = self.kept.as_slice();
             let mut chars = self.line_chars;
-            if whole && bytes.last() == Some(&b'\r') {
-                bytes = &bytes[..bytes.len() - 1];
+            // The carriage return of a CRLF ending is not part of the line,
+            // whether or not the line was short enough to keep whole.
+            if self.ends_with_cr {
                 chars -= 1;
+                if whole {
+                    bytes = &bytes[..bytes.len() - 1];
+                }
             }
             if self.number == 1 && bytes.starts_with(b"\xef\xbb\xbf") {
                 bytes = &bytes[3..];
@@ -368,7 +395,7 @@ impl Lines {
                     String::from_utf8_lossy(&bytes[..error.valid_up_to()])
                 }
                 Err(_) => {
-                    self.invalid = true;
+                    invalid = true;
                     String::from_utf8_lossy(bytes)
                 }
             };
@@ -379,12 +406,16 @@ impl Lines {
             };
             if self.budget.take(&text) {
                 self.lines.push((self.number, text));
+                // Only a line that is shown can make the result say the
+                // file is not UTF-8.
+                self.invalid |= invalid;
             } else {
                 self.stopped_at = Some(self.number);
             }
         }
         self.number += 1;
         self.open = false;
+        self.ends_with_cr = false;
         self.kept.clear();
         self.line_bytes = 0;
         self.line_chars = 0;
@@ -464,7 +495,17 @@ fn scan(
     }))
 }
 
-fn read_file(path: &ResolvedPath, call: &Call, env: &Env, cancel: &CancelToken) -> ToolResult {
+/// What a read adds to the table of seen files, once its result is
+/// delivered.
+type Seen = (AbsPath, FileSnapshot, Shown);
+
+fn read_file(
+    path: &ResolvedPath,
+    call: &Call,
+    env: &Env,
+    cancel: &CancelToken,
+    seen: &mut Option<Seen>,
+) -> ToolResult {
     let shown = path.display();
     let fs_path = path.to_fs_path();
     let metadata = match std::fs::symlink_metadata(&fs_path) {
@@ -520,37 +561,48 @@ fn read_file(path: &ResolvedPath, call: &Call, env: &Env, cancel: &CancelToken) 
     if let Some(prior) = earlier.as_ref().filter(|_| !call.fresh) {
         if prior.hash == scan.hash {
             if prior.lines.covers(first, last) {
-                env.files.record_read(abs, snapshot, prior.clone());
-                return ToolResult::success(format!(
-                    "{shown}: unchanged since you read lines {}{} ({} in all). The content is \
-                     not sent again: pass `fresh: true` if you need it.",
-                    prior.lines,
-                    when(prior.turn),
-                    lines_word(scan.total_lines),
-                ))
-                .with_payload(json!({
+                *seen = Some((abs.clone(), snapshot, prior.clone()));
+                let text = if prior.lines.is_empty() {
+                    format!(
+                        "{shown}: unchanged since you read it{}: it is still empty.",
+                        when(prior.turn)
+                    )
+                } else {
+                    format!(
+                        "{shown}: unchanged since you read lines {}{} ({} in all). The content \
+                         is not sent again: pass `fresh: true` if you need it.",
+                        prior.lines,
+                        when(prior.turn),
+                        lines_word(scan.total_lines),
+                    )
+                };
+                return ToolResult::success(text).with_payload(json!({
                     "path": shown,
                     "kind": "unchanged",
                     "total_lines": scan.total_lines,
                 }));
             }
-        } else if let Some((text, seen, added, removed)) =
-            changed_text(&shown, prior, call, &scan, last, env)
+        } else if let Some((text, after, added, removed)) = changed_text(&shown, prior, &scan, env)
+            // A diff answers the call only if, with it, the model has seen
+            // every line the call would have returned. The lines are those
+            // of the file as it is now: lines that moved into the range
+            // asked for, and were never shown, are not in the diff.
+            && after.covers(first, last)
             && text.len() < content.text.len()
             && env.limits.fits(&text)
         {
             let kept = keep_version(&scan, env);
-            env.files.record_read(
-                abs,
+            *seen = Some((
+                abs.clone(),
                 snapshot,
                 Shown {
                     hash: scan.hash,
-                    lines: seen,
+                    lines: after,
                     total_lines: scan.total_lines,
                     turn: env.turn,
                     kept,
                 },
-            );
+            ));
             return ToolResult::success(text).with_payload(json!({
                 "path": shown,
                 "kind": "diff",
@@ -569,8 +621,8 @@ fn read_file(path: &ResolvedPath, call: &Call, env: &Env, cancel: &CancelToken) 
     };
     lines.insert(content.first, content.last);
     let kept = keep_version(&scan, env);
-    env.files.record_read(
-        abs,
+    *seen = Some((
+        abs.clone(),
         snapshot,
         Shown {
             hash: scan.hash,
@@ -579,7 +631,7 @@ fn read_file(path: &ResolvedPath, call: &Call, env: &Env, cancel: &CancelToken) 
             turn: env.turn,
             kept,
         },
-    );
+    ));
     ToolResult::success(content.text).with_payload(json!({
         "path": shown,
         "kind": if content.outlined { "outline" } else { "content" },
@@ -728,31 +780,15 @@ fn content_text(
 
 /// The result for a file that changed since the model saw it: a diff, if
 /// one can be made. Returns the text, the lines of the new version the model
-/// will then have seen, and the counts of added and removed lines.
+/// will have seen once it has the diff, and the counts of added and removed
+/// lines. Whether the diff answers the call is for the caller to decide.
 fn changed_text(
     shown: &str,
     prior: &Shown,
-    call: &Call,
     scan: &Scan,
-    last_shown: u64,
     env: &Env,
 ) -> Option<(String, LineRanges, usize, usize)> {
-    if !prior.kept || call.first > prior.total_lines {
-        return None;
-    }
-    // A diff answers the call only if the model has seen, of the old
-    // version, the lines it is asking for now.
-    let wanted_last = if call.last != u64::MAX {
-        call.last
-    } else if scan.stopped_at.is_some() {
-        last_shown
-    } else {
-        u64::MAX
-    };
-    if !prior
-        .lines
-        .covers(call.first, wanted_last.min(prior.total_lines))
-    {
+    if !prior.kept {
         return None;
     }
     let new = std::str::from_utf8(scan.full.as_deref()?).ok()?;
@@ -762,8 +798,8 @@ fn changed_text(
     let seen = diff.seen_after(&prior.lines);
     let text = if diff.is_empty() {
         format!(
-            "{shown}: only its line endings or its final line break changed since you read \
-             it{}. Its {} are the same.",
+            "{shown}: only its line endings, its byte-order mark or its final line break \
+             changed since you read it{}. Its {} are the same.",
             when(prior.turn),
             lines_word(scan.total_lines)
         )
