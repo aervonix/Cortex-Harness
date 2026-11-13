@@ -26,6 +26,14 @@
 //!   `version`, or one that is not TOML, is an error and is left as it is.
 //!   Entries and keys this version does not know are kept when the file is
 //!   rewritten.
+//! - **Never through a link.** The file and its lock are opened with
+//!   [`open_regular`], which refuses a link at the name instead of
+//!   following it, and the file is written with `follow_links` off, which
+//!   refuses one there and replaces, never follows, one swapped in at the
+//!   last moment. A link there could lead anywhere of the user's, such as
+//!   a file in a repository of dotfiles, and a key written there would
+//!   leave with it. There is no look first and use after: the open and the
+//!   write are themselves what refuses.
 
 #![allow(
     clippy::disallowed_methods,
@@ -34,10 +42,13 @@
 )]
 
 use std::fs::File;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use cortex_base::{AtomicWriteOptions, Secret, SharedClock, private, write_atomic};
+use cortex_base::{
+    AtomicWriteError, AtomicWriteOptions, OpenError, Secret, SharedClock, open_regular, private,
+    write_atomic,
+};
 use toml::Value;
 
 use super::{CredentialError, CredentialStore, StoreKind, check_provider};
@@ -104,19 +115,15 @@ impl FileStore {
         }
     }
 
-    /// Refuses a link at one of the store's two paths: the file and its
-    /// lock are files of their own, or nothing.
-    ///
-    /// The check is made just before each use, and the use opens the path
-    /// again: a link put there in between, by a process of the same user,
-    /// is followed. Closing that needs an open that does not follow links,
-    /// which `cortex-base` gains in step 10.
-    fn refuse_link(path: &Path) -> Result<(), CredentialError> {
-        match std::fs::symlink_metadata(path) {
-            Ok(found) if found.file_type().is_symlink() => Err(CredentialError::Link {
+    /// Why one of the store's two files, at `path`, could not be opened.
+    fn open_failed(&self, path: &Path, action: &'static str, error: OpenError) -> CredentialError {
+        match error {
+            OpenError::Link => CredentialError::Link {
                 path: path.to_path_buf(),
-            }),
-            _ => Ok(()),
+            },
+            OpenError::Io(source) => self.io(action)(source),
+            // Not there, a directory, a device: said in words.
+            other => self.io(action)(io::Error::other(other.to_string())),
         }
     }
 
@@ -129,15 +136,20 @@ impl FileStore {
 
     /// Reads the whole file. `None` when there is none.
     fn read(&self) -> Result<Option<toml::Table>, CredentialError> {
-        Self::refuse_link(&self.path)?;
-        let text = match std::fs::read_to_string(&self.path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        const ACTION: &str = "read the credentials file";
+        let mut file = match open_regular(&self.path) {
+            Ok((file, _)) => file,
+            Err(OpenError::NotFound) => return Ok(None),
+            Err(error) => return Err(self.open_failed(&self.path, ACTION, error)),
+        };
+        let mut text = String::new();
+        match file.read_to_string(&mut text) {
+            Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::InvalidData => {
                 return Err(self.malformed("it is not UTF-8 text"));
             }
-            Err(error) => return Err(self.io("read the credentials file")(error)),
-        };
+            Err(error) => return Err(self.io(ACTION)(error)),
+        }
         // The parser's own description and a line number. Never the text of
         // the file: a line of it may be a key.
         let table = document::parse(&text)
@@ -172,8 +184,6 @@ impl FileStore {
         &self,
         change: impl FnOnce(&mut toml::Table) -> bool,
     ) -> Result<bool, CredentialError> {
-        // Before anything is created: a refused store leaves no lock behind.
-        Self::refuse_link(&self.path)?;
         let directory = match self.path.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => parent,
             _ => Path::new("."),
@@ -191,16 +201,22 @@ impl FileStore {
         let text = format!("{HEADER}{table}");
         let options = AtomicWriteOptions {
             owner_only: true,
+            // An atomic write follows a link to the file it points to by
+            // default, which is what an editor wants and this store must
+            // not do.
+            follow_links: false,
             ..AtomicWriteOptions::default()
         };
-        // An atomic write follows a link to the file it points to, which is
-        // what an editor wants and this store must not do.
-        Self::refuse_link(&self.path)?;
         write_atomic(&self.path, text.as_bytes(), &options, &*self.clock).map_err(|error| {
-            CredentialError::Io {
-                action: "write the credentials file",
-                path: self.path.clone(),
-                source: io::Error::other(error.to_string()),
+            match error {
+                AtomicWriteError::IsALink { .. } => CredentialError::Link {
+                    path: self.path.clone(),
+                },
+                other => CredentialError::Io {
+                    action: "write the credentials file",
+                    path: self.path.clone(),
+                    source: io::Error::other(other.to_string()),
+                },
             }
         })?;
         Ok(true)
@@ -210,26 +226,25 @@ impl FileStore {
     /// returned file is dropped, and by the operating system if this
     /// process dies first.
     fn lock(&self) -> Result<File, CredentialError> {
+        const ACTION: &str = "open the lock file of";
         let path = self.lock_path();
-        Self::refuse_link(&path)?;
-        let open = || {
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&path)
-        };
-        let file = match open() {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+        // Opened for reading, which is all a lock needs, and never through
+        // a link.
+        let file = match open_regular(&path) {
+            Ok((file, _)) => file,
+            Err(OpenError::NotFound) => {
                 match private::create_new(&path) {
                     Ok(_) => {}
-                    // Another process made it first.
+                    // Another process made it first, or something else did:
+                    // the open says which. A link there is not followed.
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                     Err(error) => return Err(self.io("create the lock file of")(error)),
                 }
-                open().map_err(self.io("open the lock file of"))?
+                open_regular(&path)
+                    .map(|(file, _)| file)
+                    .map_err(|error| self.open_failed(&path, ACTION, error))?
             }
-            Err(error) => return Err(self.io("open the lock file of")(error)),
+            Err(error) => return Err(self.open_failed(&path, ACTION, error)),
         };
         // Blocks while another writer holds it, which is for the length of
         // one read and one write of a small file.
@@ -248,9 +263,13 @@ impl CredentialStore for FileStore {
     }
 
     fn warning(&self, env: &Env) -> Option<String> {
-        if let Err(error) =
-            Self::refuse_link(&self.path).and_then(|()| Self::refuse_link(&self.lock_path()))
-        {
+        // A report for `cortex auth status`, not the guard: the open and the
+        // write refuse a link themselves.
+        let lock = self.lock_path();
+        if let Some(link) = [&self.path, &lock].into_iter().find(|path| {
+            std::fs::symlink_metadata(path).is_ok_and(|found| found.file_type().is_symlink())
+        }) {
+            let error = CredentialError::Link { path: link.clone() };
             return Some(format!("the credential store cannot be used: {error}"));
         }
         match self.is_private() {
@@ -319,5 +338,53 @@ impl CredentialStore for FileStore {
             Some(Value::Table(providers)) => providers.remove(provider).is_some(),
             _ => false,
         })
+    }
+}
+
+// Links are made without a privilege on Unix only.
+#[cfg(all(test, unix))]
+mod tests {
+    use std::sync::Arc;
+
+    use cortex_base::FakeClock;
+
+    use super::*;
+
+    /// A link put at the file's name after it was read and before it is
+    /// written is refused by the write itself, and nothing reaches where it
+    /// points. There is no look at the name between the two to race.
+    #[test]
+    fn a_link_swapped_in_before_the_write_is_not_written_through() {
+        let base =
+            std::env::temp_dir().join(format!("cortex-config-cred-swap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let elsewhere = base.join("notes.toml");
+        std::fs::write(&elsewhere, "# notes\n").unwrap();
+        let path = base.join("credentials.toml");
+        let store = FileStore::new(&path, Arc::new(FakeClock::default()));
+
+        let error = store
+            .update(|table| {
+                std::os::unix::fs::symlink(&elsewhere, &path).unwrap();
+                table.insert(
+                    "key".to_owned(),
+                    Value::String("sk-test-swap-0001".to_owned()),
+                );
+                true
+            })
+            .unwrap_err();
+        assert!(
+            matches!(&error, CredentialError::Link { path: link } if *link == path),
+            "{error:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "# notes\n");
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
