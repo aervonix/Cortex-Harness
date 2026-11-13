@@ -367,6 +367,9 @@ impl Session {
     /// cancelled, and a turn that was running then has ended.
     pub async fn run(mut self) {
         while let Some(start) = self.next_prompt().await {
+            // The session is no longer idle. (When one turn follows another
+            // front ends are told as the first one ends.)
+            self.shared.emit_updated(&self.shared.lock());
             let mut next = Some(start);
             while let Some((running, prompt)) = next.take() {
                 next = self.turn(running, prompt).await;
@@ -453,7 +456,6 @@ impl Session {
         self.guard.reset();
         self.enter(TurnState::Preparing);
         self.emit(&turn, Event::TurnStarted(TurnStarted {}));
-        self.shared.emit_updated(&self.shared.lock());
 
         let mut phase = match self.begin(&turn, prompt).await {
             Ok(()) => Phase::Preparing(Prep::default()),
@@ -593,13 +595,19 @@ impl Session {
                 background: false,
             })
         };
-        self.notify(turn, notice(CompactionState::Started, "Compacting the conversation."));
+        self.notify(
+            turn,
+            notice(CompactionState::Started, "Compacting the conversation."),
+        );
         let cancel = turn.cancel.child();
         let outcome = turn.cancel.race(self.context.compact(&cancel)).await;
         match outcome {
             None => Phase::Interrupted(None),
             Some(Ok(())) => {
-                self.notify(turn, notice(CompactionState::Finished, "The conversation was compacted."));
+                self.notify(
+                    turn,
+                    notice(CompactionState::Finished, "The conversation was compacted."),
+                );
                 Phase::Preparing(Prep {
                     compacted: true,
                     ..prep
@@ -673,7 +681,9 @@ impl Session {
                             "incomplete_stream",
                             "The response was started again before it ended.",
                         );
-                        if let Err(error) = self.void(turn, &model, &mut live, &mut round, error).await {
+                        if let Err(error) =
+                            self.void(turn, &model, &mut live, &mut round, error).await
+                        {
                             return self.abandon(round, End::store(&error)).await;
                         }
                     } else {
@@ -699,7 +709,8 @@ impl Session {
                             next_attempt_at: info.next_attempt_at.to_timestamp(),
                         }),
                     );
-                    if let Err(error) = self.void(turn, &model, &mut live, &mut round, error).await {
+                    if let Err(error) = self.void(turn, &model, &mut live, &mut round, error).await
+                    {
                         return self.abandon(round, End::store(&error)).await;
                     }
                     self.enter(TurnState::Backoff);
@@ -715,7 +726,9 @@ impl Session {
                             "The speed tier refused the request part-way. It was sent again at \
                              standard speed.",
                         );
-                        if let Err(error) = self.void(turn, &model, &mut live, &mut round, error).await {
+                        if let Err(error) =
+                            self.void(turn, &model, &mut live, &mut round, error).await
+                        {
                             return self.abandon(round, End::store(&error)).await;
                         }
                         self.enter(TurnState::Requesting);
@@ -756,7 +769,8 @@ impl Session {
                     match live.draft.apply(content) {
                         Applied::Nothing => {}
                         Applied::Delta(delta) => {
-                            live.first_content.get_or_insert_with(|| self.clock.monotonic());
+                            live.first_content
+                                .get_or_insert_with(|| self.clock.monotonic());
                             self.emit(
                                 turn,
                                 Event::ItemDelta(ItemDelta {
@@ -768,7 +782,8 @@ impl Session {
                         // The call is planned at once, and runs now if it
                         // has no side effects.
                         Applied::Call(call) => {
-                            live.first_content.get_or_insert_with(|| self.clock.monotonic());
+                            live.first_content
+                                .get_or_insert_with(|| self.clock.monotonic());
                             round.add_call(call, &mut self.item_ids);
                             round.pump(true);
                         }
@@ -881,7 +896,14 @@ impl Session {
             .take()
             .map(|usage| self.account(turn, model, usage, &live));
         turn.stop = Some(StopReason::Error);
-        self.request_stat(turn, model, usage.clone(), StopReason::Error, Some(data.clone()), &live);
+        self.request_stat(
+            turn,
+            model,
+            usage.clone(),
+            StopReason::Error,
+            Some(data.clone()),
+            &live,
+        );
         // None of the response's calls will run, and what ran early was
         // for a response that is not kept.
         let parts = live.draft.parts(Calls::Strip);
@@ -1013,7 +1035,14 @@ impl Session {
             error: failure.clone(),
             ..item
         });
-        self.request_stat(turn, &model, Some(usage), stop.clone(), failure.clone(), &live);
+        self.request_stat(
+            turn,
+            &model,
+            Some(usage),
+            stop.clone(),
+            failure.clone(),
+            &live,
+        );
         if let Err(error) = self.record_shown(turn, item).await {
             return self.abandon(round, End::store(&error)).await;
         }
@@ -1042,7 +1071,8 @@ impl Session {
                 {
                     return Phase::Finishing(End::store(&error));
                 }
-                self.guarded(turn, format!("malformed\u{0}{raw_stop}")).await
+                self.guarded(turn, format!("malformed\u{0}{raw_stop}"))
+                    .await
             }
             StopReason::MaxOutput => Phase::Finishing(End::failed(ErrorData::new(
                 ErrorKind::ModelStop,
@@ -1509,7 +1539,13 @@ impl Session {
 
     /// Counts what a request used: in the session's usage, in the turn's,
     /// and against every account of the ledger.
-    fn account(&mut self, turn: &mut Turn, model: &RoleModel, usage: Usage, live: &Live) -> RequestUsage {
+    fn account(
+        &mut self,
+        turn: &mut Turn,
+        model: &RoleModel,
+        usage: Usage,
+        live: &Live,
+    ) -> RequestUsage {
         let record = self.usage_record(model, usage, Some((live.sent, live.first_content)));
         self.usage.add(&record);
         self.ledger.charge(&record);
@@ -1536,9 +1572,10 @@ impl Session {
         }
         self.usage_sent = Some(time);
         let usage = match running {
-            Some(running) => self
-                .usage
-                .with_running(&self.usage_record(model, running.clone(), None)),
+            Some(running) => {
+                self.usage
+                    .with_running(&self.usage_record(model, running.clone(), None))
+            }
             None => self.usage.snapshot(),
         };
         self.emit(turn, Event::UsageUpdated(UsageUpdated { usage }));

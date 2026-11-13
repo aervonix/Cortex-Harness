@@ -76,7 +76,10 @@ pub trait Context: Send {
 
     /// Summarises and starts a new context epoch. Called between tool
     /// rounds, never inside one. It stops promptly when `cancel` fires.
-    fn compact<'a>(&'a mut self, cancel: &'a CancelToken) -> BoxFuture<'a, Result<(), ContextError>>;
+    fn compact<'a>(
+        &'a mut self,
+        cancel: &'a CancelToken,
+    ) -> BoxFuture<'a, Result<(), ContextError>>;
 }
 
 /// The stand-in context: a fixed system prompt, the tools as they were when
@@ -278,7 +281,11 @@ mod tests {
     fn results_of_one_round_share_one_message_in_call_order() {
         let mut context = StubContext::new("You are a test.", &[]).with_cache_key("s_1");
         context.push(&user("go"));
-        context.push(&assistant(vec![Part::text("Reading."), call("c1"), call("c2")]));
+        context.push(&assistant(vec![
+            Part::text("Reading."),
+            call("c1"),
+            call("c2"),
+        ]));
         context.push(&result("c1", ToolOutcome::Success));
         context.push(&result("c2", ToolOutcome::Denied));
         context.push(&Item::Notice(NoticeItem {
@@ -292,7 +299,10 @@ mod tests {
         assert_eq!(assembled.system, "You are a test.");
         assert_eq!(assembled.cache.key.as_deref(), Some("s_1"));
         let roles: Vec<&Role> = assembled.messages.iter().map(|m| &m.role).collect();
-        assert_eq!(roles, [&Role::User, &Role::Assistant, &Role::Tool, &Role::User]);
+        assert_eq!(
+            roles,
+            [&Role::User, &Role::Assistant, &Role::Tool, &Role::User]
+        );
         let results = &assembled.messages[2].parts;
         let flags: Vec<(&str, bool)> = results
             .iter()

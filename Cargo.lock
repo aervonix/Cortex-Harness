@@ -120,13 +120,13 @@ name = "cortex-agent"
 version = "0.0.0"
 dependencies = [
  "cortex-base",
- "cortex-knowledge",
  "cortex-llm",
- "cortex-policy",
  "cortex-protocol",
- "cortex-session",
- "cortex-stats",
+ "cortex-testkit",
  "cortex-tools",
+ "serde_json",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
