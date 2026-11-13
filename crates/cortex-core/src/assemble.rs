@@ -598,8 +598,15 @@ fn find_shell(
                             shell_cache::store(&file, &stamp, version, clock.as_ref());
                         }
                     });
-                if let Err(failure) = probe {
-                    tracing::debug!(%failure, "the shell's version is not asked for");
+                match probe {
+                    Ok(probe) => inner
+                        .probes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(probe),
+                    Err(failure) => {
+                        tracing::debug!(%failure, "the shell's version is not asked for");
+                    }
                 }
             }
         },
