@@ -88,16 +88,24 @@ pub struct World {
     pub timer: FakeTimer,
     pub provider: ScriptedProvider,
     pub env: Env,
+    /// The loop's blocking work (planning a call, bounding a result) runs
+    /// on the test's thread, in the order this run's seed gives. The
+    /// core's own blocking work, and a command's, stay real threads and
+    /// processes: their order is the machine's.
+    _order: cortex_tools::InlineBlocking,
+    /// Removes the test's directory when the test ends, unless it failed.
+    _scratch: cortex_testkit::Scratch,
 }
 
 impl World {
     pub fn new(test: &str, responses: impl IntoIterator<Item = Response>) -> Self {
-        let dir = std::env::temp_dir()
-            .join(format!("cortex-core-it-{}", std::process::id()))
-            .join(test);
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir).expect("clear the test's directory");
-        }
+        // In the system's temporary directory, so that no repository is
+        // above the workspace.
+        let scratch = cortex_testkit::Scratch::outside("cortex-core-it", test);
+        let dir = scratch.path().to_path_buf();
+        // Printed by the test kit, which the test runner shows if the test
+        // fails.
+        let seed = cortex_testkit::seed::for_this_test();
         let home = dir.join("home");
         let workspace = dir.join("work").join("app");
         std::fs::create_dir_all(&home).unwrap();
@@ -114,6 +122,8 @@ impl World {
                 .build()
                 .unwrap(),
             provider: ScriptedProvider::new(responses),
+            _order: cortex_tools::InlineBlocking::seeded(seed),
+            _scratch: scratch,
             dir,
             home,
             workspace,
