@@ -593,7 +593,8 @@ pub(crate) fn put_back(
     }
 }
 
-#[cfg(test)]
+// The links these tests make are Unix ones.
+#[cfg(all(test, unix))]
 mod tests {
     #![allow(
         clippy::disallowed_methods,
@@ -605,7 +606,6 @@ mod tests {
 
     use super::through_a_link;
 
-    #[cfg(unix)]
     #[test]
     fn a_path_reached_through_a_link_is_not_put_back() {
         let scratch = cortex_testkit::Scratch::outside("cortex-session-snapshot", "links");
