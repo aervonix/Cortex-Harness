@@ -1,6 +1,6 @@
 # 0001: The TUI is written in Rust, inside the main binary
 
-- **Status:** Accepted by the owner on 2026-11-12, and still provisional until the owner runs the Windows Terminal checklist. That has to happen before step 20, the terminal layer.
+- **Status:** Accepted by the owner on 2026-11-12. Confirmed on 2026-11-13, after the Windows Terminal checklist: see "Checked on Windows".
 - **Date:** 2026-11-12
 
 ## Context
@@ -68,9 +68,31 @@ The RPC protocol is nonetheless complete enough for a TypeScript client to be bu
 
 ## The gap
 
-**Windows Terminal was not measured.** The measurement harness runs on Linux; the desktop used for measurements runs Linux under WSL 2. The Rust side compiles for Windows, and the harness itself can run there under ConPTY, but how a real Windows Terminal window behaves (flicker, resize, keys) needs eyes. The checklist is in [measurements/windows-terminal-checklist.md](../measurements/windows-terminal-checklist.md), for the owner to run on the desktop. Its results belong in this record. The owner accepted this decision on 2026-11-12 and will run the checklist before step 20, the terminal layer; until then the decision is provisional.
+**Windows Terminal was not measured.** The measurement harness runs on Linux; the desktop used for measurements runs Linux under WSL 2. The Rust side compiles for Windows, and the harness itself can run there under ConPTY, but how a real Windows Terminal window behaves (flicker, resize, keys) needs eyes. The checklist is in [measurements/windows-terminal-checklist.md](../measurements/windows-terminal-checklist.md), for the owner to run on the desktop. The owner accepted this decision on 2026-11-12 on condition that the checklist was run before step 20, the terminal layer. It was run on 2026-11-13; the results are in "Checked on Windows" below.
 
 Nothing known about Windows favours TypeScript here: both prototypes send the same kinds of terminal sequences, and Node's start-up is slower on Windows than on Linux.
+
+## Checked on Windows
+
+The checklist was run on 2026-11-13, on the desktop, in Windows Terminal 1.24 on Windows build 26300, with each prototype started in a fresh 120 by 40 window, streamed to, typed into, narrowed and widened, scrolled back and quit. Flicker was judged from 30 screenshots per run, about 60 ms apart; the feel of typing was not judged.
+
+- **The Rust line renderer (`lines`) was fine on all ten checks**: it drew at once, no sample caught the live area blank, the scrollback was in order with no gaps or duplicates, the window did not jump, typed letters showed while streaming, a resize while streaming redrew the live area cleanly, the 30-line case was smooth, quitting gave back a working prompt with the process gone within 2 s, and glyphs and colours were right.
+- **The TypeScript prototype (Ink) broke on resize**: lines duplicated and cut short when the window narrowed, garbled when it widened, and left in that state in the scrollback. It also left its editor and status line on screen after quitting.
+- **Numbers over ConPTY** (the spike's `tui-bench`, run on Windows):
+
+| | Rust, `lines` | TypeScript, Ink on Node |
+|---|---|---|
+| Start to first frame, median / 95th | 17.8 / 23.0 ms | 128.9 / 141.1 ms |
+| Key latency while streaming, median / 95th | 4.8 / 14.6 ms, none lost | 1.4 / 19.0 ms, none lost |
+| Key latency when idle, median | 0.19 ms | 17.5 ms |
+| Frames dropped at 2,000 tokens per second | 0.63% | 1.26% |
+
+Rust starts about 7 times sooner on Windows too. Its key latency while streaming over ConPTY is well above what the spike measured on Linux, and above the budget of 4 ms at the 99th percentile in [performance-budgets.md](../performance-budgets.md); step 20 measures its own renderer the same way and finds whether the time is ConPTY's or the renderer's.
+
+- **The old console host** (`conhost.exe`) printed every escape sequence literally. That bears on [0002](0002-tui-rendering.md) rather than on the language: the prototype never turned on the console's virtual-terminal processing, which Windows Terminal turns on by itself.
+- **Over SSH** (check 12) was not run.
+
+The result is the checklist's first row: the decision is confirmed as it stands.
 
 ## Revisit when
 

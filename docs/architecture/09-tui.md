@@ -1,6 +1,6 @@
 # The terminal UI
 
-The interactive front end. It is written in Rust and lives in the main binary, in two crates: `cortex-term` (terminal layer and renderer, no knowledge of agents) and `cortex-tui` (the application). The language choice is [decision 0001](../decisions/0001-tui-language.md) and the rendering approach is [decision 0002](../decisions/0002-tui-rendering.md). The owner accepted both on 2026-11-12; they stay provisional until the Windows Terminal checklist has been run, which must happen before the terminal layer is built.
+The interactive front end. It is written in Rust and lives in the main binary, in two crates: `cortex-term` (terminal layer and renderer, no knowledge of agents) and `cortex-tui` (the application). The language choice is [decision 0001](../decisions/0001-tui-language.md) and the rendering approach is [decision 0002](../decisions/0002-tui-rendering.md). The owner accepted both on 2026-11-12, and both were confirmed on 2026-11-13 by the Windows Terminal checklist.
 
 The look described here is our own. It was designed from the requirements, not from another tool's screen. Glyphs, wording, colours, commands and default keys are defaults. The owner accepted them as drafted on 2026-11-12; the TUI build steps implement what this page says and do not need to invent more.
 
@@ -374,7 +374,7 @@ Custom commands (markdown files, see [12-extensions.md](12-extensions.md)) and e
 | `Shift+Enter` | Not distinguishable in every Windows terminal. `Alt+Enter` (where the terminal does not reserve it) and `Ctrl+J` always work. |
 | Ctrl+C | Read as a key in raw mode, not as a signal, so a turn can be interrupted without ending the process. |
 | Legacy console host | Works without synchronized updates and with ASCII glyphs. Windows Terminal is the supported target. |
-| Inline drawing under the console layer | To be confirmed by the manual checklist in [../measurements/windows-terminal-checklist.md](../measurements/windows-terminal-checklist.md). If inline drawing misbehaves in a terminal, the full-screen presenter is the fallback. |
+| Inline drawing under the console layer | Confirmed in Windows Terminal 1.24 by the manual checklist in [../measurements/windows-terminal-checklist.md](../measurements/windows-terminal-checklist.md) ([decision 0002](../decisions/0002-tui-rendering.md), "Checked on Windows"). If inline drawing misbehaves in a terminal, the full-screen presenter is the fallback. |
 
 ## Structure of `cortex-tui`
 

@@ -1,6 +1,6 @@
 # 0002: Inline rendering with our own line-based renderer; full screen as the alternative
 
-- **Status:** Accepted by the owner on 2026-11-12: inline by default, with stacked panels. Still provisional until the owner runs the Windows Terminal checklist, before step 20.
+- **Status:** Accepted by the owner on 2026-11-12: inline by default, with stacked panels. Confirmed on 2026-11-13, after the Windows Terminal checklist: see "Checked on Windows".
 - **Date:** 2026-11-12
 
 ## Context
@@ -60,6 +60,18 @@ Specified in [architecture/09-tui.md](../architecture/09-tui.md).
 - Earlier output is not re-wrapped when the window is resized.
 - Output already in the scrollback cannot be collapsed or expanded in place. The viewer covers that need.
 - Side-by-side panes exist only in the full-screen presenter.
+
+## Checked on Windows
+
+The Windows Terminal checklist ([measurements/windows-terminal-checklist.md](../measurements/windows-terminal-checklist.md)) was run on 2026-11-13, in Windows Terminal 1.24. The details of the run, and the numbers over ConPTY, are in [0001](0001-tui-language.md), "Checked on Windows". What bears on the rendering:
+
+- **The line renderer drawing inline (`lines`) was fine on every check**: no blank or flashing frame in the samples, the scrollback in order with no gaps, duplicates or stray lines, no jump of the window, and a clean redraw of the live region after narrowing and widening the window while it streamed. Its render and write took 1.2 ms at the 99th percentile over ConPTY, and it dropped 0.63% of frames at 2,000 tokens per second.
+- **The framework's inline viewport (`inline`) left stale copies** of the editor and status line in the scrollback, and a large blank gap after exit. That is the failure this decision chose its own renderer to avoid.
+- **The framework's full screen (`full`) was fine**, so it stays a sound fallback.
+- **The old console host (`conhost.exe`) printed every escape sequence literally.** Nothing in the prototype turned on the console's virtual-terminal processing (`ENABLE_VIRTUAL_TERMINAL_PROCESSING`), which Windows Terminal turns on by itself. The terminal layer therefore turns it on at start and restores the console's modes on every exit path ([architecture/09-tui.md](../architecture/09-tui.md), "Windows"). If the old console host still cannot draw after that, it is unsupported for the TUI, and headless mode still works there.
+- **Over SSH** (check 12) was not run.
+
+So inline by default, on our own line renderer, is confirmed as it stands.
 
 ## Revisit when
 

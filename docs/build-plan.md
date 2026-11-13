@@ -29,8 +29,8 @@ All ten resolutions were **accepted as recommended on 2026-11-12** and are no lo
 
 | # | Question | The owner's answer, 2026-11-12 | Status |
 |---|---|---|---|
-| 1 | TUI language | **Rust**, in the main binary. | Accepted. **Still provisional** until the owner runs the Windows Terminal checklist, which must happen before step 20. [Decision 0001](decisions/0001-tui-language.md) |
-| 2 | Inline or full screen by default | **Inline.** Full screen is an option. | Accepted. **Still provisional** with question 1, for the same reason. [Decision 0002](decisions/0002-tui-rendering.md) |
+| 1 | TUI language | **Rust**, in the main binary. | Accepted. Confirmed on 2026-11-13 by the Windows Terminal checklist. [Decision 0001](decisions/0001-tui-language.md) |
+| 2 | Inline or full screen by default | **Inline.** Full screen is an option. | Accepted. Confirmed on 2026-11-13 by the Windows Terminal checklist. [Decision 0002](decisions/0002-tui-rendering.md) |
 | 3 | Panes | **Stacked panels** above the editor. Side by side only in the full-screen presenter on wide windows. | Accepted. |
 | 4 | Look and feel | **As drafted** in [architecture/09-tui.md](architecture/09-tui.md): glyphs, wording, density, default keys, slash-command names, and the accent with its lighter tint. | Accepted. |
 | 5 | Command and directory names | **Changed.** The command is `cortex`, **plus a short alias, `cx`**, that runs the same program on both OSes. The alias ships as a link to the one executable. Step 2 checks both names for clashes and reports. | Accepted. [Decision 0013](decisions/0013-naming.md) |
