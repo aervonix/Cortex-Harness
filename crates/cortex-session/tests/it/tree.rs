@@ -365,12 +365,10 @@ fn the_lease_in_force_is_read_strictly() {
     assert!(session.append(None, refused).is_err());
 }
 
-/// A newer build resumed the session and ended the lease, writing its own
-/// format version. Skipping that line as a kind this build does not know
-/// would leave the ended lease in force.
-#[test]
-fn a_lease_record_in_a_newer_format_refuses_the_lease_in_force() {
-    let world = World::new("lease_newer_format");
+/// A session whose lease is granted, with `line` appended to its log as
+/// another build might have written it.
+fn granted_then(test: &str, line: &[u8]) -> (World, cortex_session::SessionDir) {
+    let world = World::new(test);
     let mut session = world.create("s_1");
     session.append(None, user("hi")).unwrap();
     session
@@ -379,31 +377,71 @@ fn a_lease_record_in_a_newer_format_refuses_the_lease_in_force() {
     drop(session);
     let dir = world.project.session(&SessionId::new("s_1")).unwrap();
     let mut content = fs::read(dir.log()).unwrap();
-    content.extend(
-        serde_json::to_vec(&json!({"v": 2, "id": "e_0003", "parent": null,
+    content.extend_from_slice(line);
+    content.push(b'\n');
+    fs::write(dir.log(), content).unwrap();
+    (world, dir)
+}
+
+/// A newer build resumed the session and ended the lease, writing its own
+/// format version. Skipping that line as a kind this build does not know
+/// would leave the ended lease in force. A newer format might place a
+/// lease in the tree, so a lease line with a parent is refused too.
+#[test]
+fn a_lease_record_in_a_newer_format_refuses_the_lease_in_force() {
+    for (case, parent) in [json!(null), json!("e_0001")].into_iter().enumerate() {
+        let line = serde_json::to_vec(&json!({"v": 2, "id": "e_0003", "parent": parent,
             "ts": "2026-11-12T10:00:00Z", "kind": "lease", "event": "ended",
             "lease": lease_json()}))
-        .unwrap(),
+        .unwrap();
+        let (world, dir) = granted_then(&format!("lease_newer_format_{case}"), &line);
+
+        let (log, report) = Log::open(&dir).unwrap();
+        assert!(
+            log.writable().is_ok(),
+            "this build may still write the session"
+        );
+        assert_eq!(report.newer_entries, 1);
+        assert!(report.unknown_kinds.is_empty(), "{report:?}");
+        let refusal = log.lease_in_force().unwrap_err();
+        assert_eq!(refusal.code, code::LEASE_NOT_UNDERSTOOD);
+        assert!(
+            refusal.message.contains("format version 2"),
+            "{}",
+            refusal.message
+        );
+        let (session, _) = world.resume("s_1");
+        assert!(session.lease_in_force().is_err(), "nor after a resume");
+    }
+}
+
+/// A line in the middle of the log that cannot be read at all may have
+/// been the lease's `ended`: the leases are then unknown.
+#[test]
+fn a_damaged_line_that_may_be_a_lease_refuses_the_lease_in_force() {
+    let (world, dir) = granted_then(
+        "lease_damaged",
+        br#"{"v":1,"id":"e_0003","parent":null,"ts":"2026-11-12T10:00:00Z","kind":"lease","event":"end"#,
+    );
+    // A whole line after it, so the damage is not a cut last line.
+    let mut content = fs::read(dir.log()).unwrap();
+    content.extend_from_slice(
+        br#"{"v":1,"id":"e_0004","parent":null,"ts":"2026-11-12T10:00:01Z","kind":"meta","title":"t"}"#,
     );
     content.push(b'\n');
     fs::write(dir.log(), content).unwrap();
 
     let (log, report) = Log::open(&dir).unwrap();
-    assert!(
-        log.writable().is_ok(),
-        "this build may still write the session"
-    );
-    assert_eq!(report.newer_entries, 1);
-    assert!(report.unknown_kinds.is_empty(), "{report:?}");
+    assert_eq!(report.damaged_lines, [4]);
     let refusal = log.lease_in_force().unwrap_err();
     assert_eq!(refusal.code, code::LEASE_NOT_UNDERSTOOD);
-    assert!(
-        refusal.message.contains("format version 2"),
-        "{}",
-        refusal.message
+    assert!(refusal.message.contains("line 4"), "{}", refusal.message);
+    assert_eq!(
+        log.title().unwrap().as_deref(),
+        Some("t"),
+        "the rest is read"
     );
-    let (session, _) = world.resume("s_1");
-    assert!(session.lease_in_force().is_err(), "nor after a resume");
+    drop(world);
 }
 
 #[test]

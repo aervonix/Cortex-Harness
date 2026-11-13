@@ -281,10 +281,7 @@ impl SessionIndex {
     fn lock(&self) -> Result<File> {
         // Held for one read and one write of a small file. On a file system
         // that cannot lock, as for a session's lock, there is none to hold.
-        match lock::take(&self.project.index_lock(), lock::Wait::Yes)? {
-            lock::Taken::Held(file) => Ok(file),
-            lock::Taken::Busy => unreachable!("a lock that is waited for is never busy"),
-        }
+        lock::take_waiting(&self.project.index_lock())
     }
 }
 

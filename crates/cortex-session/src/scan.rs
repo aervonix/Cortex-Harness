@@ -74,6 +74,9 @@ pub(crate) struct Scan {
     pub(crate) cut: Option<CutTail>,
     /// Line numbers (from 1) of lines that are not entries.
     pub(crate) damaged: Vec<u64>,
+    /// The damaged lines that may be lease records: a lease that cannot be
+    /// read makes the leases unknown, so these are never just skipped.
+    pub(crate) damaged_leases: Vec<u64>,
     /// Entries whose parent is not an earlier entry.
     pub(crate) broken_links: Vec<EntryId>,
     /// Kinds this build does not know, with how many of each.
@@ -92,7 +95,16 @@ pub(crate) struct NotALog(pub(crate) String);
 
 impl Scan {
     /// Reads a whole log from `source`.
-    pub(crate) fn read(mut source: impl Read) -> io::Result<Result<Self, NotALog>> {
+    pub(crate) fn read(source: impl Read) -> io::Result<Result<Self, NotALog>> {
+        Self::read_limited(source, MAX_LINE)
+    }
+
+    /// Reads a whole log whose lines are at most `max_line` bytes. Only a
+    /// test asks for another limit than [`MAX_LINE`].
+    pub(crate) fn read_limited(
+        mut source: impl Read,
+        max_line: usize,
+    ) -> io::Result<Result<Self, NotALog>> {
         let mut scan = Self::default();
         let mut buffer: Vec<u8> = Vec::with_capacity(CHUNK);
         // Where `buffer[0]` is in the file.
@@ -127,7 +139,7 @@ impl Scan {
             }
             buffer.drain(..start);
             base += start as u64;
-            if buffer.len() > MAX_LINE {
+            if buffer.len() > max_line {
                 // A line longer than any entry: damage. Skip to its end.
                 if !skipping {
                     line_number += 1;
@@ -185,12 +197,18 @@ impl Scan {
         }
         let Ok(found) = parsed else {
             self.damaged.push(number);
+            if may_be_lease(line) {
+                self.damaged_leases.push(number);
+            }
             return Ok(());
         };
         let id = EntryId::new(found.id.as_ref());
         if self.by_id.contains_key(&id) {
             // Two lines with one id: the later one is damage.
             self.damaged.push(number);
+            if found.kind == Kind::Lease.as_str() {
+                self.damaged_leases.push(number);
+            }
             return Ok(());
         }
         let index = u32::try_from(self.nodes.len()).map_err(|_| NotALog("too long".to_owned()))?;
@@ -250,6 +268,13 @@ impl Scan {
         });
         Ok(())
     }
+}
+
+/// Whether a line that could not be read may be a lease record: whether it
+/// holds the JSON string `"lease"`, as the kind or the key of one does. Text
+/// that merely mentions a lease is inside a longer string, and does not.
+fn may_be_lease(line: &[u8]) -> bool {
+    line.windows(7).any(|window| window == br#""lease""#)
 }
 
 /// The envelope of a line, and the id of the item it holds.
@@ -457,6 +482,20 @@ mod tests {
         assert_eq!(scan.damaged, vec![2, 4]);
         assert_eq!(scan.broken_links, vec![EntryId::new("e_0002")]);
         assert_eq!(scan.nodes.len(), 2);
+    }
+
+    #[test]
+    fn damage_that_may_be_a_lease_is_noted() {
+        let lines = [
+            HEADER,
+            r#"{"v":1,"id":"e_0001","parent":null,"kind":"lease","event":"en"#,
+            r#"{"v":1,"id":"e_0002","parent":null,"ts":"t","kind":"meta","title":"the lease ended""#,
+            r#"{"v":1,"id":"e_0003","parent":null,"ts":"t","kind":"meta"}"#,
+            r#"{"v":1,"id":"e_0003","parent":null,"ts":"t","kind":"lease"}"#,
+        ];
+        let scan = scan(&format!("{}\n", lines.join("\n")));
+        assert_eq!(scan.damaged, vec![2, 3, 5]);
+        assert_eq!(scan.damaged_leases, vec![2, 5]);
     }
 
     #[test]

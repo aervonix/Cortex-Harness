@@ -15,55 +15,46 @@ use cortex_base::private;
 
 use crate::error::{Result, SessionError};
 
-/// Whether to wait for a lock another process holds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Wait {
-    /// Do not wait: another holder is [`Taken::Busy`].
-    No,
-    /// Wait until it is free.
-    Yes,
+/// Takes the lock at `path` if no other process holds it: `None` when one
+/// does. The file is created private if it is missing, and the lock is held
+/// until it is closed.
+pub(crate) fn try_take(path: &Path) -> Result<Option<File>> {
+    let file = open(path)?;
+    let held = settle(|| file.try_lock()).map_err(SessionError::io("lock", path))?;
+    Ok(held.then_some(file))
 }
 
-/// What taking a lock came to.
-#[derive(Debug)]
-pub(crate) enum Taken {
-    /// The lock is held, or the file system has no locks: held until the
-    /// file is closed.
-    Held(File),
-    /// Another process holds it, and [`Wait::No`] was asked for.
-    Busy,
+/// Takes the lock at `path`, waiting while another process holds it. The
+/// file is created private if it is missing, and the lock is held until it
+/// is closed.
+pub(crate) fn take_waiting(path: &Path) -> Result<File> {
+    let file = open(path)?;
+    // A lock that is waited for is never busy, so `settle` says held.
+    settle(|| file.lock().map_err(TryLockError::Error)).map_err(SessionError::io("lock", path))?;
+    Ok(file)
 }
 
-/// Opens the lock file at `path`, creating it private if it is missing,
-/// and takes its lock.
-pub(crate) fn take(path: &Path, wait: Wait) -> Result<Taken> {
+/// Opens the lock file at `path`, creating it private if it is missing.
+fn open(path: &Path) -> Result<File> {
     let open = || OpenOptions::new().read(true).write(true).open(path);
-    let file = match open() {
-        Ok(file) => file,
+    match open() {
+        Ok(file) => Ok(file),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             match private::create_new(path) {
                 Ok(_) => {}
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(SessionError::io("create the lock", path)(error)),
             }
-            open().map_err(SessionError::io("open the lock", path))?
+            open().map_err(SessionError::io("open the lock", path))
         }
-        Err(error) => return Err(SessionError::io("open the lock", path)(error)),
-    };
-    match settle(wait, |wait| match wait {
-        Wait::No => file.try_lock(),
-        Wait::Yes => file.lock().map_err(TryLockError::Error),
-    }) {
-        Ok(true) => Ok(Taken::Held(file)),
-        Ok(false) => Ok(Taken::Busy),
-        Err(error) => Err(SessionError::io("lock", path)(error)),
+        Err(error) => Err(SessionError::io("open the lock", path)(error)),
     }
 }
 
 /// Makes a lock attempt and says what it means: `true` held (or no locks to
 /// hold), `false` busy.
-fn settle(wait: Wait, attempt: impl FnOnce(Wait) -> Result<(), TryLockError>) -> io::Result<bool> {
-    match attempt(wait) {
+fn settle(attempt: impl FnOnce() -> Result<(), TryLockError>) -> io::Result<bool> {
+    match attempt() {
         Ok(()) => Ok(true),
         Err(TryLockError::WouldBlock) => Ok(false),
         // A file system that cannot lock: no lock, and no reason to stop.
@@ -74,32 +65,43 @@ fn settle(wait: Wait, attempt: impl FnOnce(Wait) -> Result<(), TryLockError>) ->
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
 
-    fn failing(kind: io::ErrorKind) -> impl FnOnce(Wait) -> Result<(), TryLockError> {
-        move |_| Err(TryLockError::Error(io::Error::from(kind)))
+    fn failing(kind: io::ErrorKind) -> impl FnOnce() -> Result<(), TryLockError> {
+        move || Err(TryLockError::Error(io::Error::from(kind)))
     }
 
     #[test]
-    fn a_file_system_without_locks_is_no_lock_whether_or_not_one_waits() {
-        // The session's lock tries; the index's waits. Both go on.
-        for wait in [Wait::No, Wait::Yes] {
-            assert!(settle(wait, failing(io::ErrorKind::Unsupported)).unwrap());
-            assert!(settle(wait, failing(io::ErrorKind::PermissionDenied)).is_err());
+    fn a_file_system_without_locks_is_no_lock() {
+        assert!(settle(failing(io::ErrorKind::Unsupported)).unwrap());
+        assert!(settle(failing(io::ErrorKind::PermissionDenied)).is_err());
+        assert!(!settle(|| Err(TryLockError::WouldBlock)).unwrap());
+    }
+
+    /// A lock file in the temporary directory, removed with it.
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
         }
-        assert!(!settle(Wait::No, |_| Err(TryLockError::WouldBlock)).unwrap());
     }
 
     #[test]
     fn a_lock_is_taken_and_kept_apart() {
-        let path = std::env::temp_dir().join(format!("cortex-session-lock-{}", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let Taken::Held(first) = take(&path, Wait::No).unwrap() else {
-            panic!("a free lock is taken")
-        };
-        assert!(matches!(take(&path, Wait::No).unwrap(), Taken::Busy));
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "cortex-session-lock-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )));
+        let _ = std::fs::remove_file(&scratch.0);
+        let first = try_take(&scratch.0).unwrap().expect("a free lock is taken");
+        assert!(try_take(&scratch.0).unwrap().is_none(), "and kept apart");
         drop(first);
-        assert!(matches!(take(&path, Wait::Yes).unwrap(), Taken::Held(_)));
-        let _ = std::fs::remove_file(&path);
+        let _waited = take_waiting(&scratch.0).unwrap();
+        assert!(try_take(&scratch.0).unwrap().is_none());
     }
 }

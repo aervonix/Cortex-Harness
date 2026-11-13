@@ -487,6 +487,11 @@ impl Log {
     /// lease is never read in part, so none is given. Reading the file can
     /// fail too, as an internal error.
     pub fn lease_in_force(&self) -> std::result::Result<Option<Lease>, Box<ErrorData>> {
+        if let Some(line) = self.scan.damaged_leases.first() {
+            return Err(entry::lease_refusal(format!(
+                "line {line} of the session log is damaged and may be a lease record"
+            )));
+        }
         // Every line of the kind, record or not: a lease this build cannot
         // place is still a lease it must not ignore.
         let lines = self
