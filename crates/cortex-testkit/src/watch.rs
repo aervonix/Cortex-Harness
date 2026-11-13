@@ -257,7 +257,7 @@ fn waits() -> String {
         })
         .collect();
     drop(entries);
-    lines.sort_by(|a, b| b.0.cmp(&a.0));
+    lines.sort_by_key(|line| std::cmp::Reverse(line.0));
     let mut text = String::from("waits, and for how long:\n");
     if lines.is_empty() {
         text.push_str("  none of the test kit's waits is in progress\n");
@@ -477,7 +477,7 @@ mod tests {
         // A child that stays until it is killed: this binary, waiting on
         // its standard input, which is never closed.
         let program = std::env::current_exe().unwrap();
-        let _child = Command::new(program)
+        let mut child = Command::new(program)
             .args(["--exact", "watch::tests::stays", "--ignored"])
             .env("CORTEX_WATCH_STAY", "1")
             .stdin(Stdio::piped())
@@ -487,6 +487,9 @@ mod tests {
             .unwrap();
         let stuck = Gate::new();
         let _ = stuck.wait(Duration::from_secs(600));
+        // Not reached: the test that started this one kills it first.
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     /// A scripted exchange of four writes (the head, two pieces, the end),

@@ -50,9 +50,9 @@ fn plain(word: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"_-:./=,()|&!~*+@#".contains(&byte))
 }
 
-fn number<T: std::str::FromStr>(flag: &str, text: &str, most: T) -> Result<Option<T>>
+fn number<T>(flag: &str, text: &str, most: T) -> Result<Option<T>>
 where
-    T: PartialOrd + std::fmt::Display + Default,
+    T: std::str::FromStr + PartialOrd + std::fmt::Display + Default,
 {
     let text = text.trim();
     if text.is_empty() {

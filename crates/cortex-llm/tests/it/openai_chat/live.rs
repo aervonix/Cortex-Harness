@@ -129,6 +129,10 @@ fn converse(
 /// answer itself is never printed or written at all: OpenRouter's holds a
 /// shortened form of the key.
 fn meter(live: &mut Live) -> Option<i64> {
+    if crate::live::dry_run() {
+        live.say("dry run: the usage endpoint is not asked");
+        return None;
+    }
     let request = account::request(&live.target.provider)
         .unwrap_or_else(|error| panic!("{error}"))
         .expect("the provider's entry names a usage endpoint");

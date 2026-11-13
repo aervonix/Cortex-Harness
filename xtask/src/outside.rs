@@ -97,6 +97,130 @@ fn live_provider(name: &str) -> Result<&'static LiveProvider> {
 /// The environment variable the recorder reads its scenarios from.
 const SCENARIOS: &str = "CORTEX_LIVE_SCENARIOS";
 
+/// Set for a dry run: requests are built and printed, and none is sent.
+const DRY_RUN: &str = "CORTEX_LIVE_DRY_RUN";
+
+/// The file each live call's spend is added to, as a line of JSON.
+const LEDGER: &str = "CORTEX_LIVE_LEDGER";
+
+/// What a dry run prints when it has printed its request.
+const DRY_RUN_ENDED: &str = "dry run: nothing was sent.";
+
+/// Where the spend ledger is: `CORTEX_LIVE_LEDGER` if it is set, or a file
+/// in the user's state directory, outside every repository. On the desktop
+/// that `rx` runs on, the ledger is the desktop's.
+fn ledger() -> Result<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os(LEDGER).filter(|path| !path.is_empty()) {
+        return Ok(path.into());
+    }
+    let base = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from)
+    } else {
+        std::env::var_os("XDG_STATE_HOME")
+            .filter(|path| !path.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| std::path::Path::new(&home).join(".local").join("state"))
+            })
+    };
+    let base = base
+        .ok_or("there is no state directory to keep the spend ledger in: set CORTEX_LIVE_LEDGER")?;
+    let directory = base.join("cortex-live");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("could not create {}: {error}", directory.display()))?;
+    Ok(directory.join("spend.jsonl"))
+}
+
+/// The ledger's variable, for a live test to add its spend to.
+fn ledger_variable() -> Result<(&'static str, String)> {
+    Ok((LEDGER, ledger()?.to_string_lossy().into_owned()))
+}
+
+/// What the ledger says: each provider's and model's calls, tokens and
+/// cost, and the total. `since` keeps the lines of that date or later
+/// (`YYYY-MM-DD`).
+fn spent(text: &str, since: Option<&str>) -> String {
+    use std::collections::BTreeMap;
+    #[derive(Default)]
+    struct Sum {
+        calls: u64,
+        input: u64,
+        output: u64,
+        nanos: u64,
+    }
+    let mut sums: BTreeMap<(String, String), Sum> = BTreeMap::new();
+    let mut unread = 0;
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            unread += 1;
+            continue;
+        };
+        let field = |name: &str| {
+            entry
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("?")
+        };
+        let number = |name: &str| {
+            entry
+                .get(name)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+        };
+        if since.is_some_and(|since| field("date") < since) {
+            continue;
+        }
+        let sum = sums
+            .entry((field("provider").to_owned(), field("model").to_owned()))
+            .or_default();
+        sum.calls += 1;
+        sum.input += number("input") + number("cache_read") + number("cache_write");
+        sum.output += number("output");
+        sum.nanos += number("usd_nanos");
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a figure for a person to read; the sums are whole nano-dollars"
+    )]
+    let dollars = |nanos: u64| nanos as f64 / 1e9;
+    let mut shown = format!(
+        "  {:<12} {:<40} {:>6} {:>12} {:>10} {:>11}\n",
+        "provider", "model", "calls", "input", "output", "cost"
+    );
+    let mut total = Sum::default();
+    let mut by_provider: BTreeMap<&str, u64> = BTreeMap::new();
+    for ((provider, model), sum) in &sums {
+        shown.push_str(&format!(
+            "  {provider:<12} {model:<40} {:>6} {:>12} {:>10} {:>10.6}$\n",
+            sum.calls,
+            sum.input,
+            sum.output,
+            dollars(sum.nanos)
+        ));
+        *by_provider.entry(provider).or_default() += sum.nanos;
+        total.calls += sum.calls;
+        total.nanos += sum.nanos;
+    }
+    for (provider, nanos) in by_provider {
+        shown.push_str(&format!("  {provider}: ${:.6}\n", dollars(nanos)));
+    }
+    shown.push_str(&format!(
+        "  in all: {} call(s), ${:.6}{}\n",
+        total.calls,
+        dollars(total.nanos),
+        since
+            .map(|since| format!(" since {since}"))
+            .unwrap_or_default()
+    ));
+    if unread > 0 {
+        shown.push_str(&format!(
+            "  ({unread} line(s) of the ledger could not be read)\n"
+        ));
+    }
+    shown
+}
+
 /// The fuzz targets, and the fixtures each one starts from: the name of
 /// the protocol's fixture directory in `cortex-llm`.
 const FUZZ_TARGETS: &[(&str, &str)] = &[
@@ -145,10 +269,17 @@ fn ignored_test(name: &str, variables: &[(&str, &str)]) -> Result<()> {
 
 /// Runs one ignored test of the test binary `selection` names, and shows
 /// its output. Fails unless exactly one test ran and passed.
-pub(crate) fn run_ignored(
+pub(crate) fn run_ignored(selection: &[&str], name: &str, variables: &[(&str, &str)]) -> Result<()> {
+    run_ignored_with(selection, name, variables, false)
+}
+
+/// [`run_ignored`]; for a dry run, which ends the test's process when it
+/// has printed its request, the dry run's last line is what says it ran.
+fn run_ignored_with(
     selection: &[&str],
     name: &str,
     variables: &[(&str, &str)],
+    dry_run: bool,
 ) -> Result<()> {
     let mut arguments = vec!["test", "--locked"];
     arguments.extend_from_slice(selection);
@@ -165,6 +296,16 @@ pub(crate) fn run_ignored(
     print!("{shown}");
     if !output.status.success() {
         return Err(format!("the test `{name}` failed"));
+    }
+    if dry_run {
+        return if shown.contains(DRY_RUN_ENDED) {
+            Ok(())
+        } else {
+            Err(format!(
+                "the dry run of `{name}` printed no request: the test did not run, or sent \
+                 nothing before it ended"
+            ))
+        };
     }
     if ran_one_test(&shown) {
         Ok(())
@@ -186,6 +327,22 @@ fn ran_one_test(output: &str) -> bool {
 /// `cargo xtask live [PROVIDER]`: the smoke test against a real API.
 /// Anthropic's when no provider is named.
 pub(crate) fn live(arguments: &[String]) -> Result<()> {
+    if arguments.first().is_some_and(|first| first == "--spent") {
+        let since = match &arguments[1..] {
+            [] => None,
+            [flag, date] if flag == "--since" => Some(date.as_str()),
+            _ => return Err("usage: cargo xtask live --spent [--since YYYY-MM-DD]".to_owned()),
+        };
+        let path = ledger()?;
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(format!("could not read {}: {error}", path.display())),
+        };
+        println!("The spend ledger, {}:", path.display());
+        print!("{}", spent(&text, since));
+        return Ok(());
+    }
     let provider = match arguments {
         [] => &PROVIDERS[0],
         [name] => live_provider(name)?,
@@ -196,7 +353,8 @@ pub(crate) fn live(arguments: &[String]) -> Result<()> {
         }
     };
     require_key_file(provider)?;
-    ignored_test(provider.smoke, &[])?;
+    let (name, path) = ledger_variable()?;
+    ignored_test(provider.smoke, &[(name, &path)])?;
     match provider.headless {
         Some(name) => run_ignored(&["--package", "cortex-cli", "--test", "system"], name, &[]),
         None => Ok(()),
@@ -207,10 +365,33 @@ pub(crate) fn live(arguments: &[String]) -> Result<()> {
 /// from a real API, Anthropic's when no provider is named. With no scenario
 /// named, all of them.
 pub(crate) fn record(arguments: &[String]) -> Result<()> {
-    let (provider, scenarios) = record_arguments(arguments)?;
-    require_key_file(provider)?;
+    let dry_run = arguments.iter().any(|argument| argument == "--dry-run");
+    let arguments: Vec<String> = arguments
+        .iter()
+        .filter(|argument| *argument != "--dry-run")
+        .cloned()
+        .collect();
+    let (provider, scenarios) = record_arguments(&arguments)?;
     let scenarios = scenarios.join(",");
-    ignored_test(provider.record, &[(SCENARIOS, &scenarios)])
+    if dry_run {
+        // No key is read and nothing is sent, so none is needed.
+        return run_ignored_with(
+            &[
+                "--package",
+                "cortex-llm",
+                "--features",
+                "http",
+                "--test",
+                "it",
+            ],
+            provider.record,
+            &[(SCENARIOS, &scenarios), (DRY_RUN, "1")],
+            true,
+        );
+    }
+    require_key_file(provider)?;
+    let (name, path) = ledger_variable()?;
+    ignored_test(provider.record, &[(SCENARIOS, &scenarios), (name, &path)])
 }
 
 /// The provider and the scenarios `record` was asked for.
@@ -399,6 +580,34 @@ mod tests {
         let failed = "running 1 test\ntest result: FAILED. 0 passed; 1 failed; 0 ignored;\n";
         assert!(!ran_one_test(failed));
         assert!(!ran_one_test(""));
+    }
+
+    #[test]
+    fn the_ledger_is_totalled_by_provider_and_model() {
+        let ledger = r#"{"date":"2026-11-13","provider":"anthropic","model":"claude-haiku","input":100,"cache_read":20,"cache_write":0,"output":30,"usd_nanos":150000,"stated_by_provider":false,"test":"t"}
+{"date":"2026-11-14","provider":"anthropic","model":"claude-haiku","input":50,"cache_read":0,"cache_write":0,"output":10,"usd_nanos":50000,"stated_by_provider":false,"test":"t"}
+{"date":"2026-11-14","provider":"deepseek","model":"deepseek-chat","input":10,"cache_read":0,"cache_write":0,"output":5,"usd_nanos":7,"stated_by_provider":true,"test":"t"}
+not a line of the ledger
+"#;
+        let all = spent(ledger, None);
+        assert!(all.contains("anthropic    claude-haiku"), "{all}");
+        assert!(
+            all.contains("     2          170         40   0.000200$"),
+            "{all}"
+        );
+        assert!(all.contains("  anthropic: $0.000200\n"), "{all}");
+        assert!(all.contains("  deepseek: $0.000000\n"), "{all}");
+        assert!(all.contains("  in all: 3 call(s), $0.000200\n"), "{all}");
+        assert!(
+            all.contains("1 line(s) of the ledger could not be read"),
+            "{all}"
+        );
+        let later = spent(ledger, Some("2026-11-14"));
+        assert!(
+            later.contains("in all: 2 call(s), $0.000050 since 2026-11-14"),
+            "{later}"
+        );
+        assert!(spent("", None).contains("in all: 0 call(s), $0.000000"));
     }
 
     #[test]
