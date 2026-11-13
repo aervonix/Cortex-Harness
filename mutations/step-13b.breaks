@@ -342,3 +342,16 @@ replace: let _ = (&file, &stamp, version, &clock);
 packages: cortex-core, cortex-cli
 caught-by:
     cortex-cli::system tools::sys_the_shells_version_is_kept_for_the_runs_after_the_first
+
+# Found after step 13b merged: a signal tested in the instant after the
+# request arrived stopped the binary before the scripted server had written
+# its response, and the server never saw the hang-up its test waited for.
+
+[break] server-misses-an-early-hang-up
+rule: A client that hangs up before the scripted server's script reaches `hang_until_closed` still opens its gate.
+file: crates/cortex-testkit/src/server.rs
+in: serve
+find: if played.is_err()
+replace: if played.is_err() && false
+caught-by:
+    cortex-testkit server::tests::a_client_that_hangs_up_before_the_hold_still_opens_its_gate

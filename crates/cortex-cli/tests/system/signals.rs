@@ -19,7 +19,7 @@ use cortex_testkit::children::{ChildSpec, Roll};
 use cortex_testkit::{Gate, ServerReply};
 use serde_json::json;
 
-use crate::{CHILD_ENTRY, Machine, Run, until_requests};
+use crate::{CHILD_ENTRY, Machine, Run};
 
 /// A bound on a mistake, never waited out by a test that passes.
 const LIMIT: Duration = Duration::from_secs(30);
@@ -63,25 +63,30 @@ impl Running {
 }
 
 /// A response that has begun and goes no further until the client hangs
-/// up: the run is waiting on the model when the signal comes.
-fn held_response(machine: &Machine, closed: &Gate) {
+/// up: the run is waiting on the model when the signal comes. `begun` opens
+/// when the server has sent all it will send, so a signal sent after it
+/// finds the server holding the connection, never still writing to it.
+fn held_response(machine: &Machine, begun: &Gate, closed: &Gate) {
     let started = format!(
         "event: message_start\ndata: {}\n\n",
         json!({"type": "message_start", "message": {"model": crate::MODEL, "id": "msg_held",
             "type": "message", "role": "assistant", "content": [], "stop_reason": null,
             "usage": {"input_tokens": 5, "output_tokens": 1}}})
     );
-    machine
-        .server
-        .push(ServerReply::sse().send(started).hang_until_closed(closed));
+    machine.server.push(
+        ServerReply::sse()
+            .send(started)
+            .mark(begun)
+            .hang_until_closed(closed),
+    );
 }
 
 fn interrupted_by(signal: impl FnOnce(&Tree), code: i32, test: &str) {
     let machine = Machine::new(test);
-    let closed = Gate::new();
-    held_response(&machine, &closed);
+    let (begun, closed) = (Gate::new(), Gate::new());
+    held_response(&machine, &begun, &closed);
     let running = Running::start(&machine, &["-p", "wait for me", "--output", "json"]);
-    until_requests(&machine, 1);
+    assert!(begun.wait(LIMIT), "the response began");
     signal(&running.tree);
     let run = running.finish();
     let record = run.expect_code(code).json();
