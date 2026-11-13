@@ -358,9 +358,10 @@ fn no_more_than_the_limit_run_at_once() {
 #[test]
 fn questions_are_asked_one_at_a_time_in_call_order_while_allowed_calls_run() {
     let response = calls(&[
-        ("c1", "write", json!({"path": "a"})),
-        ("c2", "shell", json!({"id": "test"})),
-        ("c3", "read", json!({"path": "unrelated"})),
+        ("c1", "read", json!({"path": "other", "gate": "read"})),
+        ("c2", "write", json!({"path": "a"})),
+        ("c3", "shell", json!({"id": "test"})),
+        ("c4", "read", json!({"path": "unrelated"})),
     ]);
     let world = World::new("questions_in_order", [response, says("Done.")]);
     let rig = Setup::new(&world).start(&world);
@@ -370,6 +371,16 @@ fn questions_are_asked_one_at_a_time_in_call_order_while_allowed_calls_run() {
     world.run(async {
         rig.prompt("go");
         rig.policy.questions(1).await;
+        // Every call is planned, so the command's question is ready to be
+        // put. Then an allowed call ends while the first question is open:
+        // the loop looks again at what may start, and must not put the
+        // second question. Without something happening here the loop has
+        // no occasion to put it, and the assertion below would hold whether
+        // or not two questions may be open together.
+        rig.policy.decisions(4).await;
+        world.log.has("start read other").await;
+        world.gates.open("read");
+        world.log.has("end read other").await;
         settle().await;
         assert_eq!(rig.policy.asked(), ["write a"], "one question is open");
         world.gates.open("ask write");
@@ -378,11 +389,13 @@ fn questions_are_asked_one_at_a_time_in_call_order_while_allowed_calls_run() {
         world.gates.open("ask shell");
         rig.events.turns(1).await;
     });
-    // The read after the command waits for it. The write did not wait for
-    // the second question.
+    // The first read ran while a question was open. The read after the
+    // command waits for it. The write did not wait for the second question.
     assert_eq!(
         world.log.lines(),
         [
+            "start read other",
+            "end read other",
             "start write a",
             "end write a",
             "start shell test",
