@@ -1,0 +1,135 @@
+# Step 7 (pull request 17): the agent loop, in cortex-agent.
+# Reconstructed from the pull request description, the module documentation
+# of round.rs and turn.rs, and the tests, not recorded when the step was built.
+
+[break] conflicting-calls-run-together
+rule: A call waits for every earlier call it conflicts with.
+file: crates/cortex-agent/src/round.rs
+in: Round::pump
+find: other.shadow.conflicts_with(&footprint.shadow)
+replace: false
+caught-by:
+    rounds::calls_on_the_same_path_run_one_at_a_time_in_call_order
+    rounds::a_read_waits_for_the_write_before_it_to_what_it_reads
+
+[break] side-effects-start-while-streaming
+rule: While the response is still arriving only calls without side effects start.
+file: crates/cortex-agent/src/round.rs
+in: Round::pump
+find: streaming && footprint.side_effects
+replace: streaming && footprint.side_effects && false
+caught-by:
+    early::a_call_with_side_effects_waits_for_the_response_to_end
+    early::a_side_effecting_call_does_not_start_early_even_when_a_later_read_does
+
+[break] session-change-starts-early
+rule: A call that changes the session (plan, remember) is taken to have side effects, though it declares none and is scheduled as read-only.
+file: crates/cortex-agent/src/round.rs
+in: Footprint::of
+find: || plan.changes_session()
+replace:
+caught-by:
+    early::a_call_that_changes_the_session_waits_for_the_response_to_end
+
+[break] solo-call-starts-early
+rule: A call that is not scheduled as read-only is taken to have side effects, whatever effects it declares.
+file: crates/cortex-agent/src/round.rs
+in: Footprint::of
+find: || !matches!(plan.concurrency, Concurrency::ReadOnly)
+replace:
+caught-by:
+    early::a_tool_that_declares_no_effect_but_runs_alone_does_not_start_early
+
+[break] call-starts-before-earlier-block-ends
+rule: A call does not start while an earlier call's block has not ended, since that call could conflict with it.
+file: crates/cortex-agent/src/round.rs
+in: Round::pump
+find: open_call.is_some_and(|open| call.index > open)
+replace: false
+caught-by:
+    early::a_call_whose_block_ends_before_an_earlier_calls_block_waits_for_it
+
+[break] results-in-order-of-block-ends
+rule: The calls, and so their results, are in the model's order whatever order their blocks ended in.
+file: crates/cortex-agent/src/round.rs
+in: Round::insert
+find: self.calls.partition_point(|other| other.index <= call.index)
+replace: self.calls.len()
+caught-by:
+    early::a_call_whose_block_ends_before_an_earlier_calls_block_waits_for_it
+
+[break] parallel-limit-off-by-one
+rule: No more than the limit of calls run at once.
+file: crates/cortex-agent/src/round.rs
+in: Round::pump
+find: running >= self.env.max_parallel
+replace: running > self.env.max_parallel
+caught-by:
+    rounds::no_more_than_the_limit_run_at_once
+
+[break] questions-asked-together
+rule: Questions are asked one at a time: no other is put while one is open.
+file: crates/cortex-agent/src/round.rs
+in: Round::ask_next
+find: self.asking.is_some()
+replace: false
+# `rounds::questions_are_asked_one_at_a_time_in_call_order_while_allowed_calls_run`
+# is named for this rule and passes with it broken: its two questions are
+# answered at once, so two open together look the same as one after the other.
+caught-by:
+    denials::a_stop_leaves_no_question_open_and_puts_no_other
+
+[break] call-after-the-stop-is-planned-and-runs
+rule: Once the policy has said to stop the turn, a call the model wrote after the refused one does not run, even if it is planned after the stop.
+file: crates/cortex-agent/src/round.rs
+in: Round::planned
+find: stopped_at.is_some_and(|at| index > at)
+replace: stopped_at.is_some_and(|at| index < at)
+caught-by:
+    denials::a_stop_while_the_response_is_arriving_lets_nothing_more_start
+
+[break] cancellation-not-seen-in-wake
+rule: Cancellation is an input: a wait for the response or the round is ended by the turn being cancelled.
+file: crates/cortex-agent/src/turn.rs
+in: wake
+find: cancelled.as_mut().poll(context).is_ready()
+replace: cancelled.as_mut().poll(context).is_ready() && false
+caught-by:
+    transitions::an_interruption_is_taken_in_every_state_that_waits
+
+[break] queue-starts-after-a-turn-that-did-not-complete
+rule: Only a turn that completed starts the next queued prompt by itself; after a denial, a failure or a limit the queue is held.
+file: crates/cortex-agent/src/turn.rs
+in: Session::conclude
+find: outcome == TurnOutcome::Completed && !turn.cancel.is_cancelled()
+replace: !turn.cancel.is_cancelled()
+caught-by:
+    denials::prompts_queued_behind_a_denied_turn_are_held
+    steering::after_a_turn_that_failed_queued_prompts_are_held
+
+[break] queue-starts-after-an-interrupt-as-the-turn-finishes
+rule: An interrupt that comes as a turn finishes still means stop: nothing queued follows by itself, though the turn completed.
+file: crates/cortex-agent/src/turn.rs
+in: Session::conclude
+find: && !turn.cancel.is_cancelled()
+replace:
+caught-by:
+    interrupt::an_interrupt_that_comes_as_the_turn_finishes_still_holds_the_queue
+
+[break] steering-not-delivered-at-the-boundary
+rule: Steering messages and notices are delivered at the boundary between a round and the next request.
+file: crates/cortex-agent/src/turn.rs
+in: Session::prepare
+find: self.shared.lock().pending.drain(..).collect()
+replace: Vec::new()
+caught-by:
+    steering::a_steering_message_is_delivered_after_the_round_and_before_the_next_request
+    steering::an_edit_to_the_plan_reaches_the_model_as_a_notice_at_the_next_boundary
+
+[break] request-limit-off-by-one
+rule: A request is refused once the request limit has been reached, so the turn is held to its count.
+file: crates/cortex-agent/src/ledger.rs
+find: spent.requests >= limit
+replace: spent.requests > limit
+caught-by:
+    limits::the_request_limit_of_a_turn_ends_it_with_a_notice_and_the_next_turn_starts_fresh

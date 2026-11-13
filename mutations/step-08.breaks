@@ -1,0 +1,172 @@
+# Step 8 (cortex-session), the breaks behind the review fixes of pull request 20.
+# Reconstructed from the pull request's description and the crate's tests, not
+# kept from the step's own mutation runs.
+
+[break] before-string-is-absent
+rule: Only an explicit null says a file did not exist before a round; a string, such as "unknown", reads as unknown.
+file: crates/cortex-session/src/entry.rs
+in: visit_str
+find: Ok(Before::Unknown)
+replace: Ok(Before::Absent)
+caught-by:
+    entry::tests::only_an_explicit_null_says_a_file_did_not_exist_before
+
+[break] after-without-before-is-absent
+rule: A file a tool left with no record of what it was before is recorded as unknown, never as one that did not exist.
+file: crates/cortex-session/src/snapshot.rs
+in: RoundCheckpoint::after
+find: self.touch(file, Before::Unknown, Some(after))
+replace: self.touch(file, Before::Absent, Some(after))
+caught-by:
+    snapshot::undo_never_removes_a_file_whose_earlier_content_is_unknown
+
+[break] unknown-before-is-restorable
+rule: A file whose earlier content is not known is never put back, removed or overwritten: the plan says it cannot be restored.
+file: crates/cortex-session/src/snapshot.rs
+in: file_status
+find: Before::Unknown => cannot(why_not::NOT_RECORDED)
+replace: Before::Unknown => (FileStatus::AsLeft, None)
+caught-by:
+    snapshot::undo_never_removes_a_file_whose_earlier_content_is_unknown
+    snapshot::a_commands_changes_are_undone_as_far_as_what_was_before_is_known
+
+[break] unreadable-checkpoint-ignored
+rule: When a checkpoint of the undone turns cannot be read, no file is put back, because it may name any of them.
+file: crates/cortex-session/src/snapshot.rs
+in: file_status
+find: _ if unreadable
+replace: _ if false
+caught-by:
+    snapshot::a_checkpoint_that_cannot_be_read_stops_every_file_being_put_back
+
+[break] missing-content-offered-as-restorable
+rule: A version whose content is not in the store is reported as not restorable by the plan, not offered.
+file: crates/cortex-session/src/snapshot.rs
+in: file_status
+find: !store.has_blob(&version.hash)
+replace: false && !store.has_blob(&version.hash)
+caught-by:
+    snapshot::a_version_missing_from_the_store_is_not_offered_as_restorable
+
+[break] rewind-skips-the-plans-session
+rule: A rewind refuses a plan that was made for another session, even at the same entry ids.
+file: crates/cortex-session/src/session.rs
+in: rewind
+find: plan.session != *self.log.id()
+replace: false
+caught-by:
+    snapshot::a_rewind_follows_only_a_plan_made_for_the_session_where_it_is
+
+[break] newer-lease-decoded-as-unknown-kind
+rule: A lease line written in a newer format is refused whole by the decoder, never skipped as a kind this build does not know.
+file: crates/cortex-session/src/entry.rs
+in: decode
+find: else if kind == Kind::Lease.as_str()
+replace: else if false
+caught-by:
+    entry::tests::a_lease_from_a_newer_format_is_refused_not_skipped
+
+[break] lease-in-force-reads-only-tree-records
+rule: The lease in force reads every lease line, whether or not it sits in the tree, so a lease with a parent is not ignored.
+file: crates/cortex-session/src/log.rs
+in: lease_in_force
+find: node.kind == Kind::Lease
+replace: node.record && node.kind == Kind::Lease
+caught-by:
+    tree::a_lease_record_in_a_newer_format_refuses_the_lease_in_force
+
+[break] damaged-lease-line-not-noted
+rule: A damaged line that may be a lease record is noted, so that the lease in force is refused and not read without it.
+file: crates/cortex-session/src/scan.rs
+in: Scan::line
+find: if may_be_lease(line) {
+replace: if false {
+caught-by:
+    scan::tests::damage_that_may_be_a_lease_is_noted
+    tree::a_damaged_line_that_may_be_a_lease_refuses_the_lease_in_force
+
+[break] entry-over-the-line-limit-accepted
+rule: An entry longer than the longest line the reader takes is refused with session_entry_too_large, and nothing is written.
+file: crates/cortex-session/src/session.rs
+in: push
+find: length > self.max_line
+replace: false
+caught-by:
+    session::tests::the_longest_line_a_session_writes_is_the_longest_the_reader_takes
+    durability::an_entry_over_the_line_limit_is_refused_and_nothing_is_lost
+
+[break] lease-follows-the-durability
+rule: A lease record is flushed whatever the durability, so a crash cannot bring back a lease that had ended.
+file: crates/cortex-session/src/session.rs
+in: push
+find: is_lease(&entry.body)
+replace: false
+caught-by:
+    session::tests::a_lease_is_flushed_whatever_the_durability
+
+[break] redaction-skips-lines-with-bad-bytes
+rule: A line holding a byte that is not UTF-8 is still redacted, run by run, and the byte is kept as it was.
+file: crates/cortex-session/src/store.rs
+in: LineRedactor::redact
+find: self.redactor.redact(run.valid())
+replace: (if std::str::from_utf8(line).is_ok() { self.redactor.redact(run.valid()) } else { std::borrow::Cow::Borrowed(run.valid()) })
+caught-by:
+    store::tests::bytes_that_are_not_utf8_do_not_stop_redaction
+    store::a_text_artifact_with_a_byte_that_is_not_utf8_is_still_redacted
+
+[break] long-line-cut-inside-a-character
+rule: A line that grows too long is cut for redaction only between characters, so a secret or a character is not split.
+file: crates/cortex-session/src/store.rs
+in: LineRedactor::push
+find: char_boundary(&self.pending)
+replace: self.pending.len()
+caught-by:
+    store::tests::a_long_line_is_cut_only_between_characters
+
+[break] file-read-past-its-length-at-open
+rule: A file is read for no more than the length it had when it was opened, so one that grows while it is read is kept as it was.
+file: crates/cortex-session/src/store.rs
+in: put_opened_file
+find: source.take(opened_as.len())
+replace: source.take(u64::MAX)
+caught-by:
+    store::tests::a_file_that_grows_while_it_is_read_is_kept_as_it_was_when_opened
+
+[break] not-a-regular-file-reads-as-absent
+rule: A directory, a link, a device or a FIFO is refused by put_file as not a regular file, not taken for a missing file.
+file: crates/cortex-session/src/store.rs
+in: put_opened_file
+find:
+    return Err(SessionError::NotARegularFile {
+        path: path.to_path_buf(),
+    });
+replace: return Ok(None);
+caught-by:
+    store::tests::only_a_regular_file_is_kept
+
+[break] failed-name-list-still-takes-a-patch
+rule: Without the whole list of changed files no patch is taken, because protected files could not be left out of it.
+file: crates/cortex-session/src/base.rs
+in: changed_names
+find: Ok(output) if output.success && !output.truncated =>
+replace: Ok(output) if !output.truncated =>
+caught-by:
+    base::without_the_whole_list_of_changed_files_no_patch_is_taken
+
+[break] untracked-link-is-not-recorded-as-a-link
+rule: An untracked link is recorded by its target and never opened, so nothing outside the workspace is copied.
+file: crates/cortex-session/src/base.rs
+in: untracked
+find: Ok(found) if found.file_type().is_symlink()
+replace: Ok(found) if false
+caught-by:
+    base::sys_an_untracked_link_is_recorded_as_a_link_and_never_followed
+
+[break] unborn-session-keeps-its-base-state
+rule: When the last write under way ends after the session ended with no prompt, its directory is removed.
+file: crates/cortex-session/src/store.rs
+in: Writing::drop
+find: state.abandoned && state.writers == 0
+replace: false
+caught-by:
+    base::an_unborn_sessions_store_is_cleared_when_its_last_write_ends
