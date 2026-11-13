@@ -27,3 +27,35 @@ Step 12 added `cortex-policy` (about 9,200 lines of source, 2,500 of unit tests 
 - **One test of the test kit is slow on Windows in every run** (`server::tests::it_can_hold_the_whole_response_back_and_is_let_go_when_dropped`, 2.0 s), and one of `cortex-llm`'s transport tests was in the first. Neither is this step's.
 - **The tests were run two to four hundred times over on the desktop,** the engine's and the loop's. That found a test of this step that failed three runs in ten: the loop picks among ready events at random, and what a stopped turn did depended on which it saw first. The fix was in the loop ([architecture/03-agent-loop.md](../../architecture/03-agent-loop.md), "Tool rounds"): the turn now stops at the refused call in the model's order.
 - **Breaking the code fails the tests.** 158 rules of the step were each broken on purpose, one at a time, on a copy of the tree. On the first pass over the first version, 111 of 113 were caught. After the review's fixes 154 of 158 were, and the last four got tests with the order of events fixed; a fifth turned up when the properties were cut to fewer cases, and got a test that changes each field of a lease in turn. Every one of the 158 now fails at least one test.
+
+# The fixes to step 12
+
+The fixes changed `cortex-policy` (the command analysis, the engine, trust and approvals, leases), `cortex-agent` (the order of calls behind a question), and `cortex-session` (a base state's record). They also added `mutations/step-12-fixes.breaks`. The times below were measured on pull request 29 on 2026-11-13, rebased onto main at `e6c4ac3`. "Main" is main's own run at that commit.
+
+| Job | Main, `e6c4ac3` | First run | Second run | Second run, Windows tests again |
+|---|---|---|---|---|
+| `lint-linux` | 45 s | 31 s | 45 s | |
+| `test-linux` | 77 s | 74 s | 67 s | |
+| `lint-windows` | 54 s | 66 s | 69 s | |
+| `test-windows` | 150 s | 202 s, failed | 162 s, failed | 145 s |
+
+| | `test-linux` | `test-windows` |
+|---|---|---|
+| The job's command once `xtask` runs (main) | 43.1 s (build tests 31.8 s, run 11.3 s) | 89.2 s (build tests 56.3 s, run 32.9 s) |
+| The same (second run; on Windows, run again) | 37.5 s (build tests 28.6 s, run 8.9 s) | 97.9 s (build tests 64.4 s, run 33.4 s) |
+| Test time against the tier budgets (main) | tier 1: 11.5 s of 20 s. Tier 2: 22.5 s of 40 s. Tier 3: 7.3 s of 60 s | tier 1: **21.9 s of 20 s, a warning.** Tier 2: 38.4 s of 40 s. Tier 3: 43.5 s of 90 s |
+| The same (second run; on Windows, run again) | tier 1: 9.5 s of 20 s. Tier 2: 16.6 s of 40 s. Tier 3: 6.3 s of 60 s | tier 1: **22.8 s of 20 s, a warning.** Tier 2: 39.7 s of 40 s. Tier 3: 45.7 s of 90 s |
+| Of which `cortex-policy` (main, then this) | 2.1 s, then 2.6 s | 5.8 s, then 11.9 s |
+
+- **What the fixes add is 6 s on Windows, nearly all in starting PowerShell.**
+  - The new argument test runs one script through `powershell`, `pwsh`, and `pwsh` in Legacy mode, and compares what a program receives with the analysis's words. It is 4.2 s of the system tier, about 1.4 s per start of PowerShell. Finding 2 of the review asked for it.
+  - The test of a directory of 1,001 files, the bound of the listing, is 0.5 s.
+  - The test of the final review's findings is 0.5 s.
+  - On Linux the crate's tests went from 2.1 s to 2.6 s.
+- **The Windows unit tier is over its budget on main too,** at 21.9 s of 20 s, and was 15.6 s and 24.5 s in this step's other two runs of almost the same tests. The fixes add nothing to the unit tier that rises above that spread. The integration tier on Windows is at 99% of its budget, where main is at 96%; the fixes add 1.4 s there. **Recommendation:** the Windows unit tier is a case for the tooling's slowest-test report, and not something this step can settle. The policy crate's share of it is 2.6 s.
+- **The first run failed on Windows in a test of this step, which was doing its job.** The argument test found that PowerShell 7 passes a bare `~\x` to a native program as the home directory, where Windows PowerShell passes it on as written. The engine judged such a word only as home. It now judges a PowerShell word that begins with `~` both ways, quoted or not ([architecture/06-permissions-and-sandbox.md](../../architecture/06-permissions-and-sandbox.md), rule 6).
+- **A `cmd.exe` test of step 11 stopped at 60 s in each of the first two runs.** It was `shell::cmd::sys_output_is_merged_in_order` the first time and `shell::cmd::sys_hostile_arguments_arrive_unchanged` the second, as the tooling step recorded on main ([../tooling-w5/ci.md](../tooling-w5/ci.md)). Run again, the job passed. The 60 s is in the system tier of those runs.
+- **The checks before the push, on the desktop:**
+  - `cargo xtask ci` passed with 1,932 tests;
+  - `cargo xtask mutate step-12 step-12-fixes` ran all 105 breaks, and each did what its list expects;
+  - `cargo xtask stress -p cortex-agent --count 50` passed every test under every seed.
