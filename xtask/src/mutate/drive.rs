@@ -15,7 +15,7 @@ use std::time::Instant;
 use serde_json::{Value, json};
 
 use super::list::{self, Break, Expect};
-use super::{apply, read_source};
+use super::{apply, jobs, read_source};
 use crate::Result;
 use crate::junit::{self, TestCase};
 use crate::workspace;
@@ -51,8 +51,10 @@ pub(crate) enum Tested {
     Broken(String),
 }
 
-/// What builds the copy and runs its tests.
-pub(crate) trait Runner {
+/// What builds the copy and runs its tests. One for each job, each with a
+/// copy and a build directory of its own: so it is sent to the job's
+/// thread.
+pub(crate) trait Runner: Send {
     /// Whether the packages and their tests compile in `tree`. The error is
     /// the compiler's.
     fn compiles(
@@ -96,10 +98,12 @@ const NEXTEST_TESTS_FAILED: i32 = 100;
 const NEXTEST_BUILD_FAILED: i32 = 101;
 
 impl CargoRunner {
-    pub(crate) fn new(scratch: &Path) -> Self {
+    /// The runner of job `job`, counted from 0: its build directory and its
+    /// log are its own. Job 0's are those a run without `--jobs` uses.
+    pub(crate) fn new(scratch: &Path, job: usize) -> Self {
         Self {
-            target: scratch.join("target"),
-            log: scratch.join("last.log"),
+            target: scratch.join(jobs::numbered("target", job)),
+            log: scratch.join(format!("{}.log", jobs::numbered("last", job))),
             logs: scratch.join("logs"),
             kept: 0,
         }
@@ -113,7 +117,8 @@ impl CargoRunner {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_millis());
         self.kept += 1;
-        let kept = self.logs.join(format!("{stamp}-{}.log", self.kept));
+        let job = self.log.file_stem().and_then(|stem| stem.to_str()).unwrap_or("last");
+        let kept = self.logs.join(format!("{stamp}-{job}-{}.log", self.kept));
         let copied = fs::create_dir_all(&self.logs).and_then(|()| fs::copy(&self.log, &kept));
         match copied {
             Ok(_) => format!("see {}", kept.display()),
@@ -805,6 +810,7 @@ impl Plan<'_> {
 
 /// Runs the breaks: see the module's description for the order of the
 /// work. `out_of_time` is asked before each piece of work is started.
+#[cfg(test)]
 pub(crate) fn drive(
     root: &Path,
     scratch: &Path,
@@ -814,13 +820,36 @@ pub(crate) fn drive(
     out_of_time: &mut dyn FnMut() -> bool,
     say: &mut dyn FnMut(&str),
 ) -> Result<Finished> {
+    drive_jobs(root, scratch, breaks, options, &mut [runner], out_of_time, say)
+}
+
+/// [`drive`], with the work shared out among `runners`, one job each, in a
+/// copy of the tree of its own (`--jobs`). The pieces of work are the same
+/// and come in the same three rounds, each finished before the next
+/// begins: the tests with nothing broken, every break compiled, every
+/// break's tests. With more than one job `out_of_time` is asked as each
+/// piece finishes and a few times a second, and no piece is started after
+/// it says yes.
+pub(crate) fn drive_jobs(
+    root: &Path,
+    scratch: &Path,
+    breaks: &[Break],
+    options: &Options,
+    runners: &mut [&mut dyn Runner],
+    out_of_time: &mut dyn FnMut() -> bool,
+    say: &mut dyn FnMut(&str),
+) -> Result<Finished> {
     fs::create_dir_all(scratch)
         .map_err(|error| format!("could not create {}: {error}", scratch.display()))?;
     let _lock = lock(scratch)?;
-    let copy = scratch.join("tree");
     let files = tree_files(root)?;
     let code = code_hash(root, &files)?;
-    sync(root, &copy, &files)?;
+    let copies: Vec<PathBuf> = (0..runners.len())
+        .map(|job| jobs::copy(scratch, job))
+        .collect();
+    for copy in &copies {
+        sync(root, copy, &files)?;
+    }
     let mut results = Results::load(&scratch.join("results.jsonl"));
     let keys = Keys::all(code, breaks)?;
     for keys in &keys {
@@ -850,123 +879,152 @@ pub(crate) fn drive(
     // (a feature one crate's tests turn on in another), so a break is
     // judged against the tests of exactly the build it runs in. And what
     // is learnt holds whichever breaks are chosen next time.
+    let mut sets: Vec<(&[String], &str)> = Vec::new();
     for one in &keys {
-        let (packages, baseline_key) = (&one.packages, &one.baseline);
-        if results.baseline(baseline_key).is_some() {
-            continue;
+        let wanted = results.baseline(&one.baseline).is_none()
+            && !sets.iter().any(|(_, key)| *key == one.baseline);
+        if wanted {
+            sets.push((&one.packages, &one.baseline));
         }
-        let package = packages.join(", ");
-        if out_of_time() {
-            return Ok(plan.stop(&results, say));
-        }
-        say(&format!("The tests of {package} with nothing broken ..."));
-        let cases = match runner.test(&copy, packages)? {
-            Tested::Ran(cases) => cases,
-            Tested::DoesNotCompile(detail) => {
+    }
+    let finished = jobs::for_each(
+        runners,
+        &copies,
+        &sets,
+        &|runner, copy, (packages, _)| runner.test(copy, packages),
+        out_of_time,
+        &mut |(packages, baseline_key), tested| {
+            let package = packages.join(", ");
+            say(&format!("The tests of {package} with nothing broken ..."));
+            let cases = match tested? {
+                Tested::Ran(cases) => cases,
+                Tested::DoesNotCompile(detail) => {
+                    return Err(format!(
+                        "the tree does not compile with nothing broken: {detail}"
+                    ));
+                }
+                Tested::Broken(detail) => {
+                    return Err(format!(
+                        "the tests of {package} could not be run with nothing broken: {detail}"
+                    ));
+                }
+            };
+            let failing: Vec<String> = cases
+                .iter()
+                .filter(|case| case.failed)
+                .map(TestCase::id)
+                .collect();
+            if !failing.is_empty() {
                 return Err(format!(
-                    "the tree does not compile with nothing broken: {detail}"
+                    "{} test(s) fail with nothing broken: {}.\nA test that fails by itself is \
+                     no evidence about a break. Fix it first; if it fails only sometimes, find \
+                     it with `cargo xtask stress`.",
+                    failing.len(),
+                    some_of(&failing)
                 ));
             }
-            Tested::Broken(detail) => {
-                return Err(format!(
-                    "the tests of {package} could not be run with nothing broken: {detail}"
-                ));
-            }
-        };
-        let failing: Vec<String> = cases
-            .iter()
-            .filter(|case| case.failed)
-            .map(TestCase::id)
-            .collect();
-        if !failing.is_empty() {
-            return Err(format!(
-                "{} test(s) fail with nothing broken: {}.\nA test that fails by itself is no \
-                 evidence about a break. Fix it first; if it fails only sometimes, find it with \
-                 `cargo xtask stress`.",
-                failing.len(),
-                some_of(&failing)
-            ));
-        }
-        let tests: Vec<String> = cases.iter().map(TestCase::id).collect();
-        say(&format!("  {} tests pass.", tests.len()));
-        results.put(baseline_key, json!({ "tests": tests }))?;
+            let tests: Vec<String> = cases.iter().map(TestCase::id).collect();
+            say(&format!("  {} tests pass.", tests.len()));
+            results.put(baseline_key, json!({ "tests": tests }))
+        },
+    )?;
+    if !finished {
+        return Ok(plan.stop(&results, say));
     }
 
     // Every break compiles, before any is run.
     if options.compile_check {
-        let unknown = keys
+        let unknown: Vec<(&Break, &Keys)> = breaks
             .iter()
-            .filter(|keys| results.compiled(&keys.compile).is_none())
-            .count();
-        if unknown > 0 {
-            say(&format!("Compiling {unknown} break(s) ..."));
+            .zip(&keys)
+            .filter(|(_, keys)| results.compiled(&keys.compile).is_none())
+            .collect();
+        if !unknown.is_empty() {
+            say(&format!("Compiling {} break(s) ...", unknown.len()));
         }
-        for (one, keys) in breaks.iter().zip(&keys) {
-            if results.compiled(&keys.compile).is_some() {
-                continue;
-            }
-            if out_of_time() {
-                return Ok(plan.stop(&results, say));
-            }
-            let broken = Broken::make(&copy, one)?;
-            let compiled = runner.compiles(&copy, &keys.packages);
-            broken.restore()?;
-            match compiled? {
-                Ok(()) => results.put(&keys.compile, json!({ "break": one.id }))?,
+        let finished = jobs::for_each(
+            runners,
+            &copies,
+            &unknown,
+            &|runner, copy, (one, keys)| {
+                let broken = Broken::make(copy, one)?;
+                let compiled = runner.compiles(copy, &keys.packages);
+                broken.restore()?;
+                compiled
+            },
+            out_of_time,
+            &mut |(one, keys), compiled| match compiled? {
+                Ok(()) => results.put(&keys.compile, json!({ "break": one.id })),
                 Err(error) => {
                     say(&format!("  does not compile: {}: {error}", one.id));
-                    results.put(&keys.compile, json!({ "break": one.id, "error": error }))?;
+                    results.put(&keys.compile, json!({ "break": one.id, "error": error }))
                 }
-            }
+            },
+        )?;
+        if !finished {
+            return Ok(plan.stop(&results, say));
         }
     }
 
     // Each break's tests.
     let total = breaks.len();
-    for (index, (one, keys)) in breaks.iter().zip(&keys).enumerate() {
-        if results.outcome(&keys.run).is_some()
-            || matches!(results.compiled(&keys.compile), Some(Some(_)))
-        {
-            continue;
-        }
-        if out_of_time() {
-            return Ok(plan.stop(&results, say));
-        }
-        let started = Instant::now();
-        let broken = Broken::make(&copy, one)?;
-        let tested = runner.test(&copy, &keys.packages);
-        broken.restore()?;
-        let outcome = match tested? {
-            Tested::Ran(cases) => {
-                // In name order: a report lists tests as they finished,
-                // which is not the same from one run to the next.
-                let mut failed: Vec<String> = cases
-                    .iter()
-                    .filter(|case| case.failed)
-                    .map(TestCase::id)
-                    .collect();
-                failed.sort();
-                Outcome::Ran {
-                    failed,
-                    seconds: started.elapsed().as_secs_f64(),
+    let width = total.to_string().len();
+    let to_run: Vec<(usize, &Break, &Keys)> = breaks
+        .iter()
+        .zip(&keys)
+        .enumerate()
+        .filter(|(_, (_, keys))| {
+            results.outcome(&keys.run).is_none()
+                && !matches!(results.compiled(&keys.compile), Some(Some(_)))
+        })
+        .map(|(index, (one, keys))| (index, one, keys))
+        .collect();
+    let finished = jobs::for_each(
+        runners,
+        &copies,
+        &to_run,
+        &|runner, copy, (_, one, keys)| -> Result<(Tested, f64)> {
+            let started = Instant::now();
+            let broken = Broken::make(copy, one)?;
+            let tested = runner.test(copy, &keys.packages);
+            broken.restore()?;
+            Ok((tested?, started.elapsed().as_secs_f64()))
+        },
+        out_of_time,
+        &mut |(index, one, keys), tested| {
+            let (tested, seconds) = tested?;
+            let outcome = match tested {
+                Tested::Ran(cases) => {
+                    // In name order: a report lists tests as they
+                    // finished, which is not the same from one run to the
+                    // next.
+                    let mut failed: Vec<String> = cases
+                        .iter()
+                        .filter(|case| case.failed)
+                        .map(TestCase::id)
+                        .collect();
+                    failed.sort();
+                    Outcome::Ran { failed, seconds }
                 }
-            }
-            Tested::DoesNotCompile(detail) => Outcome::DoesNotCompile(detail),
-            Tested::Broken(detail) => Outcome::Broken(detail),
-        };
-        results.put_outcome(&keys.run, &one.id, &outcome)?;
-        let tests = results.baseline(&keys.baseline).unwrap_or_default();
-        let line = match judge(one, &outcome, &tests) {
-            Verdict::Good(words) => words,
-            Verdict::Flagged(label, _) => label.to_owned(),
-        };
-        say(&format!(
-            "[{:>width$}/{total}] {}  {line}  ({:.1} s)",
-            index + 1,
-            one.id,
-            started.elapsed().as_secs_f64(),
-            width = total.to_string().len(),
-        ));
+                Tested::DoesNotCompile(detail) => Outcome::DoesNotCompile(detail),
+                Tested::Broken(detail) => Outcome::Broken(detail),
+            };
+            results.put_outcome(&keys.run, &one.id, &outcome)?;
+            let tests = results.baseline(&keys.baseline).unwrap_or_default();
+            let line = match judge(one, &outcome, &tests) {
+                Verdict::Good(words) => words,
+                Verdict::Flagged(label, _) => label.to_owned(),
+            };
+            say(&format!(
+                "[{:>width$}/{total}] {}  {line}  ({seconds:.1} s)",
+                index + 1,
+                one.id,
+            ));
+            Ok(())
+        },
+    )?;
+    if !finished {
+        return Ok(plan.stop(&results, say));
     }
 
     Ok(report(breaks, &keys, &results, say))
@@ -1252,7 +1310,7 @@ replace: \"inside\"
     fn cargo_is_started_in_the_copy_with_its_own_build_directory_and_none_of_the_callers_test_settings()
      {
         let scratch = Path::new("scratch");
-        let runner = CargoRunner::new(scratch);
+        let runner = CargoRunner::new(scratch, 0);
         let command = runner.command(&scratch.join("tree"), &["check".to_owned()]);
         let variable = |name: &str| {
             command
@@ -1301,6 +1359,148 @@ error: could not compile `demo` (lib test) due to 2 previous errors
             super::errors_of("one\ntwo\nthree\nfour\nfive\nsix\n"),
             "two | three | four | five | six"
         );
+    }
+
+    /// Runs `list` with `jobs` runners that pretend, and time for
+    /// `pieces` pieces of work. Returns what each runner was asked.
+    fn go_with_jobs(
+        run: &mut Run,
+        list: &[Break],
+        jobs: usize,
+        pieces: usize,
+    ) -> (Result<Finished>, Vec<Vec<String>>) {
+        let mut pretenders: Vec<Pretend> = (0..jobs).map(|_| Pretend::default()).collect();
+        let mut runners: Vec<&mut dyn Runner> = pretenders
+            .iter_mut()
+            .map(|runner| runner as &mut dyn Runner)
+            .collect();
+        let mut asked_for_time = 0;
+        let finished = super::drive_jobs(
+            &run.root,
+            &run.scratch,
+            list,
+            &Options {
+                again: false,
+                compile_check: true,
+            },
+            &mut runners,
+            &mut || {
+                asked_for_time += 1;
+                asked_for_time > pieces
+            },
+            &mut |line| {
+                run.said.push_str(line);
+                run.said.push('\n');
+            },
+        );
+        drop(runners);
+        (
+            finished,
+            pretenders.into_iter().map(|runner| runner.asked).collect(),
+        )
+    }
+
+    #[test]
+    fn three_jobs_judge_the_breaks_as_one_does() {
+        let mut run = Run::new("jobs");
+        let list = breaks("demo", LIST);
+
+        let (finished, asked) = go_with_jobs(&mut run, &list, 3, usize::MAX);
+
+        assert_eq!(finished.unwrap(), Finished::Complete { flagged: 1 });
+        for line in [
+            "[1/3] demo/over-is-strict  caught by 1 test(s): demo tests::at_the_budget_is_not_over",
+            "[2/3] demo/far-over-factor  caught by 2 test(s): demo tests::far_over_is_over, demo \
+             tests::the_line_is_one_and_a_half",
+            "[3/3] demo/label-unseen  NOT CAUGHT",
+            "3 break(s): 2 did what the list expects, 1 flagged.",
+        ] {
+            assert!(run.said.contains(line), "{line}\n{}", run.said);
+        }
+        // Every piece of work was done once, by one job or another: the
+        // tests with nothing broken, three compiles and three runs.
+        let mut all: Vec<&String> = asked.iter().flatten().collect();
+        all.sort();
+        assert_eq!(
+            all,
+            [
+                "compile demo",
+                "compile demo",
+                "compile demo",
+                "test demo",
+                "test demo",
+                "test demo",
+                "test demo"
+            ]
+        );
+        // Each job had a copy of its own, and every copy is back as the
+        // tree is: no break is left in one.
+        for copy in ["tree", "tree-2", "tree-3"] {
+            let library = run.scratch.join(copy).join("crates/demo/src/lib.rs");
+            assert_eq!(fs::read_to_string(&library).unwrap(), LIB, "{copy}");
+        }
+
+        // What three jobs learnt, one job knows: nothing is run again.
+        let mut again = Pretend::default();
+        let finished = drive(
+            &run.root,
+            &run.scratch,
+            &list,
+            &Options {
+                again: false,
+                compile_check: true,
+            },
+            &mut again,
+            &mut || false,
+            &mut |_| {},
+        );
+        assert_eq!(finished.unwrap(), Finished::Complete { flagged: 1 });
+        assert_eq!(again.asked, Vec::<String>::new());
+    }
+
+    #[test]
+    fn jobs_start_nothing_once_the_time_is_up_and_the_next_run_carries_on() {
+        let mut run = Run::new("jobs-time");
+        let list = breaks("demo", LIST);
+
+        // Time for nothing at all.
+        let (finished, asked) = go_with_jobs(&mut run, &list, 2, 0);
+        assert_eq!(finished.unwrap(), Finished::Unfinished { left: 7 });
+        assert!(asked.iter().all(Vec::is_empty), "{asked:?}");
+
+        // Then all the time there is: the run finishes the work.
+        let (finished, _) = go_with_jobs(&mut run, &list, 2, usize::MAX);
+        assert_eq!(finished.unwrap(), Finished::Complete { flagged: 1 });
+    }
+
+    #[test]
+    fn a_job_that_finds_a_failing_test_with_nothing_broken_stops_the_run() {
+        let mut run = Run::new("jobs-failing");
+        let list = breaks("demo", LIST);
+        let mut first = Pretend {
+            always_failing: Some("tests::unrelated"),
+            ..Pretend::default()
+        };
+        let mut second = Pretend {
+            always_failing: Some("tests::unrelated"),
+            ..Pretend::default()
+        };
+        let mut runners: Vec<&mut dyn Runner> = vec![&mut first, &mut second];
+        let error = super::drive_jobs(
+            &run.root,
+            &run.scratch,
+            &list,
+            &Options::default(),
+            &mut runners,
+            &mut || false,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(error.contains("fail with nothing broken"), "{error}");
+        drop(runners);
+        let breaks_run = first.asked.len() + second.asked.len();
+        assert_eq!(breaks_run, 1, "only the tests with nothing broken ran");
+        run.said.clear();
     }
 
     #[test]
@@ -2048,7 +2248,7 @@ error: could not compile `demo` (lib test) due to 2 previous errors
             &scratch,
             &breaks,
             &options,
-            &mut CargoRunner::new(&scratch),
+            &mut CargoRunner::new(&scratch, 0),
             &mut || false,
             &mut |line| {
                 said.push_str(line);
@@ -2095,7 +2295,7 @@ error: could not compile `demo` (lib test) due to 2 previous errors
             &scratch,
             &breaks,
             &options,
-            &mut CargoRunner::new(&scratch),
+            &mut CargoRunner::new(&scratch, 0),
             &mut || false,
             &mut |_| {},
         )
@@ -2117,7 +2317,7 @@ error: could not compile `demo` (lib test) due to 2 previous errors
             &scratch,
             &breaks[4..],
             &unchecked,
-            &mut CargoRunner::new(&scratch),
+            &mut CargoRunner::new(&scratch, 0),
             &mut || false,
             &mut |line| said.push_str(line),
         )
@@ -2127,5 +2327,44 @@ error: could not compile `demo` (lib test) due to 2 previous errors
             said.contains("[1/1] demo/not-rust  DOES NOT COMPILE"),
             "{said}"
         );
+
+        // Two jobs, from nothing: the same verdicts, each job in a copy
+        // and a build directory of its own.
+        fs::remove_dir_all(&scratch).unwrap();
+        fs::create_dir_all(&scratch).unwrap();
+        let mut first = CargoRunner::new(&scratch, 0);
+        let mut second = CargoRunner::new(&scratch, 1);
+        let mut said = String::new();
+        let two_jobs = super::drive_jobs(
+            &root,
+            &scratch,
+            &breaks,
+            &options,
+            &mut [&mut first, &mut second],
+            &mut || false,
+            &mut |line| {
+                said.push_str(line);
+                said.push('\n');
+            },
+        )
+        .unwrap();
+        assert_eq!(two_jobs, Finished::Complete { flagged: 2 }, "{said}");
+        for expected in [
+            "demo/over-is-strict  caught by 1 test(s)",
+            "demo/far-over-factor  caught by 2 test(s)",
+            "demo/label-unseen  NOT CAUGHT",
+            "demo/sum-backwards  survived, as its list expects",
+            "5 break(s): 3 did what the list expects, 2 flagged.",
+        ] {
+            assert!(said.contains(expected), "`{expected}` is not in:\n{said}");
+        }
+        for copy in ["tree", "tree-2"] {
+            assert_eq!(
+                fs::read_to_string(scratch.join(copy).join("crates/demo/src/lib.rs")).unwrap(),
+                before,
+                "{copy}"
+            );
+        }
+        assert!(scratch.join("target-2").is_dir(), "the second job's build");
     }
 }
