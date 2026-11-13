@@ -80,7 +80,8 @@ Two more facts shape the design:
 | 14 | **Built.** Anthropic: `speed` in the request, for a model that offers a tier and for no other; `usage.speed` in the decoder; the `anthropic-fast-*` headers as the tier's own limits; the beta header where a model's flag asks for it; the tier's 429 and 529 told from the model's; the shortest cooldown. Tried against the real API: a request for fast was served fast and said so. The catalog's offers were checked and stand. |
 | 16 | The statistics record and the usage aggregates carry the speed, priced at its rate. `/usage` can group by it. |
 | 22, 23, 24 | The status line shows a speed other than standard and a cooldown. The `/effort` picker gets the fast-mode toggle. The usage panel shows cost by speed. |
-| 31, 35, 36 | OpenAI-compatible servers, OpenAI Responses and Google: their tiers as offers, and their silent downgrades as fallback events. |
+| 31 | **Built.** The `openai-chat` protocol: `service_tier` in the request for a model that offers a tier that way, written `priority` for `fast`; the tier that served the request from the top level of the response, read only for such a model; a downgrade as a fallback event by the provider; a speed that is another model's id, named by a model flag (Venice.ai). Catalog offers for OpenAI's and OpenRouter's fast and flex tiers and for Venice.ai's fast variant. Tried against the real APIs: OpenRouter served a request for `priority` at it and said so, and Venice.ai's fast variant answered. |
+| 35, 36 | OpenAI Responses and Google: their tiers as offers, and their silent downgrades as fallback events. |
 
 **The owner's requirement for the terminal UI**, recorded here for steps 22 to 24: the `/effort` picker shows a fast-mode toggle on `Tab`, with the hint `tab - fast mode`, only when the current model offers a fast speed. The rest of the UI is our own design, not a copy of another harness's command or icon ([architecture/09-tui.md](../architecture/09-tui.md)).
 
@@ -139,6 +140,13 @@ What it was decided from:
 - **A speed cannot be named to a model that has no fast mode.** `speed: "standard"` on such a model is a 400 (`does not support the speed parameter`). So "the adapter always sends an explicit tier" holds for a model that offers a tier, and a model that offers none is told nothing.
 - **The number of requests a minute is the model's whatever the speed.** A fast response carries the model's request limit and the fast tier's token limits. A refusal at fast speed while the model's own limit has nothing left is therefore the model's, and is not answered by falling back.
 - **A spending cap is never a tier's refusal.** It arrives as a 429 like a rate limit, with a detail code of its own. It is reported at once: no retry, no fallback, no cooldown.
+
+**Learned in step 31, from the OpenAI-compatible servers:**
+
+- **What a response says about its tier cannot be trusted from every server.** Venice.ai's responses carry `service_tier: "priority"`, its upstream host's word, on requests it bills at its own standard price. A reader that took it at its word would record a standard request as fast, price it at a rate card the request never ran at, and announce a fallback that did not happen. So a response's tier is read only where the request could have named one that way.
+- **"Another model id" is a real mechanism,** as this record allowed for: Venice.ai lists a faster variant of a model as a model of its own. The catalog keeps it as an offer of the base model, so that the setting, the fallback and the cooldown work as for any tier, and a model flag names the id. The variant has a smaller output limit than its base model, which one catalog entry cannot say, so a second model flag gives the variant's limit and a request at the tier is held to it.
+- **A price that depends on the time of day exists** ("Revisit when", below): DeepSeek's off-peak price is half its peak price. The catalog has one rate card for a speed, so the peak price is entered. It is not a speed tier, and nothing here was changed for it; it is left open as [an item of its own](../outstanding/a-price-that-depends-on-the-time-of-day.md).
+- **OpenAI's flex tier refuses with a 429** that its documentation calls "Resource Unavailable" and gives no code for. Without a code it cannot be told from the model's own rate limit, so it is retried with backoff as one, and is not answered by a fallback. The first real refusal should be looked at.
 
 **Open, for the step that needs it:**
 

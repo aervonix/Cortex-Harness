@@ -43,7 +43,7 @@ These are the rules of the build plan. They hold in every change.
 | Regenerate every generated file, the configuration schema and reference included | `cargo xtask gen` |
 | Build `cortex` and its alias `cx` | `cargo xtask alias` |
 | Fuzz the stream decoders (needs a nightly toolchain and cargo-fuzz) | `cargo xtask fuzz` |
-| Run the live smoke test, or record provider fixtures: by hand, never in CI, and it costs money | `cargo xtask live`, `cargo xtask record` |
+| Run the live smoke test, or record provider fixtures: by hand, never in CI, and it costs money | `cargo xtask live [PROVIDER]`, `cargo xtask record [--provider PROVIDER]` |
 
 `./x <command>` is the same as `cargo xtask <command>`.
 
@@ -54,7 +54,7 @@ These are the rules of the build plan. They hold in every change.
 - **A pull request that touches only `docs/**` and `*.md`** skips the Rust build and tests in CI and runs only the repo rules. Anything else runs everything, and so does a change to the generated files in `docs/protocol/` or `docs/configuration/`.
 - **Configuration keys are declared once,** in `crates/cortex-config/src/schema/sections.rs`: the type, the default, what a project's file may do with the key, and when a change takes effect. After adding or changing one, run `cargo xtask gen` and commit the regenerated files in `docs/configuration/` with it. A section in `[permissions]`, `[sandbox]` or `[limits]` is enforced: there an unknown key is an error, and must stay one.
 - **The protocol is a contract.** After changing a type in `cortex-protocol`, run `cargo xtask schema` and commit the regenerated files with it. The versioning rules in [docs/architecture/11-rpc-protocol.md](docs/architecture/11-rpc-protocol.md) say what is an addition and what needs a new protocol version. The golden transcript is not edited to make a test pass. Everything tolerates what it does not know **except the values the harness enforces** (leases, grants, rules, limits): those refuse an unknown field or value, and must stay that way.
-- **A provider protocol is tested from files.** Its fixtures are in `crates/cortex-llm/fixtures/<protocol>/`: recorded from the real API by `cargo xtask record`, or written by hand from the documented format where a case cannot be provoked. A fixture is not edited to make a test pass. The recorder reads the API key from a file named in `CORTEX_LIVE_ANTHROPIC_KEY_FILE`; do not read, print or copy that file yourself, and never put a key on a command line.
+- **A provider protocol is tested from files.** Its fixtures are in `crates/cortex-llm/fixtures/<protocol>/`: recorded from the real API by `cargo xtask record`, or written by hand from the documented format where a case cannot be provoked. A fixture is not edited to make a test pass. The recorder reads each provider's API key from a file named in `CORTEX_LIVE_<PROVIDER>_KEY_FILE` (`ANTHROPIC`, `OPENROUTER`, `DEEPSEEK`, `VENICE`); do not read, print or copy such a file yourself, and never put a key on a command line.
 - **Lints** are errors in CI. An exception is an `#[expect(…, reason = "…")]` or `#[allow(…, reason = "…")]` with a real reason, at the smallest scope that works.
 - **Measure, then write the number down.** Budgets are in [docs/performance-budgets.md](docs/performance-budgets.md). A change that affects one reports its measurement.
 - **Commit messages** say what changed and why, in the imperative. No trailers that name a person.

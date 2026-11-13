@@ -2,7 +2,7 @@
 
 `cortex-llm` gives the agent loop one way to talk to any model. The design goal is an abstraction that loses nothing a provider needs to get back, while keeping every mapping a pure, fixture-testable function.
 
-The provider facts on this page were read from the providers' public documentation in November 2026. The research notes list the sources. They change often: each provider step in the build plan starts by re-reading the current docs. **Anthropic's were read again on 2026-11-13, in step 14**, which built the first protocol; what had moved is listed in "The `anthropic-messages` protocol", at the end of the page.
+The provider facts on this page were read from the providers' public documentation in November 2026. The research notes list the sources. They change often: each provider step in the build plan starts by re-reading the current docs. **Anthropic's were read again on 2026-11-13, in step 14**, which built the first protocol; what had moved is listed in "The `anthropic-messages` protocol". **The servers that speak `openai-chat` were read the same day, in step 31**, which built the second, and three of them were asked: "The `openai-chat` protocol", at the end of the page, says what each fact came from.
 
 The neutral types this page describes (messages, parts, stop reasons, usage, model info) are defined in `cortex-protocol`, because front ends and the session log use them too. `cortex-llm` adds the request and the stream events, which nothing outside the provider layer sees.
 
@@ -16,7 +16,7 @@ Keeping these apart is the central decision. The same model can be reached throu
 | **Provider** | An endpoint that speaks a protocol: base URL, credential source, extra headers, capability flags. Data, from the built-in table or user configuration. | `anthropic`, `openai`, `openrouter`, `ollama`, `google`, or a user-defined one |
 | **Model** | A catalog entry: limits, prices, reasoning controls, capabilities. Data. | one row per provider and model id |
 
-A user adds an OpenAI-compatible server by writing a provider entry in configuration. No code changes. Quirks are capability flags on the provider or model entry (for example `reasoning_field = "reasoning_content"`, `usage_in_stream = false`, `tool_choice = false`), not branches on model-name substrings.
+A user adds an OpenAI-compatible server by writing a provider entry in configuration. No code changes. Quirks are capability flags on the provider or model entry (for example `reasoning_passback = "reasoning_content"`, `usage_in_stream = false`, `max_tokens_field = "max_completion_tokens"`), not branches on model-name substrings.
 
 ## Traits
 
@@ -64,6 +64,7 @@ pub trait Timer: Send + Sync + Debug {
 
 - `build`, `feed` and `classify` are tested from files: a request snapshot per scenario, and recorded response streams replayed with every possible chunk boundary.
 - **The first protocol changed none of these traits.** Step 14 added one thing beside them: `ImageSource`, through which an image that is stored as an artifact reaches a request ("Images", below).
+- **Neither did the second.** Step 31 added `openai-chat` as a module beside the first, and changed one rule of the client: bytes that arrive before the first event of a response restart the wait for it ("Transport", below).
 - **The request carries the model.** `ModelRequest` holds the catalog entry of the model it is for, so `build` and `decoder` take the request and the provider and no third argument. A client is for one provider; which client a role's requests go to is decided where the core is assembled.
 - **`classify` and `decoder` are given the request as it was sent**, because one thing cannot be told without it: whether a refusal belongs to the speed tier the request was sent at ("Speed tiers", below).
 - **A decoder writes to an `EventSink`, not to a list of events.** The sink has one method per thing a response can say (`start`, `text_delta`, `tool_call_start`, `block_end`, `usage`, `end`, `error`, `served_at`, `limits`, `request_id`). It is the one place that turns "the response reported this speed" into "the request ran at this speed", so no adapter can get that rule wrong.
@@ -191,7 +192,7 @@ Some providers will run the same model faster, or slower and cheaper, at a diffe
 
 **In a request.** The loop passes the speed in effect for the role. Each adapter maps it to its provider's mechanism: a body field (`speed` at Anthropic, `service_tier` at OpenAI and Google), an extra header, or, where a platform sells the tier as a separate deployment, another model id. A provider-side default such as `auto` is never relied on: the adapter sends an explicit tier, so that what was asked for is known. **That holds for a model that offers a tier.** A model that offers none is not told a speed at all: Anthropic answers a request that names a speed, even `standard`, with a 400 on a model that has no fast mode (recorded in step 14, in the fixture `error-speed-not-offered`).
 
-**In a response.** The adapter reads the tier that served the request wherever the provider reports it (`usage.speed`, a top-level `service_tier`, a response header) and passes it on. It never fills it in from the request. The event sink then applies one rule for every protocol: **a request is recorded at the speed the response reports, and at the speed it was sent at only when the response reports none.** That, not the setting, is what the request is priced at. When the two differ the usage carries both, and the stream carries a `SpeedFallback` event marked as the provider's doing, once. "Asked for fast, served standard" is never silent.
+**In a response.** The adapter reads the tier that served the request wherever the provider reports it (`usage.speed`, a top-level `service_tier`, a response header) and passes it on. It never fills it in from the request. And it reads it only where the request could have named a tier that way: one server passes on its upstream host's `service_tier` on requests it bills at its own standard price ("The `openai-chat` protocol"). The event sink then applies one rule for every protocol: **a request is recorded at the speed the response reports, and at the speed it was sent at only when the response reports none.** That, not the setting, is what the request is priced at. When the two differ the usage carries both, and the stream carries a `SpeedFallback` event marked as the provider's doing, once. "Asked for fast, served standard" is never silent.
 
 **When a tier is refused.** The classification table gains one distinction: a rate limit or overload that belongs to the tier, not to the model. The retry layer then has two choices beyond an ordinary retry.
 
@@ -221,7 +222,7 @@ The cooldown exists because of the cache: where speeds do not share a prefix, ev
 
 **What is not a speed.** Capacity an account has bought or reserved, batch processing, and a default set at the provider for a whole project or deployment. Decision 0027 says why.
 
-**Built in:** the types in step 3; the request field, the catalog format, the classification and the cooldown in step 5; Anthropic in step 14; the other providers with their own steps.
+**Built in:** the types in step 3; the request field, the catalog format, the classification and the cooldown in step 5; Anthropic in step 14; OpenAI, OpenRouter and Venice.ai through `openai-chat` in step 31; the other providers with their own steps.
 
 ## Reasoning
 
@@ -252,7 +253,8 @@ Caching is treated as a property of request shape, not a switch.
 | Protocol | Mapping |
 |---|---|
 | Anthropic Messages | An explicit breakpoint after the tools and system prompt, plus the automatic moving breakpoint for the conversation. A second explicit breakpoint when one round adds more blocks than the lookback window. The one-hour lifetime is a configuration choice. As built: "The `anthropic-messages` protocol", below. |
-| OpenAI Responses and Chat | Implicit caching, with a session-derived cache key where the model uses one, or explicit breakpoints where the model supports them. |
+| OpenAI Chat and the servers that speak it | Implicit caching at most of them: nothing to place. The session's cache key as `prompt_cache_key`, where the provider's entry says the server takes one. Anthropic's markers, for a model whose entry says it caches only where a request marks it: one on the system prompt and one at the top level. As built: "The `openai-chat` protocol", below. |
+| OpenAI Responses | Implicit caching, with a session-derived cache key where the model uses one, or explicit breakpoints where the model supports them. |
 | Gemini | Implicit caching. Nothing to place. |
 | Local servers | Nothing. Their prefix reuse is automatic. |
 
@@ -272,7 +274,7 @@ One normalised record per request, with the provider's raw usage object kept bes
 
 Beside the token counts the record carries the provider, the model, the role, and **the speed the request ran at**, with the speed that was asked for when the two differ ("Speed tiers", above).
 
-Providers disagree on what "input" includes, so each adapter documents and tests its normalisation (for example, subtracting cached tokens where the provider's input count includes them). Streaming usage may be cumulative, final-only, or absent after an abort; the adapter reports what it has, and `End.usage` is authoritative. Anthropic's input count already leaves the cache out, so nothing is subtracted; its usage arrives twice, at the start of a response and with the stop reason, and a later count replaces an earlier one while a missing count leaves it standing.
+Providers disagree on what "input" includes, so each adapter documents and tests its normalisation (for example, subtracting cached tokens where the provider's input count includes them). Streaming usage may be cumulative, final-only, or absent after an abort; the adapter reports what it has, and `End.usage` is authoritative. Anthropic's input count already leaves the cache out, so nothing is subtracted; its usage arrives twice, at the start of a response and with the stop reason, and a later count replaces an earlier one while a missing count leaves it standing. The `openai-chat` servers count every input token in `prompt_tokens`, so the cached ones are subtracted; their usage is the whole request's each time it is sent, and a later object replaces the earlier one whole.
 
 **Cost** is computed when the request is recorded: tokens × the catalog prices in force **for the speed the request ran at**, with context-size tiers and lifetime-class multipliers. A size tier is chosen by every input token the request sent (fresh, cache reads and cache writes together) and prices the whole request. Cache writes the provider did not put in a lifetime class are priced at the first class the rate card lists. A token class that was used and has no price gives no cost at all, never a guess. Money is kept as whole nano-dollars, so that sums are exact. The entry stores the cost and the catalog version, so later price changes do not rewrite history. A provider that reports cost itself overrides the calculation. A model with no price data shows tokens only.
 
@@ -290,7 +292,7 @@ Providers disagree on what "input" includes, so each adapter documents and tests
 - **Variant defaults.** Each entry names the default at each variant point ([14-adaptation.md](14-adaptation.md)). Left out, they are the `replace` edit format, strict tool schemas where the model has them, and the `concise` prompt style.
 - **Flags.** What a model's or a provider's protocol needs to know that the neutral fields do not say is a named flag on the entry. Each protocol documents the flags it reads. The ones `anthropic-messages` reads are listed with it, below.
 - **Runtime discovery, on request.** `cortex models refresh` queries the provider's list endpoint and overlays limits and capabilities in the user's state directory. It never runs on its own.
-- **Local servers** are asked at connect time for the loaded context size, because it differs from the model's trained size.
+- **Local servers** are asked at connect time for the loaded context size, because it differs from the model's trained size. Each has an endpoint of its own for it: "The `openai-chat` protocol", below.
 
 ## Credentials
 
@@ -314,7 +316,7 @@ pub trait AuthMethod: Send + Sync {
 
 ## Error classification
 
-Each protocol implements `classify` as a table from (transport error, status, provider error code, headers) to an `ErrorKind` and a retry hint. The table for each protocol lives beside its fixtures. The shared rules:
+Each protocol implements `classify` as a table from (transport error, status, provider error code, headers) to an `ErrorKind` and a retry hint. The table for each protocol is at the top of its `classify.rs`, and is tested row by row. The shared rules:
 
 | Signal | Kind |
 |---|---|
@@ -342,7 +344,8 @@ The provider's request id is attached to every error and written to the log.
 - **Client:** reqwest with rustls and the ring crypto provider, HTTP/2 enabled, default features off. Measured against the alternatives in [decision 0004](../decisions/0004-http-and-tls.md).
 - **One client per process**, created lazily on first use, off the start-up path. Connections are pooled. Making the transport costs under a microsecond. Creating the client costs 1.06 to 1.13 ms warm and 44.6 ms on the first run after a build, when the certificate store is not in the file cache (step 5, [../performance-budgets.md](../performance-budgets.md)). `warm()` creates it ahead of the first request, from a background task.
 - **Redirects are not followed.** A model endpoint has no reason to redirect, and following one would carry the credential headers to wherever it points. A redirect is a response like any other and is classified as a failure.
-- **Time limits are the client's, not the transport's.** One limit runs from sending a request to the first event of its response (default 60 s), and one on silence after that (default 90 s; keep-alive pings count as bytes). Both are in the retry settings and a provider's entry can set its own, which a local server that reads a long prompt before it answers needs. Either one ending is a `Transient` failure.
+- **Time limits are the client's, not the transport's.** One limit runs from sending a request to the first event of its response (default 60 s), and one on silence after that (default 90 s; keep-alive pings count as bytes). Both are in the retry settings and a provider's entry can set its own, which a local server that reads a long prompt before it answers needs: the built-in entries for local servers allow ten minutes and five. Either one ending is a `Transient` failure.
+- **Bytes before the first event restart the wait for it** (step 31). A server that has queued a request sends keep-alive comments until it begins: DeepSeek documents holding a request for up to ten minutes that way. Such bytes are not an event, and they do show the connection is alive. So a queue is waited out while it keeps saying so, and a connection that goes dead is given up on one first-event limit after its last byte, never later. **The wait has a ceiling:** ten first-event limits from the send, which is ten minutes at the default. A server that only ever says it is alive is not going to answer, and the one that documents its queue closes the connection itself after ten minutes.
 - **Pre-warm.** When a session starts with a configured provider, the core opens a connection to it in the background, so the first request does not pay for DNS, TCP and TLS.
 - **Proxies:** standard environment variables are honoured. Custom CA bundles are configurable.
 - **Statelessness.** The harness sends the full history on every request and does not depend on server-side conversation state. Stateful provider features can be added later as optimisations behind the same trait.
@@ -352,7 +355,7 @@ The provider's request id is attached to every error and written to the log.
 | Protocol | Covers | When |
 |---|---|---|
 | `anthropic-messages` | Anthropic. Also Anthropic-shaped endpoints on other servers. | First. **Built in step 14.** |
-| `openai-chat` | OpenAI Chat Completions, OpenRouter, Ollama, llama.cpp, vLLM, LM Studio and other compatible servers, with capability flags for their differences. | Second, before the first release, because a second protocol is what proves the abstraction. |
+| `openai-chat` | OpenAI Chat Completions, OpenRouter, DeepSeek, Venice.ai, Ollama, llama.cpp, vLLM, LM Studio and other compatible servers, with capability flags for their differences. | Second, before the first release, because a second protocol is what proves the abstraction. **Built in step 31.** |
 | `openai-responses` | OpenAI's current API, needed for its newest models' tool calling. | After the first release. |
 | `gemini-generate` | Google's `generateContent` API. Google now also documents a newer stateful API; which one to target is decided when that step starts. | After the first release. |
 
@@ -453,3 +456,211 @@ An error after a successful status has no headers; at fast speed a rate limit or
 | a provider | `api_version` | Another `anthropic-version` than the built-in one. |
 | a provider | `beta` | Names for the `anthropic-beta` header, sent with every request. |
 | a model | `speed_beta` | The beta name a request must carry to name a speed on this model: the models whose fast mode is a preview. None of the four in the catalog needs it. |
+
+## The `openai-chat` protocol
+
+As built in step 31 (`crates/cortex-llm/src/openai_chat`): OpenAI's Chat Completions API, streamed, and the servers that speak it. Its fixtures are in `crates/cortex-llm/fixtures/openai-chat/`, and its classification table is in the module that implements it, `openai_chat/classify.rs`.
+
+**What was read, and how each server was checked.** Every page was read on 2026-11-13.
+
+| Server | What was read | Checked |
+|---|---|---|
+| OpenAI | developers.openai.com/api: the reference for creating a chat completion and for its stream; the guides to error codes, rate limits, fast mode, flex processing and prompt caching; the pricing page; the pages of GPT-6 Luna and GPT-6.1 Terra. (Its documentation moved there from platform.openai.com.) | Documentation only: there was no key. |
+| OpenRouter | openrouter.ai/docs: the API overview, parameters, streaming, errors and debugging, limits, the credits endpoint, and the guides to service tiers, reasoning tokens and prompt caching. Its public model list and the list of a model's endpoints (`/api/v1/models`). | **Against the real API**: 19 recorded fixtures. |
+| DeepSeek | api-docs.deepseek.com: the first page, the chat completion reference, thinking mode, the context cache, error codes, rate limits, pricing and the balance endpoint. | **Against the real API**: 18 recorded fixtures. |
+| Venice.ai | docs.venice.ai: the chat completion reference, error codes, rate limiting, the rate-limits endpoint of a key, reasoning models and pricing. Its public model list (`/api/v1/models`). | **Against the real API**: 16 recorded fixtures. |
+| Ollama | docs.ollama.com: OpenAI compatibility, the list of running models (`/api/ps`), context length and thinking. The response types in its source (`openai/openai.go`), for the names of members its pages do not give. | Documentation only: no local server was installed. |
+| llama.cpp | The server's README (`tools/server/README.md` in github.com/ggml-org/llama.cpp), and the error types in its source (`server-common.cpp`). | Documentation only. |
+| vLLM | docs.vllm.ai: reasoning outputs and online serving. Its source for the model list (`entrypoints/openai/models/serving.py`). | Documentation only. |
+| LM Studio | lmstudio.ai/docs/developer: the OpenAI-compatible chat endpoint, tool use, the list of models (`/api/v1/models`) and the API changelog. | Documentation only. |
+
+A fixture from a server that was not there to record from is written by hand from that server's documented format, and its note says so in its first line, so that a later recording can replace it.
+
+**What reading and asking showed that this page did not know.**
+
+| What | Where it came from | What was built for it |
+|---|---|---|
+| **DeepSeek wants its reasoning back.** Once a conversation has tools, every assistant message sent to it must carry `reasoning_content`, or the answer is a 400. | Its thinking-mode guide, and the real API: a history that began on an Anthropic model was refused, and accepted with the member empty. | An assistant message this provider produced goes back raw, reasoning included. The provider's flag `reasoning_passback` names the member, and a message with no reasoning to send carries it empty. |
+| **OpenAI's newest models take tools on Chat Completions only at the reasoning level `none`, or not at all.** GPT-6 Luna's page: "Chat Completions supports function calling only when reasoning_effort is none". GPT-6.1 Terra's: "tool calling requires the Responses API". | Their model pages. | The model flag `tools_reasoning`. OpenAI itself has one catalog entry here; its real path is the `openai-responses` protocol. |
+| **OpenAI's priority tier is now "fast mode"** (renamed on 2026-07-30). The request takes `priority` or `fast`; the response answers `priority`; a request it cannot serve fast is served at standard, billed at standard, and answered `default`. | Its fast-mode guide. | `service_tier` is written `priority` for the speed `fast`, and both words are read as `fast`. |
+| **OpenRouter has service tiers too**, with the tier that served the request at the top level of the response. | Its service-tiers guide, and the real API: a request for `priority` was served and answered `priority`, at twice the price. | The same code as for OpenAI. |
+| **Venice.ai's responses say `service_tier: "priority"` on requests it bills at its standard price.** It is its upstream host's word, passed on. | The real API, and the cost each response states. | A response's `service_tier` is read only for a model that is asked for its tier with that member. |
+| **Venice.ai puts a system prompt of its own before the caller's**, about a thousand tokens, unless told not to. | The real API: a 19-token request was billed 1,101. Its reference documents the switch. | The provider flag `extra_body`, which adds members to every request. Venice.ai's entry sets `venice_parameters.include_venice_system_prompt` to false. |
+| **Venice.ai sells a speed as another model** (`…-fast` beside the model), at its own price and with its own limits. | Its pricing page and model list. Sent to the real API. | The model flag `speed_model_<tier>`: the request names that model's id. |
+| **A response can fail after it began at any of these servers**, each in its own form: an `error` at the top of a chunk (OpenRouter documents it; Venice.ai did it, recorded), or a stop reason that is a failure (DeepSeek's `insufficient_system_resource`). | Their documentation, and one real recording. | All are errors, never an end. |
+| **OpenRouter's key endpoint answers with the key's label, which is a shortened form of the key.** | The real API: the recorder's own guard refused to print the answer. | What a usage endpoint answers is read and dropped. Nothing but its figures is kept. |
+| **DeepSeek's price depends on the time of day**: off-peak is half of peak. | Its pricing page. | Not solved. The catalog holds one rate card for a speed, so the peak price is entered and the entry says so. [Decision 0027](../decisions/0027-speed-tiers.md) lists this case under "Revisit when". |
+| **vLLM renamed its reasoning member** from `reasoning_content` to `reasoning`, and warns that a client reading the old name gets nothing. | Its reasoning-outputs page. | The decoder reads either name. |
+| **A local server reports the context size it loaded a model with**, each at an endpoint of its own. | Their documentation. | The context probes, below. |
+
+**The request.** `POST <base URL>/chat/completions`. The body is written by hand, in this order:
+
+```text
+{"model", "stream", "stream_options", "max_tokens", "reasoning_effort",
+ "service_tier", "response_format", "prompt_cache_key", "cache_control",
+ the provider's own members, "tools", "messages": [ the system prompt, … ]}
+```
+
+- **Everything before the messages is the same bytes for every request of a context epoch**, the system prompt is the first message, and the messages only grow at the end. One request's body, without its two closing brackets, is the beginning of the next one's (`OpenAiChat::stable_prefix`). A test checks it over the conversations recorded from all three servers, and fails when earlier content is edited on purpose.
+- **The output limit** goes under the name the provider's entry gives (`max_tokens`, which every server knows, or `max_completion_tokens`). A request with no limit sends none: a server that counts the limit against the context window refuses one it cannot honour, so the model's maximum is not sent as a default.
+- **Reasoning.** A level the model has is sent as `reasoning_effort`, or as `reasoning.effort` where the provider's entry asks for the object form (OpenRouter). A token budget is `reasoning.max_tokens`, and a server without the object form has no way to take one. No level leaves the model's default. A level the model does not have is refused before anything is sent.
+- **Tools** carry `strict` when the variant in effect is strict schemas. `tool_choice` and `parallel_tool_calls` are never sent.
+- **Messages.** The system prompt under the role the provider's entry names (`system`, or `developer` for OpenAI). A user message as a string, or as a list of parts when it holds more than one piece of text or an image. A tool's results as one `tool` message each, in call order, right after the calls.
+- **A failed tool result** begins with `Tool error: `: the dialect has no flag for it.
+- **An image a tool returned** cannot be in a `tool` message, which holds text. It follows in a `user` message after the results, which says which call it is from.
+- **Not sent:** sampling parameters, `n`, `store`, `user`, and anything that names us. OpenRouter's optional headers that identify an application are not sent.
+
+**A response has no blocks.** The dialect streams one assistant message as additions to its members. The decoder cuts the message into blocks, and the stored block of a part is **the piece of the assistant message that part stands for**, under the message's own member names:
+
+| Part | Stored block |
+|---|---|
+| text | `{"content":"…"}` |
+| reasoning | `{"reasoning_content":"…"}`, under the name the server used, with `reasoning_details` where the server sent them |
+| a tool call | `{"tool_calls":[{"id":"…","type":"function","function":{"name":"…","arguments":"…"}}]}`, with whatever else the server put on the call |
+
+Laid over one another in order (text appended to text, a list extended by a list), a message's blocks are the message the server would have sent without streaming. That is how a message is sent back raw. No stored text is copied into a request as it is: a string is read and written again, and any other value is written only after it was read as one whole JSON value. **And a part's stored block gives the message only the members of its own kind:** a text part its `content`, a reasoning part the reasoning members, a tool call the one item of `tool_calls` that has its own id. Whatever else a block holds is left out, so a damaged or doctored session log cannot give a message a role, or a text part a tool call.
+
+**Replay** follows the rule of "The conversation model". A message this provider produced through this protocol, for a model that can read it, goes back raw: reasoning, signed pieces and all. Every other message goes as its neutral projection. Recorded from the real servers: DeepSeek and Venice.ai took their own `reasoning_content` back, a model of Anthropic's through OpenRouter took its signed `reasoning_details` back, all three took a response that an Anthropic model had produced as its projection, and DeepSeek took a conversation that went from one of its models to the other and back, each sent the other's responses without their reasoning.
+
+A reasoning part gives the message `content` only at a server that writes its reasoning inside the text (`reasoning_tags`). And text that one response of this protocol streamed is one text again when its reasoning is dropped, with nothing put between its pieces; another protocol's separate blocks of text stay apart.
+
+**Tool calls are keyed by index.** The fragments of several calls may arrive interleaved, each naming its call by `index`, and the order of arrival says nothing about which call a fragment belongs to. So a call is a block for each index, and every call stays open until the stop reason arrives. The cost: a call that only reads cannot start early while a later call of the same response is still streaming.
+
+- **A call is announced, and its block begins, once its name is known.** A server that gives a call no id by then gets one made from the call's place in the response and, where the response has an id, the end of that, so that a result can name it and another response's calls do not get the same. It is kept short: some servers refuse a call id over 40 characters.
+- **A server that gives no index at all** sends each call whole, or one call at a time: an item with no index, no id and no name is more of the call before it, and any other is the next call.
+- **Another id under an index already in use is another call.** Some servers number every call of a response `0` and tell them apart by id alone; joined by index only, the second call's arguments would be appended to the first's.
+- **A call that never gets a name is left out,** and the response stops as `malformed_tool_call`. It cannot be run, and the servers refuse a call with no name when it is sent back, which would fail every later request of the session.
+
+**Reasoning, under its names.**
+
+| Where a server puts it | Servers | Read when |
+|---|---|---|
+| `delta.reasoning_content` | DeepSeek, Venice.ai, llama.cpp, LM Studio | Always, unless the provider's `reasoning_field` names another member. |
+| `delta.reasoning` | OpenRouter, Ollama, vLLM, LM Studio for some models | When the delta has no `reasoning_content`, unless `reasoning_field` names another member. |
+| `delta.reasoning_details` | OpenRouter, Venice.ai | Always: its pieces are joined and kept for sending back. Its text is shown only when the delta has no reasoning text of its own. |
+| inside `delta.content`, between `<think>` and `</think>` | a local server that does not separate it | When the provider's or the model's `reasoning_tags` is on. |
+
+One delta is read under one name, so reasoning a server sends twice is never shown twice. A request that asks for no visible reasoning still gets the reasoning block and its stored block, without text.
+
+**Stop reasons.**
+
+| The server's | Neutral | |
+|---|---|---|
+| `stop` | `end` | `tool_calls` when the response holds a tool call: some servers end such a response with `stop`. `refusal` when the text arrived in `delta.refusal`. |
+| `tool_calls`, `function_call` | `tool_calls` | When the response holds no call after all: `max_output` if the server's own word for the stop (`native_finish_reason`) is `length`, and `end` otherwise. |
+| `length` | `max_output` | |
+| `content_filter` | `content_filter` | |
+| `stop`, `tool_calls`, `function_call`, after a call that never got a name | `malformed_tool_call` | |
+| `error`, `insufficient_system_resource` | none: an error | The response failed. |
+| an empty text | none | Some servers write `""` where others write null, on every chunk but the last. |
+| anything else | passed on under its own name | Never guessed at. |
+
+The response is complete at `[DONE]`, not at the stop reason: the usage comes in between. A server that closes the stream without `[DONE]` after a stop reason has completed its response too.
+
+**Usage.** The dialect's `prompt_tokens` counts every input token, so the cached ones are taken out: `cache_read` is `prompt_tokens_details.cached_tokens` (or DeepSeek's `prompt_cache_hit_tokens`), `cache_write` is `prompt_tokens_details.cache_write_tokens` (or Venice.ai's `cache_creation_input_tokens`), and `input` is what is left. The reasoning count is `completion_tokens_details.reasoning_tokens`. A usage object is the whole request's count so far. Some servers send one in every chunk and OpenRouter repeats the stop reason with it, so **a later object replaces the earlier one, and nothing is ever added up.** A cost the provider states is read from where it puts it: `usage.cost` (OpenRouter), or `cost.usd` beside the usage (Venice.ai). Venice.ai's responses also write the count of cache reads beside the details (`cache_read_input_tokens`, recorded), and a count of writes is read from either place. **What a failed response used is counted:** a usage that comes in the chunk that fails is passed on before the error.
+
+**Speed tiers.**
+
+| Server | How a tier is asked for | How the response says what ran | When the tier cannot be served |
+|---|---|---|---|
+| OpenAI | `service_tier`: `default`, `priority` for fast, `flex` | `service_tier` at the top level | Fast: served at standard, answered `default`. Flex: a 429. |
+| OpenRouter | The same | The same | Fast: served at standard. Flex: a capacity error. |
+| Venice.ai | Another model's id, named by the model flag `speed_model_<tier>`. The variant gives less output than its base model (32,768 tokens against 262,144), so `speed_max_output_<tier>` holds a request at the tier to the variant's limit. | Nothing: the request ran where it was sent | The fast variant refuses (429 or 503). It has limits of its own, so a refusal at fast is the tier's. |
+| DeepSeek, the local servers | No tier | | |
+
+A model that offers tiers through `service_tier` is always told which one, `default` included. A model that offers none is told nothing, and a speed asked of it is refused before anything is sent.
+
+**Errors.** The servers bend the dialect's `{"error": {"message", "type", "code"}}` each their own way: the status as the code (OpenRouter, llama.cpp), typed metadata (OpenRouter), a sentence with a code beside it in capitals (Venice.ai). Every name a body gives is read, most exact first, and the table in `openai_chat/classify.rs` decides; it is tested row by row with each server's own bodies. These rows stand out:
+
+- **A code wins over its status.** OpenAI sends exhausted credit and a spending cap as a 429. They are never retried.
+- **A 403 is not always a credential.** OpenRouter answers a moderation refusal and a spent budget with one. The first is a refused request, known by a typed name or by the `reasons` and `flagged_input` it carries, and the second a quota.
+- **No part of a key is kept.** Some servers repeat the key they were sent in the message of a failure, masked to its last characters (DeepSeek's recorded 401 does: `Your api key: ****0000`). A message goes to logs and to the screen, so a word is taken out of the message before it is kept when it has a run of asterisks or bullets in it, or begins as these providers' keys do (`sk-`). What a server masks some other way is not recognised.
+- **A context that is too long has a code at some servers and only a sentence at others.** "maximum context length" is the dialect's long-standing wording, which the servers without a code reuse. It is the one place a message is read here.
+
+The rate-limit headers are `x-ratelimit-{limit,remaining,reset}-{requests,tokens}`, with the reset written as a duration (OpenAI), a time in milliseconds (Venice.ai) or a count of seconds. A 429 with no `retry-after` waits until the reset of a limit that has nothing left.
+
+**Flags.** A flag this protocol does not know, or a value a flag cannot have, is refused when a request is built: a misspelt `usage_in_stream`, or `replay_reasoning = "All"`, must not silently be the default.
+
+| On | Flag | Meaning |
+|---|---|---|
+| a provider | `max_tokens_field` | The member that limits the output: `max_tokens` (the default) or `max_completion_tokens`. |
+| a provider | `usage_in_stream` | Off for a server that refuses `stream_options`. On when absent. |
+| a provider | `system_role` | `system` (the default) or `developer`. |
+| a provider | `reasoning_param` | `reasoning_effort` (the default) or `reasoning`, the object form. |
+| a provider | `reasoning_field` | The member of a delta that carries reasoning text, where it is neither of the usual two. |
+| a provider or a model | `reasoning_tags` | Reasoning is inside the text, between `<think>` tags. |
+| a provider | `reasoning_passback` | The member every assistant message must carry when it is sent back, empty when there is no reasoning to send. |
+| a provider | `replay_reasoning` | `"all"`: reasoning goes back whatever the model. `"readable"`, or absent: only to a model that can read it. |
+| a provider | `prompt_cache_key` | The server takes one. Off when absent: a strict server refuses a member it does not know. |
+| a provider | `extra_body` | Members added to every request, as the text of one JSON object. It cannot name a member the builder writes. |
+| a provider | `usage_endpoint` | The format of its usage or balance endpoint. |
+| a provider | `context_probe` | How its loaded context size is asked for. |
+| a model | `cache_control` | The model caches only where a request marks it, with Anthropic's markers. |
+| a model | `speed_model_<tier>` | The model id that serves a tier. |
+| a model | `speed_max_output_<tier>` | The most output tokens that model gives, where it is less than the model's own. |
+| a model | `tools_reasoning` | The one reasoning level at which the model takes tools on this protocol. |
+
+**The built-in providers** (`openai_chat::providers`). A user's own entry for any other compatible server has the same form.
+
+| Provider | Base URL | Key looked for in | What its entry sets |
+|---|---|---|---|
+| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `max_completion_tokens`, the `developer` role, a prompt cache key |
+| `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | the `reasoning` object, a usage endpoint |
+| `deepseek` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | `reasoning_content` on every assistant message, a usage endpoint |
+| `venice` | `https://api.venice.ai/api/v1` | `VENICE_API_KEY` | `max_completion_tokens`, a prompt cache key, its own system prompt turned off, a usage endpoint |
+| `ollama` | `http://localhost:11434/v1` | none | a context probe, the local time limits |
+| `llamacpp` | `http://localhost:9931/v1` | none | a context probe, the local time limits |
+| `vllm` | `http://localhost:8000/v1` | none | `max_completion_tokens`, a context probe, the local time limits |
+| `lmstudio` | `http://localhost:1234/v1` | none | a context probe, the local time limits |
+
+The ports are the ones each server's documentation gives as its default. llama.cpp's is 9931 in its current README; its examples still show 8080.
+
+**The time limits of a local server.** A hosted server answers within seconds, or queues a request and says so. A local server does neither: before it sends anything it may load the model from disk, and it reads the whole prompt, at a few hundred tokens a second on a graphics card and a few dozen on a processor. A request that is given up on is read again from the start when it is retried, so a limit that is too short does not fail fast: it never succeeds.
+
+- **The first event may take ten minutes.** That is a model load of a minute or two and a prompt of 100,000 tokens read at 200 tokens a second. It is also the default time limit of the dialect's own client libraries, so it is what these servers are run against.
+- **Silence after that may last five minutes.** A server that parses tool calls may hold back a call's arguments until they are complete, and a file written by a slow model is minutes of output.
+
+**A hosted server that queues a request keeps its ordinary limits.** DeepSeek holds a request for up to ten minutes when it is busy, and sends a keep-alive comment while it does. The client lets such bytes restart the wait for the first event ("Transport", above), so the queue is waited out, a connection that goes silent is still given up on after 60 seconds, and a server that only ever says it is alive after ten minutes.
+
+**A local server's loaded context size** (`openai_chat::context`). A local model's window is what the server was started with, not what the model was trained for: a model trained for 131,072 tokens is commonly loaded with 4,096. None of these servers reports it through the dialect, so each is asked at an endpoint of its own. The module builds the request and reads the answer; sending it when a session connects is the core's work.
+
+| Probe | Endpoint | Where the size is |
+|---|---|---|
+| `ollama-ps` | `GET <origin>/api/ps` | `models[].context_length`, for the running model of that name (a name without a tag is the tag `latest`) |
+| `llamacpp-props` | `GET <origin>/props` | `default_generation_settings.n_ctx`: the size of one slot. (`/v1/models` has `n_ctx_train`, the trained size, which is not it.) |
+| `vllm-models` | `GET <base>/models` | `data[].max_model_len`, for the model of that id |
+| `lmstudio-models` | `GET <origin>/api/v1/models` | `models[].loaded_instances[].config.context_length`. (`max_context_length` is the most the model supports, which is not it.) |
+
+`<origin>` is the base URL without its final `/v1`. A model that is not loaded yet has no size, and the catalog's figure stands.
+
+**The `/usage` refresh** (`openai_chat::account`; [18-usage.md](18-usage.md), "The opt-in refresh"). The module builds a `GET` with no body and reads the answer; whether it is made at all is the user's setting, and making it is step 16's.
+
+| Provider | Endpoint | What it reports |
+|---|---|---|
+| `openrouter` | `GET <base>/key` | What the key has spent, the key's own credit limit and what is left of it, and today's free-model requests. |
+| `deepseek` | `GET <base>/user/balance` | The balance in each currency, and whether it is enough to make calls. |
+| `venice` | `GET <base>/api_keys/rate_limits` | The balance in each of its currencies, whether the key may make calls, and each model's limits by the minute and by the day. |
+| `openai` | none | Its usage API takes an admin key, which is not the key a user gives for model calls. |
+| the local servers | none | |
+
+- **All three report money**: an amount in a currency (US dollars, yuan, Venice.ai's own unit). The protocol's `LimitWindow` counts requests and tokens and cannot say that. So what is read is returned as a type of this crate (`AccountUsage`), and how a balance reaches `/usage` is step 16's to decide ([outstanding/a-balance-in-the-usage-view.md](../outstanding/a-balance-in-the-usage-view.md)).
+- **The answer is read and dropped.** OpenRouter's holds a shortened form of the key. `AccountUsage` has no member for the provider's own text, and must not gain one.
+
+**What the second protocol changed in the shared parts.**
+
+| Part | Change |
+|---|---|
+| The neutral types in `cortex-protocol` | None. |
+| The traits of `cortex-llm` (`Protocol`, `StreamDecoder`, `Transport`, `ModelClient`, `AuthMethod`) | None. The abstraction held: the second protocol is one module beside the first. |
+| The client | One rule: bytes that arrive before the first event restart the wait for it, up to ten first-event limits in all ("Transport"). It holds for every protocol: an Anthropic `ping` that arrives before the first event restarts the wait too. |
+| The JSON writer | Moved from the Anthropic module to the crate (`cortex_llm::json`, private), with the reader of an object's members in order. Both protocols write their bodies with it. Anthropic's snapshots did not change. |
+| The catalog | Entries for the models the fixtures were recorded from, and one for OpenAI. No change to its format. |
+
+**For the steps that add a protocol** (35 and 36).
+
+- **A protocol is a module with five files** and a table of providers: `request`, `decode`, `classify`, and for this one `account` and `context`. Start from whichever of the two existing ones is nearer in shape.
+- **Where a provider's stream has no blocks,** store for each part the piece of the provider's own message it stands for, and send a message back by laying the pieces over one another. Do not invent a block format.
+- **Record first.** Four of the facts above (DeepSeek's refusal of a projected message, Venice.ai's system prompt, its `service_tier`, the key in OpenRouter's answer) are in no documentation, or were only believed after the real server showed them.
+- **OpenAI's own models belong to step 35.** Tool calling with reasoning is on the Responses API. The entry here for GPT-6 Luna, its `tools_reasoning` flag and its seven hand-written fixtures are what could be done without a key; step 35 records from the real API and should replace them.
+- **What was not recorded,** and why: a request the server refuses as invalid, from OpenRouter and Venice.ai (both answered the two invalid requests that were tried with a 200; DeepSeek's refusal is recorded); a refusal of a speed tier (it cannot be provoked; Venice.ai's is written by hand from its documented error); a server-side tool block (the dialect has none).
+- **A reasoning payload that must go back is the rule now, not the exception:** Anthropic, DeepSeek, OpenRouter's signed pieces. Google's thought signatures arrive on tool calls, and a tool call's unknown members already go back with it here.
