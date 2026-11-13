@@ -127,59 +127,68 @@ pub(crate) fn check(packages: &[Package], manifests: &[(String, String)]) -> Vec
     violations
 }
 
-/// The feature a crate puts its test-only switches behind.
-const TEST_HOOKS: &str = "test-hooks";
+/// The features that hold code for tests only: `test-hooks`, where a crate
+/// puts its test-only switches (a seeded order of events), and `pty`, the
+/// operating system's half of the test kit's pseudo-terminal driver in
+/// `cortex-term`.
+const TEST_ONLY: &[&str] = &["test-hooks", "pty"];
 
-/// A `test-hooks` feature is turned on by dev-dependencies and by nothing
-/// else. Anything else that turned it on would compile a switch meant for
-/// tests into every build of the product, the released one included. There
-/// are three other ways to turn a feature on, and each is refused:
+/// A test-only feature is turned on by dev-dependencies, and by the test kit,
+/// which is itself only ever a dev-dependency, and by nothing else. Anything
+/// else that turned it on would compile code meant for tests into every
+/// build of the product, the released one included. There are three other
+/// ways to turn a feature on, and each is refused:
 ///
 /// - a normal or build dependency that asks for it;
 /// - the crate that has it listing it in another of its features, `default`
 ///   above all;
 /// - a feature of another crate that passes it on (`cortex-tools/test-hooks`).
 fn check_test_hooks(package: &Package, violations: &mut Vec<Violation>) {
-    const WHY: &str = "Why: the feature holds switches for tests (a seeded order of events, \
-                       docs/testing-and-ci.md). Asked for under `[dev-dependencies]` it is \
-                       built into test builds only. Turned on any other way it is built into \
-                       the released binary.";
-    for dependency in &package.dependencies {
-        if dependency.kind != DepKind::Dev
-            && dependency
-                .features
-                .iter()
-                .any(|feature| feature == TEST_HOOKS)
-        {
-            violations.push(Violation::new(
-                &package.manifest,
-                None,
-                format!(
-                    "`{}` turns on the `{TEST_HOOKS}` feature of `{}` outside its \
-                     dev-dependencies.\n    {WHY}\n    Move the feature to the crate's \
-                     `[dev-dependencies]` entry.",
-                    package.name, dependency.name
-                ),
-            ));
-        }
+    const WHY: &str = "Why: the feature holds code for tests (a seeded order of events, \
+                       docs/testing-and-ci.md; or pseudo-terminals). Asked for under \
+                       `[dev-dependencies]`, or by the test kit, it is built into test builds \
+                       only. Turned on any other way it is built into the released binary.";
+    if package.name == TESTKIT {
+        return;
     }
-    for (feature, turns_on) in &package.features {
-        for turned_on in turns_on {
-            // `test-hooks`, `dep/test-hooks` or `dep?/test-hooks`.
-            let passed_on = turned_on
-                .rsplit_once('/')
-                .is_some_and(|(_, feature)| feature == TEST_HOOKS);
-            if turned_on == TEST_HOOKS || passed_on {
+    for test_only in TEST_ONLY {
+        for dependency in &package.dependencies {
+            if dependency.kind != DepKind::Dev
+                && dependency
+                    .features
+                    .iter()
+                    .any(|feature| feature == test_only)
+            {
                 violations.push(Violation::new(
                     &package.manifest,
                     None,
                     format!(
-                        "the feature `{feature}` of `{}` turns on `{turned_on}`.\n    {WHY}\n    \
-                         Take it out of the feature: a crate's tests ask for `{TEST_HOOKS}` in \
-                         their `[dev-dependencies]`.",
-                        package.name
+                        "`{}` turns on the `{test_only}` feature of `{}` outside its \
+                         dev-dependencies.\n    {WHY}\n    Move the feature to the crate's \
+                         `[dev-dependencies]` entry.",
+                        package.name, dependency.name
                     ),
                 ));
+            }
+        }
+        for (feature, turns_on) in &package.features {
+            for turned_on in turns_on {
+                // `test-hooks`, `dep/test-hooks` or `dep?/test-hooks`.
+                let passed_on = turned_on
+                    .rsplit_once('/')
+                    .is_some_and(|(_, feature)| feature == *test_only);
+                if turned_on == test_only || passed_on {
+                    violations.push(Violation::new(
+                        &package.manifest,
+                        None,
+                        format!(
+                            "the feature `{feature}` of `{}` turns on `{turned_on}`.\n    {WHY}\n    \
+                             Take it out of the feature: a crate's tests ask for `{test_only}` in \
+                             their `[dev-dependencies]`.",
+                            package.name
+                        ),
+                    ));
+                }
             }
         }
     }
@@ -699,6 +708,30 @@ mod tests {
             }],
         );
         assert_one(&messages(&in_a_build_script), &["`test-hooks`"]);
+    }
+
+    #[test]
+    fn pseudo_terminals_are_turned_on_by_tests_and_the_test_kit_only() {
+        let pty = |dependency: Dependency| Dependency {
+            features: vec!["pty".to_owned()],
+            ..dependency
+        };
+        let in_tests = krate(
+            "cortex-tui",
+            vec![dep("cortex-term"), pty(dev("cortex-term"))],
+        );
+        assert!(messages(&in_tests).is_empty(), "{:#?}", messages(&in_tests));
+        let in_the_kit = krate("cortex-testkit", vec![pty(dep("cortex-term"))]);
+        assert!(
+            messages(&in_the_kit).is_empty(),
+            "{:#?}",
+            messages(&in_the_kit)
+        );
+        let in_the_product = krate("cortex-tui", vec![pty(dep("cortex-term"))]);
+        assert_one(
+            &messages(&in_the_product),
+            &["`cortex-tui` turns on the `pty` feature of `cortex-term`"],
+        );
     }
 
     #[test]

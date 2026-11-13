@@ -24,6 +24,7 @@ mod mutate;
 mod nonblocking;
 mod outside;
 mod owner_guard;
+mod perf;
 mod rules;
 mod schema;
 mod startup;
@@ -81,6 +82,11 @@ Not blocking (the `main` and `nightly` workflows run these)
   startup BINARY [--runs N] [--budget desktop|linux|windows] [--check]
                     Time `--version` under both names, and a headless run to
                     its request, against the start-up budgets.
+  perf [--runs N] [--seconds N] [--json PATH]
+                    Measure the terminal layer's demo, optimised, in a
+                    pseudo-terminal: start to first frame, key to frame idle
+                    and while streaming, frame cost, frame intervals and bytes
+                    per frame, against the TUI's budgets.
   unused            Look for dependencies that no code uses (cargo-machete).
   advisories        Check the lockfile against the advisory database.
   fuzz [--seconds N] [TARGET...]
@@ -108,7 +114,6 @@ Working on the code
   alias [--release] Build `cortex` and put its alias `cx` beside it.
 
 Not built yet
-  perf              Measure the performance budgets (step 20).
   dist              Package release binaries (step 34).
 ";
 
@@ -141,7 +146,7 @@ fn main() -> ExitCode {
         Some("fuzz") => outside::fuzz(&rest),
         Some("live") => outside::live(&rest),
         Some("record") => outside::record(&rest),
-        Some("perf") => not_built("perf", 20),
+        Some("perf") => perf::run(&rest),
         Some("dist") => not_built("dist", 34),
         Some(other) => Err(format!("unknown command `{other}`\n\n{USAGE}")),
     };

@@ -357,6 +357,7 @@ fn push_unit(unit: u16, into: &mut Vec<u8>) {
             let high = HIGH_SURROGATE.swap(0, Ordering::SeqCst);
             let c = u16::try_from(high)
                 .ok()
+                .filter(|high| *high != 0)
                 .and_then(|high| char::decode_utf16([high, unit]).next())
                 .and_then(Result::ok)
                 .unwrap_or('\u{fffd}');

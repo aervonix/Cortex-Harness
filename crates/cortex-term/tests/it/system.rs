@@ -74,7 +74,9 @@ fn restored(session: &mut Session) {
     assert!(modes.cursor_visible, "the cursor is hidden");
     assert!(!modes.sync, "a synchronized update was left open");
     assert!(!modes.bracketed_paste, "bracketed paste was left on");
-    assert!(!modes.focus, "focus events were left on");
+    // ConPTY asks the terminal for focus events itself, for the console it
+    // runs, so on Windows the mode says nothing about the demo.
+    assert!(cfg!(windows) || !modes.focus, "focus events were left on");
     assert!(
         screen.keyboard().is_empty(),
         "the keyboard protocol was left on"
