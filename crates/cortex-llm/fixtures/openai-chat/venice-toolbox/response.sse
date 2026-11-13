@@ -1,0 +1,12 @@
+data: {"service_tier":null,"id":"id_fixture0001","object":"chat.completion.chunk","created":1794590311,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794590311,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794590311,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"ready","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794590311,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":"stop"}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0001","object":"chat.completion.chunk","created":1794590311,"model":"deepseek-v4-flash-0731","choices":[],"usage":{"prompt_tokens":3291,"completion_tokens":2,"total_tokens":3293,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}},"cost":{"usd":0.00042835,"diem":0}}
+
+data: [DONE]
+

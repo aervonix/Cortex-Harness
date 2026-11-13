@@ -1,0 +1,6 @@
+start id=id_fixture0001 model=z-ai/glm-5.3-flash
+block_start 0 Text
+text 0 "ready"
+block_end 0 {"content":"ready"}
+usage input=3147 cache_read=0 cache_write=0[] output=3 reasoning=1 speed=standard asked=-
+end stop=end raw=stop detail=stop input=3147 cache_read=0 cache_write=0[] output=3 reasoning=1 speed=standard asked=-

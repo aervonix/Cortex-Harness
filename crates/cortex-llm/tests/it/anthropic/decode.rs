@@ -218,6 +218,7 @@ every_cut! {
     switch_1 => "switch-1",
     switch_2 => "switch-2",
     switch_3 => "switch-3",
+    toolbox => "toolbox",
 }
 
 #[test]
