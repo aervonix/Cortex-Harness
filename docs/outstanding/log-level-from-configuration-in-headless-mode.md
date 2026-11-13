@@ -1,0 +1,3 @@
+| Item | Who | When |
+|---|---|---|
+| **`log.level` from configuration, in a headless run.** The binary starts the log before the core reads configuration, so its filter comes from `--log-level` and `CORTEX_LOG` only ([10-headless.md](../architecture/10-headless.md), "As built in step 13b"). Applying the configured level means setting the filter again once the core has started (`LogHandle::set_filter`), which needs the core to say what the user's configuration holds without a session: a small addition to `cortex-core`. | Step 23, which starts the log for the TUI the same way, or step 27 | Before the first release |

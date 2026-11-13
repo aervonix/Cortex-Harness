@@ -99,7 +99,9 @@ Cancelling a node cancels everything below it. Every await in the loop that can 
 
 **The second interrupt, "kill now"** (built in step 13a). A tool call is given two tokens: the one that says stop, and a second, `RunCx::kill`, that says stop now. The process runner takes the second as "skip the graces": a command that is being stopped in stages is killed at once, and one that had not been asked yet is killed without being asked. The loop's handle has `interrupt_now`, which fires both, and the protocol carries it as `turn/interrupt` with `now: true` ([11-rpc-protocol.md](11-rpc-protocol.md)). The ordinary interrupt stays safe to send twice: a client that retries one never kills. Counting "a second Ctrl-C within two seconds" is the front end's, which then sends the second kind.
 
-**Signals.** In headless and RPC modes, SIGINT and SIGTERM (Ctrl-C and Ctrl-Break events on Windows) cancel the session token, let the final event and the session log flush, and exit with 130 or 143. A second signal exits immediately.
+**Signals.** In headless and RPC modes, SIGINT and SIGTERM (Ctrl-C and Ctrl-Break events on Windows) cancel the session token, let the final event and the session log flush, and exit with 130 or 143. **As built in step 13b** for headless mode: a second SIGINT is the second interrupt ("kill now", above), and a third signal, or a second when either is a SIGTERM, exits the process at once ([10-headless.md](10-headless.md), "Signals"). They are watched on the main thread, so a busy core thread cannot keep the process from stopping.
+
+**The core thread's runtime** has its timer and its I/O driver on: the provider layer's and the process runner's waits need the first, and the HTTP client's sockets the second (found by step 13b's first real request).
 
 **Cancellation safety.** Code that must not be interrupted halfway (appending a log entry, renaming a file into place, recording a tool result) runs to completion before the token is observed. These sections are short and never wait on the network.
 

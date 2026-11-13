@@ -114,6 +114,17 @@ fn sys_anthropic_strict_tools_carry_no_keyword_strict_mode_refuses() {
         assert!(refused.is_empty(), "sent as strict with {refused:?}");
     }
     assert!(strict >= 5, "the built-in tools are strict: {tools:?}");
+    // Anthropic's limits on a whole request, over its strict tools.
+    let optional: usize = tools
+        .iter()
+        .filter(|tool| tool["strict"] == true)
+        .map(|tool| optional_parameters(&tool["input_schema"]))
+        .sum();
+    assert!(strict <= 20, "{strict} strict tools");
+    assert!(
+        optional <= 24,
+        "{optional} optional parameters over the strict tools"
+    );
 }
 
 #[test]
@@ -152,4 +163,39 @@ fn sys_openai_strict_functions_carry_no_keyword_strict_mode_refuses() {
         let required = schema["required"].as_array().unwrap();
         assert_eq!(properties.len(), required.len(), "{function}");
     }
+}
+
+/// How many properties of a schema, its nested objects included, are not
+/// required.
+fn optional_parameters(schema: &Value) -> usize {
+    let Some(object) = schema.as_object() else {
+        return 0;
+    };
+    let mut count = 0;
+    if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+        let required: Vec<&str> = object
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|names| names.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        count += properties
+            .keys()
+            .filter(|name| !required.contains(&name.as_str()))
+            .count();
+        count += properties.values().map(optional_parameters).sum::<usize>();
+    }
+    if let Some(items) = object.get("items") {
+        count += optional_parameters(items);
+    }
+    for key in ["anyOf", "oneOf", "allOf"] {
+        for branch in object
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            count += optional_parameters(branch);
+        }
+    }
+    count
 }

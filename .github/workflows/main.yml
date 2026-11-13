@@ -80,6 +80,15 @@ jobs:
           sudo apt-get install --yes --no-install-recommends musl-tools
       - name: Release build, binary size and crate count
         run: cargo run --locked --quiet --package xtask -- size --check --target ${{ matrix.target }}
+      # The start-up budgets (docs/performance-budgets.md, "Start-up"), on
+      # the binary just built: `--version` under both names, and a headless
+      # run to its request. Reported in the job's summary.
+      - name: Start-up
+        shell: bash
+        run: >-
+          cargo run --locked --quiet --package xtask --
+          startup "target/${{ matrix.target }}/dist/cortex${{ runner.os == 'Windows' && '.exe' || '' }}"
+          --budget ${{ matrix.name }}
       - name: Keep the record
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

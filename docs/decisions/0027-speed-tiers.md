@@ -151,7 +151,7 @@ What it was decided from:
 **Settled in step 13a, on 2026-11-13.**
 
 - **`model.speed_cooldown_min`** is declared, default `"1m"`, a preference, and is the retry policy's shortest cooldown.
-- **A session takes a speed when it starts,** from `session/new`'s settings or from the command line. Headless mode gets a `--speed` flag (the owner's decision), built in step 13b, under the same trust rules as `--model`: it is the user's own command line, so it waits for nothing. In the core it is the override `model.speed`.
+- **A session takes a speed when it starts,** from `session/new`'s settings or from the command line. Headless mode gets a `--speed` flag (the owner's decision), built in step 13b, under the same trust rules as `--model`: it is the user's own command line, so it waits for nothing. In the core it is the override `model.speed`. **Built in step 13b:** `--speed TIER` is parsed with the other flags that choose a setting, and a system test sees `"speed":"fast"` in the request a run with it sends.
 - **`session/set` changes the session's speed and a role's own,** and the session's state reports for each role the speed that is set and the speed its next request will ask for.
 - **A change that costs the cache is said.** When the speed, the main role's model or its reasoning level is changed in a session that has already sent a request, the user gets a notice that the next request sends the whole conversation again without the provider's cached prefix. A change to a tier whose catalog entry says it shares the cache with `standard` is the exception.
 

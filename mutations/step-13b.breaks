@@ -1,0 +1,246 @@
+# Step 13b: the command line and headless mode, in cortex-cli, and what it
+# added to cortex-core (the subcommands' functions), cortex-llm (tools
+# reduced for a strict variant) and cortex-protocol (the headless records).
+#
+# Each rule of the headless page that the binary carries is broken here:
+# the exit codes, standard output holding the result alone, the jsonl
+# records, the flags that reach the core, the signals, the guard, the name
+# in the help. And what the first live run found: the tools a strict
+# variant is sent.
+
+[break] exit-code-mapped-wrongly
+rule: A failure of kind `auth` exits with code 3.
+file: crates/cortex-cli/src/exit.rs
+in: for_kind
+find: ErrorKind::Auth => AUTH
+replace: ErrorKind::Auth => PROVIDER
+caught-by:
+    cortex-cli::bin/cortex exit::tests::each_kind_of_failure_has_the_code_of_the_table
+    cortex-cli::system runs::sys_exit_3_with_no_key_or_a_rejected_one
+
+[break] interrupted-code-ignores-the-signal
+rule: A run interrupted by SIGTERM, or Ctrl-Break, exits with 143; by SIGINT with 130.
+file: crates/cortex-cli/src/exit.rs
+in: for_outcome
+find: TurnOutcome::Interrupted => signal.map_or(INTERRUPTED, Signal::code)
+replace: TurnOutcome::Interrupted => INTERRUPTED
+caught-by:
+    cortex-cli::bin/cortex exit::tests::each_outcome_has_the_code_of_the_table
+    cortex-cli::system signals::sys_sigterm_interrupts_the_turn_and_exits_143
+
+[break] diagnostics-on-standard-output
+rule: Standard output carries only the result; what the run says to a person goes to standard error.
+file: crates/cortex-cli/src/headless.rs
+in: Front::say
+find: eprintln!("{}: {text}", self.plan.name);
+replace: println!("{}: {text}", self.plan.name);
+caught-by:
+    cortex-cli::system runs::sys_exit_0_in_each_format_with_only_the_result_on_standard_output
+
+[break] jsonl-event-without-its-envelope
+rule: Each event line of jsonl is the parameters of a session/event notification, which the generated schema describes.
+file: crates/cortex-cli/src/report.rs
+in: event_line
+find: line(serde_json::to_string(event))
+replace: line(serde_json::to_string(&event.event))
+caught-by:
+    cortex-cli::system runs::sys_exit_0_in_each_format_with_only_the_result_on_standard_output
+    cortex-cli::system runs::sys_exit_7_at_a_limit
+
+[break] jsonl-without-its-session-record
+rule: The first line of jsonl is the session record.
+file: crates/cortex-cli/src/headless.rs
+in: in_core
+find:
+    front
+        .write(report::start_line(
+            session.clone(),
+            model,
+            state.workspace.clone(),
+        ))
+        .await;
+replace: let _ = (model, report::start_line);
+caught-by:
+    cortex-cli::system runs::sys_exit_0_in_each_format_with_only_the_result_on_standard_output
+
+[break] fail-on-denial-not-set
+rule: --fail-on-denial reaches the core, so the first call nobody can approve ends the run with code 6.
+file: crates/cortex-cli/src/headless.rs
+in: start_core
+find: options.fail_on_denial = run.fail_on_denial;
+replace: options.fail_on_denial = false;
+caught-by:
+    cortex-cli::system runs::sys_exit_6_with_fail_on_denial_and_a_denial_listed_without_it
+
+[break] denials-left-out-of-the-result
+rule: The result lists the calls refused because nothing could approve them.
+file: crates/cortex-cli/src/headless.rs
+in: finish
+find: let denials = denials(core, collector);
+replace: let denials = Vec::new();
+caught-by:
+    cortex-cli::system runs::sys_exit_6_with_fail_on_denial_and_a_denial_listed_without_it
+
+[break] second-ctrl-c-not-sent-as-now
+rule: A second Ctrl-C is turn/interrupt with now: running commands are killed at once.
+file: crates/cortex-cli/src/signals.rs
+in: Counter::next
+find: Act::Tell(Interrupt { signal, now: true })
+replace: Act::Tell(Interrupt { signal, now: false })
+caught-by:
+    cortex-cli::bin/cortex signals::tests::a_second_ctrl_c_kills_now_and_a_third_exits
+    cortex-cli::system signals::sys_a_second_ctrl_c_kills_running_commands_at_once
+
+[break] guard-not-given-to-the-core
+rule: The core is given the guard: the binary's own path and its hidden subcommand, so no command outlives a killed harness.
+file: crates/cortex-cli/src/headless.rs
+in: start_core
+find: options.guard.clone_from(&plan.guard);
+replace: let _ = &plan.guard;
+caught-by:
+    cortex-cli::system signals::sys_a_killed_harness_leaves_no_command_running
+
+[break] guard-subcommand-not-dispatched
+rule: The hidden subcommand runs the guard, before anything else is done.
+file: crates/cortex-cli/src/main.rs
+in: main
+find: if rest.first().is_some_and(|first| first == args::GUARD) {
+replace: if rest.first().is_some_and(|first| first == "not-the-guard") {
+caught-by:
+    cortex-cli::system signals::sys_a_killed_harness_leaves_no_command_running
+
+[break] invoked-name-ignored-in-help
+rule: Help prints the name the program was started with, cortex or cx.
+file: crates/cortex-cli/src/main.rs
+in: dispatch
+find: print!("{}", help::help(topic, name));
+replace: print!("{}", help::help(topic, COMMAND));
+caught-by:
+    cortex-cli::system names::sys_help_differs_only_in_the_name_used
+
+[break] piped-input-after-the-prompt
+rule: Standard input comes first, as context, and the prompt after it.
+file: crates/cortex-cli/src/headless.rs
+in: prompt
+find: (false, false) => Some(format!("{piped}\n\n{words}"))
+replace: (false, false) => Some(format!("{words}\n\n{piped}"))
+caught-by:
+    cortex-cli::system runs::sys_piped_input_comes_before_the_prompt_and_a_tool_call_is_not_on_standard_output
+
+[break] system-append-not-passed
+rule: --system-append reaches the system prompt.
+file: crates/cortex-cli/src/headless.rs
+in: start_core
+find: options.system_append.clone_from(&run.system_append);
+replace: let _ = &run.system_append;
+caught-by:
+    cortex-cli::system runs::sys_piped_input_comes_before_the_prompt_and_a_tool_call_is_not_on_standard_output
+
+[break] deltas-not-asked-for
+rule: With --include-deltas, jsonl carries item.delta events.
+file: crates/cortex-cli/src/headless.rs
+in: in_core
+find: info.capabilities.deltas = run.include_deltas && run.format == Format::Jsonl;
+replace: info.capabilities.deltas = false;
+caught-by:
+    cortex-cli::system runs::sys_exit_0_in_each_format_with_only_the_result_on_standard_output
+
+[break] no-session-keeps-a-log
+rule: --no-session keeps the session in memory, so it is not listed.
+file: crates/cortex-cli/src/headless.rs
+in: session
+find: ephemeral: plan.run.no_session
+replace: ephemeral: false
+caught-by:
+    cortex-cli::system runs::sys_continue_resumes_the_latest_session_and_no_session_keeps_none
+
+[break] core-runtime-without-io
+rule: The core thread's runtime has its I/O driver on, which the HTTP client's sockets need.
+file: crates/cortex-cli/src/headless.rs
+in: core_thread
+find:
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+replace:
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+    {
+caught-by:
+    cortex-cli::system runs::sys_exit_0_in_each_format_with_only_the_result_on_standard_output
+
+[break] a-read-counted-as-a-change
+rule: files_changed lists what the run wrote, not what it read.
+file: crates/cortex-cli/src/report.rs
+in: changed_files
+find: .is_some_and(|kind| WRITTEN.contains(&kind))
+replace: .is_some_and(|kind| kind != "unchanged")
+caught-by:
+    cortex-cli::bin/cortex report::tests::the_result_is_the_last_text_and_the_turns_own_end
+    cortex-cli::system runs::sys_exit_7_at_a_limit
+
+[break] trust-pins-only-the-allow-rules
+rule: Trusting a project pins every rule its files hold, allow, deny and ask, so the next start reads it as trusted.
+file: crates/cortex-core/src/manage.rs
+in: Core::trust_project
+find: let pin = [Definition::of_rules(&rules)];
+replace:
+    let allowed: Vec<Rule> = rules
+        .iter()
+        .filter(|rule| rule.action == cortex_protocol::lease::RuleAction::Allow)
+        .cloned()
+        .collect();
+    let pin = [Definition::of_rules(&allowed)];
+packages: cortex-cli
+caught-by:
+    cortex-cli::system commands::sys_a_project_trusted_with_permissions_trust_is_trusted_on_the_next_start
+
+[break] strict-tools-sent-whole
+rule: A tool sent to Anthropic as strict is reduced to what strict mode takes.
+file: crates/cortex-llm/src/anthropic/request.rs
+in: tools
+find: budget.reduce(&tool.schema)
+replace: (std::borrow::Cow::Borrowed(&tool.schema), true)
+packages: cortex-llm, cortex-cli
+caught-by:
+    cortex-cli::system tools::sys_anthropic_strict_tools_carry_no_keyword_strict_mode_refuses
+
+[break] openai-strict-functions-sent-whole
+rule: A function sent to OpenAI as strict is reduced to what strict mode takes, or sent as not strict.
+file: crates/cortex-llm/src/openai_chat/request.rs
+in: tools
+find: budget.reduce(&tool.schema)
+replace: (std::borrow::Cow::Borrowed(&tool.schema), true)
+packages: cortex-llm, cortex-cli
+caught-by:
+    cortex-cli::system tools::sys_openai_strict_functions_carry_no_keyword_strict_mode_refuses
+
+[break] strict-request-limits-ignored
+rule: Anthropic's strict tools stay within its limits on a whole request.
+file: crates/cortex-llm/src/strict.rs
+in: Budget::reduce
+find:
+    if self.tools + 1 > limits.tools
+        || self.optional + optional > limits.optional
+        || self.unions + unions > limits.unions
+replace: if false
+packages: cortex-llm, cortex-cli
+caught-by:
+    cortex-llm strict::tests::anthropic_tools_stay_strict_while_the_request_has_room
+    cortex-cli::system tools::sys_anthropic_strict_tools_carry_no_keyword_strict_mode_refuses
+
+# In today's toolbox the one open object is `tool_call`'s `arguments`, and
+# that tool is past Anthropic's limit on optional parameters as well, so a
+# request sends it as an ordinary tool either way: only the unit test sees
+# this break.
+[break] strict-open-object-kept
+rule: An object that takes any key cannot be strict: it is sent whole, and the tool not strict.
+file: crates/cortex-llm/src/strict.rs
+in: fits
+find: if (typed_object || object.contains_key("properties"))
+replace: if (object.contains_key("properties"))
+packages: cortex-llm, cortex-cli
+caught-by:
+    cortex-llm strict::tests::a_schema_the_rules_cannot_take_is_sent_whole_and_not_strict

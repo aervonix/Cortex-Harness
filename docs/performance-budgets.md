@@ -30,6 +30,8 @@ Numbers the product and the tooling must meet, how each is measured, and where e
 
 **Checked.** Main (both OSes). A coarse PR check: the system tier fails if first frame exceeds five times the runner budget.
 
+**Measured in step 13b** with `cargo xtask startup BINARY --budget COLUMN`, which times `--version` under both names and a trivial headless run (`cortex -p hi`) from the start of the process to its request reaching a listener on the loopback interface, 30 runs each. The `main` workflow runs it on the `dist` binary of each OS after every merge and puts the table in the job's summary. Desktop, release build: `--version` 0.56 ms (`cx` 0.54 ms), the headless run 12.8 ms under either name, of 15 ms. The runners' numbers are in [steps/13b/ci.md](steps/13b/ci.md).
+
 ## Memory
 
 | Budget | Limit | Measured basis |

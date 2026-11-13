@@ -1,0 +1,3 @@
+| Item | Who | When |
+|---|---|---|
+| **`cortex auth login` at a terminal.** [08-configuration.md](../architecture/08-configuration.md) says it reads a key without echo. Step 13b reads it from standard input when that is not a terminal, and refuses a terminal with how to give it a file: turning echo off needs the terminal layer (`cortex-term`), which `cortex-cli` reaches only through `cortex-tui`, or `unsafe` code of its own, which it does not allow. The onboarding flow asks for a key in the TUI anyway ("First run"). | Step 23 (the interactive application) or step 25 (onboarding), which have the terminal layer | Before the first release |
