@@ -22,6 +22,7 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use cortex_base::log::{self, FileOptions, Filter, LogHandle, LogOptions};
@@ -71,7 +72,7 @@ pub(crate) fn run(run: Run, name: &'static str, started: Instant) -> u8 {
     let format = run.format;
     let fail = |kind: ErrorKind, code: &str, message: String| {
         let error = ErrorData::new(kind, code, message);
-        finish_early(format, &run, name, &error, started)
+        finish_early(format, run.quiet, name, &error, started)
     };
     let prompt = match prompt(run.prompt.as_deref()) {
         Ok(Some(prompt)) => prompt,
@@ -110,9 +111,13 @@ pub(crate) fn run(run: Run, name: &'static str, started: Instant) -> u8 {
         .map(|exe| (exe, vec![OsString::from(crate::args::GUARD)]));
 
     let (lines, written) = mpsc::channel::<String>(WRITER_QUEUE);
+    let (writer_done, writer_finished) = tokio::sync::oneshot::channel::<()>();
     let writer = std::thread::Builder::new()
         .name("cortex-writer".to_owned())
-        .spawn(move || write_lines(written));
+        .spawn(move || {
+            write_lines(written);
+            let _ = writer_done.send(());
+        });
     let Ok(writer) = writer else {
         return fail(
             ErrorKind::Internal,
@@ -123,6 +128,7 @@ pub(crate) fn run(run: Run, name: &'static str, started: Instant) -> u8 {
     let (interrupts, interrupted) = mpsc::unbounded_channel::<Interrupt>();
     let (done, finished) = tokio::sync::oneshot::channel::<u8>();
     let handle = log.clone();
+    let quiet = run.quiet;
     let plan = Plan {
         run,
         prompt,
@@ -142,42 +148,78 @@ pub(crate) fn run(run: Run, name: &'static str, started: Instant) -> u8 {
             code
         });
     let Ok(core_thread) = core_thread else {
-        tracing::error!("the core thread could not be started");
-        return exit::INTERNAL;
+        let error = ErrorData::new(
+            ErrorKind::Internal,
+            "no_thread",
+            "the core thread could not be started",
+        );
+        return finish_early(format, quiet, name, &error, started);
     };
 
-    // The main thread watches for signals until the core thread is done.
+    // The main thread watches for signals until the run is over: the core
+    // thread is done and the writer has written everything. Once the core
+    // thread is done there is nothing left to interrupt, so a signal then
+    // ends the process at once (a reader that takes nothing more would
+    // otherwise hold it).
+    let core_done = Arc::new(AtomicBool::new(false));
     let watched = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map(|runtime| {
+            let core_done = Arc::clone(&core_done);
             runtime.block_on(async move {
-                let watch = signals::watch(interrupts);
-                race_done(finished, watch).await;
+                let watch = signals::watch(interrupts, Arc::clone(&core_done));
+                race_done(finished, writer_finished, &core_done, watch).await;
             });
         });
     if let Err(error) = watched {
         tracing::warn!(%error, "signals are not watched: their runtime did not start");
     }
-    let code = core_thread.join().unwrap_or(exit::INTERNAL);
+    let code = core_thread.join();
     let _ = writer.join();
     if let Some(handle) = handle {
         handle.flush();
     }
-    code
+    match code {
+        Ok(code) => code,
+        Err(_) => {
+            // A panic on the core thread: still a record, and the code that
+            // says the harness itself failed.
+            let error = ErrorData::new(
+                ErrorKind::Internal,
+                "core_panicked",
+                "the core thread failed; the log file has the details",
+            );
+            finish_early(format, quiet, name, &error, started)
+        }
+    }
 }
 
-/// Waits for the core thread to say it is done, watching for signals
-/// meanwhile. Watching may end first (no signals can be watched): the
-/// wait goes on.
+/// Waits for the core thread and then the writer to be done, watching for
+/// signals meanwhile, and marks the core done when it is. Watching may end
+/// first (no signals can be watched): the wait goes on.
 async fn race_done(
     mut finished: tokio::sync::oneshot::Receiver<u8>,
+    mut writer_finished: tokio::sync::oneshot::Receiver<()>,
+    core_done: &AtomicBool,
     watch: impl std::future::Future<Output = ()>,
 ) {
     let mut watch = std::pin::pin!(watch);
     let mut watching = true;
+    let (mut core, mut writer) = (false, false);
     std::future::poll_fn(|context| {
-        if std::pin::Pin::new(&mut finished).poll(context).is_ready() {
+        if !core && std::pin::Pin::new(&mut finished).poll(context).is_ready() {
+            core = true;
+            core_done.store(true, Ordering::SeqCst);
+        }
+        if !writer
+            && std::pin::Pin::new(&mut writer_finished)
+                .poll(context)
+                .is_ready()
+        {
+            writer = true;
+        }
+        if core && writer {
             return std::task::Poll::Ready(());
         }
         if watching && watch.as_mut().poll(context).is_ready() {
@@ -218,20 +260,67 @@ struct Front<'a> {
     signal: Option<Signal>,
     /// Whether to print a line for each tool call on standard error.
     progress: bool,
+    /// The turn a signal interrupts, once it has been asked for.
+    target: Option<(Core, cortex_core::ClientId, SessionId)>,
 }
 
 impl Front<'_> {
-    async fn write(&self, line: String) {
-        if !line.is_empty() {
-            // A writer that has gone (standard output closed) takes nothing
-            // more, and the run goes on to its end.
-            let _ = self.lines.send(line).await;
+    /// Hands a line to the writer. While the writer has no room (a reader
+    /// that is slow, or stopped), signals are still taken: each interrupts
+    /// the turn as it would anywhere else.
+    async fn write(&mut self, line: String) {
+        if line.is_empty() {
+            return;
+        }
+        let mut send = std::pin::pin!(self.lines.send(line));
+        loop {
+            let mut signals_open = true;
+            let next = std::future::poll_fn(|context| {
+                if let std::task::Poll::Ready(sent) = send.as_mut().poll(context) {
+                    // A writer that has gone (standard output closed) takes
+                    // nothing more, and the run goes on to its end.
+                    let _ = sent;
+                    return std::task::Poll::Ready(None);
+                }
+                if signals_open {
+                    match self.interrupted.poll_recv(context) {
+                        std::task::Poll::Ready(Some(interrupt)) => {
+                            return std::task::Poll::Ready(Some(interrupt));
+                        }
+                        std::task::Poll::Ready(None) => signals_open = false,
+                        std::task::Poll::Pending => {}
+                    }
+                }
+                std::task::Poll::Pending
+            })
+            .await;
+            match next {
+                None => return,
+                Some(interrupt) => self.interrupt(interrupt).await,
+            }
+        }
+    }
+
+    /// Interrupts the turn, or, before there is one, remembers the signal
+    /// so that none is started.
+    async fn interrupt(&mut self, interrupt: Interrupt) {
+        self.signal.get_or_insert(interrupt.signal);
+        if let Some((core, client, session)) = &self.target {
+            let _ = core
+                .handle(
+                    *client,
+                    Op::TurnInterrupt(TurnInterruptParams {
+                        session_id: session.clone(),
+                        now: interrupt.now,
+                    }),
+                )
+                .await;
         }
     }
 
     fn say(&self, text: &str) {
         if !self.plan.run.quiet {
-            eprintln!("{}: {text}", self.plan.name);
+            eprintln!("{}: {}", self.plan.name, crate::visible(text));
         }
     }
 
@@ -256,6 +345,7 @@ async fn drive(
         interrupted,
         signal: None,
         progress: run.format == Format::Text && !run.quiet && io::stderr().is_terminal(),
+        target: None,
     };
     let core = match start_core(&plan) {
         Ok(core) => core,
@@ -320,22 +410,12 @@ async fn in_core(core: &Core, front: &mut Front<'_>) -> u8 {
         let outcome = exit::outcome_for_kind(&error.kind);
         return finish(core, front, &collector, Some((outcome, *error))).await;
     }
+    front.target = Some((core.clone(), client.id, session.clone()));
 
     loop {
         let next = next_or_signal(&client.queue, &mut front.interrupted).await;
         match next {
-            Next::Signal(interrupt) => {
-                front.signal.get_or_insert(interrupt.signal);
-                let _ = core
-                    .handle(
-                        client.id,
-                        Op::TurnInterrupt(TurnInterruptParams {
-                            session_id: session.clone(),
-                            now: interrupt.now,
-                        }),
-                    )
-                    .await;
-            }
+            Next::Signal(interrupt) => front.interrupt(interrupt).await,
             Next::Outgoing(Outgoing::Event(event)) => {
                 let ended = collector.observe(&event);
                 if front.plan.run.format == Format::Jsonl {
@@ -375,7 +455,7 @@ async fn in_core(core: &Core, front: &mut Front<'_>) -> u8 {
 /// error, and returns the exit code that agrees with the outcome.
 async fn finish(
     core: &Core,
-    front: &Front<'_>,
+    front: &mut Front<'_>,
     collector: &Collector,
     failure: Option<(TurnOutcome, ErrorData)>,
 ) -> u8 {
@@ -406,7 +486,7 @@ fn denials(core: &Core, collector: &Collector) -> Vec<PermissionDenial> {
         .collect()
 }
 
-async fn write_result(front: &Front<'_>, result: HeadlessResult) {
+async fn write_result(front: &mut Front<'_>, result: HeadlessResult) {
     if let Some(error) = &result.error {
         front.say(&format!(
             "{} ({}: {})",
@@ -443,9 +523,15 @@ async fn failed(front: &mut Front<'_>, error: ErrorData) -> u8 {
 
 /// A run that failed before its threads were started: its record is
 /// written from the main thread.
-fn finish_early(format: Format, run: &Run, name: &str, error: &ErrorData, started: Instant) -> u8 {
-    if !run.quiet {
-        eprintln!("{name}: {}", error.message);
+fn finish_early(
+    format: Format,
+    quiet: bool,
+    name: &str,
+    error: &ErrorData,
+    started: Instant,
+) -> u8 {
+    if !quiet {
+        eprintln!("{name}: {}", crate::visible(&error.message));
     }
     let outcome = exit::outcome_for_kind(&error.kind);
     let result =
@@ -630,9 +716,11 @@ fn prompt(words: Option<&str>) -> io::Result<Option<String>> {
     let piped = if stdin.is_terminal() {
         String::new()
     } else {
-        let mut text = String::new();
-        stdin.lock().take(STDIN_LIMIT).read_to_string(&mut text)?;
-        text
+        // Bytes that are not UTF-8 (a diff of a file in another encoding)
+        // are read as U+FFFD rather than failing the run.
+        let mut bytes = Vec::new();
+        stdin.lock().take(STDIN_LIMIT).read_to_end(&mut bytes)?;
+        String::from_utf8_lossy(&bytes).into_owned()
     };
     let piped = piped.trim_end();
     let words = words.map(str::trim).unwrap_or_default();
@@ -657,7 +745,10 @@ fn start_log(run: &Run, env: &Env, name: &str) -> Option<Arc<LogHandle>> {
     if let Some(level) = level {
         match Filter::parse(&level) {
             Ok(filter) => options.filter = filter,
-            Err(error) => eprintln!("{name}: the log level `{level}` is not understood: {error}"),
+            Err(error) if !run.quiet => {
+                eprintln!("{name}: the log level `{level}` is not understood: {error}");
+            }
+            Err(_) => {}
         }
     }
     options.file = StateDir::from_dirs(&Dirs::from_env(env))

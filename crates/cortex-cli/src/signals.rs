@@ -9,11 +9,15 @@
 //! |---|---|
 //! | The first, of either kind | The turn is interrupted. The run writes its record and exits with 130 or 143. |
 //! | A second SIGINT (Ctrl-C) | `turn/interrupt` with `now`: running commands are killed at once. |
-//! | A third, or any after a SIGTERM | The process exits at once. |
+//! | A third, or a second when either is a SIGTERM | The process exits at once. |
+//! | Any, once the core thread is done | The process exits at once: nothing is left to interrupt, and a reader that takes no more output would otherwise hold it. |
 //!
 //! On Windows, Ctrl-C is SIGINT, and Ctrl-Break and the console's close
 //! event are SIGTERM. A process with no console gets none of them; it is
 //! stopped by being ended, and the Job Object ends its commands with it.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -64,7 +68,7 @@ impl Counter {
 /// the process itself when the table says so. Returns only when signals
 /// cannot be watched at all (a process with no console on Windows): the
 /// run then goes on without them.
-pub(crate) async fn watch(driver: UnboundedSender<Interrupt>) {
+pub(crate) async fn watch(driver: UnboundedSender<Interrupt>, core_done: Arc<AtomicBool>) {
     let Some(mut source) = Source::open() else {
         return;
     };
@@ -73,7 +77,14 @@ pub(crate) async fn watch(driver: UnboundedSender<Interrupt>) {
         let Some(signal) = source.next().await else {
             return;
         };
-        match counter.next(signal) {
+        // With the core done there is no turn to interrupt: what is left is
+        // writing the last lines, which a stopped reader can hold forever.
+        let act = if core_done.load(Ordering::SeqCst) {
+            Act::Exit(signal.code())
+        } else {
+            counter.next(signal)
+        };
+        match act {
             Act::Tell(interrupt) => {
                 // A driver that is gone has finished: the process is about
                 // to end by itself.

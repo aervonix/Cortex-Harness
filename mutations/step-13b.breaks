@@ -32,8 +32,8 @@ caught-by:
 rule: Standard output carries only the result; what the run says to a person goes to standard error.
 file: crates/cortex-cli/src/headless.rs
 in: Front::say
-find: eprintln!("{}: {text}", self.plan.name);
-replace: println!("{}: {text}", self.plan.name);
+find: eprintln!("{}: {}", self.plan.name, crate::visible(text));
+replace: println!("{}: {}", self.plan.name, crate::visible(text));
 caught-by:
     cortex-cli::system runs::sys_exit_0_in_each_format_with_only_the_result_on_standard_output
 
@@ -113,8 +113,8 @@ caught-by:
 rule: Help prints the name the program was started with, cortex or cx.
 file: crates/cortex-cli/src/main.rs
 in: dispatch
-find: print!("{}", help::help(topic, name));
-replace: print!("{}", help::help(topic, COMMAND));
+find: print_out(&help::help(topic, name));
+replace: print_out(&help::help(topic, COMMAND));
 caught-by:
     cortex-cli::system names::sys_help_differs_only_in_the_name_used
 
@@ -244,3 +244,70 @@ replace: if (object.contains_key("properties"))
 packages: cortex-llm, cortex-cli
 caught-by:
     cortex-llm strict::tests::a_schema_the_rules_cannot_take_is_sent_whole_and_not_strict
+
+# What the independent review found untested, with the tests it asked for.
+
+[break] deny-rules-become-allow-rules
+rule: --deny adds a rule that denies, which holds even where nothing is asked.
+file: crates/cortex-cli/src/headless.rs
+in: start_core
+find: (&run.deny, RuleAction::Deny)
+replace: (&run.deny, RuleAction::Allow)
+caught-by:
+    cortex-cli::system runs::sys_exit_6_with_fail_on_denial_and_a_denial_listed_without_it
+
+[break] trust-project-not-set
+rule: --trust-project treats the project as trusted for the run.
+file: crates/cortex-cli/src/headless.rs
+in: start_core
+find: options.trust_project = run.trust_project;
+replace: options.trust_project = false;
+caught-by:
+    cortex-cli::system commands::sys_a_project_trusted_with_permissions_trust_is_trusted_on_the_next_start
+
+[break] resume-opens-another-session
+rule: --resume ID continues the session ID.
+file: crates/cortex-cli/src/headless.rs
+in: session
+find: Choice::Resume(id) => open(id.clone())
+replace: Choice::Resume(_) => open(String::from("s_another"))
+caught-by:
+    cortex-cli::system runs::sys_continue_resumes_the_latest_session_and_no_session_keeps_none
+
+[break] input-that-is-not-utf8-refused
+rule: Standard input that is not UTF-8 is read with U+FFFD in its place, not refused.
+file: crates/cortex-cli/src/headless.rs
+in: prompt
+find: String::from_utf8_lossy(&bytes).into_owned()
+replace: String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+caught-by:
+    cortex-cli::system runs::sys_piped_input_comes_before_the_prompt_and_a_tool_call_is_not_on_standard_output
+
+[break] control-characters-shown-raw
+rule: Text shown at a terminal has its control characters, other than a line break and a tab, written as escapes.
+file: crates/cortex-cli/src/main.rs
+in: visible
+find: if hidden(character) {
+replace: if false {
+caught-by:
+    cortex-cli::bin/cortex tests::control_characters_are_shown_as_escapes
+
+[break] unknown-provider-taken
+rule: auth login and logout refuse a provider the core does not know.
+file: crates/cortex-cli/src/commands.rs
+in: auth
+find: known_provider(&context, &core, &provider)?;
+occurrence: 2
+replace:
+caught-by:
+    cortex-cli::system commands::sys_a_key_stored_with_auth_login_is_used_and_never_shown
+
+[break] strict-takes-any-keyword
+rule: A schema with a keyword the strict rules are not known to take is not sent as strict.
+file: crates/cortex-llm/src/strict.rs
+in: fits
+find: if object.keys().any(|keyword| !rules.takes(keyword))
+replace: if false
+packages: cortex-llm
+caught-by:
+    strict::tests::a_keyword_the_rules_do_not_know_keeps_a_tool_out_of_strict_mode

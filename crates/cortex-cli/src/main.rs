@@ -79,11 +79,11 @@ fn main() -> ExitCode {
 fn dispatch(command: Command, name: &'static str, started: Instant) -> u8 {
     match command {
         Command::Help(topic) => {
-            print!("{}", help::help(topic, name));
+            print_out(&help::help(topic, name));
             exit::COMPLETED
         }
         Command::Version => {
-            println!("{COMMAND} {VERSION}");
+            print_out(&format!("{COMMAND} {VERSION}\n"));
             exit::COMPLETED
         }
         Command::Run(run) => match mode(&run, std::io::stdout().is_terminal()) {
@@ -102,6 +102,34 @@ fn dispatch(command: Command, name: &'static str, started: Instant) -> u8 {
         Command::Auth(command) => commands::auth(command, name),
         Command::Models => commands::models(name),
     }
+}
+
+/// Writes `text` to standard output. A reader that has gone (`| head`)
+/// ends the output quietly, where `print!` would panic.
+pub(crate) fn print_out(text: &str) {
+    use std::io::Write as _;
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
+}
+
+/// Text as it is safe to show at a terminal: every control character but a
+/// line break and a tab is written as an escape (`\u{1b}`), so that text a
+/// repository or a model wrote cannot move the cursor, clear a line, or
+/// hide what it is next to.
+pub(crate) fn visible(text: &str) -> std::borrow::Cow<'_, str> {
+    let hidden = |character: char| character.is_control() && character != '\n' && character != '\t';
+    if !text.chars().any(hidden) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut shown = String::with_capacity(text.len() + 8);
+    for character in text.chars() {
+        if hidden(character) {
+            shown.extend(character.escape_unicode());
+        } else {
+            shown.push(character);
+        }
+    }
+    std::borrow::Cow::Owned(shown)
 }
 
 /// How a run is carried out.
@@ -142,7 +170,14 @@ fn invoked_name(arg0: Option<&OsStr>) -> &'static str {
 mod tests {
     use std::ffi::OsStr;
 
-    use super::{Mode, Run, invoked_name, mode};
+    use super::{Mode, Run, invoked_name, mode, visible};
+
+    #[test]
+    fn control_characters_are_shown_as_escapes() {
+        assert_eq!(visible("plain\ttext\nnext"), "plain\ttext\nnext");
+        assert_eq!(visible("a\u{1b}[2Kb"), "a\\u{1b}[2Kb");
+        assert_eq!(visible("\r\u{7}\u{9b}"), "\\u{d}\\u{7}\\u{9b}");
+    }
 
     fn name_for(arg0: &str) -> &'static str {
         invoked_name(Some(OsStr::new(arg0)))

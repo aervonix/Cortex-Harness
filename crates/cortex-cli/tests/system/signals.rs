@@ -146,7 +146,14 @@ fn sys_a_second_ctrl_c_kills_running_commands_at_once() {
     commanding(&machine, &spec);
     let running = Running::start(
         &machine,
-        &["-p", "run it", "--permission-mode", "unrestricted"],
+        &[
+            "-p",
+            "run it",
+            "--permission-mode",
+            "unrestricted",
+            "--output",
+            "json",
+        ],
     );
     let [parent, grandchild]: [_; 2] = roll
         .all(&["parent", "grandchild"], LIMIT)
@@ -163,7 +170,11 @@ fn sys_a_second_ctrl_c_kills_running_commands_at_once() {
         grandchild.gone_within(Duration::from_millis(1500)),
         "the second Ctrl-C killed what was left at once, not after the graces"
     );
-    running.finish().expect_code(130);
+    // The run went on to its end and wrote its record: the second Ctrl-C
+    // did not end the process.
+    let record = running.finish().expect_code(130).json();
+    assert_eq!(record["outcome"], "interrupted");
+    assert_eq!(record["tool_calls"], 1);
 }
 
 /// A harness that is killed outright leaves no command behind: the guard
