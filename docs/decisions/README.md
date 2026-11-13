@@ -34,6 +34,7 @@ One record per significant choice. Each says what the options were, what was cho
 | [0026](0026-one-autonomy-model.md) | One autonomy model: levels and leases, for single sessions and for teams | Accepted by the owner, with `supervised` confirmed as the name of the default level |
 | [0027](0027-speed-tiers.md) | Speed tiers: a per-model set of named tiers, recorded at the speed that ran | The requirement is the owner's (2026-11-12). The design is accepted. How utility roles behave was settled in the review of step 3; two details stay open for steps 5 and 13. |
 | [0028](0028-enforced-values-fail-closed.md) | Enforced values fail closed: a lease or grant with a field or value a build does not know is refused whole | Accepted, in the review of step 3 |
+| [0029](0029-owner-only-files-on-windows.md) | Owner-only files on Windows are made in `cortex-base`, in its one module that may use `unsafe` | Accepted by the owner |
 
 All of the owner's answers are dated 2026-11-12 and are recorded together in the [build plan](../build-plan.md).
 

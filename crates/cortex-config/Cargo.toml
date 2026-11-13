@@ -9,9 +9,25 @@ publish.workspace = true
 [lib]
 doctest = false
 
+[features]
+# Reserved for the Linux keychain: the Secret Service backend of the
+# credential store (decision 0018). The backend is not built yet, so the
+# feature adds nothing today, and `credentials.store = "keychain"` on Linux
+# says so. Windows needs no feature: Credential Manager is always there.
+keychain = []
+
 [dependencies]
 cortex-protocol.workspace = true
 cortex-base.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+# Windows Credential Manager, through a thin wrapper, so that this crate has
+# no `unsafe` of its own (docs/dependencies.md).
+[target.'cfg(windows)'.dependencies]
+keyring-core.workspace = true
+windows-native-keyring-store.workspace = true
 
 [lints]
 workspace = true

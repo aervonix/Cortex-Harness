@@ -1,0 +1,74 @@
+## default
+compat.instructions = true
+compat.mcp = true
+compat.skills = true
+config_version = 1
+credentials.store = "auto"
+managed.locked = []
+model.reasoning = "summary"
+model.speed = "standard"
+model.speed_cooldown = "10m"
+model.speed_fallback = true
+model.speed_wait = "20s"
+permissions.mode = "supervised"
+permissions.rules = []
+retry.attempts = 5
+retry.backoff_base = "1s"
+retry.backoff_cap = "30s"
+retry.backoff_factor = 2.0
+retry.first_event_timeout = "1m"
+retry.idle_timeout = "1m30s"
+retry.max_wait = "2m"
+sandbox.enabled = true
+sandbox.network = "off"
+sandbox.protect = []
+sandbox.write = []
+
+## managed
+managed.locked = ["sandbox.enabled"]  # managed: ~/managed/config.toml:3
+permissions.rules = [
+    { action = "deny", effect = "write", match = "/etc/**" },  # managed: ~/managed/config.toml:9
+]
+sandbox.enabled = true                # managed: ~/managed/config.toml:6
+sandbox.protect = [
+    "/srv/keys",                      # managed: ~/managed/config.toml:7
+]
+
+## user
+limits.day.cost = 20.0                      # user: ~/cortex/config.toml:29
+model.effort = "medium"                     # user: ~/cortex/config.toml:7
+model.fast = "claude-haiku-5-5"             # user: ~/cortex/config.toml:6
+model.main = "claude-opus-5-5"              # user: ~/cortex/config.toml:5
+model.roles.fast.speed = "standard"         # user: ~/cortex/config.toml:10
+permissions.rules = [
+    { action = "allow", effect = "exec", match = "cargo test *" },  # user: ~/cortex/config.toml:23
+]
+profile = "review"                          # user: ~/cortex/config.toml:2
+providers.local.base_url = "http://localhost:11434"  # user: ~/cortex/config.toml:13
+providers.local.first_event_timeout = "5m"  # user: ~/cortex/config.toml:14
+providers.local.headers = { Authorization = { env = "LOCAL_TOKEN" }, X-Team = "tools" }  # user: ~/cortex/config.toml:15
+retry.attempts = 3                          # user: ~/cortex/config.toml:18
+sandbox.enabled = false                     # user: ~/cortex/config.toml:21
+tui.theme = "dusk"                          # user: ~/cortex/config.toml:36
+
+## project
+model.main = "claude-sonnet-5-5"  # project: ~/work/app/.cortex/config.toml:2
+permissions.rules = [
+    { action = "deny", effect = "write", match = "**/.env*" },  # project: ~/work/app/.cortex/config.toml:4
+]
+
+## project-local
+retry.max_wait = "5m"  # project-local: ~/work/app/.cortex/config.local.toml:2
+
+## profile
+model.effort = "high"           # profile review (user: ~/cortex/config.toml:32)
+model.speed = "fast"            # profile review (project: ~/work/app/.cortex/config.toml:10)
+permissions.mode = "read-only"  # profile review (user: ~/cortex/config.toml:33)
+
+## environment
+log.level = "info,cortex_llm=debug"  # environment: CORTEX_LOG
+
+## command-line
+model.judge = "claude-opus-5-5"  # command-line: --judge-model
+model.speed_wait = "5s"          # command-line: -c model.speed_wait
+

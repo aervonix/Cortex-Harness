@@ -224,6 +224,7 @@ Providers disagree on what "input" includes, so each adapter documents and tests
 
 - **Sources, in order:** a command-line flag, the provider's environment variable (`ANTHROPIC_API_KEY` and so on), then stored credentials. The active source is shown by `cortex auth status` and never the value.
 - **Storage:** the OS keychain where enabled, otherwise a file in the configuration directory with owner-only permissions. Details and the per-OS choice are in [08-configuration.md](08-configuration.md).
+- **Who does what.** `cortex-config` owns the stores and the lookup order, and returns the key as a `Secret` with a description of its source. It does not depend on this crate. `cortex-core` hands the key to the API-key `AuthMethod` below.
 - **Handling:** credentials are `Secret` values from the moment they are read. They are attached to requests inside the transport, after request logging. They are never written to session logs, artifacts or debug bundles.
 - **Sign-in beyond API keys.** The credential layer is a trait with one implementation in the first release (an API key) and room for more:
 

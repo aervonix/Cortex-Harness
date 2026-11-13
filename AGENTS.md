@@ -39,6 +39,7 @@ These are the rules of the build plan. They hold in every change.
 | Run exactly what CI runs | `cargo xtask ci` |
 | Format | `cargo xtask fmt` |
 | Regenerate the protocol schema and TypeScript declarations | `cargo xtask schema` |
+| Regenerate every generated file, the configuration schema and reference included | `cargo xtask gen` |
 | Build `cortex` and its alias `cx` | `cargo xtask alias` |
 
 `./x <command>` is the same as `cargo xtask <command>`.
@@ -47,7 +48,8 @@ These are the rules of the build plan. They hold in every change.
 - **Windows is checked only by CI** unless you have a Windows machine. Write for both from the start: paths, line endings, process handling, file names that differ only by case.
 - **Which crate may depend on which** is fixed by [docs/architecture/01-workspace.md](docs/architecture/01-workspace.md) and checked by `cargo xtask rules`. Do not add an edge to make something compile. If the design is wrong, say so and change the page.
 - **Tests:** unit tests in `#[cfg(test)]` modules; one integration binary per crate at `tests/it/main.rs`; tests that start a process are named `sys_…`. No sleeping, no network, no doc tests.
-- **A pull request that touches only `docs/**` and `*.md`** skips the Rust build and tests in CI and runs only the repo rules. Anything else runs everything, and so does a change to the generated files in `docs/protocol/`.
+- **A pull request that touches only `docs/**` and `*.md`** skips the Rust build and tests in CI and runs only the repo rules. Anything else runs everything, and so does a change to the generated files in `docs/protocol/` or `docs/configuration/`.
+- **Configuration keys are declared once,** in `crates/cortex-config/src/schema/sections.rs`: the type, the default, what a project's file may do with the key, and when a change takes effect. After adding or changing one, run `cargo xtask gen` and commit the regenerated files in `docs/configuration/` with it. A section in `[permissions]`, `[sandbox]` or `[limits]` is enforced: there an unknown key is an error, and must stay one.
 - **The protocol is a contract.** After changing a type in `cortex-protocol`, run `cargo xtask schema` and commit the regenerated files with it. The versioning rules in [docs/architecture/11-rpc-protocol.md](docs/architecture/11-rpc-protocol.md) say what is an addition and what needs a new protocol version. The golden transcript is not edited to make a test pass. Everything tolerates what it does not know **except the values the harness enforces** (leases, grants, rules, limits): those refuse an unknown field or value, and must stay that way.
 - **Lints** are errors in CI. An exception is an `#[expect(…, reason = "…")]` or `#[allow(…, reason = "…")]` with a real reason, at the smallest scope that works.
 - **Measure, then write the number down.** Budgets are in [docs/performance-budgets.md](docs/performance-budgets.md). A change that affects one reports its measurement.

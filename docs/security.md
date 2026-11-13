@@ -82,7 +82,7 @@ The reference harnesses load extensions into the agent process with the user's f
 | Credentials are a `Secret` type. It prints as `[redacted]`, and it cannot be serialised. | The harness's own keys cannot reach a log or session by accident. A test greps all output of the test suite for the test key. |
 | Request logging prints an allow-list of headers. Bodies are logged only at debug level, truncated and filtered. | Keys in headers are never logged. |
 | Credentials are stored in the OS keychain or an owner-only file, never in the configuration file, and are not readable by child processes through the environment. | |
-| Session logs, artifacts, checkpoints and log files are created owner-only. | Other local users cannot read them. |
+| Session logs, artifacts, checkpoints and log files are created owner-only: mode `0600` on Linux, and on Windows an access list with the user alone and inheritance off, given to the call that creates the file ([decision 0029](decisions/0029-owner-only-files-on-windows.md)). | Other local users cannot read them. Not on a file system that keeps no permissions, such as FAT: there the harness reports that the file is not private. |
 | A redaction filter runs when session entries and artifacts are written: the harness's own credentials by value, and strings in well-known key formats. | Catches common accidents, such as a command that prints its environment. Best-effort, and described as such. |
 | No sharing or upload feature. Export applies a stricter filter and lists what it masked. | Sessions leave the machine only by a deliberate act. |
 | No telemetry and no automatic network requests. | Nothing leaves by default. |

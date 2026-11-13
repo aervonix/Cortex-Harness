@@ -46,6 +46,8 @@ Two enumerations sit on both sides. A **level** and an **effect** appear in enfo
 
 Step 12 builds the policy engine on these types, and step 8 writes leases to the session log. Both read them through the same decoder.
 
+**In configuration** (step 9, `crates/cortex-config`). The tables `[permissions]`, `[sandbox]` and `[limits]` are enforced. An unknown key in one is an error, where anywhere else it is a warning, and the whole file is refused, so the configuration that was in force stays in force. A permission rule is read through `Rule`'s own strict reader, a mode must be a level this build lists, and the sandbox's network setting is the closed enumeration. A file with a newer `config_version` is refused before any of its keys is judged, which is what gates a new enforced section: an older build warns about a top-level table it does not know, so a section that restricts is added only with a version bump. Tests: `an_unknown_key_in_an_enforced_table_refuses_the_file` and `a_rule_is_read_strictly_and_written_back`.
+
 ## Revisit when
 
 An enforced type needs to grow often enough that refusing older readers is a burden. The answer then is a way to mark an addition as safe to ignore *by the sender, in the value itself*, never a lenient reader.

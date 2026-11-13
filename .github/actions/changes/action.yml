@@ -38,6 +38,9 @@ runs:
                 # Generated from the Rust types and checked against them by a
                 # test, so a change here needs the tests to run.
                 docs/protocol/*) code=true ;;
+                # The same for the configuration schema and reference, which
+                # are generated from the settings in cortex-config.
+                docs/configuration/*) code=true ;;
                 docs/* | *.md) ;;
                 *) code=true ;;
               esac

@@ -101,8 +101,9 @@ Every row is a test, or a group of tests, that runs on the Windows job.
 | Files in use | Replacing a file another process holds open retries and then fails cleanly. Built in step 4 (`crates/cortex-base/tests/it/atomic.rs`): a file held with no sharing fails after seven attempts and half a second of waiting, all of it on the fake clock, with the file unchanged and no temporary file left; a file let go during the retries is replaced. |
 | Terminal | ConPTY end-to-end tests of the TUI: key release events ignored, new-line keys, resize, restoration. |
 | Script shims | A `.cmd`-shim MCP server and hook command start with arguments intact; unsafe arguments are refused. |
-| Permissions on files | Session, credential and state files are readable only by the user. |
-| Configuration | Files with a byte-order mark and CRLF parse. |
+| Permissions on files | Session, credential and state files are readable only by the user. Built in step 9 (`crates/cortex-base/tests/it/private.rs`): a file made by `private::create_new`, a file left by an owner-only atomic write (new, and over one made by hand), and a directory made by `private::create_dir_all` each have the current user as owner and as the one entry of the access list, with full control and inheritance off, read back from the file system; a path longer than 260 characters works; a link under the name is not followed. One of them asks `icacls`, which shares no code with the module, for a second opinion, and is a system test because `icacls` is a process. The credentials file and its lock file are checked the same way (`crates/cortex-config/tests/it/credentials.rs`). |
+| Credentials | A key round-trips through the real Windows Credential Manager, under an entry name of the test's own that no real entry has, removed when the test ends, pass or fail (`crates/cortex-config/tests/it/credentials.rs`). |
+| Configuration | Files with a byte-order mark and CRLF parse, and an error in one names the same line as it would without them. Built in step 9 (`crates/cortex-config/tests/it/loading.rs`). |
 | Extension scripts | The script engine builds and runs, and a script's host calls are denied exactly as on Linux. |
 | Command names | The binary behaves identically as `cortex.exe` and `cx.exe`. The install script creates the alias as a hard link, falls back to a copy, and never overwrites another program's `cx`. |
 
@@ -143,7 +144,7 @@ Settings common to all jobs:
 - The decision is made inside each job, not in a separate job that the others wait for. All four checks therefore always report, so they can be required by branch protection as they are, with no gate job, and a pull request that does touch code pays about a second for the question.
 - **The repo rules still run on a documentation-only pull request, deliberately.** The check for home-directory paths and the check of `docs/dependencies.md` exist mostly for documentation, and skipping them on exactly the pull requests that write prose would open the hole they close. This compiles `xtask`, which is five small crates, and nothing else.
 - Anything else in the change set (a manifest, a workflow, an asset, a source file) runs everything. So does every push to the main branch and every scheduled or manual run.
-- **The generated protocol files under `docs/protocol/` count as code.** They are checked against the Rust types by a test, so a pull request that touches them runs the tests, wherever else its changes are.
+- **The generated files under `docs/protocol/` and `docs/configuration/` count as code.** They are checked against the Rust types by tests, so a pull request that touches them runs the tests, wherever else its changes are.
 
 **nextest configuration** (`.config/nextest.toml`):
 
@@ -410,7 +411,7 @@ With the `dev` profile's optimised dependencies the cold Windows column would be
   - `unwrap` and `expect` are disallowed outside tests, except where an attribute gives the invariant;
   - `println!` and `eprintln!` are disallowed outside `cortex-cli` and `xtask`, so nothing can write to standard output by accident.
 - An `allow` or `expect` attribute must carry a `reason`. `todo!`, `unimplemented!`, `dbg!` and `std::process::exit` are warnings, and so errors in CI.
-- `unsafe` is denied by default and allowed per module in `cortex-sandbox` and `cortex-term`, where the OS interfaces need it, with a safety comment on each block.
+- `unsafe` is denied by default and allowed per module in `cortex-sandbox` and `cortex-term`, where the OS interfaces need it, and in one Windows-only module of `cortex-base`, `private::windows`, which creates files with an access list of their own ([decision 0029](decisions/0029-owner-only-files-on-windows.md)). Every block has a safety comment. A new place needs a decision record.
 - Public items are documented (`missing_docs`).
 - Clippy runs on Linux and on Windows, so that code compiled only for Windows is linted.
 
@@ -423,6 +424,8 @@ With the `dev` profile's optimised dependencies the cold Windows column would be
 - workflow actions are pinned by commit hash; every workflow's token is read-only; a workflow that runs on pull requests uses no secret and can write nothing; and the only write permission anywhere is `issues: write` on the `report` job of a workflow that does not run on pull requests ("Not blocking", above).
 
 `cargo xtask check` also has a `generated` step: the protocol's JSON Schema and TypeScript declarations in `docs/protocol/` must be what the types in `cortex-protocol` generate. A test makes the same comparison on both OSes. `cargo xtask schema` regenerates them.
+
+**The configuration's generated files** are `docs/configuration/schema.json` and `docs/configuration/reference.md`, generated from the settings declared in `cortex-config`. They are checked by a test in that crate, on both OSes, and not by the `generated` step: `xtask` is built before every CI job does anything, and checking them there would make it build the configuration crate and its TOML parser each time. `cargo xtask gen` writes them, by running that test in its writing mode.
 
 ## Dependency hygiene
 
@@ -458,5 +461,6 @@ The commands, all through `cargo xtask` (or `./x`):
 | `check` | The static checks: `fmt`, `rules`, `generated`, `clippy`, `deny`. All of them run even when one fails, and the time of each is printed. |
 | `test` | All tests. Arguments go to nextest: `--profile fast` for tiers 1 and 2. |
 | `ci` | What the blocking jobs run: `check`, then the tests in the `ci` profiles, then the tier budgets. |
-| `schema` | Regenerates the protocol's JSON Schema and TypeScript declarations in `docs/protocol/`. `schema --check` only compares. `gen` regenerates every generated file, which today is the same thing. |
+| `schema` | Regenerates the protocol's JSON Schema and TypeScript declarations in `docs/protocol/`. `schema --check` only compares. |
+| `gen` | Regenerates every generated file: what `schema` writes, and the configuration schema and reference in `docs/configuration/`. |
 | `size`, `unused`, `advisories` | What the non-blocking workflows run: the `dist` build with its size and crate count (`--check` fails over the budget, `--target` names the target), cargo-machete, and `cargo deny check advisories`. |

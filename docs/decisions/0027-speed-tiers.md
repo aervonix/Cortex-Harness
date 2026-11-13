@@ -75,7 +75,7 @@ Two more facts shape the design:
 | 3 (this one) | The protocol types, their schema, and these pages. |
 | 5 | The request and the model event carry a speed. The catalog format has per-model speed offers with their rate cards. The retry layer tells a tier's own limit from the model's, and has the fallback and the cooldown, tested against the fake clock. |
 | 7 | The loop sends each request at the speed in effect and emits the fallback and cooldown notices. A change of the setting applies from the next request. |
-| 9 | Configuration: the session's speed, a role's own, the utility roles at `standard` by default, and whether to fall back. |
+| 9 | Configuration: the session's speed, a role's own, the utility roles at `standard` by default, and whether to fall back. **Built.** The keys are `model.speed` (the session's), `model.roles.<role>.speed` (a role's own), `model.speed_fallback`, `model.speed_wait` and `model.speed_cooldown`. |
 | 13 | `session/set` wired through the core. Headless mode gets the setting from configuration. |
 | 14 | Anthropic: `speed` in the request, `usage.speed` in the decoder, the `anthropic-fast-*` headers, the beta header where a model needs it, catalog entries. It begins, as always, by re-reading the provider's documentation. |
 | 16 | The statistics record and the usage aggregates carry the speed, priced at its rate. `/usage` can group by it. |
@@ -87,6 +87,18 @@ Two more facts shape the design:
 ## Settled and open
 
 **Settled in the review of step 3, on 2026-11-12:** utility roles default to `standard` and do not inherit a fast session speed. It can be overridden per role. It is part of "The setting", above, and step 9 builds it.
+
+**Settled in step 9, on 2026-11-12: the configuration keys.**
+
+| Key | Default | Meaning |
+|---|---|---|
+| `model.speed` | `"standard"` | The session's speed, which the `main` role runs at. Any tier name is accepted and is checked against the model's offers when it is used. |
+| `model.roles.<role>.speed` | not set | A role's own speed. It wins for `main`, and it is the only way a utility role gets a speed other than `standard`. |
+| `model.speed_fallback` | `true` | Whether a request a tier refuses is sent again at `standard`. Off, such a refusal is an ordinary rate limit. |
+| `model.speed_wait` | `"20s"` | The longest one request waits in place for a tier, in total, before it falls back. `"0s"` never waits. |
+| `model.speed_cooldown` | `"10m"` | How long requests stay at `standard` after a fallback, when the provider gives no time. |
+
+The names sit under `[model]`, beside the model and the reasoning level, because a speed is a property of how a model is run, and `model.roles.<role>` mirrors `roles.<role>` on the wire. The three fallback settings are flat keys, so that `-c model.speed_fallback=false` reads as it should. A project's file may set them, as it may set the model: all five are classed as preferences. The defaults of the last three are the ones step 5 settled for the retry layer.
 
 **Open, for the steps that need them:**
 

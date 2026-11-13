@@ -60,6 +60,7 @@ These docs are the specification that every build step works from. They were wri
 | Page | Content |
 |---|---|
 | [protocol/](protocol/README.md) | The protocol's JSON Schema and TypeScript declarations, generated from the Rust types in `cortex-protocol` by `cargo xtask schema`. Not edited by hand, and checked against the types in CI. |
+| [configuration/reference.md](configuration/reference.md) | Every configuration key: its type, its default, what a project's file may do with it, and when a change takes effect. Generated from the settings in `cortex-config` by `cargo xtask gen`, with a JSON Schema of the same keys beside it ([configuration/schema.json](configuration/schema.json)). Not edited by hand, and checked against the settings in CI. |
 
 ### Background
 
@@ -81,7 +82,7 @@ These docs are the specification that every build step works from. They were wri
 - **Decisions are recorded.** A choice that changes gets a new or amended record, with the reason.
 - **Provisional means the owner has not confirmed it yet.** Work proceeds on the recommendation. The build plan lists every such item, and records each decision the owner has made with its date.
 - **Provider and protocol facts go stale.** Pages that depend on them say when they were read. The steps that implement them begin by reading the current documentation.
-- **Generated files are checked.** Protocol schemas and the configuration reference are generated from code and verified in CI. The protocol's are in [protocol/](protocol/README.md); a pull request that touches them is never treated as documentation-only.
+- **Generated files are checked.** Protocol schemas and the configuration reference are generated from code and verified in CI. The protocol's are in [protocol/](protocol/README.md) and the configuration's in [configuration/](configuration/reference.md); a pull request that touches either is never treated as documentation-only.
 
 ## Ground rules
 

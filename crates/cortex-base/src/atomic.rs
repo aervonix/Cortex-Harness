@@ -8,6 +8,13 @@
 //! - **Permissions are kept.** The new file gets the mode of the one it
 //!   replaces. On Windows it gets the directory's inherited access rules;
 //!   rules set on the old file itself are not carried over.
+//! - **Unless the write asks for an owner-only file.** With
+//!   [`owner_only`](AtomicWriteOptions::owner_only) the file the write
+//!   leaves can be opened by the current user alone, on both OSes, whether
+//!   it existed before or not: mode `0600` on Linux, and on Windows an
+//!   access list with one entry and inheritance off ([`crate::private`]).
+//!   It is private from the moment its temporary file is created, before
+//!   any content is in it.
 //! - **A target that could not have been written in place is refused.** A
 //!   rename needs only the right to change the directory, so without this
 //!   it would replace a file its owner had protected. Refused: a file marked
@@ -58,10 +65,15 @@ pub struct AtomicWriteOptions {
     /// file. On by default. Off trades that for speed, for files that can be
     /// rebuilt.
     pub sync: bool,
-    /// When the target does not exist yet, create it readable and writable
-    /// by its owner only (mode `0600`). For session, credential and state
-    /// files. An existing file keeps its mode either way. No effect on
-    /// Windows, where a file takes its directory's access rules.
+    /// Leave a file that only the current user can open: mode `0600` on
+    /// Linux, and on Windows an access list that allows the current user
+    /// alone, with inheritance from the directory off. For session,
+    /// credential and state files.
+    ///
+    /// It holds whether or not the target existed: a file that was readable
+    /// by others is private after the write. The option only ever tightens.
+    /// Without it, a new file gets the default permissions and an existing
+    /// one keeps its mode.
     pub owner_only: bool,
     /// How long to wait before each new attempt to replace a file that
     /// another program holds open. Their sum is the longest the write waits.
@@ -183,17 +195,26 @@ pub fn write_atomic(
         _ => PathBuf::from("."),
     };
     // The temporary file must never be easier to read than the file it
-    // will become. When it replaces a file, it starts private and takes
-    // that file's mode once the content is in it.
-    let private = options.owner_only || existing.is_some();
+    // will become. An owner-only file is created owner-only and stays so.
+    // Otherwise, when it replaces a file, it starts private and takes that
+    // file's mode once the content is in it.
+    let access = if options.owner_only {
+        NewFile::OwnerOnly
+    } else if existing.is_some() {
+        NewFile::PrivateForNow
+    } else {
+        NewFile::Ordinary
+    };
     let (temporary, mut file) =
-        create_temporary(&directory, private).map_err(io_error("create a temporary file"))?;
+        create_temporary(&directory, access).map_err(io_error("create a temporary file"))?;
 
     // From here on, any failure removes the temporary file.
     let prepared = (|| {
         file.write_all(contents)
             .map_err(io_error("write the new content"))?;
-        if let Some(found) = &existing {
+        if let Some(found) = &existing
+            && !options.owner_only
+        {
             file.set_permissions(found.permissions())
                 .map_err(io_error("copy the file's permissions"))?;
         }
@@ -237,19 +258,27 @@ pub fn write_atomic(
     Ok(())
 }
 
+/// Who may open a temporary file when it is created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NewFile {
+    /// Whoever may open any new file here.
+    Ordinary,
+    /// The owner alone, until the file takes the mode of the one it
+    /// replaces. On Windows this is `Ordinary`: the file it replaces has the
+    /// directory's access rules, and so does this one.
+    PrivateForNow,
+    /// The owner alone, for good.
+    OwnerOnly,
+}
+
 /// Creates a new, empty file with a name of its own in `directory`.
-fn create_temporary(directory: &Path, private: bool) -> io::Result<(PathBuf, File)> {
+fn create_temporary(directory: &Path, access: NewFile) -> io::Result<(PathBuf, File)> {
     let mut rng = SystemRng::new();
     let mut last_error = None;
     for _ in 0..16 {
         let name = format!(".cortex-{:016x}.tmp", rng.next_u64());
         let path = directory.join(name);
-        let mut open = OpenOptions::new();
-        // `create_new` fails if the name exists, and does not follow a link
-        // someone put there.
-        open.write(true).create_new(true);
-        set_mode(&mut open, private);
-        match open.open(&path) {
+        match create_file(&path, access) {
             Ok(file) => return Ok((path, file)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => last_error = Some(error),
             Err(error) => return Err(error),
@@ -258,16 +287,29 @@ fn create_temporary(directory: &Path, private: bool) -> io::Result<(PathBuf, Fil
     Err(last_error.unwrap_or_else(|| io::ErrorKind::AlreadyExists.into()))
 }
 
-#[cfg(unix)]
-fn set_mode(open: &mut OpenOptions, private: bool) {
-    use std::os::unix::fs::OpenOptionsExt;
-    // The process's umask still applies to the wider mode, as it does for
-    // any file a program creates.
-    open.mode(if private { 0o600 } else { 0o666 });
+/// Creates one new file, open for writing. It fails if the name exists, and
+/// does not follow a link someone put there.
+fn create_file(path: &Path, access: NewFile) -> io::Result<File> {
+    if access == NewFile::OwnerOnly {
+        // The mode, or the access list, is given to the call that creates
+        // the file: it never exists without it.
+        return crate::private::create_new(path);
+    }
+    let mut open = OpenOptions::new();
+    open.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // The process's umask still applies to the wider mode, as it does
+        // for any file a program creates.
+        open.mode(if access == NewFile::PrivateForNow {
+            0o600
+        } else {
+            0o666
+        });
+    }
+    open.open(path)
 }
-
-#[cfg(not(unix))]
-fn set_mode(_: &mut OpenOptions, _: bool) {}
 
 /// Makes the rename itself durable, where the OS has a way to. Failure is
 /// ignored: the content is in place, and some file systems cannot do this.
@@ -582,14 +624,17 @@ mod tests {
         fs::create_dir(&directory).unwrap();
         let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o7777;
 
-        let (private, _) = create_temporary(&directory, true).unwrap();
-        let (ordinary, _) = create_temporary(&directory, false).unwrap();
+        let (private, _) = create_temporary(&directory, NewFile::PrivateForNow).unwrap();
+        let (owner_only, _) = create_temporary(&directory, NewFile::OwnerOnly).unwrap();
+        let (ordinary, _) = create_temporary(&directory, NewFile::Ordinary).unwrap();
         let plain = directory.join("plain");
         fs::write(&plain, "x").unwrap();
         let outcome = (mode(&private), mode(&ordinary), mode(&plain));
+        let owner_only = mode(&owner_only);
         fs::remove_dir_all(&directory).unwrap();
 
         assert_eq!(outcome.0, 0o600);
+        assert_eq!(owner_only, 0o600);
         assert_eq!(outcome.1, outcome.2, "what any new file gets here");
         let name = private.file_name().unwrap().to_str().unwrap();
         assert!(

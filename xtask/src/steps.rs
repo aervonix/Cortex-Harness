@@ -49,6 +49,14 @@ impl Step {
 /// Runs `cargo <arguments>` in the repository root, with its output going
 /// straight to the terminal.
 pub(crate) fn cargo<S: AsRef<OsStr>>(arguments: &[S]) -> Result<()> {
+    cargo_with(arguments, &[])
+}
+
+/// [`cargo`], with environment variables set for the command.
+pub(crate) fn cargo_with<S: AsRef<OsStr>>(
+    arguments: &[S],
+    variables: &[(&str, &str)],
+) -> Result<()> {
     let shown: Vec<String> = arguments
         .iter()
         .map(|argument| argument.as_ref().to_string_lossy().into_owned())
@@ -57,6 +65,7 @@ pub(crate) fn cargo<S: AsRef<OsStr>>(arguments: &[S]) -> Result<()> {
     println!("$ cargo {shown}");
     let status = Command::new(workspace::cargo())
         .args(arguments)
+        .envs(variables.iter().copied())
         .current_dir(workspace::root())
         .status()
         .map_err(|error| format!("could not run cargo {shown}: {error}"))?;
