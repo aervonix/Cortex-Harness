@@ -259,3 +259,82 @@ impl Clients {
         Ok(session)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use cortex_protocol::methods::{ApprovalChoice, QuestionRequest};
+
+    use super::*;
+
+    fn request(session: &SessionId) -> ServerRequest {
+        ServerRequest::Question(QuestionRequest {
+            session_id: session.clone(),
+            turn_id: None,
+            question: "May it run?".to_owned(),
+            choices: Vec::new(),
+            extension: None,
+        })
+    }
+
+    fn allow() -> ApprovalResponse {
+        ApprovalResponse {
+            choice: ApprovalChoice::AllowOnce,
+            note: None,
+        }
+    }
+
+    /// Each of the two checks on an answer holds by itself: the client's
+    /// role, and whether it was asked.
+    #[test]
+    fn an_answer_counts_only_from_a_user_client_that_was_asked() {
+        let clients = Clients::default();
+        let session = SessionId::new("s_1");
+        let (user, _) = clients.connect(ClientInfo::user());
+        let (other_user, _) = clients.connect(ClientInfo::user());
+        let (observer, _) = clients.connect(ClientInfo::observer());
+        let (supervisor, _) = clients.connect(ClientInfo {
+            role: ClientRole::Supervisor,
+            ..ClientInfo::user()
+        });
+
+        // Only user clients that answer approvals are approvers.
+        let everyone = [user.0, other_user.0, observer.0, supervisor.0];
+        assert_eq!(clients.approvers(&everyone), [user.0, other_user.0]);
+        let (headless, _) = clients.connect(ClientInfo::headless());
+        assert!(clients.approvers(&[headless.0]).is_empty());
+
+        // Suppose a request did reach clients that may not answer: their
+        // role alone refuses the answer.
+        let (id, mut answer) = clients.ask(&session, &[user.0, observer.0, supervisor.0], |_| {
+            request(&session)
+        });
+        for client in [observer, supervisor] {
+            let refused = clients.answer(client, &id, allow()).unwrap_err();
+            assert_eq!(refused.code, code::ROLE_NOT_ALLOWED);
+        }
+        // A user client that was not asked is refused too.
+        let refused = clients.answer(other_user, &id, allow()).unwrap_err();
+        assert_eq!(refused.code, code::ROLE_NOT_ALLOWED);
+        // A client that is not connected at all.
+        let refused = clients.answer(ClientId(999), &id, allow()).unwrap_err();
+        assert_eq!(refused.code, code::ROLE_NOT_ALLOWED);
+        assert!(answer.try_recv().is_err(), "a refused answer was delivered");
+
+        // The one it was put to answers it, once.
+        assert_eq!(clients.answer(user, &id, allow()).unwrap(), session);
+        assert_eq!(answer.try_recv().unwrap().choice, ApprovalChoice::AllowOnce);
+        let late = clients.answer(user, &id, allow()).unwrap_err();
+        assert_eq!(late.code, "request_not_open");
+        assert!(!clients.close(&id), "an answered request is closed");
+    }
+
+    #[test]
+    fn a_disconnected_client_gets_nothing_more() {
+        let clients = Clients::default();
+        let (client, queue) = clients.connect(ClientInfo::user());
+        clients.disconnect(client);
+        assert!(clients.queue(client).is_none());
+        assert!(clients.info(client).is_none());
+        assert_eq!(cortex_testkit::block_on(queue.next()), None);
+    }
+}

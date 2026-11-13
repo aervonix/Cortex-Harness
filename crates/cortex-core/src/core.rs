@@ -147,6 +147,10 @@ pub struct CoreOptions {
     /// The process runner shell commands go through, in place of one on
     /// this core's timer and clock with the guard above: a test's.
     pub runner: Option<Runner>,
+    /// The shell commands run in, in place of the one that is looked for
+    /// and asked its version: a test's, which starts no process to find
+    /// out what the model's tool description says.
+    pub shell: Option<cortex_tools::Shell>,
     /// How git is run for the base state and for a file's earlier content.
     pub git: Arc<dyn Git>,
     /// Whether a new session records the workspace's starting state.
@@ -195,6 +199,7 @@ impl CoreOptions {
             protocols: BTreeMap::new(),
             shell_env: None,
             runner: None,
+            shell: None,
             git: Arc::new(SystemGit),
             base_capture: true,
             cancel: CancelToken::new(),
@@ -235,7 +240,13 @@ pub(crate) struct Inner {
     user: Arc<Loaded>,
     ids: IdGenerator,
     sessions: Mutex<BTreeMap<SessionId, Arc<Live>>>,
+    /// The shells found so far, by the program and arguments configured:
+    /// a shell is asked its version once in the life of a core.
+    pub(crate) shells: Mutex<BTreeMap<ShellKey, cortex_tools::Shell>>,
 }
+
+/// What a shell was looked for with: `shell.program` and `shell.args`.
+pub(crate) type ShellKey = (Option<String>, Option<Vec<String>>);
 
 impl std::fmt::Debug for Inner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -324,6 +335,7 @@ impl Core {
                 user: Arc::new(user),
                 ids,
                 sessions: Mutex::new(BTreeMap::new()),
+                shells: Mutex::new(BTreeMap::new()),
             }),
         })
     }

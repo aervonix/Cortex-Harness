@@ -190,7 +190,6 @@ dependencies = [
  "cortex-testkit",
  "cortex-tools",
  "serde_json",
- "thiserror",
  "tokio",
  "toml",
  "tracing",

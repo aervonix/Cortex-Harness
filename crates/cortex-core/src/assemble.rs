@@ -51,7 +51,7 @@ use cortex_session::{
 use cortex_tools::process::{Guard, Runner};
 use cortex_tools::{
     ContentStore, EditTool, Editing, FileTable, MemoryCheckpoints, MemoryProposals, MemoryStore,
-    OutputLimits, PlanBoard, PlanTool, RememberTool, ShellConfig, ShellSearch, ShellTool,
+    OutputLimits, PlanBoard, PlanTool, RememberTool, Shell, ShellConfig, ShellSearch, ShellTool,
     ToolRegistry, Toolbox, WriteTool,
 };
 
@@ -520,6 +520,38 @@ fn speeds(settings: &Settings) -> SpeedSettings {
     speeds
 }
 
+/// The shell a session's commands run in: the one the options give, or
+/// the one found on this machine, asked its version the first time.
+fn find_shell(
+    inner: &Inner,
+    settings: &Settings,
+) -> Result<Shell, cortex_tools::shell::ShellError> {
+    if let Some(shell) = &inner.options.shell {
+        return Ok(shell.clone());
+    }
+    let key = (settings.shell.program.clone(), settings.shell.args.clone());
+    let known = inner
+        .shells
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .cloned();
+    if let Some(shell) = known {
+        return Ok(shell);
+    }
+    let mut shell = ShellSearch::from_env().find(key.0.as_deref(), key.1.as_deref())?;
+    // The description the model is given names the shell and its version.
+    // Asking for it starts a process: this function runs off the core
+    // thread, and the answer is kept for every later session of the core.
+    shell.probe_version(std::time::Duration::from_secs(2));
+    inner
+        .shells
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, shell.clone());
+    Ok(shell)
+}
+
 /// The shell tool's process runner.
 fn runner(inner: &Inner) -> Runner {
     if let Some(runner) = &inner.options.runner {
@@ -759,18 +791,8 @@ pub(crate) fn assemble(
     let sink = Arc::new(SessionSink::default());
 
     // ------------------------------------------------- the shell, if any
-    let search = ShellSearch::from_env();
-    let shell = match search.find(
-        settings.shell.program.as_deref(),
-        settings.shell.args.as_deref(),
-    ) {
-        Ok(mut shell) => {
-            // The description the model is given names the shell and its
-            // version. Asking for it starts a process, which is why the
-            // whole of this function runs off the core thread.
-            shell.probe_version(std::time::Duration::from_secs(2));
-            Some(shell)
-        }
+    let shell = match find_shell(inner, settings) {
+        Ok(shell) => Some(shell),
         Err(failure) if settings.shell.program.is_some() => {
             return Err(error(
                 ErrorKind::Config,

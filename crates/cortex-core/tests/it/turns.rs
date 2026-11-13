@@ -48,7 +48,17 @@ fn a_turn_runs_the_models_tool_calls_and_records_everything() {
     let core = world.core();
     world.run(async {
         let front = Front::start(&world, &core).await;
-        assert_eq!(front.state.workspace, world.workspace.to_str().unwrap());
+        // The workspace as the file system spells it, which on Windows can
+        // differ from how the test wrote it (a short name, a drive's case).
+        assert!(
+            front
+                .state
+                .workspace
+                .replace('\\', "/")
+                .ends_with("work/app"),
+            "{}",
+            front.state.workspace
+        );
         let end = front.turn("write a note").await;
         assert_eq!(end.outcome, TurnOutcome::Completed);
 

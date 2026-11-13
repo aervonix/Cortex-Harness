@@ -249,10 +249,27 @@ fn sys_undo_puts_back_what_a_command_changed_where_git_still_has_it() {
         return;
     }
     let committed = std::fs::read(world.workspace.join("tracked.txt")).unwrap();
-    let core = world.core_with(|options| options.trust_project = true);
+    let core = world.core_with(|options| {
+        options.trust_project = true;
+        // The shell is looked for and asked its version, as in the real
+        // program, and the tool's description names it.
+        options.shell = None;
+    });
     world.run(async {
         let front = Front::start(&world, &core).await;
         front.turn("hello").await;
+        let description = world.provider.requests()[0]
+            .tools
+            .iter()
+            .find(|tool| tool.name == "shell")
+            .map(|tool| tool.description.clone())
+            .expect("a shell tool");
+        assert!(
+            description
+                .chars()
+                .any(|character| character.is_ascii_digit()),
+            "the shell's version is not in the tool's description: {description}"
+        );
         let keep = front
             .items()
             .iter()
