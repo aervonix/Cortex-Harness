@@ -205,6 +205,85 @@ fn a_stop_withdraws_the_question_that_was_open() {
     assert_eq!(rig.policy.withdrawn(), asked);
 }
 
+/// The turn stops at the refused call, in the model's order: a write the
+/// model put before it runs, as it would have if the calls ran one by one,
+/// and a write after it does not. Which of the answers arrived first, and
+/// whether the response had ended by then, changes nothing. (This test
+/// failed three runs in ten while the rule was "whatever has not started
+/// does not start".)
+#[test]
+fn the_turn_stops_at_the_refused_call_in_the_models_order() {
+    let response = calls(&[
+        ("c1", "write", json!({"path": "a"})),
+        ("c2", "shell", json!({"id": "deploy"})),
+        ("c3", "write", json!({"path": "b"})),
+        ("c4", "read", json!({"path": "c"})),
+    ]);
+    let world = World::new("stop_in_order", [response, says("Unused.")]);
+    let rig = Setup::new(&world).start(&world);
+    rig.policy
+        .decide_for("shell", stop("stop at the first denial"));
+    world.run(async {
+        rig.prompt("go");
+        rig.events.turns(1).await;
+    });
+    assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Denied);
+    let results = results(&rig);
+    let outcomes: Vec<&ToolOutcome> = results.iter().map(|result| &result.outcome).collect();
+    assert_eq!(
+        outcomes,
+        [
+            &ToolOutcome::Success,
+            &ToolOutcome::Denied,
+            &ToolOutcome::Interrupted,
+            &ToolOutcome::Interrupted
+        ]
+    );
+    assert_eq!(world.log.count("end write a"), 1);
+    assert_eq!(world.log.count("start shell deploy"), 0);
+    assert_eq!(world.log.count("start write b"), 0);
+    assert_eq!(world.log.count("start read c"), 0);
+    assert!(text(&results[2]).contains("did not run"));
+}
+
+/// Two calls the policy stops the turn over: the turn stops at the first of
+/// them in the model's order, whichever was decided first.
+#[test]
+fn of_two_stops_the_first_in_the_models_order_is_where_the_turn_stops() {
+    let response = calls(&[
+        ("c1", "write", json!({"path": "a"})),
+        ("c2", "shell", json!({"id": "one"})),
+        ("c3", "write", json!({"path": "b"})),
+        ("c4", "shell", json!({"id": "two"})),
+    ]);
+    let world = World::new("stop_twice", [response, says("Unused.")]);
+    let rig = Setup::new(&world).start(&world);
+    rig.policy
+        .decide_for("shell", stop("stop at the first denial"));
+    world.run(async {
+        rig.prompt("go");
+        rig.events.turns(1).await;
+    });
+    let results = results(&rig);
+    assert_eq!(results.len(), 4);
+    assert_eq!(results[0].outcome, ToolOutcome::Success);
+    assert_eq!(results[1].outcome, ToolOutcome::Denied);
+    assert_eq!(results[2].outcome, ToolOutcome::Interrupted);
+    // The second refused command is after the stop. It says it was refused
+    // if its answer came before the first one's, and that it did not run
+    // if it came after: true either way, and it ran in neither.
+    assert!(
+        matches!(
+            results[3].outcome,
+            ToolOutcome::Denied | ToolOutcome::Interrupted
+        ),
+        "{:?}",
+        results[3].outcome
+    );
+    assert_eq!(world.log.lines(), ["start write a", "end write a"]);
+    assert_eq!(rig.events.ends().len(), 1);
+}
+
 #[test]
 fn a_stop_while_the_response_is_arriving_lets_nothing_more_start() {
     let more = Gate::new();

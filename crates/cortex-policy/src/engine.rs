@@ -74,7 +74,7 @@ use crate::command::pattern::words_of;
 use crate::command::{Analysis, Joiner, Part, Redirect, ShellSyntax, analyse, table};
 use crate::lease::{StandingTerms, standing_lease};
 use crate::level::{self, Decider, LevelError, Matter, SandboxState};
-use crate::rules::{Hit, Protected, RuleContext, RuleError, RuleSet, RuleSource, SourcedRule};
+use crate::rules::{By, Hit, Protected, RuleContext, RuleError, RuleSet, RuleSource, SourcedRule};
 use crate::secrets::looks_secret;
 
 /// One thing a planned call would do.
@@ -245,7 +245,13 @@ impl Locate for Lexical {
         if written == "~" {
             return self.home.clone();
         }
-        if let Some(rest) = written.strip_prefix("~/") {
+        let under_home = written.strip_prefix("~/").or_else(|| {
+            // Windows takes either separator.
+            (cwd.style() == PathStyle::Windows)
+                .then(|| written.strip_prefix("~\\"))
+                .flatten()
+        });
+        if let Some(rest) = under_home {
             return self.home.as_ref()?.join(rest).ok();
         }
         if starts_elsewhere(written, cwd.style()) {
@@ -309,6 +315,19 @@ pub enum StartError {
     /// start with a rule missing.
     #[error("{}", .0.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))]
     Rules(Vec<RuleError>),
+    /// A writable root or a protected path is not a path. A protected path
+    /// that was skipped would not be protected, so the session does not
+    /// start.
+    #[error(
+        "`{entry}` in `{list}` is not a path Cortex-Harness accepts. Write an absolute path, one \
+         that starts with `~/`, or one relative to the workspace"
+    )]
+    Sandbox {
+        /// The entry, as written.
+        entry: String,
+        /// The setting it is in.
+        list: &'static str,
+    },
 }
 
 /// The rules in force and where they came from, behind the engine's lock.
@@ -354,6 +373,10 @@ enum Finding {
     },
     Deny {
         reason: String,
+        /// Whether the denial is the built-in protection of the harness's
+        /// own files, which stays a denial even for a path a command only
+        /// mentions.
+        built_in: bool,
     },
 }
 
@@ -362,6 +385,13 @@ impl Finding {
         Self::Ask {
             reason: reason.into(),
             lift: None,
+        }
+    }
+
+    fn deny(reason: impl Into<String>) -> Self {
+        Self::Deny {
+            reason: reason.into(),
+            built_in: false,
         }
     }
 }
@@ -385,7 +415,22 @@ impl Engine {
     ///
     /// When the level cannot be held with the sandbox as it is, or a rule
     /// cannot be compiled.
-    pub fn start(parts: Parts) -> Result<Self, StartError> {
+    pub fn start(mut parts: Parts) -> Result<Self, StartError> {
+        // The scope and the protected paths, as absolute paths. The lease
+        // then holds them in that form, so that it means the same wherever
+        // it is read.
+        let roots = place_all(
+            &mut parts.sandbox_policy.write.roots,
+            "sandbox.write",
+            &parts.workspace,
+            parts.home.as_ref(),
+        )?;
+        let guarded = place_all(
+            &mut parts.sandbox_policy.protect.roots,
+            "sandbox.protect",
+            &parts.workspace,
+            parts.home.as_ref(),
+        )?;
         let compiled = compile(
             &parts.rules,
             &parts.approved,
@@ -408,16 +453,9 @@ impl Engine {
             },
             parts.sandbox,
         )?;
-        let style = parts.workspace.style();
-        let read_roots = |roots: &[String]| -> Vec<AbsPath> {
-            roots
-                .iter()
-                .filter_map(|root| AbsPath::parse(root, style).ok())
-                .collect()
-        };
         Ok(Self {
-            roots: read_roots(&lease.grant.sandbox.write.roots),
-            guarded: read_roots(&lease.grant.sandbox.protect.roots),
+            roots,
+            guarded,
             lease,
             workspace: parts.workspace,
             home: parts.home,
@@ -530,16 +568,20 @@ impl Engine {
         // A tool's own default is for a call that no rule and no level
         // decides: one that declares nothing at all. (For an extension's
         // tool it was used above, with the rules on the tool's name.)
-        if request.accesses.is_empty() && *self.level() != Level::Unrestricted {
+        if request.accesses.is_empty() {
             match request.default {
                 RuleAction::Allow => {}
+                // At `unrestricted` nothing is asked. A tool that is turned
+                // off stays off.
+                RuleAction::Ask if *self.level() == Level::Unrestricted => {}
                 RuleAction::Ask => findings.push(Finding::ask(format!(
                     "The tool `{}` asks before every call.",
                     request.tool
                 ))),
-                RuleAction::Deny => findings.push(Finding::Deny {
-                    reason: format!("The tool `{}` is turned off.", request.tool),
-                }),
+                RuleAction::Deny => findings.push(Finding::deny(format!(
+                    "The tool `{}` is turned off.",
+                    request.tool
+                ))),
             }
         }
         combine(findings, read_only)
@@ -598,11 +640,24 @@ impl Engine {
     }
 
     /// Whether `path` is one of the lease's protected paths, or inside
-    /// one. Compared as the style compares names: protecting too much is
-    /// the safe side.
+    /// one, or part of a git repository's own data. Compared as the style
+    /// compares names: protecting too much is the safe side.
     fn is_guarded(&self, path: &AbsPath) -> bool {
         self.lease.grant.sandbox.protect.all
             || self.guarded.iter().any(|guard| path.starts_with(guard))
+            || is_repository_data(path)
+    }
+
+    /// Whether writing `path` always goes to the supervisor, short of
+    /// `unrestricted`: a protected path, or a file that looks like a
+    /// secret, that no allow rule names.
+    fn is_sensitive(&self, rules: &RuleSet, path: &AbsPath) -> bool {
+        (self.is_guarded(path) || self.is_secret(path))
+            && level::decider(self.level(), Matter::WriteBeyond) != Decider::Holder
+            && !matches!(
+                rules.path(&Effect::Write, path),
+                Some(hit) if hit.action == RuleAction::Allow
+            )
     }
 
     /// Judges a read or a write of a path. `named_by` is the command that
@@ -637,21 +692,20 @@ impl Engine {
         };
         let decider = level::decider(self.level(), matter);
         if decider == Decider::Refused {
-            return Finding::Deny {
-                reason: format!(
-                    "The session is at the level `{}`, which does not {} {}.",
-                    self.level().as_str(),
-                    if writes { "write" } else { "read" },
-                    match named_by {
-                        Some(_) => format!("`{path}`"),
-                        None => "files".to_owned(),
-                    }
-                ),
-            };
+            return Finding::deny(format!(
+                "The session is at the level `{}`, which does not {} {}.",
+                self.level().as_str(),
+                if writes { "write" } else { "read" },
+                match named_by {
+                    Some(_) => format!("`{path}`"),
+                    None => "files".to_owned(),
+                }
+            ));
         }
         match rules.path(effect, path) {
             Some(hit) if hit.action == RuleAction::Deny => Finding::Deny {
                 reason: format!("{what} is protected by {}.", hit.describe()),
+                built_in: matches!(hit.by, By::Builtin(_)),
             },
             Some(hit) if hit.action == RuleAction::Ask => {
                 Finding::ask(format!("{what} is asked about by {}.", hit.describe()))
@@ -684,6 +738,7 @@ impl Engine {
                         "A command may write anywhere in `{path}`, which is protected by {}.",
                         hit.describe()
                     ),
+                    built_in: matches!(hit.by, By::Builtin(_)),
                 };
             }
             Some(hit) if hit.action == RuleAction::Ask => {
@@ -695,21 +750,30 @@ impl Engine {
             Some(_) => return Finding::Allow,
             None => {}
         }
-        if self.in_scope(path) || *self.level() == Level::Unrestricted {
+        if *self.level() == Level::Unrestricted {
             Finding::Allow
-        } else {
+        } else if !self.in_scope(path) {
             Finding::ask(format!(
                 "The command would run in `{path}`, outside the workspace, and may write there."
             ))
+        } else if self.is_sensitive(rules, path) {
+            // A tool that declares a write of one file beside its command.
+            Finding::ask(format!(
+                "The call would write `{path}`, which is a protected path or looks like a file \
+                 that holds secrets."
+            ))
+        } else {
+            Finding::Allow
         }
     }
 
     fn judge_network(&self, rules: &RuleSet, host: Option<&str>) -> Finding {
         let shown = host.unwrap_or("any host");
         match rules.network(host) {
-            Some(hit) if hit.action == RuleAction::Deny => Finding::Deny {
-                reason: format!("Reaching {shown} is refused by {}.", hit.describe()),
-            },
+            Some(hit) if hit.action == RuleAction::Deny => Finding::deny(format!(
+                "Reaching {shown} is refused by {}.",
+                hit.describe()
+            )),
             Some(hit) if hit.action == RuleAction::Ask => Finding::ask(format!(
                 "Reaching {shown} is asked about by {}.",
                 hit.describe()
@@ -738,9 +802,10 @@ impl Engine {
                         "The tool `{tool}` is asked about by {}.",
                         hit.describe()
                     )),
-                    RuleAction::Deny => Finding::Deny {
-                        reason: format!("The tool `{tool}` is refused by {}.", hit.describe()),
-                    },
+                    RuleAction::Deny => Finding::deny(format!(
+                        "The tool `{tool}` is refused by {}.",
+                        hit.describe()
+                    )),
                 };
             }
             None if *self.level() == Level::Unrestricted && default != RuleAction::Deny => {
@@ -750,9 +815,7 @@ impl Engine {
         };
         match action {
             RuleAction::Allow => Finding::Allow,
-            RuleAction::Deny => Finding::Deny {
-                reason: format!("The tool `{tool}` is turned off."),
-            },
+            RuleAction::Deny => Finding::deny(format!("The tool `{tool}` is turned off.")),
             RuleAction::Ask => Finding::Ask {
                 reason: format!(
                     "The tool `{tool}` comes from an extension or an MCP server, and asks before \
@@ -775,7 +838,7 @@ impl Engine {
         match rules.exec_restriction(command, analysis.parts(), self.shell) {
             Some(hit) if hit.action == RuleAction::Deny => {
                 let reason = format!("The command is refused by {}.", hit.describe());
-                return (vec![Finding::Deny { reason }], false);
+                return (vec![Finding::deny(reason)], false);
             }
             Some(hit) => findings.push(Finding::ask(format!(
                 "The command is asked about by {}.",
@@ -807,14 +870,23 @@ impl Engine {
                 ));
                 return (findings, false);
             };
-            if is_change_of_directory(part, self.shell) {
-                directory = self.follow_cd(part, parts.get(index + 1), &here);
-                if directory.is_none() && index + 1 == parts.len() {
-                    // A last `cd` nobody could follow changes nothing that
-                    // is checked.
-                    directory = Some(here);
-                }
+            let changes_directory = is_change_of_directory(part, self.shell);
+            let later = parts.get(index + 1..).unwrap_or(&[]);
+            if changes_directory && part.redirects.is_empty() {
+                // A last `cd` changes nothing that is checked. Any other is
+                // followed where its effect is certain, and where it is
+                // not, nothing after it can be judged.
+                directory = if later.is_empty() {
+                    Some(here)
+                } else {
+                    self.follow_cd(part, later, &here)
+                };
                 continue;
+            }
+            if changes_directory && !later.is_empty() {
+                // A `cd` with a redirection: judged as any command, for
+                // what it writes, and not followed.
+                directory = None;
             }
             let (standing, found) = self.judge_part(rules, part, &here);
             findings.extend(found);
@@ -857,18 +929,33 @@ impl Engine {
         }
     }
 
-    /// Where a `cd` leads, when that can be known: it has one plain
-    /// argument, it is not in a pipeline, and what follows it runs only if
-    /// it succeeded.
-    fn follow_cd(&self, part: &Part, next: Option<&Part>, here: &AbsPath) -> Option<AbsPath> {
+    /// Where a `cd` leads, when that is certain for every part after it.
+    ///
+    /// - It has one plain argument.
+    /// - It is not in a pipeline, where it runs in a shell of its own, and
+    ///   it does not follow `||`, where it runs only if what came before
+    ///   failed.
+    /// - **Everything after it is joined by `&&`,** or is in a pipeline with
+    ///   something that is. Then a part after the `cd` runs only if the
+    ///   `cd` ran and succeeded. After a `;` or a `||` a part would run in
+    ///   one directory if the `cd` succeeded and in another if it failed
+    ///   (`cd nowhere && ls; cat ../x`), and after `a || cd x && …` it runs
+    ///   whether the `cd` ran or not.
+    ///
+    /// The shell's own search for directories (`CDPATH`) is taken to be
+    /// off, which the shell tool's environment is to ensure
+    /// (`docs/build-plan.md`, step 13).
+    fn follow_cd(&self, part: &Part, later: &[Part], here: &AbsPath) -> Option<AbsPath> {
         let [target] = part.arguments() else {
             return None;
         };
-        let certain = part.redirects.is_empty()
-            && part.joiner != Joiner::Pipe
+        let certain = !matches!(part.joiner, Joiner::Pipe | Joiner::Or)
             && target.is_fixed()
             && !target.text.starts_with('-')
-            && next.is_none_or(|next| next.joiner == Joiner::And);
+            && later.first().is_none_or(|next| next.joiner == Joiner::And)
+            && later
+                .iter()
+                .all(|part| matches!(part.joiner, Joiner::And | Joiner::Pipe));
         if !certain {
             return None;
         }
@@ -882,13 +969,16 @@ impl Engine {
         let mut findings = Vec::new();
         let mut writes = false;
         for redirect in &part.redirects {
+            let null_device = |target: &crate::command::Word| {
+                target.text == "/dev/null" && self.shell == ShellSyntax::Posix
+            };
             let (target, effect) = match redirect {
                 Redirect::Duplicate => continue,
+                Redirect::Read(target) | Redirect::Write { target, .. } if null_device(target) => {
+                    continue;
+                }
                 Redirect::Read(target) => (target, Effect::Read),
                 Redirect::Write { target, .. } => {
-                    if target.text == "/dev/null" && self.shell == ShellSyntax::Posix {
-                        continue;
-                    }
                     writes = true;
                     (target, Effect::Write)
                 }
@@ -912,32 +1002,58 @@ impl Engine {
         match named {
             // A command that only reads: everything it names, and the
             // directory it runs in, is a read like any other.
-            Some(named) => {
+            Some(reading) => {
                 findings.push(mentioned(self.judge_path(
                     rules,
                     &Effect::Read,
                     here,
                     Some(&shown),
                 )));
-                for name in named {
+                // A command that prints tracked content reads the whole
+                // repository, from wherever in it it runs.
+                if reading.repository {
+                    let searched = [here, &self.workspace];
+                    let held = searched
+                        .into_iter()
+                        .find_map(|tree| Some((tree, rules.read_held_back_under(tree)?)));
+                    if let Some((tree, hit)) = held {
+                        findings.push(self.searched(&shown, tree, &hit));
+                    }
+                }
+                for name in reading.named {
                     match self.locate.locate(here, &name.text) {
-                        Some(path) => findings.push(mentioned(self.judge_path(
-                            rules,
-                            &Effect::Read,
-                            &path,
-                            Some(&shown),
-                        ))),
-                        None if name.must_resolve => findings.push(Finding::ask(format!(
-                            "`{shown}` names `{}`, which is not a path that can be checked.",
-                            name.text
-                        ))),
+                        Some(path) => {
+                            findings.push(mentioned(self.judge_path(
+                                rules,
+                                &Effect::Read,
+                                &path,
+                                Some(&shown),
+                            )));
+                            // A search reads files nobody named.
+                            if name.searched
+                                && let Some(hit) = rules.read_held_back_under(&path)
+                            {
+                                findings.push(self.searched(&shown, &path, &hit));
+                            }
+                        }
+                        // A word that may be a git revision need not be a
+                        // path. One that starts at a root, a drive or a
+                        // share is a path, and one the harness cannot
+                        // follow: a share is refused before it is reached.
+                        None if name.must_resolve || starts_elsewhere(&name.text, here.style()) => {
+                            findings.push(Finding::ask(format!(
+                                "`{shown}` names `{}`, which is not a path that can be checked.",
+                                name.text
+                            )));
+                        }
                         None => {}
                     }
                 }
             }
             // Any other command: an argument that names a path a rule
-            // holds back makes the command one to ask about, whatever
-            // allows the command.
+            // holds back, a protected path or a file that looks like a
+            // secret makes the command one to ask about, whatever allows
+            // the command. The harness's own files stay refused.
             None => {
                 for word in part.arguments().iter().filter(|word| word.is_fixed()) {
                     let value = word
@@ -952,17 +1068,69 @@ impl Engine {
                             continue;
                         };
                         if let Some(hit) = held_back(rules, &path) {
-                            findings.push(Finding::ask(format!(
+                            let reason = format!(
                                 "`{shown}` names `{path}`, which is protected by {}.",
                                 hit.describe()
+                            );
+                            findings.push(match hit.by {
+                                By::Builtin(_) => Finding::Deny {
+                                    reason,
+                                    built_in: true,
+                                },
+                                By::Rule(_) => Finding::ask(reason),
+                            });
+                            break;
+                        }
+                        if self.is_sensitive(rules, &path) {
+                            findings.push(self.beyond(format!(
+                                "`{shown}` names `{path}`, which is a protected path or looks \
+                                 like a file that holds secrets. Whoever can write a protected \
+                                 path can run code later."
                             )));
                             break;
                         }
                     }
                 }
+                // `git config` writes the repository's configuration,
+                // which can name programs for git to run.
+                if is_git_config(part)
+                    && level::decider(self.level(), Matter::WriteBeyond) != Decider::Holder
+                {
+                    findings.push(self.beyond(format!(
+                        "`{shown}` changes git's configuration, which can name programs for git \
+                         to run."
+                    )));
+                }
             }
         }
         (standing, findings)
+    }
+
+    /// The finding for a write beyond what the level lets the holder
+    /// decide, made by a command: refused where the level refuses such
+    /// writes, and asked about otherwise.
+    fn beyond(&self, reason: String) -> Finding {
+        if level::decider(self.level(), Matter::WriteBeyond) == Decider::Refused {
+            Finding::deny(reason)
+        } else {
+            Finding::ask(reason)
+        }
+    }
+
+    /// The finding for a command that reads every file of `tree`, where
+    /// something in the tree is held back from reading. Asked, never
+    /// refused: the command names the tree, not the file. At
+    /// `unrestricted` too: a rule that holds back holds at every level.
+    #[expect(
+        clippy::unused_self,
+        reason = "a judgement like the others, which do read the engine"
+    )]
+    fn searched(&self, shown: &str, tree: &AbsPath, hit: &Hit<'_>) -> Finding {
+        Finding::ask(format!(
+            "`{shown}` reads every file it finds in `{tree}`, and {} protects something there. \
+             The `search` tool makes the same search and leaves protected files out.",
+            hit.describe()
+        ))
     }
 
     // ----------------------------------------------------------- approvals
@@ -1121,9 +1289,123 @@ fn compile(
 /// certain, and keeps its denial.
 fn mentioned(finding: Finding) -> Finding {
     match finding {
-        Finding::Deny { reason } => Finding::ask(reason),
+        Finding::Deny {
+            reason,
+            built_in: false,
+        } => Finding::ask(reason),
         other => other,
     }
+}
+
+/// Whether a path is part of a git repository's own data, wherever the
+/// repository is: anything in a directory named `.git`, a file named `.git`
+/// (which points a worktree at its repository), and a file named `HEAD`,
+/// which with two directories beside it makes git take a plain directory
+/// for a repository and read the `config` in it.
+///
+/// The repository's configuration can name programs that `git status` and
+/// `git diff` run, and those are on the table of commands that only read.
+/// So no tool writes any of this unasked, in the workspace's own repository
+/// or in one nested in it.
+fn is_repository_data(path: &AbsPath) -> bool {
+    path.names().any(|name| name.eq_ignore_ascii_case(".git"))
+        || path
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("HEAD"))
+}
+
+/// Whether a simple command is `git config`, however git is named and
+/// whatever stands before the subcommand.
+///
+/// Git's own options come before the subcommand, and some take a value in
+/// the next word. With only options this knows, the subcommand is the
+/// first word that is not one. With any other option before it, a `config`
+/// anywhere counts: asking once too often is the safe side.
+fn is_git_config(part: &Part) -> bool {
+    const TAKES_A_VALUE: [&str; 7] = [
+        "-C",
+        "-c",
+        "--git-dir",
+        "--work-tree",
+        "--namespace",
+        "--config-env",
+        "--attr-source",
+    ];
+    const ALONE: [&str; 12] = [
+        "-p",
+        "-P",
+        "--paginate",
+        "--no-pager",
+        "--bare",
+        "--no-replace-objects",
+        "--no-lazy-fetch",
+        "--no-optional-locks",
+        "--no-advice",
+        "--literal-pathspecs",
+        "--glob-pathspecs",
+        "--noglob-pathspecs",
+    ];
+    let program = part.program();
+    let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    let name = name.to_ascii_lowercase();
+    if name.strip_suffix(".exe").unwrap_or(&name) != "git" {
+        return false;
+    }
+    let mut words = part.arguments().iter().map(|word| word.text.as_str());
+    while let Some(word) = words.next() {
+        if TAKES_A_VALUE.contains(&word) {
+            words.next();
+        } else if ALONE.contains(&word)
+            || TAKES_A_VALUE
+                .iter()
+                .any(|option| option.starts_with("--") && is_given(word, option))
+        {
+            // An option this knows, with its value attached if it has one.
+        } else if word.starts_with('-') {
+            return part.arguments().iter().any(|word| word.text == "config");
+        } else {
+            return word == "config";
+        }
+    }
+    false
+}
+
+/// Whether `word` is `--option=value`.
+fn is_given(word: &str, option: &str) -> bool {
+    word.strip_prefix(option)
+        .is_some_and(|rest| rest.starts_with('='))
+}
+
+/// Reads the roots of a path set as absolute paths, and writes them back in
+/// that form: absolute as it is, `~/…` under the home directory, anything
+/// else under the workspace.
+fn place_all(
+    roots: &mut [String],
+    list: &'static str,
+    workspace: &AbsPath,
+    home: Option<&AbsPath>,
+) -> Result<Vec<AbsPath>, StartError> {
+    let mut placed = Vec::with_capacity(roots.len());
+    for root in roots {
+        let path = if let Ok(path) = AbsPath::parse(root, workspace.style()) {
+            Some(path)
+        } else if root.as_str() == "~" {
+            home.cloned()
+        } else if let Some(rest) = root.strip_prefix("~/").or_else(|| root.strip_prefix("~\\")) {
+            home.and_then(|home| home.join(rest).ok())
+        } else {
+            workspace.join(root).ok()
+        };
+        let Some(path) = path else {
+            return Err(StartError::Sandbox {
+                entry: root.clone(),
+                list,
+            });
+        };
+        path.as_str().clone_into(root);
+        placed.push(path);
+    }
+    Ok(placed)
 }
 
 /// The strictest of the findings, as the answer for the call.
@@ -1134,7 +1416,7 @@ fn combine(findings: Vec<Finding>, read_only: bool) -> Outcome {
     for finding in findings {
         match finding {
             Finding::Allow => {}
-            Finding::Deny { reason } => return Outcome::Deny { reason },
+            Finding::Deny { reason, .. } => return Outcome::Deny { reason },
             Finding::Ask { reason, lift } => {
                 if !reasons.contains(&reason) {
                     reasons.push(reason);
@@ -1179,11 +1461,12 @@ fn is_change_of_directory(part: &Part, shell: ShellSyntax) -> bool {
     }
 }
 
-/// Programs whose arguments are themselves a command or a program's text.
-/// An approval of one covers that exact command line and nothing wider:
-/// "always allow `sudo *`" is not what a person meant by approving `sudo
-/// apt list`.
-const WRAPPERS: [&str; 43] = [
+/// Programs whose arguments are themselves a command, a program's text, or
+/// a script in a language of their own. An approval of one covers that
+/// exact command line and nothing wider: "always allow `sudo *`" is not
+/// what a person meant by approving `sudo apt list`, nor "always allow
+/// `find *`" by approving one `find`.
+const WRAPPERS: [&str; 56] = [
     "sudo",
     "doas",
     "su",
@@ -1227,6 +1510,47 @@ const WRAPPERS: [&str; 43] = [
     "docker",
     "podman",
     "kubectl",
+    "find",
+    "sed",
+    "tar",
+    "rsync",
+    "npx",
+    "pnpx",
+    "bunx",
+    "uvx",
+    "pipx",
+    "parallel",
+    "watchexec",
+    "entr",
+    "git-shell",
+];
+
+/// Programs that do their work through subcommands. An approval of one
+/// names the subcommand; where there is none in second place (an option
+/// comes first, as in `git -C dir status`), it covers the exact line.
+const HAS_SUBCOMMANDS: [&str; 22] = [
+    "git",
+    "cargo",
+    "npm",
+    "pnpm",
+    "yarn",
+    "go",
+    "pip",
+    "pip3",
+    "gh",
+    "dotnet",
+    "apt",
+    "apt-get",
+    "brew",
+    "rustup",
+    "poetry",
+    "uv",
+    "hg",
+    "svn",
+    "conda",
+    "systemctl",
+    "dnf",
+    "just",
 ];
 
 /// The allow rule an approval of this command adds: the program and its
@@ -1247,8 +1571,26 @@ fn approval_rule(part: &Part) -> Option<Rule> {
         .text
         .rsplit(['/', '\\'])
         .next()
-        .unwrap_or(&program.text);
-    let pattern = if WRAPPERS.contains(&name.to_ascii_lowercase().as_str()) {
+        .unwrap_or(&program.text)
+        .to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    // A second word is a subcommand when it reads like one: `test` in
+    // `cargo test`, not `-la` or `src/main.rs`.
+    let subcommand = part.words.get(1).filter(|word| {
+        word.is_fixed()
+            && !word.home
+            && word
+                .text
+                .chars()
+                .next()
+                .is_some_and(|first| first.is_ascii_lowercase())
+            && word.text.chars().all(|character| {
+                character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+            })
+    });
+    let exact_line = WRAPPERS.contains(&name)
+        || (subcommand.is_none() && HAS_SUBCOMMANDS.contains(&name) && part.words.len() > 1);
+    let pattern = if exact_line {
         // The whole line, word for word, and no more.
         if !part
             .words
@@ -1259,20 +1601,6 @@ fn approval_rule(part: &Part) -> Option<Rule> {
         }
         words_of(part).join(" ")
     } else {
-        // A second word is a subcommand when it reads like one: `test` in
-        // `cargo test`, not `-la` or `src/main.rs`.
-        let subcommand = part.words.get(1).filter(|word| {
-            word.is_fixed()
-                && !word.home
-                && word
-                    .text
-                    .chars()
-                    .next()
-                    .is_some_and(|first| first.is_ascii_lowercase())
-                && word.text.chars().all(|character| {
-                    character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
-                })
-        });
         match subcommand {
             Some(subcommand) => format!("{} {} *", program.text, subcommand.text),
             None => format!("{} *", program.text),
@@ -1331,6 +1659,16 @@ mod tests {
             ("ls -la src", Some("ls *")),
             ("./scripts/build.sh fast", Some("./scripts/build.sh fast *")),
             ("rm src/main.rs", Some("rm *")),
+            // A program that works through subcommands, with an option
+            // where the subcommand would be: the exact line.
+            ("git -C sub status", Some("git -C sub status")),
+            ("cargo --locked test", Some("cargo --locked test")),
+            ("git", Some("git *")),
+            // Programs with a language of their own in their arguments.
+            ("find . -name x -delete", Some("find . -name x -delete")),
+            ("sed -i s/a/b/ f", Some("sed -i s/a/b/ f")),
+            ("tar xf a.tar", Some("tar xf a.tar")),
+            ("npx cowsay hi", Some("npx cowsay hi")),
             ("pytest tests/unit", Some("pytest *")),
             ("go test ./...", Some("go test *")),
             // A program that runs its arguments: the exact line only.
@@ -1373,7 +1711,14 @@ mod tests {
         for text in ["docs/find", "a*b", "what?", "[x]", "{a,b}", "plain", "]["] {
             let pattern = NamePattern::parse(&literal_name(text)).unwrap();
             assert!(pattern.matches(text), "{text:?}");
-            assert!(pattern.is_literal() || text.contains(['*', '?', '[', ']', '{', '}']));
+            // And nothing one character away from it.
+            for (index, _) in text.char_indices() {
+                let mut other = text.to_owned();
+                other.replace_range(index..index + 1, "x");
+                if other != text {
+                    assert!(!pattern.matches(&other), "{text:?} matched {other:?}");
+                }
+            }
         }
         assert!(
             !NamePattern::parse(&literal_name("a*b"))

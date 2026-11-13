@@ -203,6 +203,26 @@ impl Protected {
         self
     }
 
+    /// What is protected from reading somewhere below `tree`, if anything
+    /// is.
+    fn guards_under(&self, tree: &AbsPath) -> Option<&'static str> {
+        let below = |protected: &AbsPath| protected != tree && protected.starts_with(tree);
+        if self.closed.iter().any(below) {
+            return Some(
+                "a built-in rule that protects Cortex-Harness's own configuration, credentials, \
+                 trust and stored approvals",
+            );
+        }
+        if self
+            .sessions
+            .as_ref()
+            .is_some_and(|(sessions, _)| sessions.starts_with(tree))
+        {
+            return Some("a built-in rule that protects the session logs of other projects");
+        }
+        None
+    }
+
     /// What protects `path` from `effect`, if anything does. Compared as
     /// the style compares names: matching too much is the safe side.
     fn guards(&self, effect: &Effect, path: &AbsPath) -> Option<&'static str> {
@@ -329,9 +349,17 @@ impl RuleSet {
             let matcher = match &rule.rule.effect {
                 Effect::Read | Effect::Write => PathGlob::compile(pattern, anchors, Case::Exact)
                     .and_then(|exact| {
-                        Ok(Matcher::Path {
-                            exact,
-                            folded: PathGlob::compile(pattern, anchors, Case::Folded)?,
+                        let folded = PathGlob::compile(pattern, anchors, Case::Folded)?;
+                        // What grants is matched narrowly: an allow that
+                        // starts anywhere (`**/…`) is an allow in the
+                        // workspace.
+                        Ok(if rule.rule.action == RuleAction::Allow {
+                            Matcher::Path {
+                                exact: exact.kept_within(context.workspace),
+                                folded: folded.kept_within(context.workspace),
+                            }
+                        } else {
+                            Matcher::Path { exact, folded }
                         })
                     })
                     .map_err(|error| error.problem),
@@ -416,6 +444,33 @@ impl RuleSet {
                         } else {
                             folded.matches(path) || exact.matches(path)
                         }
+                    }
+                    _ => false,
+                }
+        })
+    }
+
+    /// What holds back reading something below the directory `tree`, if
+    /// anything does: a `deny` or `ask` rule on reading that can match a
+    /// path in the tree, or a protected tree of the harness's own inside
+    /// it. For a command that reads every file of a tree and names none.
+    ///
+    /// Errs towards an answer: a rule with `**` is taken to reach
+    /// everywhere below where the `**` stands.
+    #[must_use]
+    pub fn read_held_back_under(&self, tree: &AbsPath) -> Option<Hit<'_>> {
+        if let Some(what) = self.protected.guards_under(tree) {
+            return Some(Hit {
+                action: RuleAction::Deny,
+                by: By::Builtin(what),
+            });
+        }
+        self.strongest(|compiled| {
+            compiled.rule.rule.effect == Effect::Read
+                && compiled.rule.rule.action != RuleAction::Allow
+                && match &compiled.matcher {
+                    Matcher::Path { exact, folded } => {
+                        folded.reaches_under(tree) || exact.reaches_under(tree)
                     }
                     _ => false,
                 }

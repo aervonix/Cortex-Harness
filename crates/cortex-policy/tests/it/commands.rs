@@ -23,10 +23,12 @@ fn the_command_table_at_the_default_level() {
         ("cat README.md", ReadOnly),
         ("cat src/main.rs | head -20", ReadOnly),
         (
-            "grep -rn TODO src | sort | uniq -c | sort -rn | head -5",
+            "grep -n TODO src/main.rs | sort | uniq -c | sort -rn | head -5",
             ReadOnly,
         ),
         ("rg -n 'fn main' crates", ReadOnly),
+        ("rg TODO", ReadOnly),
+        ("git log --oneline -5 && git diff", ReadOnly),
         ("find . -name '*.rs' -type f", ReadOnly),
         ("wc -l src/main.rs && pwd", ReadOnly),
         ("git status", ReadOnly),
@@ -43,6 +45,10 @@ fn the_command_table_at_the_default_level() {
         ("cd src", ReadOnly),
         ("ls\npwd\n", ReadOnly),
         ("cat < Cargo.toml", ReadOnly),
+        ("cat < /dev/null", ReadOnly),
+        ("ls; cd src && cat main.rs", ReadOnly),
+        ("ls && cd src && cat main.rs | head -3", ReadOnly),
+        ("ls || cd src", ReadOnly),
         // Reading, and writing inside the workspace by a redirection: the
         // command is safe, the edit is in scope, and it is not read-only.
         ("echo hello > notes.txt", Allow),
@@ -88,6 +94,20 @@ fn the_command_table_at_the_default_level() {
         ("sed -i s/a/b/ f", Ask),
         ("rg --pre cat x", Ask),
         ("tail -f log.txt", Ask),
+        // A search of a whole tree that reads hidden files, where the
+        // files that look like secrets are.
+        ("grep -rn TODO src", Ask),
+        ("grep -r password .", Ask),
+        ("rg --hidden TODO", Ask),
+        ("rg -uu TODO", Ask),
+        ("rg --no-ignore TODO", Ask),
+        ("rg -g .env KEY", Ask),
+        // Shell builtins that evaluate their arguments.
+        ("printf '%s' hello", Ask),
+        ("test -f Cargo.toml", Ask),
+        ("printf -v 'a[$(touch pwned)]' %s 1", Ask),
+        ("test -v 'a[$(touch pwned)]'", Ask),
+        ("printf -v CDPATH %s ~ && cd .aws && cat credentials", Ask),
         // A command named by a path, not by its name.
         ("./ls", Ask),
         ("/tmp/ls", Ask),
@@ -117,10 +137,13 @@ fn the_command_table_at_the_default_level() {
         ("cd .. && ls", Ask),
         ("cd ~ && ls", Ask),
         ("realpath --relative-to=/etc x", Ask),
-        // The harness's own files: asked about, and never run unasked.
-        ("cat ~/.config/cortex-harness/credentials.toml", Ask),
-        ("cat ~/.local/state/cortex-harness/trust.toml", Ask),
-        ("ls ~/.local/share/cortex-harness/sessions/bbbb2222", Ask),
+        // The harness's own files: refused, however they are named.
+        ("cat ~/.config/cortex-harness/credentials.toml", Deny),
+        ("cat ~/.local/state/cortex-harness/trust.toml", Deny),
+        ("ls ~/.local/share/cortex-harness/sessions/bbbb2222", Deny),
+        ("cd ~/.config/cortex-harness && ls", Deny),
+        // A tree with the harness's files somewhere in it.
+        ("rg token /users/dev", Ask),
         // Redirections that write outside the workspace, or to a secret or
         // a protected path.
         ("echo x > /tmp/elsewhere.txt", Ask),
@@ -139,6 +162,25 @@ fn the_command_table_at_the_default_level() {
         ("cd - && ls", Ask),
         ("cd a b && ls", Ask),
         ("cd src > log && ls", Ask),
+        // A `cd` that may not run, or after which a part runs whether it
+        // succeeded or not. Each of these reads `/work/notes.txt`, outside
+        // the workspace, if the `cd` is taken to have happened when it has
+        // not, or the other way round.
+        ("true || cd src && cat ../notes.txt", Ask),
+        ("false || cd src && cat ../notes.txt", Ask),
+        ("ls || cd src && cat main.rs", Ask),
+        ("cd nowhere && ls; cat ../notes.txt", Ask),
+        ("cd src && ls; cat ../notes.txt", Ask),
+        ("cd src && false || cat ../notes.txt", Ask),
+        ("cd src && ls || cat ../notes.txt", Ask),
+        ("cd src && ls\ncat ../notes.txt", Ask),
+        ("true || cd src && echo key >> ../authorized_keys", Ask),
+        // A `cd` with a redirection writes the file, whatever else it does.
+        ("cd src > log", Ask),
+        ("cd . > notes.txt", Ask),
+        ("cd . > ~/.bashrc", Ask),
+        ("cd . > ../outside.txt", Ask),
+        ("cd . > .git/hooks/pre-commit", Ask),
     ];
     let engine = engine();
     for (command, expected) in table {
@@ -214,8 +256,32 @@ fn the_command_table_with_rules() {
         ("cat private/notes.txt", Ask),
         ("git add secrets/key.txt", Ask),
         ("cargo test --manifest-path=secrets/Cargo.toml", Ask),
-        ("cat ~/.config/cortex-harness/credentials.toml", Ask),
+        ("cat ~/.config/cortex-harness/credentials.toml", Deny),
+        ("git add ~/.config/cortex-harness/credentials.toml", Deny),
         ("git add src/.env", Ask),
+        // A search reads files nobody named: asked about where a rule
+        // protects something in the tree it searches.
+        ("rg KEY", Ask),
+        ("rg KEY .", Ask),
+        ("rg -e KEY", Ask),
+        ("rg --files", Ask),
+        ("rg KEY secrets", Ask),
+        ("rg KEY private/deep", Ask),
+        ("rg KEY src", ReadOnly),
+        ("rg KEY src tests", ReadOnly),
+        ("rg KEY src .", Ask),
+        ("cd src && rg KEY", ReadOnly),
+        ("cd src && rg KEY ..", Ask),
+        ("git grep KEY", Ask),
+        ("git diff", Ask),
+        ("git show HEAD", Ask),
+        ("git log -p", Ask),
+        ("cd src && git log -p", Ask),
+        ("git log --oneline -5", ReadOnly),
+        ("git status --short", ReadOnly),
+        // Commands that print names, and not what files hold.
+        ("ls -R", ReadOnly),
+        ("find . -name '*.txt'", ReadOnly),
         // A redirection to a file a write rule denies is denied.
         ("echo x > src/.env", Deny),
         ("cargo test > .env.log", Deny),
@@ -262,11 +328,17 @@ fn a_denial_and_a_question_say_why() {
     );
     let asked = reason(&shell(&engine, "cat .env"));
     assert!(asked.contains("holds secrets"), "{asked}");
-    let asked = reason(&shell(
-        &engine,
-        "cat ~/.config/cortex-harness/credentials.toml",
-    ));
-    assert!(asked.contains("built-in rule"), "{asked}");
+    let refused = shell(&engine, "cat ~/.config/cortex-harness/credentials.toml");
+    assert_eq!(said(&refused), Deny);
+    assert!(reason(&refused).contains("built-in rule"), "{refused:?}");
+    let searching = with_rules(vec![user(Effect::Read, "secrets/**", RuleAction::Deny)]);
+    let asked = reason(&shell(&searching, "rg KEY"));
+    assert!(
+        asked.contains("reads every file it finds in `/work/app`")
+            && asked.contains("`deny read secrets/**`")
+            && asked.contains("`search` tool"),
+        "{asked}"
+    );
     let asked = reason(&shell(&engine, "cd src; ls"));
     assert!(asked.contains("cannot follow"), "{asked}");
     let asked = reason(&shell(&engine, "echo x > .git/hooks/pre-commit"));
@@ -293,6 +365,17 @@ fn a_question_about_a_command_offers_the_rule_an_approval_would_add() {
     );
     assert_eq!(lifts("ls && make -j8"), ["exec make *"]);
     assert_eq!(lifts("sudo apt list"), ["exec sudo apt list"]);
+    // A program with a language of its own in its arguments, and one whose
+    // subcommand is not where it is expected: the line that was shown.
+    assert_eq!(
+        lifts("find . -name x -delete"),
+        ["exec find . -name x -delete"]
+    );
+    assert_eq!(
+        lifts("git -C sub commit -m x"),
+        ["exec git -C sub commit -m x"]
+    );
+    assert_eq!(lifts("git commit -m x"), ["exec git commit *"]);
     // A glob takes `ls` off the table of commands that only read. A rule
     // the person is shown, and chooses, can still allow it.
     assert_eq!(lifts("ls *.rs"), ["exec ls *"]);
@@ -415,7 +498,14 @@ fn the_command_table_for_powershell() {
         ("Get-Content -Wait log.txt", Ask),
         ("Get-Content .env", Ask),
         ("Get-Content /etc/passwd", Ask),
-        ("Get-Content ~/.config/cortex-harness/credentials.toml", Ask),
+        (
+            "Get-Content ~/.config/cortex-harness/credentials.toml",
+            Deny,
+        ),
+        // Not a file: the environment, the registry.
+        ("Get-ChildItem Env:", Ask),
+        ("Get-Content Env:PATH", Ask),
+        ("Get-Item HKLM:\\Software", Ask),
         ("Get-ChildItem ..", Ask),
         // More than one command, and every way to hide one.
         ("Get-ChildItem; Remove-Item x", Deny),

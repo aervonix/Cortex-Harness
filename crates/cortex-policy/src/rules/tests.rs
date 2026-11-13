@@ -87,6 +87,60 @@ fn deny_beats_ask_beats_allow_whatever_the_order() {
     }
 }
 
+/// The same pattern is wide in a rule that holds back and narrow in a
+/// rule that grants: `**/…` is the whole machine for a deny or an ask, and
+/// the workspace for an allow.
+#[test]
+fn an_allow_that_starts_anywhere_is_an_allow_in_the_workspace() {
+    for effect in [Effect::Read, Effect::Write] {
+        let allows = set(vec![
+            user(effect.clone(), "**/*.md", Allow),
+            user(effect.clone(), "**", Allow),
+        ]);
+        for inside in [
+            "/work/app/README.md",
+            "/work/app/docs/a/b.md",
+            "/work/app/x",
+        ] {
+            assert_eq!(action(allows.path(&effect, &posix(inside))), Some(Allow));
+        }
+        for outside in [
+            "/users/dev/notes.md",
+            "/users/dev/.ssh/id_rsa",
+            "/users/dev/.bashrc",
+            "/etc/passwd",
+            "/work/app2/README.md",
+            "/work",
+        ] {
+            assert_eq!(
+                action(allows.path(&effect, &posix(outside))),
+                None,
+                "{outside}"
+            );
+        }
+        // A rule that holds back, written the same way, holds everywhere.
+        for held in [Deny, Ask] {
+            let holds = set(vec![user(effect.clone(), "**/*.md", held)]);
+            for path in ["/work/app/README.md", "/users/dev/notes.md", "/etc/x.md"] {
+                assert_eq!(action(holds.path(&effect, &posix(path))), Some(held));
+            }
+        }
+        // An allow that says where is an allow there.
+        let named = set(vec![
+            user(effect.clone(), "~/notes/**", Allow),
+            user(effect.clone(), "/srv/data/**", Allow),
+        ]);
+        assert_eq!(
+            action(named.path(&effect, &posix("/users/dev/notes/a.md"))),
+            Some(Allow)
+        );
+        assert_eq!(
+            action(named.path(&effect, &posix("/srv/data/x"))),
+            Some(Allow)
+        );
+    }
+}
+
 #[test]
 fn a_hit_says_which_rule_and_whose() {
     let set = set(vec![
@@ -276,9 +330,9 @@ fn the_harnesss_own_files_are_closed_whatever_the_rules_say() {
     // Rules that allow everything, from every source that could.
     let set = set_with(
         vec![
-            user(Effect::Read, "**", Allow),
-            user(Effect::Write, "**", Allow),
-            SourcedRule::new(rule(Effect::Read, "**", Allow), RuleSource::Managed),
+            user(Effect::Read, "/**", Allow),
+            user(Effect::Write, "/**", Allow),
+            SourcedRule::new(rule(Effect::Read, "/**", Allow), RuleSource::Managed),
             SourcedRule::new(rule(Effect::Write, "~/**", Allow), RuleSource::Session),
         ],
         true,
