@@ -308,39 +308,6 @@ impl EnvText {
     }
 }
 
-/// What a literal that may be a secret is shown as, in the configuration's
-/// untyped views.
-pub(crate) fn redacted() -> Value {
-    Value::String(cortex_base::secret::REDACTED.to_owned())
-}
-
-/// Whether a setting of this kind can hold a secret as literal text.
-pub(crate) fn may_hold_secret(kind: &Kind) -> bool {
-    match kind {
-        Kind::EnvText => true,
-        Kind::List(inner) | Kind::Map(inner) => may_hold_secret(inner),
-        _ => false,
-    }
-}
-
-/// A value of `kind` with every literal that may be a secret replaced by
-/// `[redacted]`. `{ env = "NAME" }` is kept: a name is not a secret.
-pub(crate) fn redact_kind(kind: &Kind, value: &Value) -> Value {
-    match (kind, value) {
-        (Kind::EnvText, Value::String(_)) => redacted(),
-        (Kind::Map(inner), Value::Table(table)) => Value::Table(
-            table
-                .iter()
-                .map(|(name, entry)| (name.clone(), redact_kind(inner, entry)))
-                .collect(),
-        ),
-        (Kind::List(inner), Value::Array(items)) => {
-            Value::Array(items.iter().map(|item| redact_kind(inner, item)).collect())
-        }
-        _ => value.clone(),
-    }
-}
-
 impl Setting for EnvText {
     fn node() -> Node {
         Node::Leaf(Kind::EnvText)
@@ -363,7 +330,7 @@ impl Setting for EnvText {
         Some(match self {
             // Written out so that a configuration read and written again is
             // the same. Nothing prints what this returns: the views that
-            // print values redact it ([`redact_kind`]).
+            // print values redact it (`schema::redact`).
             Self::Literal(text) => Value::String(text.expose().to_owned()),
             Self::Env(name) => {
                 let mut table = toml::Table::new();
@@ -415,8 +382,20 @@ impl Setting for Headers {
 /// A section whose keys are not declared yet: the build step that owns the
 /// section declares them. Until then whatever a file holds there is kept as
 /// it was written and not checked.
-#[derive(Debug, Clone, Default, PartialEq)]
+///
+/// Its `Debug` form redacts what looks like a secret by its name or as a
+/// web address's user part (`schema::redact`): a section of this kind can
+/// hold anything, an MCP server's token included.
+#[derive(Clone, Default, PartialEq)]
 pub struct Reserved(pub toml::Table);
+
+impl std::fmt::Debug for Reserved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Reserved")
+            .field(&super::redact::redact_undeclared(&self.0))
+            .finish()
+    }
+}
 
 impl Setting for Reserved {
     fn node() -> Node {
@@ -674,22 +653,6 @@ mod tests {
                 .starts_with("X-One:")
         );
         assert_eq!(Headers::default().write(), None);
-
-        // The untyped views redact a literal and keep a variable's name.
-        let kind = Kind::Map(Box::new(Kind::EnvText));
-        assert!(may_hold_secret(&kind) && !may_hold_secret(&Kind::Text));
-        assert_eq!(
-            redact_kind(
-                &kind,
-                &toml("{ api-key = \"k\", X-Two = { env = \"TWO\" } }")
-            ),
-            toml("{ api-key = \"[redacted]\", X-Two = { env = \"TWO\" } }")
-        );
-        assert_eq!(
-            redact_kind(&Kind::List(Box::new(Kind::EnvText)), &toml("[\"k\"]")),
-            toml("[\"[redacted]\"]")
-        );
-        assert_eq!(redact_kind(&Kind::Text, &toml("\"k\"")), toml("\"k\""));
     }
 
     #[test]

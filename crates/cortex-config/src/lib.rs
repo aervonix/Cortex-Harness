@@ -53,7 +53,7 @@ pub use credentials::{
     Credential, CredentialError, CredentialSource, CredentialStatus, CredentialStore, FileStore,
     StoreKind, open_store, resolve,
 };
-pub use dirs::{Dirs, ProjectFiles, workspace_root};
+pub use dirs::{Dirs, ProjectFiles, WorkspaceRoot, find_workspace_root, workspace_root};
 pub use env::{Env, Platform};
 pub use key::KeyPath;
 pub use layer::{Diagnostic, LayerKind, Origin, Severity, Withheld};

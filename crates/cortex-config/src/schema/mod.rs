@@ -31,6 +31,7 @@
 //! | `[reserved <trust>]` | A section whose keys the step that builds it will declare. Anything in it is accepted, unread. |
 
 mod json;
+mod redact;
 mod reference;
 mod sections;
 mod types;
@@ -41,6 +42,7 @@ use std::sync::OnceLock;
 use toml::Value;
 
 pub use json::json_schema;
+pub(crate) use redact::redact;
 pub use reference::reference_page;
 pub use sections::{
     CompatSettings, CredentialSettings, LimitSet, LimitSettings, LogSettings, ManagedSettings,
@@ -459,38 +461,6 @@ pub fn lookup(path: &KeyPath) -> Lookup {
     Lookup::Table { enforced }
 }
 
-/// The value at `key` as the configuration's untyped views may show it: in
-/// `cortex config show`, in `--layer` output and in `Debug`. A literal that
-/// may be a secret (a provider's header) is `[redacted]`; a table is gone
-/// into, so a table that holds such a setting is redacted where it holds
-/// it. The typed [`Settings`] keep the literal, as a `Secret`.
-#[must_use]
-pub(crate) fn redact(key: &KeyPath, value: &Value) -> Value {
-    match lookup(key) {
-        Lookup::Setting { child, .. } => match &child.node {
-            Node::Leaf(kind) => types::redact_kind(kind, value),
-            _ => value.clone(),
-        },
-        // One entry of such a setting: a single header.
-        Lookup::InsideSetting { child } => match &child.node {
-            Node::Leaf(kind) if types::may_hold_secret(kind) => {
-                types::redact_kind(&Kind::EnvText, value)
-            }
-            _ => value.clone(),
-        },
-        Lookup::Table { .. } => match value {
-            Value::Table(table) => Value::Table(
-                table
-                    .iter()
-                    .map(|(name, entry)| (name.clone(), redact(&key.child(name), entry)))
-                    .collect(),
-            ),
-            _ => value.clone(),
-        },
-        Lookup::Reserved { .. } | Lookup::Unknown { .. } => value.clone(),
-    }
-}
-
 /// One declared setting, with its full name. A name inside a named
 /// collection has `*` where the name goes: `providers.*.base_url`.
 #[derive(Debug, Clone)]
@@ -654,12 +624,22 @@ macro_rules! settings {
         }
     ) => {
         $(#[doc = $struct_doc])*
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Clone, PartialEq)]
         pub struct $name {
             $(
                 $(#[doc = $doc])*
                 pub $field: $ty,
             )*
+        }
+
+        /// Every field, with the user part of any web address in it
+        /// redacted (`schema::redact`).
+        impl ::std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                f.debug_struct(stringify!($name))
+                    $( .field(stringify!($field), &$crate::schema::redact::Shown(&self.$field)) )*
+                    .finish()
+            }
         }
 
         impl Default for $name {

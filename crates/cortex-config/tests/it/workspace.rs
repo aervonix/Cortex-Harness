@@ -9,7 +9,7 @@
 
 use std::fs;
 
-use cortex_config::workspace_root;
+use cortex_config::{find_workspace_root, workspace_root};
 
 use crate::{Scratch, make_link, write};
 
@@ -59,14 +59,27 @@ fn the_nearest_folder_with_a_cortex_folder_or_a_git_entry_is_the_root() {
 #[test]
 fn on_unix_a_link_at_git_counts_by_its_own_owner() {
     let scratch = Scratch::new("root_link_unix");
-    fs::create_dir_all(scratch.join("elsewhere")).unwrap();
     fs::create_dir_all(scratch.join("ws/sub")).unwrap();
+    // A link to nothing: an owner read through it would find nothing to
+    // read, so only the link's own owner can make it count.
     assert!(make_link(
-        &scratch.join("elsewhere"),
+        &scratch.join("nowhere"),
         &scratch.join("ws/.git"),
         true
     ));
     assert_eq!(workspace_root(&scratch.join("ws/sub")), scratch.join("ws"));
+
+    // A `.cortex` must be a folder: a link there is passed over, and said.
+    fs::create_dir_all(scratch.join("elsewhere")).unwrap();
+    fs::create_dir_all(scratch.join("project/sub")).unwrap();
+    assert!(make_link(
+        &scratch.join("elsewhere"),
+        &scratch.join("project/.cortex"),
+        true
+    ));
+    let found = find_workspace_root(&scratch.join("project/sub"));
+    assert_ne!(found.root, scratch.join("project"));
+    assert_eq!(found.passed_over[0], scratch.join("project/.cortex"));
 }
 
 #[cfg(windows)]
@@ -90,7 +103,9 @@ mod windows {
         if !make_link(&scratch.join("elsewhere"), &scratch.join("ws/.git"), true) {
             return;
         }
-        assert_ne!(workspace_root(&scratch.join("ws/sub")), scratch.join("ws"));
+        let found = find_workspace_root(&scratch.join("ws/sub"));
+        assert_ne!(found.root, scratch.join("ws"));
+        assert_eq!(found.passed_over[0], scratch.join("ws").join(".git"));
     }
 
     /// Gives `path` to another owner with `icacls`, which needs the restore
@@ -131,11 +146,13 @@ mod windows {
             {
                 return;
             }
-            let root = workspace_root(&ws.join("sub"));
+            let found = find_workspace_root(&ws.join("sub"));
+            let root = found.root;
             if counts {
                 assert_eq!(root, ws, "{name}");
             } else {
                 assert_ne!(root, ws, "{name}");
+                assert_eq!(found.passed_over[0], ws.join(".git"), "{name}");
             }
         }
     }

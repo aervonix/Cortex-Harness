@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use cortex_base::FakeClock;
-use cortex_config::{Effect, KeyPath, LayerKind, LiveConfig, ProjectTrust, Reload, Severity};
+use cortex_config::{
+    Effect, KeyPath, LayerKind, LiveConfig, Loaded, ProjectTrust, Reload, Severity,
+};
 
 use crate::{Machine, value};
 
@@ -335,38 +337,48 @@ fn a_change_of_options_that_does_not_load_is_undone_and_refused_every_time() {
 }
 
 /// Taking trust away always takes effect, even while a file has an error,
-/// whichever file it is. The project's layers leave the configuration in
-/// force and the error is reported. Before, the trusted project's allow
-/// rule stayed in force, and a second attempt said `Unchanged`.
+/// whichever file it is, and the error is reported. What is in force is
+/// then what an untrusted load of the files in force gives: the project's
+/// allow rule and its choice of model wait for trust again, and its deny
+/// rule, its protected path and its preferences stay, since losing them
+/// would loosen what is in force. Before, the trusted project's allow rule
+/// stayed in force, and a second attempt said `Unchanged`.
 #[test]
 fn lowering_trust_takes_effect_while_a_file_is_broken() {
     const USER: &str = "[model]\nmain = \"big\"\n";
-    const PROJECT: &str = "[sandbox]\nprotect = [\"vendor\"]\n\
+    const PROJECT: &str = "[model]\nmain = \"theirs\"\nreasoning = \"none\"\n\
+                           [sandbox]\nprotect = [\"vendor\"]\n\
                            [[permissions.rules]]\neffect = \"exec\"\nmatch = \"curl *\"\n\
-                           action = \"allow\"\n";
+                           action = \"allow\"\n\
+                           [[permissions.rules]]\neffect = \"write\"\nmatch = \"**/.env*\"\n\
+                           action = \"deny\"\n";
+    let actions = |loaded: &Loaded| -> Vec<String> {
+        loaded
+            .rules()
+            .iter()
+            .map(|placed| placed.rule.action.as_str().to_owned())
+            .collect()
+    };
     for (broken, fixed) in [(LayerKind::User, USER), (LayerKind::Project, PROJECT)] {
         let mut machine = Machine::new(&format!("reload_revoke_{broken}"));
         machine.trusted();
         write_at(&machine, LayerKind::User, USER, 60);
         write_at(&machine, LayerKind::Project, PROJECT, 60);
         let (mut live, _clock) = start(&machine);
-        assert_eq!(
-            live.current().rules().len(),
-            1,
-            "trusted: the allow rule applies"
-        );
+        assert_eq!(actions(&live.current()), ["allow", "deny"], "trusted");
+        assert_eq!(value(&live.current(), "model.main"), "\"theirs\"");
 
         write_at(&machine, broken, "[retry]\nattempts = 0\n", 50);
         assert!(matches!(live.check(), Some(Reload::Rejected(_))));
 
         let reload = live.update(|options| options.trust = ProjectTrust::Untrusted);
-        let Reload::ProjectDropped {
+        let Reload::TrustLowered {
             previous,
             changes,
             failure,
         } = reload
         else {
-            panic!("{broken}: expected the project to be dropped, got {reload:?}");
+            panic!("{broken}: expected trust to be lowered, got {reload:?}");
         };
         assert!(
             failure
@@ -374,49 +386,50 @@ fn lowering_trust_takes_effect_while_a_file_is_broken() {
                 .contains("retry.attempts: 0 is out of range"),
             "{broken}: the error is reported"
         );
-        assert_eq!(previous.rules().len(), 1);
+        assert_eq!(actions(&previous), ["allow", "deny"]);
         let changed: Vec<String> = changes.iter().map(|c| c.key.to_string()).collect();
-        assert_eq!(
-            changed,
-            ["permissions.rules", "sandbox.protect"],
-            "{broken}"
-        );
+        assert_eq!(changed, ["model.main", "permissions.rules"], "{broken}");
 
-        // Trust is lowered, nothing of the project is in force, and the
-        // user's own configuration, as it was in force, stays.
+        // Trust is lowered: what needed it waits again, the project's
+        // restrictions and preferences stay, and the user's own setting is
+        // back where the project's was.
         let current = live.current();
         assert_eq!(live.options().trust, ProjectTrust::Untrusted);
-        assert!(current.rules().is_empty(), "{broken}");
-        assert_eq!(value(&current, "sandbox.protect"), "[]", "{broken}");
+        assert_eq!(actions(&current), ["deny"], "{broken}");
+        assert_eq!(
+            value(&current, "sandbox.protect"),
+            "[\"vendor\"]",
+            "{broken}"
+        );
+        assert_eq!(value(&current, "model.reasoning"), "\"none\"", "{broken}");
         assert_eq!(value(&current, "model.main"), "\"big\"", "{broken}");
-        assert!(current.files.iter().all(|(kind, ..)| !kind.is_project()));
+        let held: Vec<String> = current.withheld.iter().map(|h| h.key.to_string()).collect();
+        assert_eq!(held, ["model.main", "permissions.rules"], "{broken}");
 
         // The same error is not reported again until a file changes.
         assert!(live.check().is_none());
         assert_eq!(live.reload(), Reload::Unchanged);
 
-        // Once the file is fixed, the project is back, held to the trust
-        // rules: its protected path applies and its allow rule waits.
+        // Once the file is fixed, the files are read again, untrusted, and
+        // that is the same configuration.
         write_at(&machine, broken, fixed, 40);
-        assert!(matches!(live.check(), Some(Reload::Applied { .. })));
-        let current = live.current();
-        assert!(current.rules().is_empty(), "{broken}");
-        assert_eq!(value(&current, "sandbox.protect"), "[\"vendor\"]");
-        assert_eq!(current.withheld.len(), 1);
+        assert_eq!(live.check(), Some(Reload::Unchanged), "{broken}");
+        assert_eq!(live.current().settings, current.settings);
     }
 }
 
-/// The user selected a profile that only the project defines, and takes
-/// trust away while a file is broken: the project and its profile go.
+/// The user selected a profile the project defines, and takes trust away
+/// while a file is broken: the profile stays selected, held to the rules
+/// for an untrusted project, as an untrusted load would hold it.
 #[test]
-fn lowering_trust_drops_a_profile_only_the_project_defines() {
+fn lowering_trust_holds_a_projects_profile_to_the_untrusted_rules() {
     let mut machine = Machine::new("reload_revoke_profile");
     machine.trusted();
     write_at(&machine, LayerKind::User, "profile = \"theirs\"\n", 60);
     write_at(
         &machine,
         LayerKind::Project,
-        "[profiles.theirs]\nsandbox.network = \"full\"\n",
+        "[profiles.theirs]\nsandbox.network = \"full\"\nmodel.reasoning = \"none\"\n",
         60,
     );
     let (mut live, _clock) = start(&machine);
@@ -425,19 +438,37 @@ fn lowering_trust_drops_a_profile_only_the_project_defines() {
 
     write_at(&machine, LayerKind::Project, "[retry\n", 50);
     let reload = live.update(|options| options.trust = ProjectTrust::Untrusted);
-    assert!(
-        matches!(reload, Reload::ProjectDropped { .. }),
-        "{reload:?}"
-    );
+    assert!(matches!(reload, Reload::TrustLowered { .. }), "{reload:?}");
     let current = live.current();
-    assert_eq!(current.profile, None);
+    assert_eq!(current.profile.as_deref(), Some("theirs"));
     assert_eq!(value(&current, "sandbox.network"), "\"off\"");
-    let said = machine.said(&current);
-    assert!(
-        said.iter()
-            .any(|line| line.contains("`theirs` was defined by the project alone")),
-        "{said:?}"
+    assert_eq!(value(&current, "model.reasoning"), "\"none\"");
+    assert_eq!(current.withheld.len(), 1);
+}
+
+/// What checking a file noticed stays said when trust is lowered while
+/// another file is broken: the files in force are merged again, and their
+/// warnings with them.
+#[test]
+fn lowering_trust_keeps_what_the_files_in_force_were_warned_about() {
+    let mut machine = Machine::new("reload_revoke_warnings");
+    machine.trusted();
+    write_at(&machine, LayerKind::User, "[model]\nmian = \"big\"\n", 60);
+    write_at(
+        &machine,
+        LayerKind::Project,
+        "[sandbox]\nprotect = [\"x\"]\n",
+        60,
     );
+    let (mut live, _clock) = start(&machine);
+    let warned = machine.said(&live.current());
+    assert_eq!(warned.len(), 1, "{warned:?}");
+    assert!(warned[0].contains("model.mian: unknown key"), "{warned:?}");
+
+    write_at(&machine, LayerKind::Project, "[retry\n", 50);
+    let reload = live.update(|options| options.trust = ProjectTrust::Untrusted);
+    assert!(matches!(reload, Reload::TrustLowered { .. }), "{reload:?}");
+    assert_eq!(machine.said(&live.current()), warned);
 }
 
 #[test]
