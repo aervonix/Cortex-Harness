@@ -1561,10 +1561,20 @@ fn patterns_and_lost_directories_hold_against_the_second_review() {
         "cp evil.yml \"~/../.github/workflows/ci.yml\"",
         "cp evil.yml x/~/../../.github/workflows/ci.yml",
         "dd if=x of=.github/workflows/a=b.yml",
+        "tool --define=key=.github/workflows/ci.yml",
     ] {
         let outcome = shell(&autonomous, command);
         assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
     }
+    // After a `cd` that was not followed, a later `cd` is taken from every
+    // place the shell may be: here from `sub`, and from the workspace,
+    // where `./.github` is the protected one.
+    let outcome = shell_in(
+        &autonomous,
+        "cd elsewhere && cd ./.github && touch workflows/x.yml",
+        "/work/app/sub",
+    );
+    assert_eq!(said(&outcome), Ask, "{}", reason(&outcome));
     for engine in [&autonomous, &at(Level::Unrestricted)] {
         assert_eq!(
             said(&shell(
