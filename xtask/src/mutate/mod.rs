@@ -28,7 +28,7 @@
 
 mod drive;
 mod jobs;
-mod lex;
+pub(crate) mod lex;
 mod list;
 
 use std::collections::BTreeMap;

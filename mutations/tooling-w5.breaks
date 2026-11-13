@@ -156,7 +156,7 @@ caught-by:
 [break] two-runs-share-a-copy
 rule: A second run on a copy is refused while the first holds it.
 file: xtask/src/mutate/drive.rs
-in: drive
+in: drive_jobs
 find: let _lock = lock(scratch)?;
 replace:
 caught-by:
@@ -174,7 +174,7 @@ caught-by:
 [break] lost-run-is-kept-for-good
 rule: A run that ended without a verdict is tried again by the next run.
 file: xtask/src/mutate/drive.rs
-in: drive
+in: drive_jobs
 find: if options.again || no_verdict
 replace: if options.again
 caught-by:

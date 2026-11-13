@@ -25,6 +25,7 @@ mod load;
 mod mutate;
 mod nonblocking;
 mod outside;
+mod replace;
 mod owner_guard;
 mod perf;
 mod rules;
@@ -129,6 +130,10 @@ By hand only, against a real provider (never in CI)
 
 Working on the code
   fmt               Format the workspace.
+  replace FILE --from CODE --to CODE [--in ITEM] [--occurrence N] [--dry-run]
+                    Replace Rust code found by its tokens, so the match holds
+                    however rustfmt laid it out. It must be there once.
+                    --from-file and --to-file read the code from files.
   schema [--check]  Regenerate the protocol's JSON Schema and TypeScript
                     declarations in docs/protocol/. --check only compares.
   gen               Regenerate every checked-in generated file: what `schema`
@@ -171,6 +176,7 @@ fn run(command: &str, rest: &[String]) -> Result<()> {
         "test" => checks::test(rest),
         "ci" => checks::ci(rest),
         "ci-times" => runs::ci_times(rest),
+        "replace" => replace::run(rest),
         "rules" => checks::rules(),
         "links" => checks::links(),
         "fmt" => checks::fmt(),

@@ -1339,6 +1339,18 @@ replace: \"inside\"
     }
 
     #[test]
+    fn each_job_has_a_build_directory_and_a_log_of_its_own() {
+        let scratch = Path::new("scratch");
+        let first = CargoRunner::new(scratch, 0);
+        assert_eq!(first.target, scratch.join("target"));
+        assert_eq!(first.log, scratch.join("last.log"));
+        let third = CargoRunner::new(scratch, 2);
+        assert_eq!(third.target, scratch.join("target-3"));
+        assert_eq!(third.log, scratch.join("last-3.log"));
+        assert_eq!(super::jobs::copy(scratch, 2), scratch.join("tree-3"));
+    }
+
+    #[test]
     fn the_compilers_errors_are_picked_out_of_cargos_output() {
         let short = "    Checking demo v0.0.0 (/somewhere/crates/demo)
 crates/demo/src/lib.rs:16:20: error: expected one of `!` or `.`, found `the`
