@@ -151,13 +151,15 @@ pub enum Kind {
     Lease,
     /// The active position moved.
     Rewind,
+    /// The session's plan, after a change to it.
+    Plan,
     /// A kind this build does not know.
     Unknown(Box<str>),
 }
 
 impl Kind {
     /// Every kind this build knows, as written.
-    pub const KNOWN: [&'static str; 18] = [
+    pub const KNOWN: [&'static str; 19] = [
         "session",
         "base",
         "epoch",
@@ -176,6 +178,7 @@ impl Kind {
         "decision",
         "lease",
         "rewind",
+        "plan",
     ];
 
     /// The kind a line names.
@@ -200,6 +203,7 @@ impl Kind {
             "decision" => Self::Decision,
             "lease" => Self::Lease,
             "rewind" => Self::Rewind,
+            "plan" => Self::Plan,
             other => Self::Unknown(other.into()),
         }
     }
@@ -226,6 +230,7 @@ impl Kind {
             Self::Decision => "decision",
             Self::Lease => "lease",
             Self::Rewind => "rewind",
+            Self::Plan => "plan",
             Self::Unknown(name) => name,
         }
     }
@@ -322,6 +327,12 @@ pub enum Body {
     LeaseRefused(Box<ErrorData>),
     /// The active position moved to this entry's parent.
     Rewind(Rewind),
+    /// The session's plan after a change to it, by the model or by the
+    /// user. It is an entry of the conversation tree and is not sent to
+    /// the model: the plan of a branch is the last one on it, so a resume
+    /// gets the plan back, a rewind goes back to the plan of that point,
+    /// and a fork takes the plan with it.
+    Plan(PlanRecord),
     /// A kind this build does not know, or a line written in a newer format
     /// version: skipped, and kept as it is.
     Unknown {
@@ -363,6 +374,7 @@ impl Body {
             Self::Decision(_) => Kind::Decision,
             Self::Lease(_) | Self::LeaseRefused(_) => Kind::Lease,
             Self::Rewind(_) => Kind::Rewind,
+            Self::Plan(_) => Kind::Plan,
             Self::Unknown { kind, .. } | Self::Unreadable { kind, .. } => Kind::from_name(kind),
         }
     }
@@ -903,6 +915,13 @@ pub struct LeaseRecord {
     pub lease: Lease,
 }
 
+/// The session's plan, as it stood after a change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanRecord {
+    /// The plan: its items and its revision.
+    pub plan: cortex_protocol::item::Plan,
+}
+
 /// A move of the active position. The entry moved to is the `rewind`
 /// entry's parent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -972,6 +991,7 @@ fn payload(body: &Body) -> Result<Map<String, Value>, serde_json::Error> {
         Body::Decision(decision) => object(decision),
         Body::Lease(record) => object(record),
         Body::Rewind(rewind) => object(rewind),
+        Body::Plan(plan) => object(plan),
         Body::Unknown { fields, .. } => Ok(fields.clone()),
         Body::LeaseRefused(_) | Body::Unreadable { .. } => Err(serde::ser::Error::custom(
             "an entry that was not understood is never written",
@@ -1109,6 +1129,7 @@ fn decode_body(kind: String, fields: Map<String, Value>) -> Body {
             Err(refusal) => Body::LeaseRefused(refusal),
         }),
         Kind::Rewind => read(fields).map(Body::Rewind),
+        Kind::Plan => read(fields).map(Body::Plan),
         Kind::Unknown(_) => return Body::Unknown { kind, fields },
     };
     decoded.unwrap_or_else(|reason| Body::Unreadable { kind, reason })

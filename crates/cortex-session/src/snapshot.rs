@@ -146,6 +146,20 @@ impl RoundCheckpoint {
         }
     }
 
+    /// Records that `file` was seen changed by something that did not say
+    /// what it left: a shell command. For a file the round has no record
+    /// of, this is [`record_before`](Self::record_before). For one it has
+    /// (an editing tool changed it earlier in the round), the first record
+    /// of what it was before stands, and what the tool said it left is
+    /// forgotten: the file is looked at when the round finishes, so that
+    /// the checkpoint holds what the round really left.
+    pub fn seen_changed(&mut self, file: &AbsPath, before: Before) {
+        match self.by_key.get(file.key()) {
+            Some(&index) => self.files[index].after = None,
+            None => self.touch(file, before, None),
+        }
+    }
+
     fn touch(&mut self, file: &AbsPath, before: Before, after: Option<Option<FileVersion>>) {
         self.by_key.insert(file.key().to_owned(), self.files.len());
         self.files.push(Touched {
