@@ -244,21 +244,77 @@ fn a_long_line_arriving_in_pieces_is_still_redacted() {
     assert_eq!(content, text.replace("hunter2", "[redacted]"));
 }
 
-/// Opening a FIFO to read it waits for a writer that may never come: one is
-/// refused before it is opened.
+/// Runs `work` on a thread of its own and waits for it within a bound, so
+/// that a read that waits on a FIFO is a failed test and not a hung one.
+#[cfg(unix)]
+fn without_waiting<T: Send + 'static>(what: &str, work: impl FnOnce() -> T + Send + 'static) -> T {
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done_tx.send(work());
+    });
+    done_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap_or_else(|_| panic!("{what} waited on a FIFO nobody writes to"))
+}
+
+/// Opening a FIFO to read it waits for a writer that may never come. The
+/// store looks at nothing before it opens: the open itself neither waits
+/// nor follows a link, so a file that is swapped for a FIFO or a link at
+/// the last moment is refused like one that was always there.
 #[cfg(unix)]
 #[test]
-fn sys_a_fifo_is_refused_before_it_is_opened() {
+fn sys_a_file_swapped_for_a_fifo_or_a_link_is_neither_waited_on_nor_followed() {
+    use cortex_session::RoundCheckpoint;
+
     let world = World::new("sys_store_fifo");
     let session = world.create("s_1");
-    let fifo = world.file("pipe");
-    let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+    let store = session.store();
+    let path = world.file("build.log");
+    let file = world.abs("build.log");
+
+    // A round keeps the file as it was, and a tool changes it.
+    world.write("build.log", b"as it was");
+    let mut round = RoundCheckpoint::new(world.root.clone());
+    round.before(&store, &file).unwrap();
+    assert!(store.has_blob(&ContentHash::of(b"as it was")));
+
+    // Then the file is swapped for a FIFO that nobody writes to.
+    fs::remove_file(&path).unwrap();
+    let made = std::process::Command::new("mkfifo").arg(&path).status();
     if !made.is_ok_and(|status| status.success()) {
         assert!(!crate::in_ci(), "mkfifo is needed in CI");
         return;
     }
+    let refused = {
+        let (store, path) = (Arc::clone(&store), path.clone());
+        without_waiting("put_file", move || {
+            store.put_file(&path, cortex_session::KEEP_LIMIT)
+        })
+    };
+    assert!(
+        matches!(refused, Err(SessionError::NotARegularFile { .. })),
+        "{refused:?}"
+    );
+    // The end of the round looks at what the file is now: it is known as
+    // "not a file", and was not read.
+    let body = without_waiting("the end of a round", move || round.finish())
+        .unwrap()
+        .expect("the file changed");
+    let cortex_session::entry::Body::Checkpoint(checkpoint) = body else {
+        panic!("a checkpoint entry");
+    };
+    let after = checkpoint.files[0].after.expect("something is there");
+    assert!(!after.kept && after.bytes == 0, "{after:?}");
+
+    // And for a link to a file outside the workspace: nothing of the
+    // outside file reaches the store.
+    fs::remove_file(&path).unwrap();
+    let outside = world.scratch.dir.join("outside-secret");
+    fs::write(&outside, b"not the workspace's").unwrap();
+    std::os::unix::fs::symlink(&outside, &path).unwrap();
     assert!(matches!(
-        session.store().put_file(&fifo, cortex_session::KEEP_LIMIT),
+        store.put_file(&path, cortex_session::KEEP_LIMIT),
         Err(SessionError::NotARegularFile { .. })
     ));
+    assert!(!store.has_blob(&ContentHash::of(b"not the workspace's")));
 }

@@ -35,11 +35,11 @@
 //! - any other changed file: [`Before::Unknown`].
 
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{self, Read};
 use std::path::PathBuf;
 
-use cortex_base::{AbsPath, ContentHash, ContentHasher, PathStyle};
+use cortex_base::{AbsPath, ContentHash, ContentHasher, OpenError, PathStyle};
 use cortex_protocol::ids::{SessionId, TurnId};
 
 use crate::entry::{Before, Body, Checkpoint, EntryId, FileChange, FileVersion, RewindReason};
@@ -203,33 +203,31 @@ impl RoundCheckpoint {
 /// The hash and size of the file at `path` now, streamed. `None` when there
 /// is no file.
 ///
-/// It reads as [`DiskStore::put_file`] does: a regular file only, and no
-/// more than the length it had when it was opened. Anything else at the
-/// path (a link, a directory, a device, a FIFO) is never opened, and is
-/// known by what it is: see [`not_a_file`].
+/// It reads as [`DiskStore::put_file`] does: a regular file only, opened
+/// without following a link or waiting, and no more than the length it had
+/// when it was opened. Anything else at the path (a link, a directory, a
+/// device, a FIFO) is never read, and is known by what it is: see
+/// [`not_a_file`].
 pub(crate) fn hash_file(path: &std::path::Path) -> Result<Option<FileVersion>> {
-    let found = match fs::symlink_metadata(path) {
-        Ok(found) => found,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(SessionError::io("read the file", path.to_path_buf())(error)),
+    let read_error = || SessionError::io("read the file", path.to_path_buf());
+    // The open is the check, as in `put_file`: no link is followed and no
+    // FIFO waited on, whatever was put at the path a moment ago.
+    let (file, opened) = match cortex_base::open_regular(path) {
+        Ok(regular) => regular,
+        Err(OpenError::NotFound) => return Ok(None),
+        Err(OpenError::Link | OpenError::Directory | OpenError::NotAFile) => {
+            // What it is, asked of the name itself and never of what a
+            // link leads to.
+            return match fs::symlink_metadata(path) {
+                Ok(found) => Ok(Some(not_a_file(path, &found))),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(read_error()(error)),
+            };
+        }
+        Err(OpenError::Io(error)) => return Err(read_error()(error)),
     };
-    if !found.is_file() {
-        return Ok(Some(not_a_file(path, &found)));
-    }
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(SessionError::io("read the file", path.to_path_buf())(error)),
-    };
-    let opened = file
-        .metadata()
-        .map_err(SessionError::io("read the file", path.to_path_buf()))?;
-    if !opened.is_file() {
-        return Ok(Some(not_a_file(path, &opened)));
-    }
     let mut hasher = ContentHasher::new();
-    let bytes = io::copy(&mut file.take(opened.len()), &mut hasher)
-        .map_err(SessionError::io("read the file", path.to_path_buf()))?;
+    let bytes = io::copy(&mut file.take(opened.len()), &mut hasher).map_err(read_error())?;
     Ok(Some(FileVersion {
         hash: hasher.finish(),
         bytes,

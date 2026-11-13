@@ -55,8 +55,9 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, READ_CONTROL,
+    FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo,
+    GetFileInformationByHandleEx, READ_CONTROL,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -398,6 +399,44 @@ pub(super) fn create_dir(path: &Path) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// The reparse tag of an open file: what kind of reparse point it is. 0 for
+/// a file that is not one.
+///
+/// This is the one thing in this module that is not about access lists
+/// (`docs/decisions/0029-owner-only-files-on-windows.md`, "Amended in step
+/// 10"). [`crate::nofollow`] needs the tag to tell a link, which it
+/// refuses, from a placeholder of a cloud or projected file system, which
+/// is an ordinary file to its user, and the standard library does not
+/// report it.
+///
+/// # Errors
+///
+/// When Windows refuses to report the handle's attributes.
+pub(crate) fn reparse_tag(file: &File) -> io::Result<u32> {
+    let mut info = FILE_ATTRIBUTE_TAG_INFO {
+        FileAttributes: 0,
+        ReparseTag: 0,
+    };
+    // The structure is two 32-bit numbers: its size always fits.
+    let size = u32::try_from(size_of::<FILE_ATTRIBUTE_TAG_INFO>()).unwrap_or(u32::MAX);
+    // SAFETY: `file` is an open handle, alive for the call. `info` is a
+    // live, writable `FILE_ATTRIBUTE_TAG_INFO`, which is the structure the
+    // class `FileAttributeTagInfo` fills, and `size` is its size, so the
+    // call writes inside it and nowhere else.
+    let filled = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileAttributeTagInfo,
+            (&raw mut info).cast::<c_void>(),
+            size,
+        )
+    };
+    if filled == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(info.ReparseTag)
 }
 
 /// Reads the owner and the access list of the file or directory at `path`.
