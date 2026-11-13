@@ -17,6 +17,7 @@
 //! | `policy` | The loop's policy, the tools' read gate and the base state's keep gate to the permission engine. |
 //! | `provider` | Configuration and credentials to model clients. |
 //! | `redact` | The secret filter to the session log, and the rules for provider blocks. |
+//! | `manage` | The command line's subcommands to the credential store, the stored approvals and the trust store, judged as a session judges them. |
 //!
 //! A front end needs [`Core`], [`CoreOptions`], [`ClientInfo`], and the
 //! protocol's own types: an [`Op`](cortex_protocol::methods::Op) in, an
@@ -28,6 +29,7 @@ mod clients;
 mod content;
 pub mod core;
 pub mod events;
+mod manage;
 mod policy;
 mod provider;
 mod redact;
@@ -37,6 +39,10 @@ mod store;
 pub use crate::clients::{ClientId, ClientInfo};
 pub use crate::core::{Client, Core, CoreOptions, OpError};
 pub use crate::events::{EventQueue, Outgoing, QUEUE_CAPACITY};
+pub use crate::manage::{Project, ProviderCredential, TrustState, Trusted};
 pub use crate::policy::PermissionDenial;
 pub use crate::provider::{ANTHROPIC_KEY_ENV, Connector, EFFORT_ALIASES, KeyFound};
 pub use crate::rules::parse_rule;
+/// The runtime's timer, which the core's options take: the provider layer's
+/// and the process runner's waits are on it.
+pub use cortex_llm::TokioTimer;

@@ -328,3 +328,40 @@ fn sys_a_trust_store_that_cannot_be_read_trusts_nothing_and_says_so() {
         "{notices:?}"
     );
 }
+
+/// Carried over from step 13a's review: a project the user trusts, whose
+/// rules have changed, is read twice, once as trusted to see its rules and
+/// once as not. Values that only a trusted read admits (a model the catalog
+/// does not have, a tier and a reasoning level nothing offers, writable
+/// paths nothing can place) must not stop it starting: they are set aside
+/// with everything else that waits for the change to be approved.
+#[test]
+fn a_trusted_project_whose_rules_changed_starts_with_what_only_trust_admits_set_aside() {
+    let world = World::new("trust_peek", [says("Done.")]);
+    let (store, key) = trust_store(&world);
+    store
+        .trust(&key, "~/work/app", &[Definition::of_rules(&[allow_rule()])])
+        .unwrap();
+    world.project_config(
+        "[model]\nmain = \"no-such-model\"\nspeed = \"no-such-tier\"\neffort = \
+         \"no-such-level\"\n\n[sandbox]\nwrite = [\"\", \"~nobody/x\", \"C:relative\"]\n\n\
+         [[permissions.rules]]\neffect = \"write\"\nmatch = \".github/**\"\naction = \"allow\"\n\n\
+         [[permissions.rules]]\neffect = \"exec\"\nmatch = \"curl *\"\naction = \"allow\"\n",
+    );
+    let core = world.core();
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        assert_eq!(front.state.roles[&ModelRole::Main].model.as_str(), MODEL);
+        front.prompt("hello").await;
+        front.until(|seen| !crate::ends_in(seen).is_empty()).await;
+        assert_eq!(front.last_text(), "Done.");
+        let notices = front.notices();
+        assert!(
+            notices
+                .iter()
+                .any(|notice| notice.contains("rules have changed")),
+            "{notices:?}"
+        );
+        front.close().await;
+    });
+}

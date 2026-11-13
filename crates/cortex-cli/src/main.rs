@@ -1,11 +1,20 @@
 //! The `cortex` binary, also installed under the alias `cx`.
 //!
-//! This is the repository skeleton: it answers `--version` and `--help` and
-//! nothing else. Argument parsing, mode selection and the headless printer
-//! arrive in the build step that `docs/build-plan.md` assigns to this crate.
+//! It parses the command line, chooses a mode, drives the core and exits
+//! with the code of the table in `docs/architecture/10-headless.md`.
 //!
-//! The program behaves identically under both names. It reads the name it was
-//! started with only to echo it in usage and error text
+//! | Module | What it does |
+//! |---|---|
+//! | [`args`] | The command line, read into what to do. |
+//! | [`help`] | The help, in the name the program was started with. |
+//! | [`headless`] | A prompt run to completion, with standard output for the result. |
+//! | [`report`] | The result record and what each output format writes. |
+//! | [`exit`] | The exit codes. |
+//! | [`signals`] | Ctrl-C, SIGTERM and the console's events. |
+//! | [`commands`] | The subcommands: sessions, configuration, permissions, credentials. |
+//!
+//! The program behaves identically under both names. It reads the name it
+//! was started with only to echo it in usage, help and error text
 //! (`docs/decisions/0013-naming.md`).
 
 #![allow(
@@ -13,41 +22,102 @@
     clippy::print_stderr,
     reason = "the binary is the one place that writes to the user's terminal"
 )]
+#![allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    reason = "the binary's own threads read standard input, the working directory and the \
+              environment, outside the core's runtime"
+)]
+
+mod args;
+mod commands;
+mod exit;
+mod headless;
+mod help;
+mod report;
+mod signals;
 
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::Instant;
+
+use crate::args::{Command, Run};
 
 /// The command's own name. `--version` prints it under either name.
 const COMMAND: &str = "cortex";
 /// The short alias: the same executable under a second name.
 const ALIAS: &str = "cx";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-/// Exit code for bad flags or arguments (`docs/architecture/02-runtime.md`).
-const EXIT_USAGE: u8 = 2;
 
 fn main() -> ExitCode {
-    let mut args = env::args_os();
-    let name = invoked_name(args.next().as_deref());
-    match args.next() {
-        None => {
-            print!("{}", help(name));
-            ExitCode::SUCCESS
-        }
-        Some(arg) if arg == "--help" || arg == "-h" => {
-            print!("{}", help(name));
-            ExitCode::SUCCESS
-        }
-        Some(arg) if arg == "--version" || arg == "-V" => {
-            println!("{COMMAND} {VERSION}");
-            ExitCode::SUCCESS
-        }
-        Some(arg) => {
-            eprintln!("{name}: unexpected argument '{}'", arg.to_string_lossy());
+    let started = Instant::now();
+    let mut arguments = env::args_os();
+    let name = invoked_name(arguments.next().as_deref());
+    let rest: Vec<OsString> = arguments.collect();
+
+    // The guard of process trees is started by the harness itself, and is
+    // started for every command: nothing else is done before it.
+    if rest.first().is_some_and(|first| first == args::GUARD) {
+        cortex_sandbox::tree::run_guard();
+        return ExitCode::SUCCESS;
+    }
+
+    let command = match args::parse(rest) {
+        Ok(command) => command,
+        Err(error) => {
+            eprintln!("{name}: {}", error.0);
             eprintln!("Try '{name} --help'.");
-            ExitCode::from(EXIT_USAGE)
+            return ExitCode::from(exit::USAGE);
         }
+    };
+    ExitCode::from(dispatch(command, name, started))
+}
+
+fn dispatch(command: Command, name: &'static str, started: Instant) -> u8 {
+    match command {
+        Command::Help(topic) => {
+            print!("{}", help::help(topic, name));
+            exit::COMPLETED
+        }
+        Command::Version => {
+            println!("{COMMAND} {VERSION}");
+            exit::COMPLETED
+        }
+        Command::Run(run) => match mode(&run, std::io::stdout().is_terminal()) {
+            Mode::Headless => headless::run(*run, name, started),
+            Mode::Interactive => {
+                eprintln!(
+                    "{name}: the interactive application is not built yet. Run a prompt \
+                     headless with `{name} -p \"…\"`, or see `{name} --help`."
+                );
+                exit::USAGE
+            }
+        },
+        Command::Sessions(command) => commands::sessions(command, name),
+        Command::Config(command) => commands::config(command, name),
+        Command::Permissions(command) => commands::permissions(command, name),
+        Command::Auth(command) => commands::auth(command, name),
+        Command::Models => commands::models(name),
+    }
+}
+
+/// How a run is carried out.
+#[derive(Debug, PartialEq, Eq)]
+enum Mode {
+    Headless,
+    Interactive,
+}
+
+/// Headless with `-p`, or when a prompt is given and standard output is
+/// not a terminal (`docs/architecture/10-headless.md`, "Invocation").
+fn mode(run: &Run, stdout_is_terminal: bool) -> Mode {
+    if run.print || (run.prompt.is_some() && !stdout_is_terminal) {
+        Mode::Headless
+    } else {
+        Mode::Interactive
     }
 }
 
@@ -68,27 +138,11 @@ fn invoked_name(arg0: Option<&OsStr>) -> &'static str {
     }
 }
 
-fn help(name: &str) -> String {
-    format!(
-        "\
-Cortex-Harness {VERSION}: a terminal agent harness.
-
-Usage: {name} [OPTIONS]
-
-Options:
-  -h, --help     Print this help
-  -V, --version  Print the version
-
-This build is the repository skeleton. The harness itself is not built yet.
-"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
 
-    use super::{help, invoked_name};
+    use super::{Mode, Run, invoked_name, mode};
 
     fn name_for(arg0: &str) -> &'static str {
         invoked_name(Some(OsStr::new(arg0)))
@@ -122,8 +176,17 @@ mod tests {
     }
 
     #[test]
-    fn help_uses_the_name_it_is_given() {
-        assert!(help("cx").contains("Usage: cx [OPTIONS]"));
-        assert!(help("cortex").contains("Usage: cortex [OPTIONS]"));
+    fn a_run_is_headless_with_print_or_a_prompt_and_no_terminal() {
+        let with = |print: bool, prompt: Option<&str>| Run {
+            print,
+            prompt: prompt.map(str::to_owned),
+            ..Run::default()
+        };
+        assert_eq!(mode(&with(true, None), true), Mode::Headless);
+        assert_eq!(mode(&with(true, Some("x")), true), Mode::Headless);
+        assert_eq!(mode(&with(false, Some("x")), false), Mode::Headless);
+        assert_eq!(mode(&with(false, Some("x")), true), Mode::Interactive);
+        assert_eq!(mode(&with(false, None), false), Mode::Interactive);
+        assert_eq!(mode(&with(false, None), true), Mode::Interactive);
     }
 }

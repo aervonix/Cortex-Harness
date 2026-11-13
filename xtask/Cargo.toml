@@ -12,5 +12,10 @@ publish.workspace = true
 cortex-protocol = { workspace = true, features = ["schema"] }
 serde_json.workspace = true
 
+[dev-dependencies]
+# The validator of the protocol's schema, shared with the binary's system
+# tests.
+cortex-testkit.workspace = true
+
 [lints]
 workspace = true

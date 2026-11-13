@@ -515,6 +515,55 @@ export interface HardLimits {
   team_size?: number | null;
 }
 
+/** A record of headless mode's own, told apart by `type`. */
+export type HeadlessRecord = ({
+    type: "session";
+  } & HeadlessStart) | ({
+    type: "result";
+  } & HeadlessResult);
+
+/** How a headless run ended: the whole of `--output json`, and the last line of `jsonl`. It is written on success and on failure alike, and its `outcome` and the process's exit code always agree. */
+export interface HeadlessResult {
+  /** What the run cost, one amount per basis, in whole nano-dollars: `usd_nanos / 1e9` is US dollars. Empty when no price is known. */
+  costs?: Array<Cost>;
+  /** Milliseconds from the start of the process to this record. */
+  duration_ms?: number;
+  /** The failure, when there was one. */
+  error?: ErrorData | null;
+  /** The files the run created, changed or deleted, relative to the workspace, sorted. */
+  files_changed?: Array<string>;
+  /** How the run ended. */
+  outcome: TurnOutcome;
+  /** The calls that were refused because nothing could approve them. */
+  permission_denials?: Array<PermissionDenial>;
+  /** How many requests were made to a model. */
+  requests?: number;
+  /** The text of the assistant's last message. Empty when it wrote none. */
+  result?: string;
+  /** The version of the records' shape: [`HEADLESS_SCHEMA`]. */
+  schema: number;
+  /** The session. Absent when the run failed before one was started. */
+  session_id?: SessionId | null;
+  /** Why the last response ended. */
+  stop_reason?: StopReason | null;
+  /** How many tool calls were made. */
+  tool_calls?: number;
+  /** Tokens, by class. */
+  usage?: TokenUsage;
+}
+
+/** The first line of `jsonl`: which session the run is, on which model, in which workspace. */
+export interface HeadlessStart {
+  /** The main role's model. */
+  model: ModelId;
+  /** The version of the records' shape: [`HEADLESS_SCHEMA`]. */
+  schema: number;
+  /** The session the run is in. */
+  session_id: SessionId;
+  /** The workspace root: an absolute path. */
+  workspace: string;
+}
+
 /** An image. Input only. */
 export interface ImagePart {
   /** The stored artifact that holds the image. */
@@ -866,6 +915,20 @@ export interface PeerInfo {
   name: string;
   /** Its version. */
   version: string;
+}
+
+/** A tool call that was refused because nothing could approve it: the usual reason a headless run does less than was expected. */
+export interface PermissionDenial {
+  /** The call. */
+  call_id: CallId;
+  /** Why it needed an answer. */
+  reason: string;
+  /** The call in one line. */
+  summary: string;
+  /** The tool. */
+  tool: string;
+  /** The turn the call belonged to. */
+  turn_id: TurnId;
 }
 
 /** The result of `permissions/list`. */

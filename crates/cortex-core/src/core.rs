@@ -76,7 +76,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn error(kind: ErrorKind, code: &str, message: impl Into<String>) -> Box<ErrorData> {
+pub(crate) fn error(kind: ErrorKind, code: &str, message: impl Into<String>) -> Box<ErrorData> {
     Box::new(ErrorData::new(kind, code, message))
 }
 
@@ -100,6 +100,9 @@ pub struct CoreOptions {
     pub harness_version: String,
     /// The profile to load configuration with (`--profile`).
     pub profile: Option<String>,
+    /// Text added to the end of every session's system prompt
+    /// (`--system-append`). The user's own, for this run.
+    pub system_append: Option<String>,
     /// Settings from the command line (`-c key=value`, and flags such as
     /// `--model`, `--effort`, `--speed` and `--permission-mode` as their
     /// keys). They rank above every file and are the user's own, so
@@ -186,6 +189,7 @@ impl CoreOptions {
             timer,
             harness_version: env!("CARGO_PKG_VERSION").to_owned(),
             profile: None,
+            system_append: None,
             overrides: Vec::new(),
             rules: Vec::new(),
             trust_project: false,
@@ -268,7 +272,7 @@ pub(crate) struct Inner {
     pub(crate) providers: Providers,
     /// The configuration with no project's layers: what `config/get`
     /// answers with when it is asked about no session.
-    user: Arc<Loaded>,
+    pub(crate) user: Arc<Loaded>,
     ids: IdGenerator,
     sessions: Mutex<BTreeMap<SessionId, Arc<Live>>>,
     /// The shells found so far, by the program and arguments configured:
@@ -301,7 +305,7 @@ pub struct Client {
 /// The core. Clones are the same core.
 #[derive(Debug, Clone)]
 pub struct Core {
-    inner: Arc<Inner>,
+    pub(crate) inner: Arc<Inner>,
 }
 
 impl Core {

@@ -47,6 +47,8 @@ pub fn bundle() -> Value {
     // the same: the session log and the provider layer use them.
     let _ = generator.subschema_for::<crate::message::Message>();
     let _ = generator.subschema_for::<crate::lease::Lease>();
+    // What headless mode writes beside the events (step 13b).
+    let _ = generator.subschema_for::<crate::headless::HeadlessRecord>();
 
     let definitions = generator.take_definitions(true);
 
