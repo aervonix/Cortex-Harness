@@ -278,19 +278,16 @@ fn a_configuration_directory_behind_a_link_is_protected_where_it_really_is() {
     world.provider.push(says("Could not."));
     let core = world.core();
     world.run(async {
-        let front = Front::start_as(
-            &world,
-            &core,
-            ClientInfo::headless(),
-            SessionSettings::default(),
-        )
-        .await
-        .unwrap();
+        // A user is there to be asked, and would say yes: a read outside
+        // the workspace is a question, and a read of the harness's own
+        // configuration is a refusal nobody is asked about.
+        let front = Front::start(&world, &core).await;
         assert_eq!(front.state.roles[&ModelRole::Main].model.as_str(), MODEL);
-        front.turn("read the real file").await;
+        let asked = front.turn_allowing("read the real file").await;
+        assert!(asked.is_empty(), "a protected file was asked about");
         let result = &front.results()[0];
-        assert_ne!(
-            result.1, "success",
+        assert_eq!(
+            result.1, "denied",
             "read through its real path: {}",
             result.2
         );

@@ -502,6 +502,14 @@ impl Front {
         )
     }
 
+    /// Every approval this client was asked for, in order.
+    pub fn approvals(&self) -> Vec<ApprovalRequest> {
+        requests_in(&self.seen.borrow())
+            .into_iter()
+            .map(|(_, request)| request)
+            .collect()
+    }
+
     pub fn events(&self) -> Vec<SessionEvent> {
         self.seen
             .borrow()
