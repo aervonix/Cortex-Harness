@@ -133,21 +133,30 @@ impl Writer {
     /// writer refuses every later write ([`SessionError::Broken`]): the
     /// session must be opened again, which repairs the tail.
     pub(crate) fn append(&mut self, line: &[u8]) -> Result<u64> {
+        self.write_line(line, self.durability == Durability::Item)
+    }
+
+    /// Writes `line` at the end and flushes it, whatever the durability, as
+    /// [`append`](Self::append) does with [`Durability::Item`]. For lines
+    /// that must survive a crash however the session is set: leases.
+    pub(crate) fn append_flushed(&mut self, line: &[u8]) -> Result<u64> {
+        self.write_line(line, true)
+    }
+
+    fn write_line(&mut self, line: &[u8], flush: bool) -> Result<u64> {
         if self.broken {
             return Err(SessionError::Broken);
         }
         let start = self.end;
-        let written = self.file.write_at(start, line).and_then(|()| {
-            if self.durability == Durability::Item {
-                self.file.sync()
-            } else {
-                Ok(())
-            }
-        });
+        let written = self
+            .file
+            .write_at(start, line)
+            .and_then(|()| if flush { self.file.sync() } else { Ok(()) });
         match written {
             Ok(()) => {
                 self.end = start + line.len() as u64;
-                self.unsynced = self.durability != Durability::Item;
+                // A flush takes every earlier line to the disk too.
+                self.unsynced = !flush;
                 Ok(start)
             }
             Err(error) => {
@@ -157,8 +166,9 @@ impl Writer {
                 }
                 // The cut is flushed where it matters: a line that reached
                 // the disk before the failure must not reappear after a
-                // crash. With `never`, nothing is flushed, by choice.
-                if self.durability != Durability::Never && self.file.sync().is_err() {
+                // crash. With `never`, nothing is flushed, by choice, except
+                // a line that was itself to be flushed.
+                if (flush || self.durability != Durability::Never) && self.file.sync().is_err() {
                     self.broken = true;
                     return Err(SessionError::Broken);
                 }
@@ -175,8 +185,16 @@ impl Writer {
     /// [`Durability::Turn`]. A failure is reported and removes nothing:
     /// the lines were written, and whether they reach the disk is now the
     /// operating system's.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Broken`] once a write could not be undone: the file
+    /// is no longer vouched for, so there is nothing a flush could promise.
     pub(crate) fn flush(&mut self) -> Result<()> {
-        if self.broken || !self.unsynced || self.durability == Durability::Never {
+        if self.broken {
+            return Err(SessionError::Broken);
+        }
+        if !self.unsynced || self.durability == Durability::Never {
             return Ok(());
         }
         self.file
@@ -370,6 +388,51 @@ mod tests {
             Err(SessionError::Broken)
         ));
         assert_eq!(disk.contents(), before, "nothing more is written");
+        // Nor does a flush vouch for it, whatever the durability.
+        assert!(matches!(writer.flush(), Err(SessionError::Broken)));
+        assert!(matches!(
+            writer.append_flushed(b"third\n"),
+            Err(SessionError::Broken)
+        ));
+    }
+
+    #[test]
+    fn a_broken_writer_never_reports_a_flush_as_done() {
+        for durability in [Durability::Item, Durability::Turn, Durability::Never] {
+            let disk = FakeDisk::default();
+            let mut writer = writer(&disk, durability);
+            writer.append(b"first\n").unwrap();
+            assert!(writer.flush().is_ok(), "{durability:?}");
+            disk.fail(Faults {
+                write_fails_after: Some(2),
+                truncate_fails: true,
+                ..Faults::default()
+            });
+            assert!(writer.append(b"second\n").is_err());
+            assert!(
+                matches!(writer.flush(), Err(SessionError::Broken)),
+                "{durability:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_flushed_line_is_flushed_whatever_the_durability() {
+        for durability in [Durability::Item, Durability::Turn, Durability::Never] {
+            let disk = FakeDisk::default();
+            let mut writer = writer(&disk, durability);
+            writer.append(b"first\n").unwrap();
+            // A flush that fails is seen, so one was made, and the line is
+            // taken back out.
+            disk.fail(Faults {
+                sync_fails: true,
+                ..Faults::default()
+            });
+            assert!(writer.append_flushed(b"lease\n").is_err(), "{durability:?}");
+            assert_eq!(disk.contents(), b"first\n", "{durability:?}");
+            assert_eq!(writer.append_flushed(b"lease\n").unwrap(), 6);
+            assert!(!writer.unsynced, "{durability:?}: everything is flushed");
+        }
     }
 
     #[test]

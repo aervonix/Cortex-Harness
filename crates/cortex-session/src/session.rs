@@ -17,7 +17,7 @@
 //! active branch that has no result an "interrupted" one. Tools are never
 //! run again by themselves.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::ops::Deref;
@@ -27,20 +27,24 @@ use std::sync::Arc;
 use cortex_base::{
     AbsPath, AtomicWriteOptions, IdCounter, PathStyle, SharedClock, private, write_atomic,
 };
-use cortex_protocol::ids::{CallId, ItemId, SessionId, TurnId};
+use cortex_protocol::ids::{ItemId, SessionId, TurnId};
 use cortex_protocol::item::{Item, ToolOutcome, ToolResultItem};
 use cortex_protocol::message::Part;
 
 use crate::entry::{
-    self, Body, Checkpoint, Entry, EntryId, FileVersion, ForkOrigin, Header, Kind, Outcome,
-    Reverted, Rewind, RewindReason,
+    self, Body, Checkpoint, Entry, EntryId, ForkOrigin, Header, Kind, Outcome, Reverted, Rewind,
+    RewindReason,
 };
 use crate::error::{Result, SessionError};
 use crate::file::{DiskFile, Durability, LogFile, Writer};
 use crate::layout::{ProjectSessions, SessionDir};
+use crate::lock;
 use crate::log::{Log, OpenReport};
 use crate::redact::{NoRedaction, Redactor};
-use crate::snapshot::{self, FileRestore, FileStatus, Restore, RewindDone, RewindPlan};
+use crate::scan::MAX_LINE;
+use crate::snapshot::{
+    self, FileRestore, FileStatus, Repaired, Restore, RewindDone, RewindPlan, SwitchDone,
+};
 use crate::store::DiskStore;
 
 /// How a session is written.
@@ -110,6 +114,17 @@ impl Deref for Session {
     }
 }
 
+impl Drop for Session {
+    /// A session that ends before its first prompt leaves nothing behind:
+    /// what its store kept meanwhile (the base state) is removed, once no
+    /// write to it is in progress, and nothing more is stored.
+    fn drop(&mut self) {
+        if matches!(self.state, State::Unborn { .. }) {
+            self.store.abandon();
+        }
+    }
+}
+
 impl Session {
     /// Starts a new session in `project`. Nothing is written until the
     /// first user message is appended.
@@ -153,7 +168,7 @@ impl Session {
             turn: None,
             body: Body::Session(header.clone()),
         };
-        let store = Arc::new(DiskStore::new(
+        let store = Arc::new(DiskStore::unborn(
             dir.clone(),
             Arc::clone(&options.redactor),
             options.durability != Durability::Never,
@@ -251,7 +266,7 @@ impl Session {
         session.log.scan.end = end;
         session.log.scan.missing_newline = false;
         session.log.scan.cut = None;
-        report.repaired_calls = session.repair()?;
+        report.repaired = session.repair()?;
         session.check_privacy();
         report.not_private.clone_from(&session.warnings);
         Ok((session, report))
@@ -409,12 +424,28 @@ impl Session {
             body,
         };
         let line = entry::encode(&entry, &*self.options.redactor)?;
+        // A line the scanner would skip as damage must not be written: it
+        // would be in memory now and gone, with the branch after it, when
+        // the log is read again.
+        let length = line.len() - 1;
+        if length > MAX_LINE {
+            return Err(SessionError::EntryTooLarge {
+                bytes: length as u64,
+                limit: MAX_LINE as u64,
+            });
+        }
         let id = entry.id.clone();
         match &mut self.state {
             State::Live { writer, .. } => {
-                let offset = writer.append(&line)?;
+                // A lease is flushed whatever the durability: a crash must
+                // not bring back a lease that had ended or been narrowed.
+                let offset = if is_lease(&entry.body) {
+                    writer.append_flushed(&line)?
+                } else {
+                    writer.append(&line)?
+                };
                 self.entry_ids = ids;
-                self.log.add(&entry, offset, line.len() - 1);
+                self.log.add(&entry, offset, length);
             }
             State::Unborn { pending } => {
                 let is_user = matches!(entry.body, Body::User(_));
@@ -447,7 +478,8 @@ impl Session {
         let path = dir.log();
         let options = AtomicWriteOptions {
             owner_only: true,
-            sync: self.options.durability != Durability::Never,
+            sync: self.options.durability != Durability::Never
+                || pending.iter().any(|(entry, _)| is_lease(&entry.body)),
             ..AtomicWriteOptions::default()
         };
         let written = write_atomic(&path, &content, &options, &*self.options.clock)
@@ -491,6 +523,7 @@ impl Session {
             return Ok(());
         };
         self.log.reader = Some(reader);
+        self.store.born();
         let mut offset = 0u64;
         for (entry, line) in pending {
             self.log.add(&entry, offset, line.len() - 1);
@@ -502,15 +535,16 @@ impl Session {
     }
 
     /// Gives the tool calls at the end of the active branch that have no
-    /// result an "interrupted" one.
-    fn repair(&mut self) -> Result<Vec<CallId>> {
+    /// result an "interrupted" one, and says which, with the ids it made.
+    fn repair(&mut self) -> Result<Vec<Repaired>> {
         let Some((turn, calls)) = self.log.dangling_calls()? else {
             return Ok(Vec::new());
         };
         let mut repaired = Vec::new();
         for (call_id, tool) in calls {
-            let item = ToolResultItem {
-                id: self.next_item_id(),
+            let item = self.next_item_id();
+            let result = ToolResultItem {
+                id: item.clone(),
                 call_id: call_id.clone(),
                 tool,
                 outcome: ToolOutcome::Interrupted,
@@ -520,8 +554,12 @@ impl Session {
                 duration_ms: None,
                 created_at: Some(self.options.clock.now().to_timestamp()),
             };
-            self.append(turn.as_ref(), Body::ToolResult(item))?;
-            repaired.push(call_id);
+            let entry = self.append(turn.as_ref(), Body::ToolResult(result))?;
+            repaired.push(Repaired {
+                call: call_id,
+                item,
+                entry,
+            });
         }
         Ok(repaired)
     }
@@ -583,34 +621,7 @@ impl Session {
     }
 
     fn plan(&self, to: &EntryId, reason: RewindReason) -> Result<RewindPlan> {
-        let branch = self.log.branch();
-        let Some(position) = branch.iter().position(|id| id == to) else {
-            return Err(SessionError::Invalid(format!(
-                "`{to}` is not on the active branch"
-            )));
-        };
-        let undone = &branch[position + 1..];
-        let mut turns: Vec<TurnId> = Vec::new();
-        let mut changes: Vec<(String, Option<FileVersion>, Option<FileVersion>)> = Vec::new();
-        for id in undone {
-            if let Some(turn) = self.log.turn_of(id)
-                && !turns.contains(turn)
-            {
-                turns.push(turn.clone());
-            }
-            if self.log.kind_of(id) == Some(&Kind::Checkpoint)
-                && let Body::Checkpoint(Checkpoint { files }) = self.log.read(id)?.body
-            {
-                for change in files {
-                    match changes.iter_mut().find(|(path, _, _)| *path == change.path) {
-                        // The earliest `before` is what to go back to; the
-                        // latest `after` is what the harness left.
-                        Some(found) => found.2 = change.after,
-                        None => changes.push((change.path, change.before, change.after)),
-                    }
-                }
-            }
-        }
+        let (turns, changes) = self.undone(to)?;
         let root = self.workspace_root()?;
         let files = changes
             .into_iter()
@@ -622,7 +633,48 @@ impl Session {
             from: self.log.active().cloned(),
             turns,
             files,
+            session: self.log.id().clone(),
         })
+    }
+
+    /// What a rewind to `to` undoes, read from the log: the turns, and for
+    /// each file the undone rounds changed, the earliest `before` (what to
+    /// go back to) and the latest `after` (what the harness left).
+    fn undone(&self, to: &EntryId) -> Result<(Vec<TurnId>, Vec<snapshot::Change>)> {
+        let branch = self.log.branch();
+        let Some(position) = branch.iter().position(|id| id == to) else {
+            return Err(SessionError::Invalid(format!(
+                "`{to}` is not on the active branch"
+            )));
+        };
+        let root = self.workspace_root()?;
+        let mut turns: Vec<TurnId> = Vec::new();
+        let mut changes: Vec<snapshot::Change> = Vec::new();
+        // By the file's comparison form, so two spellings of one file in
+        // different rounds are one file.
+        let mut by_key: HashMap<String, usize> = HashMap::new();
+        for id in &branch[position + 1..] {
+            if let Some(turn) = self.log.turn_of(id)
+                && !turns.contains(turn)
+            {
+                turns.push(turn.clone());
+            }
+            if self.log.kind_of(id) == Some(&Kind::Checkpoint)
+                && let Body::Checkpoint(Checkpoint { files }) = self.log.read(id)?.body
+            {
+                for change in files {
+                    let key = snapshot::locate(&root, &change.path)?.key().to_owned();
+                    match by_key.get(&key) {
+                        Some(&index) => changes[index].2 = change.after,
+                        None => {
+                            by_key.insert(key, changes.len());
+                            changes.push((change.path, change.before, change.after));
+                        }
+                    }
+                }
+            }
+        }
+        Ok((turns, changes))
     }
 
     fn workspace_root(&self) -> Result<AbsPath> {
@@ -636,18 +688,38 @@ impl Session {
     /// tool call left without a result at the new position an
     /// "interrupted" one.
     ///
-    /// Each file's state is looked at again first: one changed since the
-    /// plan was made is treated as it is now.
+    /// The plan is checked against the log first: it must have been made
+    /// for this session, at its active position, and what it would do is
+    /// worked out again from the log's own checkpoints, so a plan that was
+    /// changed, or made for another session, is refused rather than
+    /// followed. Each file's state is looked at again too: one changed
+    /// since the plan was made is treated as it is now.
     ///
     /// # Errors
     ///
-    /// When the plan is for another position than the active one, or the
-    /// log cannot be written. A file that cannot be put back is reported
-    /// in [`RewindDone::not_restored`], not as an error.
+    /// When the plan is not one for this session at its active position, or
+    /// the log cannot be written. A file that cannot be put back is
+    /// reported in [`RewindDone::not_restored`], not as an error.
     pub fn rewind(&mut self, plan: &RewindPlan, restore: &Restore) -> Result<RewindDone> {
+        if plan.session != *self.log.id() {
+            return Err(SessionError::Invalid(format!(
+                "the rewind was planned for the session `{}`, not `{}`",
+                plan.session,
+                self.log.id()
+            )));
+        }
         if plan.from.as_ref() != self.log.active() {
             return Err(SessionError::Invalid(
                 "the session has moved on since the rewind was planned".to_owned(),
+            ));
+        }
+        // From the log, not from the plan: `to` must be on the active
+        // branch, and the plan must say what the log says.
+        let (turns, changes) = self.undone(&plan.to)?;
+        if turns != plan.turns || changes != plan.changes() {
+            return Err(SessionError::Invalid(
+                "the rewind plan does not match the session's checkpoints; plan it again"
+                    .to_owned(),
             ));
         }
         let root = self.workspace_root()?;
@@ -659,15 +731,11 @@ impl Session {
                 .iter()
                 .map(String::as_str)
                 .collect();
-            for planned in &plan.files {
-                let file =
-                    snapshot::file_status(&root, &planned.path, planned.restore, planned.left)?;
+            for (path, before, left) in changes {
+                let file = snapshot::file_status(&root, &path, before, left)?;
                 let why_not = match file.status {
                     FileStatus::AlreadyRestored => None,
-                    FileStatus::CannotRestore => Some(
-                        "its earlier content was too large to keep, so it cannot be put back"
-                            .to_owned(),
-                    ),
+                    FileStatus::CannotRestore => file.why_not().map(str::to_owned),
                     FileStatus::EditedSince if !overwrite.contains(file.path.as_str()) => {
                         Some("it was changed after the harness left it".to_owned())
                     }
@@ -690,7 +758,7 @@ impl Session {
         } else {
             Reverted::Rewound
         };
-        for turn in &plan.turns {
+        for turn in &turns {
             self.append(
                 Some(turn),
                 Body::Outcome(Outcome {
@@ -699,33 +767,35 @@ impl Session {
                 }),
             )?;
         }
-        let repaired_calls = self.repair()?;
+        let repaired = self.repair()?;
         Ok(RewindDone {
             entry,
             restored,
             not_restored,
-            repaired_calls,
+            repaired,
         })
     }
 
     /// Makes another branch active: the one that ends at `to`. Files are
-    /// not touched.
+    /// not touched. Tool calls at `to` that have no result are given an
+    /// "interrupted" one, with item ids the store makes, and reported.
     ///
     /// # Errors
     ///
     /// When `to` is not an entry of the tree, or the log cannot be written.
-    pub fn switch(&mut self, to: &EntryId) -> Result<EntryId> {
+    pub fn switch(&mut self, to: &EntryId) -> Result<SwitchDone> {
+        let entry = self.move_to(to, RewindReason::Switch)?;
+        let repaired = self.repair()?;
+        Ok(SwitchDone { entry, repaired })
+    }
+
+    /// Appends the `rewind` entry that makes `to` the active position.
+    fn move_to(&mut self, to: &EntryId, reason: RewindReason) -> Result<EntryId> {
         if !self.log.contains(to) || self.log.is_record(to) {
             return Err(SessionError::Invalid(format!(
                 "`{to}` is not an entry of the conversation"
             )));
         }
-        let entry = self.move_to(to, RewindReason::Switch)?;
-        self.repair()?;
-        Ok(entry)
-    }
-
-    fn move_to(&mut self, to: &EntryId, reason: RewindReason) -> Result<EntryId> {
         let from = self.log.active().cloned();
         self.push(
             None,
@@ -832,37 +902,19 @@ impl Log {
     }
 }
 
+/// Whether an entry is a lease record, which is flushed whatever the
+/// durability.
+fn is_lease(body: &Body) -> bool {
+    matches!(body, Body::Lease(_))
+}
+
 /// Takes the session's lock, creating the lock file if it is missing.
 fn take_lock(dir: &SessionDir) -> Result<File> {
-    let path = dir.lock();
-    let open = || OpenOptions::new().read(true).write(true).open(&path);
-    let file = match open() {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            match private::create_new(&path) {
-                Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => {
-                    return Err(SessionError::io("create the session's lock", path)(error));
-                }
-            }
-            open().map_err(SessionError::io("open the session's lock", path.clone()))?
-        }
-        Err(error) => return Err(SessionError::io("open the session's lock", path)(error)),
-    };
-    match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(fs::TryLockError::WouldBlock) => Err(SessionError::Busy {
+    match lock::take(&dir.lock(), lock::Wait::No)? {
+        lock::Taken::Held(file) => Ok(file),
+        lock::Taken::Busy => Err(SessionError::Busy {
             session: dir.id().to_string(),
         }),
-        // A file system that cannot lock: one writer is then the user's
-        // to keep to, as it was before locks.
-        Err(fs::TryLockError::Error(error)) if error.kind() == io::ErrorKind::Unsupported => {
-            Ok(file)
-        }
-        Err(fs::TryLockError::Error(error)) => {
-            Err(SessionError::io("lock the session", path)(error))
-        }
     }
 }
 
@@ -942,6 +994,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use cortex_base::FakeClock;
+    use cortex_protocol::ids::CallId;
     use cortex_protocol::item::{AssistantMessageItem, NoticeItem, NoticeSource, UserMessageItem};
     use cortex_protocol::message::ToolCallPart;
     use cortex_testkit::cases::{self, ensure};
@@ -1208,6 +1261,58 @@ mod tests {
                 Ok(())
             },
         );
+    }
+
+    fn lease() -> Body {
+        Body::Lease(crate::entry::LeaseRecord {
+            event: crate::entry::LeaseEvent::Ended,
+            lease: cortex_protocol::lease::Lease::from_wire(json!({
+                "id": "l_1",
+                "grant": {"level": "supervised", "sandbox": {"read": {"all": true}, "write": {"roots": ["/w"]}, "network": "off"}},
+                "expires": {"kind": "end_of_session"},
+                "granted_by": {"kind": "user"}
+            }))
+            .unwrap(),
+        })
+    }
+
+    #[test]
+    fn a_lease_is_flushed_whatever_the_durability() {
+        let scratch = Scratch::new();
+        for durability in [Durability::Item, Durability::Turn, Durability::Never] {
+            let (mut session, disk) = on_fake_disk(&scratch, durability);
+            // The next flush fails. Only a write that flushes sees it.
+            disk.fail(Faults {
+                sync_fails: true,
+                ..Faults::default()
+            });
+            let before = disk.contents();
+            let flushed = session.append(None, lease()).is_err();
+            assert!(flushed, "{durability:?}: the lease was not flushed");
+            assert_eq!(disk.contents(), before, "{durability:?}");
+            agree(&session, &disk).unwrap();
+            session.append(None, lease()).unwrap();
+            agree(&session, &disk).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_broken_session_does_not_report_its_turn_as_flushed() {
+        let scratch = Scratch::new();
+        for durability in [Durability::Item, Durability::Turn, Durability::Never] {
+            let (mut session, disk) = on_fake_disk(&scratch, durability);
+            session.end_turn().unwrap();
+            disk.fail(Faults {
+                write_fails_after: Some(3),
+                truncate_fails: true,
+                ..Faults::default()
+            });
+            assert!(session.append(None, user("lost")).is_err());
+            assert!(
+                matches!(session.end_turn(), Err(SessionError::Broken)),
+                "{durability:?}"
+            );
+        }
     }
 
     #[test]

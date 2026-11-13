@@ -8,7 +8,8 @@
 //!
 //! **In a git repository:** the commit, the branch, the uncommitted changes
 //! to tracked files as a binary patch (an artifact), and the untracked files
-//! that are not ignored, kept in the checkpoint store under caps.
+//! that are not ignored, kept in the checkpoint store under caps. A link is
+//! recorded by what it points to and never followed.
 //!
 //! **Elsewhere:** a list of the files with their sizes and hashes, under
 //! caps. Their content is not kept, so a replay needs the files to still
@@ -164,6 +165,11 @@ pub struct GitBase {
     /// Untracked files that are not ignored, kept in the checkpoint store.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub untracked: Vec<StoredFile>,
+    /// Untracked links that are not ignored, by what they point to. A link
+    /// is never followed: what it points to may be outside the workspace,
+    /// or a device that never ends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<StoredLink>,
 }
 
 /// A file whose content is in the checkpoint store.
@@ -175,6 +181,15 @@ pub struct StoredFile {
     pub hash: ContentHash,
     /// Its size.
     pub bytes: u64,
+}
+
+/// A link, recorded as the text it holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredLink {
+    /// The link, relative to the repository's top.
+    pub path: String,
+    /// What it points to, as written in the link.
+    pub target: String,
 }
 
 /// A file in the listing of a workspace that is not a git repository.
@@ -213,6 +228,9 @@ pub enum OmitReason {
     OutOfTime,
     /// It could not be read.
     Unreadable,
+    /// It is not a file or a link: a directory (a repository of its own), a
+    /// device or a FIFO. Never read.
+    NotAFile,
     /// A reason this build does not know.
     Other(String),
 }
@@ -226,6 +244,7 @@ impl OmitReason {
             Self::TotalLimit => "total_limit",
             Self::OutOfTime => "out_of_time",
             Self::Unreadable => "unreadable",
+            Self::NotAFile => "not_a_file",
             Self::Other(other) => other,
         }
     }
@@ -247,6 +266,7 @@ impl<'de> Deserialize<'de> for OmitReason {
             "total_limit" => Self::TotalLimit,
             "out_of_time" => Self::OutOfTime,
             "unreadable" => Self::Unreadable,
+            "not_a_file" => Self::NotAFile,
             _ => Self::Other(text),
         })
     }
@@ -458,6 +478,7 @@ fn from_git(
         branch,
         patch: None,
         untracked: Vec::new(),
+        links: Vec::new(),
     };
     if !trusted {
         return BaseState {
@@ -483,35 +504,57 @@ fn from_git(
     };
     let mut names = vec!["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff"];
     names.extend_from_slice(against);
-    let changed = run(&names, limits.patch_bytes).map(|output| split_nul(&output.stdout));
-    let mut exclusions = Vec::new();
-    match changed {
-        Ok(changed) => {
-            for path in changed {
-                if is_likely_secret(&path) {
-                    exclusions.push(format!(":(exclude,literal){path}"));
-                    omitted.push(Omitted {
-                        path,
-                        reason: OmitReason::Secret,
-                    });
-                }
+    // The secrets are left out of the patch by name, so a patch is taken
+    // only with the whole list of changed files in hand.
+    let not_listed = "so no patch was taken: without the whole list, likely secrets could not \
+                      be left out of it";
+    let changed = match run(&names, limits.patch_bytes) {
+        Ok(output) if output.success && !output.truncated => Some(split_nul(&output.stdout)),
+        Ok(output) if output.truncated => {
+            problems.push(format!(
+                "the list of changed files is too long, {not_listed}"
+            ));
+            None
+        }
+        Ok(_) => {
+            problems.push(format!(
+                "git could not list the changed files, {not_listed}"
+            ));
+            None
+        }
+        Err(error) => {
+            problems.push(format!(
+                "git could not list the changed files ({error}), {not_listed}"
+            ));
+            None
+        }
+    };
+    let patch = changed.map(|changed| {
+        let mut exclusions = Vec::new();
+        for path in changed {
+            if is_likely_secret(&path) {
+                exclusions.push(format!(":(exclude,literal){path}"));
+                omitted.push(Omitted {
+                    path,
+                    reason: OmitReason::Secret,
+                });
             }
         }
-        Err(error) => problems.push(format!("git could not list the changed files: {error}")),
-    }
-    let patch = if base.commit.is_some() {
-        diff(&run, &["HEAD"], &exclusions, limits.patch_bytes)
-    } else {
-        // No commits yet: the staged changes, then the unstaged ones.
-        diff(&run, &["--cached"], &exclusions, limits.patch_bytes).and_then(|mut staged| {
-            let unstaged = diff(&run, &[], &exclusions, limits.patch_bytes)?;
-            staged.extend(unstaged);
-            Ok(staged)
-        })
-    };
+        if base.commit.is_some() {
+            diff(&run, &["HEAD"], &exclusions, limits.patch_bytes)
+        } else {
+            // No commits yet: the staged changes, then the unstaged ones.
+            diff(&run, &["--cached"], &exclusions, limits.patch_bytes).and_then(|mut staged| {
+                let unstaged = diff(&run, &[], &exclusions, limits.patch_bytes)?;
+                staged.extend(unstaged);
+                Ok(staged)
+            })
+        }
+    });
     match patch {
-        Ok(patch) if patch.is_empty() => {}
-        Ok(patch) => match store.put_artifact(
+        None => {}
+        Some(Ok(patch)) if patch.is_empty() => {}
+        Some(Ok(patch)) => match store.put_artifact(
             "uncommitted changes when the session started",
             "text/x-diff",
             &patch,
@@ -519,11 +562,11 @@ fn from_git(
             Ok(reference) => base.patch = Some(reference),
             Err(error) => problems.push(format!("the patch could not be stored: {error}")),
         },
-        Err(DiffFailure::TooLarge) => omitted.push(Omitted {
+        Some(Err(DiffFailure::TooLarge)) => omitted.push(Omitted {
             path: "*".to_owned(),
             reason: OmitReason::TooLarge,
         }),
-        Err(DiffFailure::Failed(reason)) => problems.push(reason),
+        Some(Err(DiffFailure::Failed(reason))) => problems.push(reason),
     }
 
     // Untracked files that are not ignored.
@@ -532,58 +575,14 @@ fn from_git(
         limits.patch_bytes,
     ) {
         Ok(output) if output.success => {
-            let mut total = 0u64;
-            for path in split_nul(&output.stdout) {
-                let reason = if is_likely_secret(&path) {
-                    Some(OmitReason::Secret)
-                } else if base.untracked.len() >= limits.files {
-                    Some(OmitReason::TooMany)
-                } else {
-                    None
-                };
-                if let Some(reason) = reason {
-                    omitted.push(Omitted { path, reason });
-                    continue;
-                }
-                let file = top_dir.join(&path);
-                let size = std::fs::symlink_metadata(&file).map(|found| found.len());
-                match size {
-                    Ok(size) if size > limits.file_bytes => {
-                        omitted.push(Omitted {
-                            path,
-                            reason: OmitReason::TooLarge,
-                        });
-                    }
-                    Ok(size) if total + size > limits.total_bytes => {
-                        omitted.push(Omitted {
-                            path,
-                            reason: OmitReason::TotalLimit,
-                        });
-                    }
-                    Ok(_) => match store.put_file(&file, limits.file_bytes) {
-                        Ok(Some(version)) if version.kept => {
-                            total += version.bytes;
-                            base.untracked.push(StoredFile {
-                                path,
-                                hash: version.hash,
-                                bytes: version.bytes,
-                            });
-                        }
-                        Ok(Some(_)) => omitted.push(Omitted {
-                            path,
-                            reason: OmitReason::TooLarge,
-                        }),
-                        Ok(None) | Err(_) => omitted.push(Omitted {
-                            path,
-                            reason: OmitReason::Unreadable,
-                        }),
-                    },
-                    Err(_) => omitted.push(Omitted {
-                        path,
-                        reason: OmitReason::Unreadable,
-                    }),
-                }
-            }
+            untracked(
+                &top_dir,
+                split_nul(&output.stdout),
+                store,
+                limits,
+                &mut base,
+                &mut omitted,
+            );
         }
         Ok(output) => problems.push(if output.truncated {
             "the list of untracked files is too long".to_owned()
@@ -603,6 +602,83 @@ fn from_git(
         omitted,
         note: (!problems.is_empty()).then(|| problems.join("; ")),
         ..BaseState::default()
+    }
+}
+
+/// Keeps the untracked files git listed, under the limits.
+///
+/// A file over the limit for one file is listed by name. Past the limit on
+/// the number of files or on bytes in all, one `*` entry says so and
+/// nothing more is kept, so a workspace with a million untracked files
+/// gives a record of a fixed size, not one entry for each.
+///
+/// Nothing is followed or read but a regular file: a link is recorded by
+/// what it points to, and a directory, a device or a FIFO is listed as not
+/// a file.
+fn untracked(
+    top_dir: &Path,
+    paths: Vec<String>,
+    store: &DiskStore,
+    limits: &BaseLimits,
+    base: &mut GitBase,
+    omitted: &mut Vec<Omitted>,
+) {
+    let mut total = 0u64;
+    for path in paths {
+        if is_likely_secret(&path) {
+            omitted.push(Omitted {
+                path,
+                reason: OmitReason::Secret,
+            });
+            continue;
+        }
+        if base.untracked.len() + base.links.len() >= limits.files {
+            omitted.push(Omitted {
+                path: "*".to_owned(),
+                reason: OmitReason::TooMany,
+            });
+            return;
+        }
+        let file = top_dir.join(&path);
+        let reason = match std::fs::symlink_metadata(&file) {
+            Err(_) => OmitReason::Unreadable,
+            Ok(found) if found.file_type().is_symlink() => {
+                // Never opened: recorded by the text it holds.
+                match std::fs::read_link(&file).map(|target| target.into_os_string().into_string())
+                {
+                    Ok(Ok(target)) => {
+                        base.links.push(StoredLink { path, target });
+                        continue;
+                    }
+                    _ => OmitReason::Unreadable,
+                }
+            }
+            Ok(found) if !found.is_file() => OmitReason::NotAFile,
+            Ok(found) if found.len() > limits.file_bytes => OmitReason::TooLarge,
+            Ok(found) if total + found.len() > limits.total_bytes => {
+                omitted.push(Omitted {
+                    path: "*".to_owned(),
+                    reason: OmitReason::TotalLimit,
+                });
+                return;
+            }
+            Ok(_) => match store.put_file(&file, limits.file_bytes) {
+                Ok(Some(version)) if version.kept => {
+                    total += version.bytes;
+                    base.untracked.push(StoredFile {
+                        path,
+                        hash: version.hash,
+                        bytes: version.bytes,
+                    });
+                    continue;
+                }
+                // It grew past the limit since it was looked at.
+                Ok(Some(_)) => OmitReason::TooLarge,
+                Err(crate::SessionError::NotARegularFile { .. }) => OmitReason::NotAFile,
+                Ok(None) | Err(_) => OmitReason::Unreadable,
+            },
+        };
+        omitted.push(Omitted { path, reason });
     }
 }
 
@@ -809,6 +885,7 @@ mod tests {
             OmitReason::TotalLimit,
             OmitReason::OutOfTime,
             OmitReason::Unreadable,
+            OmitReason::NotAFile,
             OmitReason::Other("quarantined".to_owned()),
         ];
         for reason in reasons {

@@ -12,7 +12,7 @@
 use std::time::{Duration, Instant};
 
 use cortex_protocol::ids::{SessionId, TurnId};
-use cortex_session::entry::{Body, Checkpoint, FileChange, FileVersion};
+use cortex_session::entry::{Before, Body, Checkpoint, FileChange, FileVersion};
 use cortex_session::{Durability, Log, Session};
 
 use crate::{World, assistant, tool_result, user};
@@ -82,7 +82,7 @@ fn long_session(world: &World, entries: usize) -> u64 {
                 Body::Checkpoint(Checkpoint {
                     files: vec![FileChange {
                         path: "src/loader.rs".into(),
-                        before: Some(FileVersion {
+                        before: Before::Version(FileVersion {
                             hash,
                             bytes: 4000,
                             kept: true,

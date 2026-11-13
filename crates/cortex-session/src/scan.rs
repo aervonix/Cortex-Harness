@@ -205,11 +205,16 @@ impl Scan {
             },
         };
         let newer = found.v > FORMAT_VERSION;
-        let kind = if newer {
+        let kind = if !newer {
+            Kind::from_name(&found.kind)
+        } else if found.kind == Kind::Lease.as_str() {
+            // Kept as a lease, so that asking for the lease in force finds
+            // it and refuses: a newer build's lease is never skipped.
+            self.newer += 1;
+            Kind::Lease
+        } else {
             self.newer += 1;
             Kind::Unknown(found.kind.as_ref().into())
-        } else {
-            Kind::from_name(&found.kind)
         };
         if let Kind::Unknown(name) = &kind {
             *self.unknown_kinds.entry(name.to_string()).or_default() += 1;

@@ -47,7 +47,8 @@ use crate::redact::Redactor;
 pub const KEEP_LIMIT: u64 = 16 * 1024 * 1024;
 
 /// A text artifact's line that grows past this without a newline is
-/// redacted as it is, so that a stream with no newlines is not held.
+/// redacted as it is (cut where no character is split), so that a stream
+/// with no newlines is not held.
 const REDACT_PENDING: usize = 64 * 1024;
 
 /// A session's artifacts and stored contents. Shared between threads.
@@ -60,6 +61,60 @@ pub struct DiskStore {
     /// The number of the last artifact, once the directory has been looked
     /// at.
     last_artifact: Mutex<Option<u64>>,
+    life: Arc<Lifetime>,
+}
+
+/// Whether the store's session exists on disk, and the writes in progress.
+///
+/// The store of a session that has not had its first prompt yet is
+/// written to all the same (the base state is taken then). If the session
+/// ends before its log exists, it must leave nothing behind
+/// (`docs/architecture/07-sessions-and-context.md`, "Writing"): the store
+/// then refuses every new write, and whichever comes last, the end of the
+/// session or the end of the last write in progress, removes the session's
+/// directory.
+#[derive(Debug)]
+struct Lifetime {
+    dir: SessionDir,
+    state: Mutex<LifeState>,
+}
+
+#[derive(Debug, Default)]
+struct LifeState {
+    /// The session's log does not exist yet.
+    unborn: bool,
+    /// The session ended before its log existed.
+    abandoned: bool,
+    /// Writes in progress: an unfinished artifact counts until it is
+    /// finished or dropped.
+    writers: usize,
+}
+
+impl Lifetime {
+    fn lock(&self) -> std::sync::MutexGuard<'_, LifeState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Removes what an abandoned session left, if it never got a log.
+    fn clear(&self) {
+        if fs::symlink_metadata(self.dir.log()).is_err() {
+            let _ = fs::remove_dir_all(self.dir.path());
+        }
+    }
+}
+
+/// One write in progress. Dropping it ends the write.
+#[derive(Debug)]
+struct Writing(Arc<Lifetime>);
+
+impl Drop for Writing {
+    fn drop(&mut self) {
+        let mut state = self.0.lock();
+        state.writers -= 1;
+        if state.abandoned && state.writers == 0 {
+            self.0.clear();
+        }
+    }
 }
 
 impl DiskStore {
@@ -67,12 +122,60 @@ impl DiskStore {
     /// something is stored.
     #[must_use]
     pub fn new(dir: SessionDir, redactor: Arc<dyn Redactor>, sync: bool) -> Self {
+        Self::with_life(dir, redactor, sync, false)
+    }
+
+    /// The store of a session whose log does not exist yet.
+    pub(crate) fn unborn(dir: SessionDir, redactor: Arc<dyn Redactor>, sync: bool) -> Self {
+        Self::with_life(dir, redactor, sync, true)
+    }
+
+    fn with_life(dir: SessionDir, redactor: Arc<dyn Redactor>, sync: bool, unborn: bool) -> Self {
         Self {
+            life: Arc::new(Lifetime {
+                dir: dir.clone(),
+                state: Mutex::new(LifeState {
+                    unborn,
+                    ..LifeState::default()
+                }),
+            }),
             dir,
             redactor,
             sync,
             last_artifact: Mutex::new(None),
         }
+    }
+
+    /// The session's log now exists: what is stored stays.
+    pub(crate) fn born(&self) {
+        self.life.lock().unborn = false;
+    }
+
+    /// The session ended before its log existed: nothing more is stored,
+    /// and the session's directory is removed once no write is in
+    /// progress.
+    pub(crate) fn abandon(&self) {
+        let mut state = self.life.lock();
+        if !state.unborn {
+            return;
+        }
+        state.abandoned = true;
+        if state.writers == 0 {
+            self.life.clear();
+        }
+    }
+
+    /// Starts a write, unless the session ended before its log existed.
+    fn writing(&self) -> Result<Writing> {
+        let mut state = self.life.lock();
+        if state.abandoned {
+            return Err(SessionError::ReadOnly {
+                session: self.dir.id().to_string(),
+                reason: "it ended before its first prompt, so nothing is kept for it".to_owned(),
+            });
+        }
+        state.writers += 1;
+        Ok(Writing(Arc::clone(&self.life)))
     }
 
     /// Starts an artifact. `label` says what it holds, in a few words, and
@@ -83,6 +186,7 @@ impl DiskStore {
     ///
     /// When the artifacts directory or the file cannot be created.
     pub fn begin_artifact(&self, label: &str, media_type: &str) -> Result<ArtifactFile> {
+        let writing = self.writing()?;
         let directory = self.dir.artifacts();
         private::create_dir_all(&directory).map_err(SessionError::io(
             "create the artifacts directory",
@@ -107,6 +211,7 @@ impl DiskStore {
             bytes: 0,
             redact,
             sync: self.sync,
+            _writing: writing,
         })
     }
 
@@ -219,6 +324,7 @@ impl DiskStore {
     ///
     /// When the content cannot be written.
     pub fn put_blob(&self, content: &[u8]) -> Result<ContentHash> {
+        let _writing = self.writing()?;
         let hash = ContentHash::of(content);
         if self.has_blob(&hash) {
             return Ok(hash);
@@ -232,20 +338,84 @@ impl DiskStore {
         Ok(hash)
     }
 
-    /// Stores the content of the file at `path`, streamed, unless it is
-    /// larger than `limit`: then only its hash and size are recorded, and
-    /// [`FileVersion::kept`] is false. `None` when there is no file.
+    /// Stores the content of the regular file at `path`, streamed, unless
+    /// it is larger than `limit`: then only its hash and size are recorded,
+    /// and [`FileVersion::kept`] is false. `None` when there is no file.
+    ///
+    /// **Only a regular file is read, and never more than it held.** A link
+    /// is not followed, and a device, a FIFO or a directory is refused
+    /// before anything is opened. The read is bounded by the length the
+    /// file had when it was opened, not by `limit`: up to `limit` bytes are
+    /// copied, and the hash and size cover that whole length, so that a
+    /// file over the limit is still known by its hash. A file that grows
+    /// while it is read is recorded as it was when it was opened.
     ///
     /// # Errors
     ///
-    /// When the file exists and cannot be read, or the store cannot be
-    /// written.
+    /// [`SessionError::NotARegularFile`] for anything but a regular file;
+    /// otherwise when the file cannot be read or the store written.
     pub fn put_file(&self, path: &Path, limit: u64) -> Result<Option<FileVersion>> {
-        let mut source = match File::open(path) {
+        self.put_opened_file(path, limit, || {})
+    }
+
+    /// [`put_file`](Self::put_file), with `opened` called once the file is
+    /// open and its length known, for a test to change the file then.
+    fn put_opened_file(
+        &self,
+        path: &Path,
+        limit: u64,
+        opened: impl FnOnce(),
+    ) -> Result<Option<FileVersion>> {
+        let not_regular = || SessionError::NotARegularFile {
+            path: path.to_path_buf(),
+        };
+        match fs::symlink_metadata(path) {
+            Ok(found) if found.is_file() => {}
+            Ok(_) => return Err(not_regular()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(SessionError::io("read the file", path.to_path_buf())(error)),
+        }
+        let source = match File::open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(SessionError::io("read the file", path.to_path_buf())(error)),
         };
+        // What was opened, which a change between the look and the open
+        // could have made something else.
+        let opened_as = source
+            .metadata()
+            .map_err(SessionError::io("read the file", path.to_path_buf()))?;
+        if !opened_as.is_file() {
+            return Err(not_regular());
+        }
+        opened();
+        self.store_stream(&mut source.take(opened_as.len()), limit, path)
+            .map(Some)
+    }
+
+    /// Stores content read from `source` to its end, as
+    /// [`put_file`](Self::put_file) stores a file's: up to `limit` bytes
+    /// are kept, and the hash and size cover all of it. For content that
+    /// is not a file in the workspace: a file's earlier version read from
+    /// git, for the `before` of a change a shell command made
+    /// ([`RoundCheckpoint::record_before`](crate::RoundCheckpoint::record_before)).
+    /// `source` must end: it is read until it does.
+    ///
+    /// # Errors
+    ///
+    /// When `source` cannot be read or the store cannot be written.
+    pub fn put_stream(&self, source: &mut dyn Read, limit: u64) -> Result<FileVersion> {
+        self.store_stream(source, limit, &self.dir.checkpoints())
+    }
+
+    /// Stores what `source` gives, naming `origin` in an error.
+    fn store_stream(
+        &self,
+        source: &mut dyn Read,
+        limit: u64,
+        origin: &Path,
+    ) -> Result<FileVersion> {
+        let _writing = self.writing()?;
         let mut hasher = ContentHasher::new();
         let mut copy = Some(self.temporary_blob()?);
         let mut bytes: u64 = 0;
@@ -274,26 +444,26 @@ impl DiskStore {
         };
         let hash = hasher.finish();
         let Some((temporary, file)) = copy else {
-            outcome.map_err(SessionError::io("read the file", path.to_path_buf()))?;
-            return Ok(Some(FileVersion {
+            outcome.map_err(SessionError::io("read the content", origin.to_path_buf()))?;
+            return Ok(FileVersion {
                 hash,
                 bytes,
                 kept: false,
-            }));
+            });
         };
         let finished = outcome.and_then(|()| if self.sync { file.sync_all() } else { Ok(()) });
         drop(file);
         if self.has_blob(&hash) {
             let _ = fs::remove_file(&temporary);
-            finished.map_err(SessionError::io("read the file", path.to_path_buf()))?;
+            finished.map_err(SessionError::io("read the content", origin.to_path_buf()))?;
         } else {
             self.settle_blob(temporary, &hash, finished)?;
         }
-        Ok(Some(FileVersion {
+        Ok(FileVersion {
             hash,
             bytes,
             kept: true,
-        }))
+        })
     }
 
     /// The content stored under a hash, checked against it. `None` when it
@@ -369,6 +539,8 @@ pub struct ArtifactFile {
     bytes: u64,
     redact: Option<LineRedactor>,
     sync: bool,
+    /// Held until the artifact is finished or dropped.
+    _writing: Writing,
 }
 
 impl ArtifactFile {
@@ -449,6 +621,12 @@ impl Drop for ArtifactFile {
 }
 
 /// Redacts a text artifact a line at a time, as it arrives.
+///
+/// Each line goes through the redactor on its own, and within a line each
+/// run of valid UTF-8 does: a byte that is not UTF-8 is not text, so it is
+/// written as it is, between the runs, and never stops the text around it
+/// from being redacted. A line that grows past [`REDACT_PENDING`] without a
+/// newline is redacted in pieces, cut where no character is split.
 #[derive(Debug)]
 struct LineRedactor {
     redactor: Arc<dyn Redactor>,
@@ -462,28 +640,51 @@ impl LineRedactor {
         self.pending.extend_from_slice(data);
         let cut = match self.pending.iter().rposition(|&byte| byte == b'\n') {
             Some(newline) => newline + 1,
-            None if self.pending.len() > REDACT_PENDING => self.pending.len(),
+            None if self.pending.len() > REDACT_PENDING => char_boundary(&self.pending),
             None => return None,
         };
         let ready: Vec<u8> = self.pending.drain(..cut).collect();
-        Some(self.redact(ready))
+        Some(self.redact(&ready))
     }
 
     fn take_all(&mut self) -> Vec<u8> {
         let rest = std::mem::take(&mut self.pending);
-        self.redact(rest)
+        self.redact(&rest)
     }
 
-    fn redact(&self, bytes: Vec<u8>) -> Vec<u8> {
+    fn redact(&self, bytes: &[u8]) -> Vec<u8> {
         if self.redactor.is_noop() {
-            return bytes;
+            return bytes.to_vec();
         }
-        match String::from_utf8(bytes) {
-            Ok(text) => self.redactor.redact(&text).into_owned().into_bytes(),
-            // Not text after all: written as it is.
-            Err(error) => error.into_bytes(),
+        let mut out = Vec::with_capacity(bytes.len());
+        for line in bytes.split_inclusive(|&byte| byte == b'\n') {
+            for run in line.utf8_chunks() {
+                out.extend_from_slice(self.redactor.redact(run.valid()).as_bytes());
+                out.extend_from_slice(run.invalid());
+            }
+        }
+        out
+    }
+}
+
+/// Where to cut `bytes` so that no UTF-8 character is split: before a
+/// character whose bytes have not all arrived, and at the end otherwise.
+fn char_boundary(bytes: &[u8]) -> usize {
+    let len = bytes.len();
+    // The last character starts at most three bytes before the end.
+    for back in 1..=len.min(4) {
+        let byte = bytes[len - back];
+        if byte & 0b1100_0000 != 0b1000_0000 {
+            let width = match byte {
+                0xc0..=0xdf => 2,
+                0xe0..=0xef => 3,
+                0xf0..=0xf7 => 4,
+                _ => 1,
+            };
+            return if width > back { len - back } else { len };
         }
     }
+    len
 }
 
 /// Whether content of this media type is text the redactor reads.
@@ -509,7 +710,155 @@ fn extension(media_type: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use cortex_protocol::ids::SessionId;
+
     use super::*;
+    use crate::layout::ProjectSessions;
+    use crate::redact::tests::MaskHunter;
+
+    /// A store in a directory of its own, removed with it.
+    struct Scratch {
+        root: PathBuf,
+        store: DiskStore,
+    }
+
+    impl Scratch {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let root = std::env::temp_dir().join(format!(
+                "cortex-session-store-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).unwrap();
+            let dir = ProjectSessions::at(root.join("project"))
+                .session(&SessionId::new("s_1"))
+                .unwrap();
+            let store = DiskStore::new(dir, Arc::new(crate::redact::NoRedaction), false);
+            Self { root, store }
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn redactor() -> LineRedactor {
+        LineRedactor {
+            redactor: Arc::new(MaskHunter),
+            pending: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_file_that_grows_while_it_is_read_is_kept_as_it_was_when_opened() {
+        let scratch = Scratch::new();
+        let path = scratch.root.join("growing.log");
+        fs::write(&path, b"first line\n").unwrap();
+        for limit in [KEEP_LIMIT, 4] {
+            let version = scratch
+                .store
+                .put_opened_file(&path, limit, || {
+                    let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+                    file.write_all(&[b'x'; 100_000]).unwrap();
+                })
+                .unwrap()
+                .unwrap();
+            assert_eq!(version.bytes, 11, "limit {limit}");
+            assert_eq!(
+                version.hash,
+                ContentHash::of(b"first line\n"),
+                "limit {limit}"
+            );
+            assert_eq!(version.kept, limit >= 11);
+            fs::write(&path, b"first line\n").unwrap();
+        }
+        let hash = ContentHash::of(b"first line\n");
+        assert_eq!(
+            scratch.store.get_blob(&hash).unwrap().unwrap(),
+            b"first line\n"
+        );
+    }
+
+    #[test]
+    fn only_a_regular_file_is_kept() {
+        let scratch = Scratch::new();
+        let directory = scratch.root.join("a-directory");
+        fs::create_dir_all(&directory).unwrap();
+        let refused = |path: &Path| {
+            matches!(
+                scratch.store.put_file(path, KEEP_LIMIT),
+                Err(SessionError::NotARegularFile { .. })
+            )
+        };
+        assert!(refused(&directory));
+        assert_eq!(
+            scratch
+                .store
+                .put_file(&scratch.root.join("missing"), KEEP_LIMIT)
+                .unwrap(),
+            None
+        );
+        #[cfg(unix)]
+        {
+            let target = scratch.root.join("target.txt");
+            fs::write(&target, b"outside").unwrap();
+            let link = scratch.root.join("link.txt");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(refused(&link), "a link is not followed");
+            // A device, read to its end, never ends.
+            assert!(refused(Path::new("/dev/zero")));
+            assert!(!scratch.store.has_blob(&ContentHash::of(b"outside")));
+        }
+    }
+
+    #[test]
+    fn a_long_line_is_cut_only_between_characters() {
+        let e = "é".as_bytes();
+        let euro = "€".as_bytes();
+        assert_eq!(char_boundary(b"abc"), 3);
+        assert_eq!(char_boundary(e), 2);
+        assert_eq!(char_boundary(&e[..1]), 0);
+        assert_eq!(char_boundary(&[b'a', e[0]]), 1);
+        assert_eq!(char_boundary(&[b'a', euro[0], euro[1]]), 1);
+        assert_eq!(char_boundary(&[b'a', euro[0], euro[1], euro[2]]), 4);
+        // Not UTF-8 at all: cut anywhere.
+        assert_eq!(char_boundary(&[0x80, 0x80, 0x80, 0x80, 0x80]), 5);
+        assert_eq!(char_boundary(&[0xff]), 1);
+
+        let mut redact = redactor();
+        let mut line = b"hunter2 ".to_vec();
+        line.extend("é".repeat(REDACT_PENDING).as_bytes());
+        let mut out = Vec::new();
+        for piece in line.chunks(4093) {
+            out.extend(redact.push(piece).unwrap_or_default());
+        }
+        out.extend(redact.take_all());
+        let text = String::from_utf8(out).expect("no character was split");
+        assert!(
+            text.starts_with("[redacted] é"),
+            "{}",
+            text.chars().take(20).collect::<String>()
+        );
+    }
+
+    #[test]
+    fn bytes_that_are_not_utf8_do_not_stop_redaction() {
+        let mut redact = redactor();
+        let mut out = redact
+            .push(b"password=hunter2\nlatin-1 caf\xe9 hunter2\n\xff\xfehunter2")
+            .unwrap();
+        out.extend(redact.take_all());
+        assert_eq!(
+            out,
+            b"password=[redacted]\nlatin-1 caf\xe9 [redacted]\n\xff\xfe[redacted]"
+        );
+    }
 
     #[test]
     fn media_types_have_extensions() {
@@ -527,10 +876,7 @@ mod tests {
     fn lines_are_redacted_whole_wherever_the_pieces_split() {
         let text = "one hunter2\ntwo hun";
         let rest = "ter2 three\nfour";
-        let mut redact = LineRedactor {
-            redactor: Arc::new(crate::redact::tests::MaskHunter),
-            pending: Vec::new(),
-        };
+        let mut redact = redactor();
         let mut out = redact.push(text.as_bytes()).unwrap();
         out.extend(redact.push(rest.as_bytes()).unwrap());
         out.extend(redact.take_all());

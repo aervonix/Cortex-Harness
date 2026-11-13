@@ -4,7 +4,7 @@
 use std::fs;
 
 use cortex_protocol::ids::{SessionId, TurnId};
-use cortex_session::entry::{Body, ExtRecord, Kind, Meta};
+use cortex_session::entry::{Body, EntryId, ExtRecord, Kind, Meta};
 use cortex_session::{Log, Session, SessionError};
 use serde_json::json;
 
@@ -90,7 +90,7 @@ fn cut_at_every_byte(test: &str, last: Body) {
         } else {
             0
         };
-        assert_eq!(report.repaired_calls.len(), dangling, "{what}");
+        assert_eq!(report.repaired.len(), dangling, "{what}");
         let next = session.append(None, user("and then")).unwrap();
         drop(session);
 
@@ -299,4 +299,36 @@ fn an_extension_record_round_trips_through_the_file() {
     assert!(session.is_record(&id));
     let entry = session.read(&id).unwrap();
     assert!(matches!(entry.body, Body::Ext(ExtRecord { ext, .. }) if ext == "notes"));
+}
+
+/// A line longer than the reader's limit would be accepted, and then
+/// skipped as damage when the session is read again, with the branch after
+/// it. So it is refused, and nothing is written.
+#[test]
+fn an_entry_over_the_line_limit_is_refused_and_nothing_is_lost() {
+    let world = World::new("line_limit");
+    let mut session = world.create("s_1");
+    let first = session.append(None, user("first")).unwrap();
+    let log_path = session.dir().log();
+    let before = fs::read(&log_path).unwrap();
+    // Each control character is six bytes as JSON (`\u0001`): a line over
+    // 64 MiB from a quarter of the text, which keeps the test quick.
+    let big = "\u{1}".repeat(11 * 1024 * 1024 + 1024);
+    let refused = session.append(None, user(&big));
+    drop(big);
+    assert!(
+        matches!(refused, Err(SessionError::EntryTooLarge { bytes, limit }) if bytes > limit),
+        "{refused:?}"
+    );
+    assert_eq!(fs::read(&log_path).unwrap(), before, "nothing was written");
+    assert_eq!(session.active(), Some(&first));
+    let after = session.append(None, user("after!")).unwrap();
+    assert_eq!(session.branch().len(), 3);
+    drop(session);
+
+    let dir = world.project.session(&SessionId::new("s_1")).unwrap();
+    let (log, report) = Log::open(&dir).unwrap();
+    assert!(report.is_clean(), "{report:?}");
+    assert_eq!(log.active(), Some(&after));
+    assert_eq!(log.branch(), [EntryId::header(), first, after]);
 }

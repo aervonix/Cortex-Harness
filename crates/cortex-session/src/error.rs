@@ -61,6 +61,25 @@ pub enum SessionError {
         /// What was wrong with it.
         reason: String,
     },
+    /// Only a regular file can be kept: this is a link, a directory, a
+    /// device or a FIFO, which are never followed or read.
+    #[error("`{}` is not a regular file, so its content is not kept", path.display())]
+    NotARegularFile {
+        /// The path.
+        path: PathBuf,
+    },
+    /// An entry is longer, as one line of the log, than a log line may be.
+    /// Large content belongs in an artifact.
+    #[error(
+        "the entry would be a line of {bytes} bytes, over the limit of {limit}; large content \
+         belongs in an artifact"
+    )]
+    EntryTooLarge {
+        /// How long its line would be, without the newline.
+        bytes: u64,
+        /// The longest line a log may have.
+        limit: u64,
+    },
     /// Stored content does not match the hash it is filed under.
     #[error("the stored content `{hash}` is damaged: its content no longer matches its hash")]
     Corrupt {
@@ -109,8 +128,10 @@ impl Classified for SessionError {
             | Self::NotFound { .. }
             | Self::NoSuchEntry { .. }
             | Self::AmbiguousPrefix { .. }
-            | Self::Invalid(_) => ErrorKind::Usage,
+            | Self::Invalid(_)
+            | Self::NotARegularFile { .. } => ErrorKind::Usage,
             Self::Broken
+            | Self::EntryTooLarge { .. }
             | Self::NotALog { .. }
             | Self::Corrupt { .. }
             | Self::Io { .. }
@@ -129,6 +150,8 @@ impl Classified for SessionError {
             Self::Broken => "session_log_broken",
             Self::NotALog { .. } => "not_a_session_log",
             Self::Corrupt { .. } => "stored_content_damaged",
+            Self::NotARegularFile { .. } => "not_a_regular_file",
+            Self::EntryTooLarge { .. } => "session_entry_too_large",
             Self::Io { .. } => "session_io",
             Self::Encode(_) => "session_encode",
         }
