@@ -8,6 +8,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
+// What the test of the second interrupt reads, which needs a command
+// that ignores the first: Unix only.
+#[cfg(unix)]
 use cortex_protocol::event::{Delta, Event, TurnOutcome};
 use cortex_protocol::methods::{Op, SessionRewindParams};
 use cortex_protocol::{Item, Part};

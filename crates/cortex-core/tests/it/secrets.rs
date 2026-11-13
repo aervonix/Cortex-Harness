@@ -112,7 +112,9 @@ fn sys_the_harnesss_own_key_and_a_key_in_a_known_format_are_masked_on_disk() {
             calls(&[(
                 "c1",
                 "shell",
-                json!({"command": format!("echo {KEY} {TOKEN}")}),
+                // Quoted, so that every shell prints the two on one line:
+                // PowerShell prints each argument of `echo` on its own.
+                json!({"command": format!("echo \"{KEY} {TOKEN}\"")}),
             )]),
             says("I saw them."),
         ],
