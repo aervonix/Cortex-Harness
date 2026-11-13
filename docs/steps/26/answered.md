@@ -59,3 +59,14 @@ A second fresh reviewer on Opus read the fixes (`da2191d..2ac3f41`). The same ba
 | 10 | **The look followed links in `.git/modules` and `.git/worktrees`.** | **Fixed:** an entry there that is a link is recorded as the link. Test: `protect::tests::a_linked_module_or_worktree_is_not_looked_through`. |
 | 11 | Tests that would pass with a fix removed: the rewind's result ignored; no break for read-only commands being looked at; none for the check inside `put_back`. | **The rewind's result is checked.** Not done, and left as gaps: a break for read-only commands needs a command the engine marks as only reading that writes a protected path, and none was looked for; the check inside `put_back` guards against a link planted between the status and the write, which a test cannot place without a hook into the rewind (the check it shares, `through_a_link`, has a break the undo test catches). |
 | 12 | A process killed with the tree may still be finishing a write when the look after runs (plausible). | **Left open:** [outstanding/the-last-writes-of-a-killed-command.md](../../outstanding/the-last-writes-of-a-killed-command.md). |
+
+# The owner's answers on the second review, 2026-11-13
+
+Through the coordinator, after the report of the second review's fixes.
+
+| Question | The answer | Recorded in |
+|---|---|---|
+| **`setsid` faked, `setpgid` allowed,** and what that costs programs that make a terminal. | **Accepted:** `setsid` stays faked for now; step 32 adds the child subreaper that lets it work. | [decision 0032](../../decisions/0032-what-the-linux-sandbox-needs.md); [outstanding/a-session-of-its-own-in-the-sandbox.md](../../outstanding/a-session-of-its-own-in-the-sandbox.md) |
+| **`network = "full"` as an allow-list,** Unix sockets still refused. | **Accepted as built.** | [decision 0032](../../decisions/0032-what-the-linux-sandbox-needs.md) |
+| **The look at protected paths over the budget** (the conflict this step raised under rule 11). | **Merged as it is,** with a row in the budgets that gives today's figures and marks them as over what is wanted; step 33 makes the look incremental. | [performance-budgets.md](../../performance-budgets.md), "Latency the harness adds"; [outstanding/the-cost-of-the-look-at-protected-paths.md](../../outstanding/the-cost-of-the-look-at-protected-paths.md) |
+| **The changes outside the core's three items:** `cortex-session`'s check for links, `SessionHandle::set_sandbox` in `cortex-agent`, and the core's additions for the stop. | **Approved by the coordinator.** | This file, above |
