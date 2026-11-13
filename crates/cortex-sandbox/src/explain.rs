@@ -154,25 +154,25 @@ mod tests {
         let policy = policy(Network::Off);
         for (output, path) in [
             (
-                "touch: cannot touch '/home/u/x': Permission denied",
-                "/home/u/x",
+                "touch: cannot touch '/srv/u/x': Permission denied",
+                "/srv/u/x",
             ),
             ("bash: /etc/hosts: Permission denied", "/etc/hosts"),
             (
-                "/bin/sh: 1: cannot create /home/u/new: Permission denied",
-                "/home/u/new",
+                "/bin/sh: 1: cannot create /srv/u/new: Permission denied",
+                "/srv/u/new",
             ),
             (
-                "mv: cannot move '/work/a' to '/home/u/a': Permission denied",
-                "/home/u/a",
+                "mv: cannot move '/work/a' to '/srv/u/a': Permission denied",
+                "/srv/u/a",
             ),
             (
-                "PermissionError: [Errno 13] Permission denied: '/home/u/.cache/pip'",
-                "/home/u/.cache/pip",
+                "PermissionError: [Errno 13] Permission denied: '/srv/u/.cache/pip'",
+                "/srv/u/.cache/pip",
             ),
             (
-                "Error: EACCES: permission denied, open '/home/u/.npm/_cacache/tmp'",
-                "/home/u/.npm/_cacache/tmp",
+                "Error: EACCES: permission denied, open '/srv/u/.npm/_cacache/tmp'",
+                "/srv/u/.npm/_cacache/tmp",
             ),
             (
                 "mkdir: cannot create directory ‘/opt/y’: Permission denied",
