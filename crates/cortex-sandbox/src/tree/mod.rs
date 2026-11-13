@@ -156,10 +156,13 @@ impl Tree {
     /// command itself. After the command has exited, this is what it left
     /// behind: background processes, which the tree's end will kill.
     ///
-    /// On Linux it reads the process table, which takes about a
-    /// microsecond for each process on the machine, and counts the members
-    /// of the command's process group: a process that left the group is
-    /// not counted. On Windows it asks the Job Object.
+    /// On Linux it reads the process table and counts the members of the
+    /// command's process group: a process that left the group is not
+    /// counted. Reading the whole table takes a few microseconds for each
+    /// process on the machine, so for a command that is under a second
+    /// old only the processes with a higher id than the command's are
+    /// read, which is where its group's members are. On Windows it asks
+    /// the Job Object.
     pub fn others_running(&self) -> io::Result<usize> {
         self.inner.others_running()
     }

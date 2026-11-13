@@ -32,6 +32,9 @@ pub(super) struct Inner {
     /// that is waiting for it, so that the command is never reaped under a
     /// waiter.
     exit: Mutex<Option<Exit>>,
+    /// When the command was started: how old the tree is decides how much
+    /// of the process table a count of it has to read.
+    started: std::time::Instant,
     /// The guard's knowledge of this group, given up when the tree ends.
     watch: Option<Watch>,
 }
@@ -78,6 +81,7 @@ impl Inner {
                 ended: false,
             }),
             exit: Mutex::new(None),
+            started: std::time::Instant::now(),
             watch: None,
         };
         if let Some(guard) = guard {
@@ -138,7 +142,7 @@ impl Inner {
         }
         // The lock is held, so the command is not reaped and the group's
         // id is still its own.
-        count_group(self.pid)
+        count_group(self.pid, self.started.elapsed())
     }
 
     pub(super) fn end(&self) {
@@ -251,15 +255,30 @@ pub(super) fn signal_group(group: libc::pid_t, signal: libc::c_int) -> io::Resul
 /// How many live processes are in the group `group` leads, not counting
 /// the leader. A process that has exited and waits to be reaped is not
 /// alive.
+///
+/// The process table has no list of a group's members, so the table is
+/// read: a line for each process. Most of it need not be. Everything in a
+/// command's group was started after the command, and the system gives
+/// out process ids in rising order, so the members have ids above the
+/// leader's, unless the ids wrapped round to the bottom meanwhile. For a
+/// command that has run for less than a second with a million ids above
+/// its own still unused, they cannot have: then only the higher ids are
+/// read. Otherwise every process is.
 #[cfg(target_os = "linux")]
-fn count_group(group: libc::pid_t) -> io::Result<usize> {
+fn count_group(group: libc::pid_t, age: std::time::Duration) -> io::Result<usize> {
+    let leader_id = group.unsigned_abs();
+    let above_only = age < std::time::Duration::from_secs(1)
+        && highest_process_id()
+            .is_some_and(|highest| highest.saturating_sub(leader_id) > IDS_NO_SECOND_USES_UP);
     let leader = group.to_string();
     let mut count = 0;
     for entry in std::fs::read_dir("/proc")? {
         let Ok(entry) = entry else { continue };
         let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        if name == leader || !name.bytes().all(|byte| byte.is_ascii_digit()) {
+        let Some(id) = name.to_str().and_then(|name| name.parse::<u32>().ok()) else {
+            continue;
+        };
+        if id == leader_id || (above_only && id < leader_id) {
             continue;
         }
         // A process may end between the listing and the read.
@@ -285,8 +304,26 @@ fn count_group(group: libc::pid_t) -> io::Result<usize> {
     Ok(count)
 }
 
+/// More process ids than a machine gives out in a second.
+#[cfg(target_os = "linux")]
+const IDS_NO_SECOND_USES_UP: u32 = 1_000_000;
+
+/// The highest process id the system gives out before it starts again
+/// from the bottom. Read once: it is a setting of the system.
+#[cfg(target_os = "linux")]
+fn highest_process_id() -> Option<u32> {
+    static HIGHEST: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *HIGHEST.get_or_init(|| {
+        std::fs::read_to_string("/proc/sys/kernel/pid_max")
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    })
+}
+
 #[cfg(not(target_os = "linux"))]
-fn count_group(_group: libc::pid_t) -> io::Result<usize> {
+fn count_group(_group: libc::pid_t, _age: std::time::Duration) -> io::Result<usize> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "this system has no process table to read",
@@ -479,5 +516,56 @@ impl OutputPipe {
 impl StopHandle {
     pub(super) fn stop(&self) {
         lock(&self.writer).take();
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    /// The count reads only part of the process table for a young tree,
+    /// and all of it for an old one. Both must find the same members.
+    #[test]
+    fn sys_a_group_is_counted_the_same_whichever_way_the_table_is_read() {
+        // Two processes that stay for as long as their input is open: the
+        // command itself, and one it started in the background.
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "cat <&0 & exec cat"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let (reader, input) = io::pipe().expect("make a pipe");
+        command.stdin(reader);
+        let tree = Inner::spawn(command, None).expect("start the command");
+
+        let young = Duration::ZERO;
+        let old = Duration::from_secs(60);
+        let begun = Instant::now();
+        while count_group(tree.pid, old).expect("read the table") != 1 {
+            assert!(
+                begun.elapsed() < Duration::from_secs(30),
+                "the background process never appeared"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(count_group(tree.pid, young).expect("read the table"), 1);
+        assert_eq!(count_group(tree.pid, old).expect("read the table"), 1);
+        // A group that is not there has nobody in it, either way.
+        assert_eq!(count_group(libc::pid_t::MAX - 1, young).expect("read"), 0);
+        assert_eq!(count_group(libc::pid_t::MAX - 1, old).expect("read"), 0);
+
+        // Their input closes, and both go.
+        drop(input);
+        assert_eq!(tree.wait().expect("wait"), Exit::Code(0));
+        let begun = Instant::now();
+        while count_group(tree.pid, old).expect("read the table") != 0 {
+            assert!(begun.elapsed() < Duration::from_secs(30), "it never left");
+            std::thread::yield_now();
+        }
+        assert_eq!(count_group(tree.pid, young).expect("read the table"), 0);
+        tree.end();
     }
 }

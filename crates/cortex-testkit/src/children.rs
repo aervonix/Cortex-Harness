@@ -25,8 +25,8 @@
 //! # A child is watched through a socket
 //!
 //! Each child connects to the test's [`Roll`] on the loopback interface,
-//! says its name and its process id, and keeps the connection until it
-//! dies. So [`Roll::next`] returns when a child is up, and
+//! says its name and its process id, waits for the roll to answer, and
+//! keeps the connection until it dies. So [`Roll::next`] returns when a child is up, and
 //! [`Present::gone_within`] returns when the system has closed a dead
 //! child's connection. Neither is a guess at how long something takes.
 
@@ -316,6 +316,12 @@ pub fn run_if_child() {
     let mut stream = TcpStream::connect(&spec.address).expect("reach the test's roll");
     writeln!(stream, "{} {}", spec.name, std::process::id()).expect("report to the test");
     stream.flush().expect("report to the test");
+    // The roll answers when it has the line. A child that exits at once
+    // would otherwise race its own report: Windows may throw away what a
+    // process has sent and the other side has not read when the process
+    // ends.
+    let mut heard = [0u8; 1];
+    stream.read_exact(&mut heard).expect("be heard by the test");
 
     if let Some(text) = &spec.say {
         let mut out = std::io::stdout().lock();
@@ -401,6 +407,10 @@ impl Roll {
                         return;
                     };
                     let Ok(pid) = pid.parse() else { return };
+                    // Heard: the child goes on only now.
+                    if (&stream).write_all(b"k").is_err() {
+                        return;
+                    }
                     let _ = sender.send(Present {
                         name: name.to_owned(),
                         pid,
