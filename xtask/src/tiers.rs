@@ -4,6 +4,15 @@
 //! A single test is held to its limit by nextest itself (`.config/nextest.toml`
 //! stops a test that runs too long). This is the other half: the time all the
 //! tests of a tier take together, and which tests that time is made of.
+//!
+//! **A budget is held against the time above the start of the tests'
+//! processes.** nextest runs every test in a process of its own, and on a
+//! hosted Windows runner starting one costs 6 to 12 ms, by the runner's
+//! speed. For a thousand unit tests that is 6 to 12 s of a 20 s budget before
+//! any test has done anything, so the raw total said more about the runner a
+//! run drew than about the tests. Each run measures its own start cost
+//! ([`start_cost`]) and takes it off every test; the report prints both
+//! totals, and the cost it used.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -22,6 +31,44 @@ enum Tier {
     Unit,
     Integration,
     System,
+}
+
+/// Which of a run's unit and integration test times is taken as the cost of
+/// starting one test's process: the time that this many in a hundred of
+/// them were quicker than.
+///
+/// The quickest tests of a run do next to nothing, so their time is the
+/// start of a process. Not the very quickest: one test that happens to be
+/// a millisecond quicker than the rest moves the whole floor, and with it a
+/// thousand tests' worth of time. In four runs of one commit in one job,
+/// on one runner, the unit tier's figure spread over 2.6 s with the minimum
+/// as the floor, and over 1.6 s with the 1st percentile, which is the
+/// spread of the raw totals themselves. System tests are not looked at:
+/// they start other processes of their own.
+const START_PERCENTILE: usize = 1;
+
+/// What starting one test's process cost in this run, in seconds: the
+/// [`START_PERCENTILE`]th percentile of its unit and integration tests'
+/// times. A run with none of those has no floor to measure: 0.
+fn start_cost(cases: &[TestCase]) -> f64 {
+    let mut times: Vec<f64> = cases
+        .iter()
+        .filter(|case| Tier::of(&case.binary, &case.name) != Tier::System)
+        .map(|case| case.seconds)
+        .collect();
+    if times.is_empty() {
+        return 0.0;
+    }
+    times.sort_by(f64::total_cmp);
+    times[times.len() * START_PERCENTILE / 100]
+}
+
+/// How many unit and integration tests a run's start cost was measured on.
+fn start_sample(cases: &[TestCase]) -> usize {
+    cases
+        .iter()
+        .filter(|case| Tier::of(&case.binary, &case.name) != Tier::System)
+        .count()
 }
 
 /// The OS a report is from. Tier 3 has a larger budget on Windows.
@@ -54,7 +101,8 @@ impl Tier {
     }
 
     /// The budget for the tier's total test time, in seconds: the sum of the
-    /// times of its tests, not the wall time of the run.
+    /// times of its tests above the start of their processes, not the wall
+    /// time of the run.
     fn budget(self, os: Os) -> f64 {
         match (self, os) {
             (Tier::Unit, _) => 20.0,
@@ -160,25 +208,63 @@ fn verdict(seconds: f64, budget: f64) -> Option<Verdict> {
     }
 }
 
-/// Total seconds and number of tests for a tier.
-fn total(cases: &[TestCase], tier: Tier) -> (f64, usize) {
+/// What a tier's tests took together.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Totals {
+    count: usize,
+    /// The sum of the tests' times.
+    seconds: f64,
+    /// The sum of what each test took above the start cost, a test that
+    /// took less counting as nothing. This is what the budget is held to.
+    above_start: f64,
+}
+
+fn total(cases: &[TestCase], tier: Tier, start: f64) -> Totals {
     let of_tier = cases
         .iter()
         .filter(|case| Tier::of(&case.binary, &case.name) == tier);
-    of_tier.fold((0.0, 0), |(seconds, count), case| {
-        (seconds + case.seconds, count + 1)
-    })
+    of_tier.fold(
+        Totals {
+            count: 0,
+            seconds: 0.0,
+            above_start: 0.0,
+        },
+        |totals, case| Totals {
+            count: totals.count + 1,
+            seconds: totals.seconds + case.seconds,
+            above_start: totals.above_start + (case.seconds - start).max(0.0),
+        },
+    )
+}
+
+/// The line that says what the start of a test's process was taken to
+/// cost, and from what.
+fn start_line(cases: &[TestCase]) -> String {
+    format!(
+        "process start: {:.0} ms a test ({START_PERCENTILE}% of the run's {} unit and integration \
+         tests were quicker), taken off every test before a tier is held to its budget",
+        1000.0 * start_cost(cases),
+        start_sample(cases),
+    )
 }
 
 /// The table for the terminal, and the tiers that are over budget.
 fn summarise(cases: &[TestCase], os: Os) -> (String, Vec<(Tier, Verdict)>) {
-    let mut table = String::from("  tier             tests   time    budget  used\n");
+    let start = start_cost(cases);
+    let mut table = format!(
+        "  {}\n  tier             tests   time    above start  budget  used\n",
+        start_line(cases)
+    );
     let mut over = Vec::new();
     for tier in Tier::ALL {
-        let (seconds, count) = total(cases, tier);
+        let Totals {
+            count,
+            seconds,
+            above_start,
+        } = total(cases, tier, start);
         let budget = tier.budget(os);
-        let used = 100.0 * seconds / budget;
-        let verdict = verdict(seconds, budget);
+        let used = 100.0 * above_start / budget;
+        let verdict = verdict(above_start, budget);
         let mark = match verdict {
             None => "",
             Some(Verdict::OverBudget) => "  over budget (warning)",
@@ -186,7 +272,7 @@ fn summarise(cases: &[TestCase], os: Os) -> (String, Vec<(Tier, Verdict)>) {
         };
         let _ = writeln!(
             table,
-            "  {:<15}  {count:>5}  {seconds:>5.1} s  {budget:>4.0} s  {used:>3.0}%{mark}",
+            "  {:<15}  {count:>5}  {seconds:>5.1} s  {above_start:>9.1} s  {budget:>4.0} s  {used:>3.0}%{mark}",
             tier.name(),
         );
         if let Some(verdict) = verdict {
@@ -197,16 +283,24 @@ fn summarise(cases: &[TestCase], os: Os) -> (String, Vec<(Tier, Verdict)>) {
 }
 
 fn markdown(cases: &[TestCase], os: Os) -> String {
-    let mut table =
-        String::from("| Tier | Tests | Time | Budget | Used |\n|---|---:|---:|---:|---:|\n");
+    let start = start_cost(cases);
+    let mut table = format!(
+        "The {}.\n\n| Tier | Tests | Time | Above start | Budget | Used |\n\
+         |---|---:|---:|---:|---:|---:|\n",
+        start_line(cases).replacen("process start: ", "start of a test's process: ", 1)
+    );
     for tier in Tier::ALL {
-        let (seconds, count) = total(cases, tier);
+        let Totals {
+            count,
+            seconds,
+            above_start,
+        } = total(cases, tier, start);
         let budget = tier.budget(os);
         let _ = writeln!(
             table,
-            "| {} | {count} | {seconds:.1} s | {budget:.0} s | {:.0}% |",
+            "| {} | {count} | {seconds:.1} s | {above_start:.1} s | {budget:.0} s | {:.0}% |",
             tier.name(),
-            100.0 * seconds / budget,
+            100.0 * above_start / budget,
         );
     }
     table
@@ -242,7 +336,7 @@ fn slowest_tests(cases: &[TestCase], count: usize) -> String {
         if tests.is_empty() {
             continue;
         }
-        let (seconds, _) = total(cases, tier);
+        let seconds = total(cases, tier, 0.0).seconds;
         let shown: f64 = tests.iter().map(|case| case.seconds).sum();
         let _ = writeln!(
             lines,
@@ -290,14 +384,24 @@ fn slowest_markdown(cases: &[TestCase], count: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Os, Tier, Verdict, markdown, slowest_markdown, slowest_tests, summarise, verdict};
+    use super::{
+        Os, Tier, Totals, Verdict, markdown, slowest_markdown, slowest_tests, start_cost,
+        summarise, total, verdict,
+    };
     use crate::junit::tests::case;
     use crate::junit::{self, TestCase};
 
     /// A report kept in the repository: thirteen tests across the three
     /// tiers, two of them failures, with times chosen so that every line of
-    /// the report below can be checked by hand.
+    /// the report below can be checked by hand. Its quickest unit or
+    /// integration test took 0.2 s, which is therefore its start cost.
     const REPORT: &str = include_str!("../fixtures/tiers/junit.xml");
+
+    /// Two real reports of one tree, from the Windows job on 2026-11-13:
+    /// one from a fast runner and one from a slow one. Only each test's
+    /// binary, tier and time are kept.
+    const FAST_RUNNER: &str = include_str!("../fixtures/tiers/windows-fast-runner.xml");
+    const SLOW_RUNNER: &str = include_str!("../fixtures/tiers/windows-slow-runner.xml");
 
     #[test]
     fn where_a_test_lives_and_its_name_decide_its_tier() {
@@ -337,10 +441,12 @@ mod tests {
         assert_eq!(over, []);
         assert_eq!(
             report,
-            "  tier             tests   time    budget  used
-  1, unit              5    6.0 s    20 s   30%
-  2, integration       4   10.0 s    40 s   25%
-  3, system            4   15.0 s    60 s   25%
+            "  process start: 200 ms a test (1% of the run's 9 unit and integration tests were \
+             quicker), taken off every test before a tier is held to its budget
+  tier             tests   time    above start  budget  used
+  1, unit              5    6.0 s        5.0 s    20 s   25%
+  2, integration       4   10.0 s        9.2 s    40 s   23%
+  3, system            4   15.0 s       14.2 s    60 s   24%
 
   slowest in tier 1, unit (3 tests, 92% of the tier's time)
       3.000 s  cortex-policy  rules::tests::a_deny_beats_an_allow_in_any_order
@@ -366,11 +472,14 @@ mod tests {
 
         assert_eq!(
             markdown(&cases, Os::Windows),
-            "| Tier | Tests | Time | Budget | Used |
-|---|---:|---:|---:|---:|
-| 1, unit | 5 | 6.0 s | 20 s | 30% |
-| 2, integration | 4 | 10.0 s | 40 s | 25% |
-| 3, system | 4 | 15.0 s | 90 s | 17% |
+            "The start of a test's process: 200 ms a test (1% of the run's 9 unit and integration \
+             tests were quicker), taken off every test before a tier is held to its budget.
+
+| Tier | Tests | Time | Above start | Budget | Used |
+|---|---:|---:|---:|---:|---:|
+| 1, unit | 5 | 6.0 s | 5.0 s | 20 s | 25% |
+| 2, integration | 4 | 10.0 s | 9.2 s | 40 s | 23% |
+| 3, system | 4 | 15.0 s | 14.2 s | 90 s | 16% |
 "
         );
         assert_eq!(
@@ -421,7 +530,7 @@ mod tests {
 
     #[test]
     fn a_tier_over_its_budget_is_a_warning() {
-        // 22.5 s against a budget of 20 s.
+        // 22.0 s above the start cost of 0.1 s, against a budget of 20 s.
         let (table, over) = summarise(&unit_tests_taking(4.5), Os::Linux);
 
         assert_eq!(over, [(Tier::Unit, Verdict::OverBudget)]);
@@ -430,7 +539,8 @@ mod tests {
 
     #[test]
     fn a_tier_far_over_its_budget_fails() {
-        // 32.5 s: more than one and a half times the budget of 20 s.
+        // 32.0 s above the start cost: more than one and a half times the
+        // budget of 20 s.
         let (table, over) = summarise(&unit_tests_taking(6.5), Os::Linux);
 
         assert_eq!(over, [(Tier::Unit, Verdict::Failing)]);
@@ -449,6 +559,119 @@ mod tests {
             [(Tier::System, Verdict::OverBudget)]
         );
         assert_eq!(summarise(&cases, Os::Windows).1, []);
+    }
+
+    #[test]
+    fn the_start_cost_is_what_one_in_a_hundred_unit_and_integration_tests_beat() {
+        // Two hundred tests from 10 ms to 209 ms: two of them are quicker
+        // than 12 ms.
+        let mut cases: Vec<TestCase> = (0..200)
+            .map(|i| {
+                case(
+                    "cortex-base",
+                    &format!("tests::t{i}"),
+                    0.010 + 0.001 * f64::from(i),
+                )
+            })
+            .collect();
+        assert!((start_cost(&cases) - 0.012).abs() < 1e-9);
+        // A system test is not looked at, however quick: it starts other
+        // processes, and is no measure of starting one.
+        cases.push(case("cortex-tools::it", "shell::sys_quick", 0.001));
+        assert!((start_cost(&cases) - 0.012).abs() < 1e-9);
+        // With fewer than a hundred, the quickest.
+        let few = [
+            case("cortex-base", "tests::a", 0.030),
+            case("cortex-agent::it", "rounds::b", 0.020),
+        ];
+        assert!((start_cost(&few) - 0.020).abs() < 1e-9);
+        // With none to measure, nothing is taken off.
+        let system_only = [case("cortex-cli::system", "sys_version", 0.5)];
+        assert_eq!(start_cost(&system_only), 0.0);
+        assert_eq!(start_cost(&[]), 0.0);
+    }
+
+    #[test]
+    fn a_test_quicker_than_the_start_cost_counts_as_nothing() {
+        let cases = [
+            case("cortex-base", "tests::a", 0.010),
+            case("cortex-base", "tests::b", 0.008),
+            case("cortex-base", "tests::c", 0.510),
+        ];
+        let totals = total(&cases, Tier::Unit, 0.010);
+        assert_eq!(totals.count, 3);
+        assert!((totals.seconds - 0.528).abs() < 1e-9);
+        assert!((totals.above_start - 0.5).abs() < 1e-9, "{totals:?}");
+    }
+
+    #[test]
+    fn a_slow_runner_alone_does_not_put_a_tier_over_its_budget() {
+        // Two thousand unit tests that do nothing, each 12 ms of starting
+        // a process on a slow runner: 24 s, over the budget of 20 s as a
+        // raw total, and nothing above the start.
+        let cases: Vec<TestCase> = (0..2000)
+            .map(|i| case("cortex-base", &format!("tests::t{i}"), 0.012))
+            .collect();
+        let (table, over) = summarise(&cases, Os::Windows);
+        assert_eq!(over, [], "{table}");
+        assert!(table.contains("24.0 s        0.0 s"), "{table}");
+        // One test that takes 21 s puts it over, as it should.
+        let mut slow = cases;
+        slow.push(case("cortex-base", "tests::slow", 21.0));
+        assert_eq!(
+            summarise(&slow, Os::Windows).1,
+            [(Tier::Unit, Verdict::OverBudget)]
+        );
+    }
+
+    /// Each tier's raw total and its total above the start cost.
+    fn tiers_of(report: &str) -> (f64, Vec<Totals>) {
+        let cases = junit::parse(report);
+        let start = start_cost(&cases);
+        let totals = Tier::ALL
+            .iter()
+            .map(|tier| total(&cases, *tier, start))
+            .collect();
+        (start, totals)
+    }
+
+    /// How far apart two figures are, as a share of the smaller.
+    fn apart(a: f64, b: f64) -> f64 {
+        (a - b).abs() / a.min(b)
+    }
+
+    #[test]
+    fn a_fast_and_a_slow_windows_runner_read_alike_above_the_start() {
+        let (fast_start, fast) = tiers_of(FAST_RUNNER);
+        let (slow_start, slow) = tiers_of(SLOW_RUNNER);
+        // The two runners: 6 ms and 11 ms to start a test.
+        assert!((fast_start - 0.006).abs() < 1e-9, "{fast_start}");
+        assert!((slow_start - 0.011).abs() < 1e-9, "{slow_start}");
+        let (unit, integration, system) = (0, 1, 2);
+        assert_eq!(fast[unit].count, slow[unit].count);
+
+        // The unit tier: 17.0 s and 22.7 s raw, a third apart, which is
+        // the runner and not the tests. Above the start, 11.0 s and 11.6 s:
+        // within the run-to-run noise of one runner (1.6 s in four runs).
+        assert!(apart(fast[unit].seconds, slow[unit].seconds) > 0.30);
+        assert!(
+            apart(fast[unit].above_start, slow[unit].above_start) < 0.10,
+            "{fast:?} {slow:?}"
+        );
+
+        // The integration tier: 28.2 s and 40.6 s raw, 23.1 s and 31.3 s
+        // above the start. The start explains part of the gap, and the
+        // rest is the slow runner being slower at the tests' work, which
+        // the budget is right to see: its tests do much more than start.
+        assert!(
+            apart(fast[integration].above_start, slow[integration].above_start)
+                < apart(fast[integration].seconds, slow[integration].seconds)
+        );
+        assert!(slow[integration].above_start < 40.0);
+
+        // The system tier is unchanged in substance: its tests take
+        // seconds, of which the start is a sliver.
+        assert!(slow[system].seconds - slow[system].above_start < 1.0);
     }
 
     #[test]
