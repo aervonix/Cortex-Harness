@@ -818,6 +818,8 @@ enum Expansion {
     Matches(Vec<(AbsPath, bool)>),
     /// More than [`MOST_NAMES_LISTED`] names, or directories.
     TooMany,
+    /// More work than one decision does ([`MOST_WORK`]).
+    TooMuchWork,
     /// A directory could not be listed: the pattern is judged by its text.
     Unknown,
 }
@@ -1886,7 +1888,7 @@ impl Engine {
         shown: &str,
         how: How,
     ) -> Option<Finding> {
-        if !spend(1 + text.len() / 32) {
+        if !spend((1 + text.len() / 32) * places.len().max(1)) {
             return Some(self.too_much(shown));
         }
         let reads = how.reads;
@@ -1949,25 +1951,26 @@ impl Engine {
             // names since, that is all the pattern can match; otherwise its
             // text is judged as well (found by the final review of the fixes
             // to step 12: `mkdir t && rm *.lock` dodged a rule).
-            if !deep && !up {
-                match self.expand(&base, &names, hidden_rule) {
-                    Expansion::Matches(paths) => {
-                        let found = paths
-                            .iter()
-                            .find_map(|path| self.judge_match(rules, path, shown, how));
-                        if found.is_some() || how.listing {
-                            return found;
-                        }
+            // A name that could be `..`, or a `**`, matches more than the
+            // listing shows: its text is judged as well.
+            match self.expand(&base, &names, hidden_rule) {
+                Expansion::Matches(paths) => {
+                    let found = paths
+                        .iter()
+                        .find_map(|path| self.judge_match(rules, path, shown, how));
+                    if found.is_some() || (how.listing && !deep && !up) {
+                        return found;
                     }
-                    Expansion::TooMany => {
-                        return Some(Finding::ask(format!(
-                            "`{shown}` names `{text}`, a pattern that matches more than \
-                             {MOST_NAMES_LISTED} names, or reaches into more than \
-                             {MOST_DIRECTORIES_LISTED} directories: too many to check."
-                        )));
-                    }
-                    Expansion::Unknown => {}
                 }
+                Expansion::TooMany => {
+                    return Some(Finding::ask(format!(
+                        "`{shown}` names `{text}`, a pattern that matches more than \
+                         {MOST_NAMES_LISTED} names, or reaches into more than \
+                         {MOST_DIRECTORIES_LISTED} directories: too many to check."
+                    )));
+                }
+                Expansion::TooMuchWork => return Some(self.too_much(shown)),
+                Expansion::Unknown => {}
             }
             // Otherwise, by its text: what it could match.
             if let Some(hit) = rules.protected_under(&base) {
@@ -2073,7 +2076,7 @@ impl Engine {
                 match self.locate.list(&real, MOST_NAMES_LISTED) {
                     Listing::Names(found) => {
                         if !spend(found.len()) {
-                            return Expansion::TooMany;
+                            return Expansion::TooMuchWork;
                         }
                         for (found, link) in found {
                             if pattern.could_match_name(&found, hidden_rule) {
@@ -2195,11 +2198,15 @@ impl Engine {
     }
 
     /// Adds to `places` every directory a `cd` among the words of a raw
-    /// line could lead to, from every place so far. `false` where one could
-    /// lead anywhere: `cd -`, a pattern, more places than are followed.
+    /// line could lead to: from where the line started, and from where the
+    /// `cd` before it led (`(cd a && x) && (cd b && y)`, `cd a; cd b`).
+    /// `false` where one could lead anywhere: `cd -`, a pattern, more places
+    /// than are followed, or more work than one decision does.
     fn places_of_cds(&self, command: &str, places: &mut Vec<AbsPath>) -> bool {
         let mut placed = true;
+        let start = places.clone();
         for cut in raw_cuts(command) {
+            let mut last: Vec<AbsPath> = Vec::new();
             let mut words = cut.iter().peekable();
             while let Some(word) = words.next() {
                 let program = word.rsplit(['/', '\\']).next().unwrap_or(word);
@@ -2228,11 +2235,19 @@ impl Engine {
                     }
                     Some(target) => vec![(*target).clone()],
                 };
-                for place in places.clone() {
+                let mut reached: Vec<AbsPath> = Vec::new();
+                for place in start.iter().chain(&last) {
                     for target in &targets {
-                        if let Some(next) = self.locate.locate(&place, target)
-                            && !places.contains(&next)
-                        {
+                        if !spend(1 + target.len() / 32) {
+                            return false;
+                        }
+                        let Some(next) = self.locate.locate(place, target) else {
+                            continue;
+                        };
+                        if !reached.contains(&next) {
+                            reached.push(next.clone());
+                        }
+                        if !places.contains(&next) {
                             if places.len() >= MOST_PLACES {
                                 return false;
                             }
@@ -2240,6 +2255,7 @@ impl Engine {
                         }
                     }
                 }
+                last = reached;
             }
         }
         placed

@@ -11,8 +11,7 @@ use std::sync::Arc;
 use cortex_base::{PathOptions, PathResolver};
 use cortex_policy::command::ShellSyntax;
 use cortex_policy::{
-    Access, Engine, Locate, Outcome, Parts, Protected, Request, SandboxState, SourcedRule,
-    default_sandbox,
+    Access, Engine, Outcome, Parts, Protected, Request, SandboxState, SourcedRule, default_sandbox,
 };
 use cortex_protocol::ids::LeaseId;
 use cortex_protocol::lease::{Budget, HardLimits, Level, RuleAction};
@@ -167,13 +166,30 @@ fn a_pattern_is_judged_by_what_the_directory_holds() {
         let (outcome, why) = decide(&plain, command);
         assert_eq!(outcome, Ask, "{command:?}: {why}");
     }
+    // Such a pattern is listed too, so a rule meets what it matches at
+    // every level (found by the last review of the fixes to step 12).
+    scratch.file("ws/.env", "KEY=x");
+    let deny_env = SourcedRule::new(
+        Rule {
+            effect: Effect::Write,
+            pattern: "**/.env*".to_owned(),
+            action: RuleAction::Deny,
+        },
+        RuleSource::User,
+    );
+    let (unrestricted, _) =
+        real_engine_at(&ws, ShellSyntax::Posix, vec![deny_env], Level::Unrestricted);
+    for command in ["rm .[e]nv", "rm .*", "echo x > .[e]nv"] {
+        let (outcome, why) = decide(&unrestricted, command);
+        assert_eq!(outcome, Ask, "{command:?}: {why}");
+    }
 }
 
 #[cfg(unix)]
 mod unix {
     use std::os::unix::fs::symlink;
 
-    use cortex_policy::RuleSource;
+    use cortex_policy::{Locate, RuleSource};
     use cortex_protocol::lease::{Effect, Rule};
 
     use super::*;
@@ -365,6 +381,9 @@ mod unix {
             "ln -s .github gh && cp evil.yml g?/workflows/x.yml",
             "ln -s .bashrc b.o; cp x *.o",
             "cp -s .github gh2 && cp x gh2/workflows/y.yml",
+            // `**` is `*` in bash, and is listed as one too (found by the
+            // last review of the fixes to step 12).
+            "cp evil.yml **/workflows/ci.yml",
         ] {
             let outcome = run(&engine, &resolver, command);
             assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));

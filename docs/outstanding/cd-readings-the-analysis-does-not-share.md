@@ -1,0 +1,3 @@
+| Item | Who | When |
+|---|---|---|
+| **Readings of `cd` a shell makes that the analysis does not.** bash takes `cd ./l/../x` through the link `l` when it cannot enter the logical directory for any reason, not only when it is missing (a directory with mode 000, which neither git nor the model makes unasked). On Windows, bash from Git for Windows is thought to take `..` after a link through the link, where the resolver takes it as text, so a link before `..` would be misplaced there (from reading, not run). Found by the last independent review of the fixes to step 12. | Step 32 (hardening pass), with a Windows run | In step 32 |

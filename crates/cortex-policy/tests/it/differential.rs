@@ -586,7 +586,7 @@ fn sys_a_program_receives_the_words_the_analysis_gives_from_every_powershell() {
     }
     // With a byte-order mark, which Windows PowerShell needs to read the
     // file as UTF-8.
-    let file = scratch.file("argv.ps1", &format!("\u{feff}{script}"));
+    let file = scratch.file("argv.ps1", format!("\u{feff}{script}"));
     for (shell, mode) in [("powershell", ""), ("pwsh", ""), ("pwsh", "Legacy")] {
         let output = Command::new(shell)
             .args([

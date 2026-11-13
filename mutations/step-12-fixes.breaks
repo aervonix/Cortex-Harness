@@ -569,8 +569,8 @@ caught-by:
 rule: A pattern is expanded against the directory as it is now, and each match judged as the name written out.
 file: crates/cortex-policy/src/engine.rs
 in: Engine::judge_pattern
-find: if !deep && !up {
-replace: if false {
+find: match self.expand(&base, &names, hidden_rule) {
+replace: match Expansion::Unknown {
 caught-by:
     real_paths::a_pattern_is_judged_by_what_the_directory_holds
 
@@ -578,8 +578,8 @@ caught-by:
 rule: Where an earlier part of the line may write, a pattern's text is judged as well as what the directory holds.
 file: crates/cortex-policy/src/engine.rs
 in: Engine::judge_pattern
-find: if !deep && !up {
-replace: if how.listing && !deep && !up {
+find: match self.expand(&base, &names, hidden_rule) {
+replace: match (if how.listing { self.expand(&base, &names, hidden_rule) } else { Expansion::Unknown }) {
 caught-by:
     real_paths::a_pattern_is_judged_by_what_the_directory_holds
 
@@ -587,8 +587,26 @@ caught-by:
 rule: Where an earlier part of the line may write, a pattern's text is judged too.
 file: crates/cortex-policy/src/engine.rs
 in: Engine::judge_pattern
-find: if found.is_some() || how.listing {
-replace: if true {
+find: if found.is_some() || (how.listing && !deep && !up)
+replace: if true
+caught-by:
+    real_paths::a_pattern_is_judged_by_what_the_directory_holds
+
+[break] double-star-not-listed
+rule: A name `**` is listed as `*`, as bash reads it, so a link it matches is followed.
+file: crates/cortex-policy/src/engine.rs
+in: Engine::judge_pattern
+find: match self.expand(&base, &names, hidden_rule) {
+replace: match (if deep { Expansion::Unknown } else { self.expand(&base, &names, hidden_rule) }) {
+caught-by:
+    real_paths::unix::a_pattern_is_followed_through_links_and_after_a_link_is_made
+
+[break] dot-patterns-not-listed
+rule: A pattern that could be `..` is listed too, so a rule meets what it matches at every level.
+file: crates/cortex-policy/src/engine.rs
+in: Engine::judge_pattern
+find: match self.expand(&base, &names, hidden_rule) {
+replace: match (if up { Expansion::Unknown } else { self.expand(&base, &names, hidden_rule) }) {
 caught-by:
     real_paths::a_pattern_is_judged_by_what_the_directory_holds
 
@@ -669,8 +687,8 @@ caught-by:
 rule: A raw line's words are taken as written and with the quotes taken out.
 file: crates/cortex-policy/src/command/pattern.rs
 in: raw_words
-find: for word in unquoted {
-replace: for word in unquoted.into_iter().take(0) {
+find: .chain(unquoted)
+replace: .chain(unquoted.into_iter().take(0))
 caught-by:
     bypasses::what_an_unmodelled_line_names_is_still_checked
 
@@ -790,5 +808,25 @@ file: crates/cortex-policy/src/engine.rs
 in: spend
 find: done <= MOST_WORK
 replace: true
+caught-by:
+    bypasses::the_final_review_of_the_fixes_holds
+
+# What the last review of the fixes found.
+
+[break] places-of-cds-grow-as-a-power
+rule: Each `cd` of an unmodelled line is taken from where the line started and from where the `cd` before it led, so the places grow with the number of `cd`s.
+file: crates/cortex-policy/src/engine.rs
+in: Engine::places_of_cds
+find: for place in start.iter().chain(&last) {
+replace: for place in places.clone().iter().chain(&last) {
+caught-by:
+    bypasses::the_final_review_of_the_fixes_holds
+
+[break] raw-words-repeated
+rule: Each word of a raw line is checked once, however often it is there.
+file: crates/cortex-policy/src/command/pattern.rs
+in: raw_words
+find: .filter(|word| seen.insert(word.clone()))
+replace: .filter(|word| seen.insert(word.clone()) || !word.is_empty())
 caught-by:
     bypasses::the_final_review_of_the_fixes_holds
