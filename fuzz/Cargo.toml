@@ -5,7 +5,8 @@
 #
 # It is not a member of the workspace. The fuzzer needs a nightly compiler
 # and a C++ compiler for its runtime, and neither belongs in the blocking
-# checks or in what ships. The package has its own lockfile.
+# checks or in what ships. The package has its own lockfile, and its own
+# toolchain file, which pins the nightly to a date.
 [package]
 name = "cortex-fuzz"
 description = "Fuzz targets for the stream decoders of Cortex-Harness. Not shipped."

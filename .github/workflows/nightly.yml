@@ -141,17 +141,20 @@ jobs:
   # each provider protocol, each for a fixed time, starting from the recorded
   # fixtures. The fuzzer needs a nightly compiler, which only this job
   # installs; the targets are a package of their own, `fuzz/`, outside the
-  # workspace. An input that fails is kept as an artifact of the run.
+  # workspace. The nightly is pinned to a date in `fuzz/rust-toolchain.toml`,
+  # so that a new nightly cannot break this job by itself. An input that
+  # fails is kept as an artifact of the run.
   fuzz:
     if: ${{ !inputs.force_failure }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install the toolchain from rust-toolchain.toml, and a nightly one for the fuzzer
+      - name: Install the toolchain from rust-toolchain.toml, and the fuzzer's from fuzz/rust-toolchain.toml
         run: |
           rustup toolchain install
-          rustup toolchain install nightly --profile minimal
+          cd fuzz
+          rustup toolchain install
       - name: Install cargo-fuzz
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:

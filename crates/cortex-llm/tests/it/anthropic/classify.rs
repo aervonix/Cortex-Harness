@@ -761,6 +761,41 @@ fn the_headers_of_a_good_response_give_the_id_and_the_limits() {
     assert_eq!(sink.known_request_id(), None);
 }
 
+#[test]
+fn no_fixture_holds_the_size_of_a_real_rate_limit() {
+    // Every limit in every fixture is what the scrubber writes for it, so
+    // none is a number a real account had.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a test lists its own fixture directory"
+    )]
+    let entries = std::fs::read_dir(super::fixtures_directory()).expect("the fixtures directory");
+    let mut checked = 0;
+    for entry in entries {
+        let name = entry
+            .expect("an entry")
+            .file_name()
+            .into_string()
+            .expect("a name");
+        let fixture = load(&name);
+        let scrubbed = cortex_testkit::fixture::Scrubber::new(cortex_base::Secret::new(
+            "a-made-up-key-for-a-test-0123456789",
+        ))
+        .headers(&fixture.headers);
+        for (header, value) in fixture.headers.iter() {
+            if header.ends_with("-limit") || header.ends_with("-remaining") {
+                assert_eq!(
+                    scrubbed.get(header),
+                    Some(value),
+                    "{name}: {header} is not a made-up value"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 100, "{checked} limit headers were looked at");
+}
+
 // The whole client, over a scripted transport and the fake clock.
 
 struct Client {
