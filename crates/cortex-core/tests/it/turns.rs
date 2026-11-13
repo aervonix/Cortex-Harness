@@ -396,15 +396,25 @@ fn an_operation_on_a_session_that_is_not_open_is_refused() {
 
 /// A rewind works on the session's files off the core's thread, and a
 /// prompt that arrives meanwhile does not start a turn under it.
+///
+/// "Meanwhile" is made, not hoped for: the runtime has one thread for
+/// blocking work, the test holds it, and the rewind's own work waits
+/// behind the test's for as long as the test says. (Left to the machine,
+/// the rewind's work can be over before the prompt is sent, and was, on a
+/// busy runner.)
 #[test]
 fn no_turn_starts_while_a_rewind_is_under_way() {
     use std::future::Future as _;
     use std::task::Poll;
 
-    let world = World::new(
+    let mut world = World::new(
         "rewind_race",
         [says("First."), says("Second."), says("After the rewind.")],
     );
+    world.runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
     let core = world.core();
     world.run(async {
         let front = Front::start(&world, &core).await;
@@ -420,45 +430,51 @@ fn no_turn_starts_while_a_rewind_is_under_way() {
             .unwrap();
         front.turn("two").await;
 
-        // The rewind is begun and, before it is over, a prompt is sent.
+        // The one thread for blocking work is taken, until the test lets
+        // it go.
+        let (let_go, held) = std::sync::mpsc::channel::<()>();
+        let holding = tokio::task::spawn_blocking(move || {
+            let _ = held.recv();
+        });
+
+        // The rewind is begun. Its work is behind the test's, so it is
+        // under way and cannot be over.
         let mut rewind = std::pin::pin!(front.op(Op::SessionRewind(SessionRewindParams {
             session_id: front.session.clone(),
             to: keep,
             restore_files: false,
         })));
-        let mut prompt = std::pin::pin!(front.op(Op::TurnStart(
-            cortex_protocol::methods::TurnStartParams {
+        let first_look = std::future::poll_fn(|cx| Poll::Ready(rewind.as_mut().poll(cx))).await;
+        assert!(first_look.is_pending(), "the rewind was over at once");
+
+        // A prompt sent now starts no turn.
+        let refused = front
+            .op(Op::TurnStart(cortex_protocol::methods::TurnStartParams {
                 session_id: front.session.clone(),
                 input: vec![cortex_protocol::Part::text("three")],
                 delivery: None,
-            }
-        )));
-        let (mut rewound, mut prompted) = (None, None);
-        std::future::poll_fn(|cx| {
-            if rewound.is_none()
-                && let Poll::Ready(result) = rewind.as_mut().poll(cx)
-            {
-                rewound = Some(result);
-            }
-            if prompted.is_none()
-                && let Poll::Ready(result) = prompt.as_mut().poll(cx)
-            {
-                // The rewind had begun and had not ended.
-                assert!(rewound.is_none(), "the rewind did not leave the thread");
-                prompted = Some(result);
-            }
-            if rewound.is_some() && prompted.is_some() {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        })
-        .await;
-        assert!(matches!(rewound, Some(Ok(OpResult::SessionRewind(_)))));
-        let refused = prompted
-            .unwrap()
+            }))
+            .await
             .expect_err("a turn started under a rewind");
         assert_eq!(refused.code, "history_changing");
+        // Nor does a second rewind begin.
+        let again = front
+            .op(Op::SessionRewind(SessionRewindParams {
+                session_id: front.session.clone(),
+                to: cortex_protocol::ItemId::new("i_0"),
+                restore_files: false,
+            }))
+            .await
+            .expect_err("two rewinds at once");
+        assert_eq!(again.code, "history_changing");
+
+        let_go.send(()).unwrap();
+        holding.await.unwrap();
+        let rewound = rewind.await;
+        assert!(
+            matches!(rewound, Ok(OpResult::SessionRewind(_))),
+            "{rewound:?}"
+        );
 
         // When it is over, a prompt is a prompt again, on the history the
         // rewind left.
