@@ -23,8 +23,9 @@ use std::time::Duration;
 
 use cortex_base::{SharedClock, TimedStamp, WatchList};
 
+use crate::dirs::ProjectLocator;
 use crate::load::{
-    Change, FileLayer, LoadFailure, LoadOptions, Loaded, MissingProfile, ProjectTrust,
+    Change, FileLayer, LoadFailure, LoadOptions, Loaded, Location, MissingProfile, ProjectTrust,
     load_layers, merge_layers,
 };
 
@@ -68,9 +69,51 @@ pub struct LiveConfig {
     /// be taken out of it without reading any file again.
     layers: Vec<FileLayer>,
     watch: WatchList,
+    /// Where the project's files were found when they were last stamped.
+    places: Option<ProjectPlaces>,
+    clock: SharedClock,
+    /// The clock's monotonic time at the last check.
+    last_check: Option<Duration>,
     /// The failure of the last reload, so that the same broken file is
     /// reported once and not on every check.
     rejected: Option<LoadFailure>,
+}
+
+/// Where the project's files were found, to be found again before each
+/// check.
+///
+/// The check asks the file system about each watched file, and the
+/// standard library's way of asking follows links. A link to a network
+/// share that a repository puts at `.cortex` after the load would be
+/// followed by the next check, and on Windows that sends the account's
+/// credentials to the server it names. So before the files are looked at,
+/// the project's are found again through the path resolver, which looks at
+/// each name on the way without following a link it has not checked. If
+/// any of them is found somewhere else, or is refused now, the check
+/// reloads through the resolver instead of looking.
+#[derive(Debug)]
+struct ProjectPlaces {
+    locator: ProjectLocator,
+    /// Each project file, as named, and where it was.
+    places: Vec<(std::path::PathBuf, Location)>,
+}
+
+impl ProjectPlaces {
+    /// Whether a project file is now somewhere other than it was.
+    fn moved(&self) -> bool {
+        self.places
+            .iter()
+            .any(|(file, was)| Location::of(&self.locator, file) != *was)
+    }
+}
+
+/// What a load is about to read, looked at before it reads it.
+struct Before {
+    /// The stamp of each file to watch: where each layer is really read
+    /// from. A project file whose way is refused is not watched: finding
+    /// it again ([`ProjectPlaces`]) notices when that changes.
+    stamps: Vec<(std::path::PathBuf, TimedStamp)>,
+    places: Option<ProjectPlaces>,
 }
 
 impl LiveConfig {
@@ -81,17 +124,21 @@ impl LiveConfig {
     /// The [`LoadFailure`] when it cannot be loaded. There is then no
     /// configuration to fall back to, and the caller reports it and stops.
     pub fn start(options: LoadOptions, clock: SharedClock) -> Result<Self, LoadFailure> {
-        let mut watch = WatchList::new(clock);
-        let stamps = stamps(&options, &watch);
+        let watch = WatchList::new(Arc::clone(&clock));
+        let before = look_before(&options, &watch);
         let (current, layers) = load_layers(&options)?;
-        register(&mut watch, stamps);
-        Ok(Self {
+        let mut live = Self {
             options,
             current: Arc::new(current),
             layers,
             watch,
+            places: None,
+            clock,
+            last_check: None,
             rejected: None,
-        })
+        };
+        live.register(before);
+        Ok(live)
     }
 
     /// The configuration in force.
@@ -125,12 +172,11 @@ impl LiveConfig {
         let lowers_trust =
             self.options.trust == ProjectTrust::Trusted && options.trust == ProjectTrust::Untrusted;
         // As for any reload, the stamps are taken before the files are read.
-        let stamps = stamps(&options, &self.watch);
+        let before = look_before(&options, &self.watch);
         match load_layers(&options) {
             Ok((loaded, layers)) => {
                 self.options = options;
-                self.watch.clear();
-                register(&mut self.watch, stamps);
+                self.register(before);
                 self.accept(loaded, layers)
             }
             Err(failure) if lowers_trust => self.drop_project(failure),
@@ -141,7 +187,15 @@ impl LiveConfig {
     }
 
     /// Looks at the files and reloads if one changed. `None` when none did.
+    ///
+    /// The project's files are found again first ([`ProjectPlaces`]), and
+    /// if any is now somewhere else, the files are reloaded through the
+    /// path resolver instead of being looked at.
     pub fn check(&mut self) -> Option<Reload> {
+        self.last_check = Some(self.clock.monotonic());
+        if self.places.as_ref().is_some_and(ProjectPlaces::moved) {
+            return Some(self.reload());
+        }
         if self.watch.check().is_empty() {
             None
         } else {
@@ -149,13 +203,14 @@ impl LiveConfig {
         }
     }
 
-    /// [`check`](Self::check), unless a check ran less than `interval` ago.
-    /// For the check on a key press, which runs at most once a second.
+    /// [`check`](Self::check), unless a check ran less than `interval` ago,
+    /// in which case nothing is looked at. For the check on a key press,
+    /// which runs at most once a second.
     pub fn check_at_most_every(&mut self, interval: Duration) -> Option<Reload> {
-        if self.watch.check_at_most_every(interval)?.is_empty() {
-            None
-        } else {
-            Some(self.reload())
+        let now = self.clock.monotonic();
+        match self.last_check {
+            Some(last) if now.saturating_sub(last) < interval => None,
+            _ => self.check(),
         }
     }
 
@@ -163,12 +218,11 @@ impl LiveConfig {
     pub fn reload(&mut self) -> Reload {
         // The stamps are taken before the files are read, so that a change
         // that lands during the read is seen by the next check.
-        let stamps = stamps(&self.options, &self.watch);
+        let before = look_before(&self.options, &self.watch);
         let loaded = load_layers(&self.options);
         // The files are stamped afresh whatever the outcome: a file that is
         // broken is reported now, and again only when it changes again.
-        self.watch.clear();
-        register(&mut self.watch, stamps);
+        self.register(before);
         match loaded {
             Ok((loaded, layers)) => self.accept(loaded, layers),
             Err(failure) => {
@@ -179,6 +233,15 @@ impl LiveConfig {
                 Reload::Rejected(failure)
             }
         }
+    }
+
+    /// Watches what [`look_before`] saw, in place of what was watched.
+    fn register(&mut self, before: Before) {
+        self.watch.clear();
+        for (file, stamp) in before.stamps {
+            self.watch.watch_with(file, stamp);
+        }
+        self.places = before.places;
     }
 
     /// Puts a configuration that loaded in force.
@@ -244,19 +307,23 @@ impl LiveConfig {
     }
 }
 
-fn stamps(options: &LoadOptions, watch: &WatchList) -> Vec<(std::path::PathBuf, TimedStamp)> {
-    options
-        .files()
-        .into_iter()
-        .map(|(_, file)| {
-            let stamp = watch.stamp(&file);
-            (file, stamp)
-        })
-        .collect()
-}
-
-fn register(watch: &mut WatchList, stamps: Vec<(std::path::PathBuf, TimedStamp)>) {
-    for (file, stamp) in stamps {
-        watch.watch_with(file, stamp);
+/// Finds the files a load reads and stamps them, before the load reads
+/// them.
+fn look_before(options: &LoadOptions, watch: &WatchList) -> Before {
+    let locator = options.project_locator();
+    let mut stamps = Vec::new();
+    let mut places = Vec::new();
+    for (kind, file, location) in options.locations(locator.as_ref()) {
+        if let Location::At(path) = &location {
+            let stamp = watch.stamp(path);
+            stamps.push((path.clone(), stamp));
+        }
+        if kind.is_project() {
+            places.push((file, location));
+        }
+    }
+    Before {
+        stamps,
+        places: locator.map(|locator| ProjectPlaces { locator, places }),
     }
 }

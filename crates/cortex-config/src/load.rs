@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use cortex_protocol::lease::Rule;
 use toml::Value;
 
-use crate::dirs::{Dirs, ProjectFiles};
+use crate::dirs::{Dirs, ProjectFiles, ProjectLocator};
 use crate::document::{self, Document};
 use crate::env::Env;
 use crate::key::KeyPath;
@@ -156,6 +156,53 @@ impl LoadOptions {
         .into_iter()
         .filter_map(|(layer, file)| Some((layer, file?)))
         .collect()
+    }
+
+    /// The means to find the project's files, when there is a workspace.
+    pub(crate) fn project_locator(&self) -> Option<ProjectLocator> {
+        self.workspace.as_deref().map(ProjectLocator::new)
+    }
+
+    /// [`files`](Self::files), each with where it is really read from: a
+    /// project's file found through `locator`, so that no link in the
+    /// project leads anywhere unchecked (`docs/security.md`, section 7),
+    /// and every other file where it is named.
+    pub(crate) fn locations(
+        &self,
+        locator: Option<&ProjectLocator>,
+    ) -> Vec<(LayerKind, PathBuf, Location)> {
+        self.files()
+            .into_iter()
+            .map(|(kind, file)| {
+                let location = match locator {
+                    Some(locator) if kind.is_project() => Location::of(locator, &file),
+                    _ => Location::At(file.clone()),
+                };
+                (kind, file, location)
+            })
+            .collect()
+    }
+}
+
+/// Where a file layer is really read from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Location {
+    /// This path, with no unchecked link on the way.
+    At(PathBuf),
+    /// Nowhere: the way to a project's file is refused, and why. Nothing
+    /// was opened.
+    Refused(String),
+}
+
+impl Location {
+    /// Where a project's file named `file` is.
+    pub(crate) fn of(locator: &ProjectLocator, file: &Path) -> Self {
+        match locator.locate(file) {
+            Ok(Some(found)) => Self::At(found),
+            // No workspace directory: opening the name finds nothing.
+            Ok(None) => Self::At(file.to_path_buf()),
+            Err(why) => Self::Refused(why),
+        }
     }
 }
 
@@ -332,8 +379,9 @@ pub(crate) fn load_layers(options: &LoadOptions) -> Result<(Loaded, Vec<FileLaye
     let mut files = Vec::new();
     let mut layers = Vec::new();
 
-    for (kind, file) in options.files() {
-        let document = read_layer(kind, &file, options.strict, &mut diagnostics);
+    let locator = options.project_locator();
+    for (kind, file, location) in options.locations(locator.as_ref()) {
+        let document = read_layer(kind, &file, &location, options.strict, &mut diagnostics);
         files.push((kind, file.clone(), document.is_some()));
         if let Some(Some(document)) = document {
             layers.push(FileLayer {
@@ -433,11 +481,13 @@ pub(crate) fn merge_layers(
     })
 }
 
-/// Reads, parses and checks one file. `None`: the file is not there.
-/// `Some(None)`: it is there and has an error, which was reported.
+/// Reads, parses and checks one file, named `file` and read from
+/// `location`. `None`: the file is not there. `Some(None)`: it is there and
+/// has an error, which was reported.
 fn read_layer(
     kind: LayerKind,
     file: &Path,
+    location: &Location,
     strict: bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Option<Document>> {
@@ -451,8 +501,17 @@ fn read_layer(
             message,
         });
     };
+    let opened = match location {
+        Location::At(path) => path,
+        // A file that cannot be reached safely is an error, not a layer to
+        // skip: what it would say is not known.
+        Location::Refused(why) => {
+            report(None, format!("is not opened: {why}"));
+            return Some(None);
+        }
+    };
     let mut bytes = Vec::new();
-    match std::fs::File::open(file) {
+    match std::fs::File::open(opened) {
         Ok(opened) => {
             // One more byte than the limit, to tell "at the limit" from
             // "over it" without reading a huge file.

@@ -31,6 +31,7 @@ mod provenance;
 mod reloading;
 mod state;
 mod trust;
+mod workspace;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -73,6 +74,39 @@ fn write(path: &Path, contents: &str) {
     }
     fs::write(path, contents).expect("write a file");
 }
+
+/// Makes a symbolic link to a file or, with `directory`, to a folder. On
+/// Windows that needs a privilege an ordinary account lacks unless
+/// Developer Mode is on; the CI runner has it, and there the link must be
+/// made. Elsewhere `false` when it could not be, and the test says so and
+/// stops. Making a link asks nothing of what it names.
+fn make_link(target: &Path, link: &Path, directory: bool) -> bool {
+    #[cfg(unix)]
+    let made = {
+        let _ = directory;
+        std::os::unix::fs::symlink(target, link)
+    };
+    #[cfg(windows)]
+    let made = if directory {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    };
+    match made {
+        Ok(()) => true,
+        Err(error) if std::env::var_os("GITHUB_ACTIONS").is_none() => {
+            println!("skipped: cannot make a link here ({error})");
+            false
+        }
+        Err(error) => panic!("the CI runner cannot make a link: {error}"),
+    }
+}
+
+/// A network share that does not exist. A test that followed a link to it
+/// would wait for the name to fail, and a refusal made on the text takes
+/// no time.
+#[cfg(windows)]
+const NO_SUCH_SHARE: &str = r"\\cortex-no-such-host.invalid\share";
 
 /// A made-up machine: a home directory, a workspace inside it, and a
 /// managed file inside it too, so that every path a test prints starts

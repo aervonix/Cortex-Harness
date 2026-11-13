@@ -97,6 +97,18 @@ pub enum CredentialError {
         #[source]
         source: std::io::Error,
     },
+    /// The credentials file, or its lock file, is a link. The store uses a
+    /// file of its own, never one a link points to: the target could be
+    /// anything of the user's, such as a file in a repository of dotfiles,
+    /// and a key written there would leave with it.
+    #[error(
+        "`{path}` is a link. Credentials are kept in a file of their own, never written through \
+         a link: put the file itself in its place, or set the provider's environment variable"
+    )]
+    Link {
+        /// The link.
+        path: PathBuf,
+    },
     /// The credentials file is not what this version writes. It is left as
     /// it is: nothing is overwritten that was not understood.
     #[error("the credentials file `{path}` cannot be used: {reason}")]
@@ -122,7 +134,9 @@ impl Classified for CredentialError {
     fn kind(&self) -> ErrorKind {
         match self {
             Self::InvalidProvider { .. } => ErrorKind::Usage,
-            Self::Unavailable { .. } | Self::Malformed { .. } => ErrorKind::Config,
+            Self::Unavailable { .. } | Self::Link { .. } | Self::Malformed { .. } => {
+                ErrorKind::Config
+            }
             Self::Io { .. } | Self::Store { .. } => ErrorKind::Auth,
         }
     }

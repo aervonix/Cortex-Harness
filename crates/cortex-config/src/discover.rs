@@ -24,6 +24,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::dirs::ProjectLocator;
 use crate::env::{Env, Platform};
 use crate::schema::CompatSettings;
 
@@ -133,11 +134,25 @@ pub fn discover(env: &Env, workspace: Option<&Path>, compat: &CompatSettings) ->
         FoundKind::Skills => compat.skills,
     };
     let mut found = Vec::new();
+    // In the workspace, a candidate is looked at where it really is, found
+    // through the path resolver: a repository can put a link where another
+    // tool's file goes, and on Windows merely asking about a link to a
+    // network share sends the account's credentials to that server. A
+    // candidate whose way is refused is not reported. The home directory is
+    // the user's own, and is asked as it is.
+    let locator = workspace.map(ProjectLocator::new);
     let mut look = |base: &Path, scope: Scope, candidates: &[Candidate]| {
         for candidate in candidates.iter().filter(|candidate| wanted(candidate.kind)) {
             let mut path = base.to_path_buf();
             path.extend(candidate.path);
-            if exists_as(&path, candidate.shape) {
+            let real = match (&locator, scope) {
+                (Some(locator), Scope::Project) => match locator.locate(&path) {
+                    Ok(Some(real)) => real,
+                    Ok(None) | Err(_) => continue,
+                },
+                _ => path.clone(),
+            };
+            if exists_as(&real, candidate.shape) {
                 found.push(Found {
                     kind: candidate.kind,
                     scope,
@@ -174,8 +189,9 @@ pub fn discover(env: &Env, workspace: Option<&Path>, compat: &CompatSettings) ->
     found
 }
 
-/// Whether `path` is there, as a file or as a folder. A link is followed.
-/// The file is not opened.
+/// Whether `path` is there, as a file or as a folder. A link is followed:
+/// in the workspace, `path` is where the resolver found the candidate, so
+/// there is none left to follow. The file is not opened.
 fn exists_as(path: &Path, shape: Shape) -> bool {
     std::fs::metadata(path).is_ok_and(|found| match shape {
         Shape::File => found.is_file(),

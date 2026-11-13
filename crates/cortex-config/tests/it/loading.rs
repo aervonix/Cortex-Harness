@@ -150,6 +150,86 @@ fn a_file_that_cannot_be_text_is_an_error_not_a_layer_to_skip() {
     );
 }
 
+/// A project's files are found through the path resolver, which follows
+/// each link itself. A link to a file of the user's is read like the file;
+/// a link to nothing is an error, not a layer to skip. Before, a link to
+/// nothing was taken for a missing file.
+#[test]
+fn a_projects_files_are_found_through_the_path_resolver() {
+    let machine = Machine::new("load_project_links");
+    let project = machine.file(LayerKind::Project);
+    let local = machine.file(LayerKind::ProjectLocal);
+    let elsewhere = machine.home().join("shared").join("project.toml");
+    write(&elsewhere, "[model]\nreasoning = \"none\"\n");
+    fs::create_dir_all(project.parent().unwrap()).unwrap();
+    if !crate::make_link(&elsewhere, &project, false) {
+        return;
+    }
+    let loaded = machine.load();
+    assert_eq!(value(&loaded, "model.reasoning"), "\"none\"");
+    // Named as the project's file, wherever it was read from.
+    assert_eq!(
+        crate::layer_of(&loaded, "model.reasoning"),
+        "project"
+    );
+
+    assert!(crate::make_link(
+        &machine.home().join("gone.toml"),
+        &local,
+        false
+    ));
+    let said = machine.failure();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].starts_with("error: ~/work/app/.cortex/config.local.toml: is not opened:")
+            && said[0].contains("symbolic link to something that does not exist"),
+        "{said:?}"
+    );
+}
+
+/// A link to a network share in a project is refused before the network is
+/// asked: following it would send the account's credentials to the server
+/// it names (`docs/security.md`, section 7). The share does not exist, so
+/// a load that followed the link would wait for its name to fail.
+#[cfg(windows)]
+#[test]
+fn a_link_in_a_project_to_a_network_share_is_refused_unopened() {
+    let machine = Machine::new("load_project_share");
+    let project = machine.file(LayerKind::Project);
+    let folder = project.parent().unwrap();
+    // The whole `.cortex` folder, and one file in a real folder.
+    if !crate::make_link(
+        &std::path::Path::new(crate::NO_SUCH_SHARE).join("cortex"),
+        folder,
+        true,
+    ) {
+        return;
+    }
+    let said = machine.failure();
+    assert_eq!(said.len(), 2, "both project files are refused: {said:?}");
+    for line in &said {
+        assert!(
+            line.contains("is not opened:")
+                && line.contains(r"network share `\\cortex-no-such-host.invalid\share`"),
+            "{said:?}"
+        );
+    }
+
+    fs::remove_dir(folder).unwrap();
+    fs::create_dir_all(folder).unwrap();
+    assert!(crate::make_link(
+        &std::path::Path::new(crate::NO_SUCH_SHARE).join("config.toml"),
+        &project,
+        false
+    ));
+    let said = machine.failure();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].starts_with(r"error: ~/work/app/.cortex/config.toml: is not opened:"),
+        "{said:?}"
+    );
+}
+
 /// A project can put a link where its configuration file goes, to any
 /// file of the user's. What a parse error says about such a file must not
 /// repeat any of it. Before, a number too large for TOML was repeated
