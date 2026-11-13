@@ -75,6 +75,8 @@ These docs are the specification that every build step works from. They were wri
 | Page | Content |
 |---|---|
 | [build-plan.md](build-plan.md) | The owner's decisions and what is still open, the feature table, the rules for every step, and the ordered steps. |
+| [steps/](steps/README.md) | What each step recorded about itself, one folder per step: the owner's answers to its questions, and its CI times. |
+| [outstanding/](outstanding/README.md) | What is still to be settled, one file per item. |
 
 ## How these docs are kept
 

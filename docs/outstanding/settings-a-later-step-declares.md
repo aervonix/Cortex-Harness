@@ -1,0 +1,3 @@
+| Item | Who | When |
+|---|---|---|
+| **Settings a later step declares.** `cortex-config` reserves the sections whose keys belong to parts not built yet (the list is in [configuration/reference.md](../configuration/reference.md)): a file may hold them, and a project's file cannot set them, or must wait for trust. The step that builds a part declares its keys in `crates/cortex-config/src/schema/sections.rs` and says, key by key, what a project may do. Two shapes to settle then: the user's catalog entries (`[models]`, which step 5's catalog reads as `[[model]]` tables with a `version`), and the HTTP client's settings (`[http]`: connect timeout, proxy, extra certificate authorities). | Steps 5, 13, 15, 16 and the others, each for its own section | In those steps |
