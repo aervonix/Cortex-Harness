@@ -18,6 +18,8 @@ pub(crate) enum Action {
     Cargo(Vec<String>),
     /// A check implemented in this crate.
     Function(fn() -> Result<()>),
+    /// A check implemented in this crate that was given arguments.
+    Closure(Box<dyn Fn() -> Result<()>>),
 }
 
 /// One named, timed step.
@@ -38,10 +40,26 @@ impl Step {
         }
     }
 
+    /// `cargo <arguments>`, where the arguments were put together at run
+    /// time.
+    pub(crate) fn cargo_owned(name: &'static str, arguments: Vec<String>) -> Self {
+        Self {
+            name,
+            action: Action::Cargo(arguments),
+        }
+    }
+
     pub(crate) fn function(name: &'static str, function: fn() -> Result<()>) -> Self {
         Self {
             name,
             action: Action::Function(function),
+        }
+    }
+
+    pub(crate) fn closure(name: &'static str, closure: impl Fn() -> Result<()> + 'static) -> Self {
+        Self {
+            name,
+            action: Action::Closure(Box::new(closure)),
         }
     }
 }
@@ -91,6 +109,7 @@ pub(crate) fn run(title: &str, steps: Vec<Step>) -> Result<()> {
         let outcome = match &step.action {
             Action::Cargo(arguments) => cargo(arguments),
             Action::Function(function) => function(),
+            Action::Closure(closure) => closure(),
         };
         let elapsed = started.elapsed();
         if in_actions {

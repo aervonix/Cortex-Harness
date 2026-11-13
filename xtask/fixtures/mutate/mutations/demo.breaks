@@ -1,0 +1,42 @@
+# The breaks `cargo xtask mutate` is tested with, against the real cargo.
+# Two are caught, one is caught by nothing, one changes nothing a test can
+# see and says so, and one does not compile.
+
+[break] over-is-strict
+rule: A tier at its budget is not over it.
+file: crates/demo/src/lib.rs
+in: over
+find: seconds > budget
+replace: seconds >= budget
+caught-by:
+    tests::at_the_budget_is_not_over
+
+[break] far-over-factor
+rule: Far over is one and a half budgets.
+file: crates/demo/src/lib.rs
+find: 1.5 * budget
+replace: 1.0 * budget
+caught-by:
+    demo tests::the_line_is_one_and_a_half
+    tests::far_*
+
+[break] label-unseen
+rule: The label of a tier inside its budget. No test reads it.
+file: crates/demo/src/lib.rs
+find: "within"
+replace: "inside"
+
+[break] sum-backwards
+rule: The times are added first to last. Adding them last to first gives the same sum, so no test can tell.
+file: crates/demo/src/lib.rs
+in: total
+find: times.iter().sum()
+replace: times.iter().rev().sum()
+expect: survives
+
+[break] not-rust
+rule: A break whose replacement is not code.
+file: crates/demo/src/lib.rs
+in: label
+find: "over"
+replace: over the budget

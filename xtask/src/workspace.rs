@@ -17,6 +17,29 @@ pub(crate) fn root() -> PathBuf {
     xtask.parent().unwrap_or(xtask).to_path_buf()
 }
 
+/// Where a run of nextest in `profile` leaves its JUnit report, for the
+/// workspace at `root`.
+///
+/// nextest keeps its files in `target/nextest` under the workspace root
+/// (its `store.dir` setting), and not in cargo's target directory: a build
+/// that is sent elsewhere with `CARGO_TARGET_DIR` still reports here.
+pub(crate) fn nextest_report(root: &Path, profile: &str) -> PathBuf {
+    root.join("target")
+        .join("nextest")
+        .join(profile)
+        .join("junit.xml")
+}
+
+/// Removes the report of an earlier run, so that a run that fails before it
+/// writes one is not followed by a reading of the last run's.
+pub(crate) fn forget_report(report: &Path) -> Result<()> {
+    match fs::remove_file(report) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("could not remove {}: {error}", report.display())),
+    }
+}
+
 /// The cargo that is running this command, so every nested call uses the
 /// same toolchain.
 pub(crate) fn cargo() -> OsString {
@@ -64,6 +87,9 @@ pub(crate) struct Package {
     pub(crate) publish_disabled: bool,
     pub(crate) dependencies: Vec<Dependency>,
     pub(crate) targets: Vec<Target>,
+    /// The package's own features, each with what it turns on, in name
+    /// order: `("default", ["std"])`.
+    pub(crate) features: Vec<(String, Vec<String>)>,
 }
 
 /// The workspace as `cargo metadata` describes it.
@@ -141,6 +167,26 @@ fn parse_metadata(json: &Value) -> Result<Metadata> {
             });
         }
 
+        let mut features: Vec<(String, Vec<String>)> = package
+            .get("features")
+            .and_then(Value::as_object)
+            .map(|features| {
+                features
+                    .iter()
+                    .map(|(name, turns_on)| {
+                        let turns_on = turns_on.as_array().map_or_else(Vec::new, |list| {
+                            list.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_owned)
+                                .collect()
+                        });
+                        (name.clone(), turns_on)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        features.sort();
+
         packages.push(Package {
             name: text(package, "name")?.to_owned(),
             manifest,
@@ -151,6 +197,7 @@ fn parse_metadata(json: &Value) -> Result<Metadata> {
                 .is_some_and(Vec::is_empty),
             dependencies,
             targets,
+            features,
         });
     }
     packages.sort_by(|a, b| a.name.cmp(&b.name));
@@ -189,8 +236,14 @@ fn strings(value: &Value, key: &str) -> Result<Vec<String>> {
 /// Outside a git checkout (a copy of the tree made for a remote build, for
 /// example) it falls back to walking the directory, skipping `.git` and
 /// `target`.
+///
+/// Git is asked only when `root` is the top of a checkout. A directory
+/// inside one that git ignores (a copy of the tree under `target/`) is not a
+/// repository of its own: git would answer for the checkout around it, and
+/// say that the directory holds no file at all.
 pub(crate) fn repository_files(root: &Path) -> Result<Vec<String>> {
-    let mut files = match git_files(root) {
+    let checkout = root.join(".git").exists();
+    let mut files = match checkout.then(|| git_files(root)).flatten() {
         Some(files) => files,
         None => {
             let mut files = Vec::new();
@@ -283,7 +336,8 @@ mod tests {
                 "targets": [
                     { "name": "cortex_agent", "kind": ["lib"], "doctest": false },
                     { "name": "it", "kind": ["test"], "doctest": false }
-                ]
+                ],
+                "features": { "test-hooks": [], "default": ["std"] }
             }]
         });
 
@@ -300,6 +354,62 @@ mod tests {
         assert_eq!(package.dependencies[1].kind, DepKind::Dev);
         assert_eq!(package.dependencies[1].features, ["std"]);
         assert_eq!(package.targets[1].kinds, ["test"]);
+        assert_eq!(
+            package.features,
+            [
+                ("default".to_owned(), vec!["std".to_owned()]),
+                ("test-hooks".to_owned(), vec![])
+            ]
+        );
+    }
+
+    /// The name starts with `sys_` because it starts git.
+    #[test]
+    fn sys_a_directory_that_a_checkout_ignores_is_listed_by_walking_it() {
+        let outer = std::env::temp_dir().join(format!("cortex-xtask-files-{}", std::process::id()));
+        if outer.exists() {
+            std::fs::remove_dir_all(&outer).unwrap();
+        }
+        let copy = outer.join("target").join("copy");
+        std::fs::create_dir_all(copy.join("src")).unwrap();
+        std::fs::write(outer.join(".gitignore"), "/target/\n").unwrap();
+        std::fs::write(outer.join("kept.txt"), "tracked").unwrap();
+        std::fs::write(copy.join("src").join("lib.rs"), "// a copy").unwrap();
+        std::fs::write(copy.join("README.md"), "# A copy").unwrap();
+        let initialised = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&outer)
+            .status()
+            .unwrap();
+        assert!(initialised.success());
+
+        // The checkout itself: what git does not ignore.
+        assert_eq!(
+            super::repository_files(&outer).unwrap(),
+            [".gitignore", "kept.txt"]
+        );
+        // The copy inside it. Git, asked there, lists nothing.
+        assert_eq!(
+            super::repository_files(&copy).unwrap(),
+            ["README.md", "src/lib.rs"]
+        );
+
+        std::fs::remove_dir_all(&outer).unwrap();
+    }
+
+    #[test]
+    fn an_old_report_is_removed_and_no_report_is_no_error() {
+        let directory =
+            std::env::temp_dir().join(format!("cortex-xtask-report-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let report = directory.join("junit.xml");
+        std::fs::write(&report, "<testsuites/>").unwrap();
+
+        super::forget_report(&report).unwrap();
+        assert!(!report.exists());
+        super::forget_report(&report).unwrap();
+
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

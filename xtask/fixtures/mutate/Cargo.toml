@@ -1,0 +1,6 @@
+# A workspace of its own, for testing `cargo xtask mutate` against the real
+# cargo and nextest (`xtask/src/mutate/drive.rs`, the ignored test). It is
+# not a member of the repository's workspace and nothing else builds it.
+[workspace]
+resolver = "3"
+members = ["crates/*"]

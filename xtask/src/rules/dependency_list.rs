@@ -176,6 +176,7 @@ mod tests {
                 })
                 .collect(),
             targets: Vec::new(),
+            features: Vec::new(),
         }
     }
 

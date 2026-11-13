@@ -2,9 +2,11 @@
 //! `ci test`, so the commands here are the definition of what CI runs
 //! (`docs/testing-and-ci.md`).
 
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use crate::Result;
+use crate::mutate;
 use crate::rules;
 use crate::schema;
 use crate::steps::{self, Step};
@@ -12,12 +14,16 @@ use crate::tiers;
 use crate::workspace;
 
 /// The tier 0 steps, in the order they run: cheapest first.
-const CHECK_STEPS: [&str; 5] = ["fmt", "rules", "generated", "clippy", "deny"];
+const CHECK_STEPS: [&str; 6] = ["fmt", "rules", "breaks", "generated", "clippy", "deny"];
 
 fn check_step(name: &str) -> Option<Step> {
     Some(match name {
         "fmt" => Step::cargo("fmt", &["fmt", "--all", "--check"]),
         "rules" => Step::function("rules", rules),
+        // Every break in `mutations/` still finds the code it changes
+        // (docs/testing-and-ci.md, "Breaking the code on purpose"). It reads
+        // a few files and runs nothing.
+        "breaks" => Step::function("breaks", mutate::check_breaks_apply),
         // The checked-in protocol schema and TypeScript declarations are what
         // the types generate (docs/architecture/11-rpc-protocol.md).
         "generated" => Step::function("generated", schema::check),
@@ -72,26 +78,73 @@ pub(crate) fn rules() -> Result<()> {
     Err(format!("{} repo-rule violation(s)", violations.len()))
 }
 
+/// `cargo xtask links`: the part of the repo rules that is about the docs,
+/// by itself. It reads text files and asks cargo nothing, so it answers
+/// before a page that was just edited is out of mind.
+pub(crate) fn links() -> Result<()> {
+    let root = workspace::root();
+    let files = workspace::repository_files(&root)?;
+    let violations = rules::check_docs(&root, &files)?;
+    if violations.is_empty() {
+        println!(
+            "Every link inside the repository leads somewhere, and the step records are in their places."
+        );
+        return Ok(());
+    }
+    for violation in &violations {
+        println!("{violation}\n");
+    }
+    Err(format!(
+        "{} broken link(s) or misplaced record(s)",
+        violations.len()
+    ))
+}
+
 /// `cargo xtask fmt`
 pub(crate) fn fmt() -> Result<()> {
     steps::cargo(&["fmt", "--all"])
 }
 
 /// `cargo xtask test [ARGS...]`
+///
+/// The whole workspace, unless the arguments name packages: `test -p
+/// cortex-agent` builds and runs that crate's tests and no other's.
 pub(crate) fn test(arguments: &[String]) -> Result<()> {
-    let mut command = vec![
-        "nextest".to_owned(),
-        "run".to_owned(),
-        "--workspace".to_owned(),
-    ];
-    command.extend(arguments.iter().cloned());
     require_nextest()?;
-    steps::cargo(&command)
+    steps::cargo(&test_command(arguments))
+}
+
+/// The arguments of `cargo` for `cargo xtask test <arguments>`.
+fn test_command(arguments: &[String]) -> Vec<String> {
+    let mut command = vec!["nextest".to_owned(), "run".to_owned()];
+    if !selects_packages(arguments) {
+        command.push("--workspace".to_owned());
+    }
+    command.extend(arguments.iter().cloned());
+    command
+}
+
+/// Whether arguments for `cargo nextest run` already say which packages to
+/// build and test. To cargo, `--workspace` beside `-p` means the whole
+/// workspace, so it is added only when nothing was chosen.
+pub(crate) fn selects_packages(arguments: &[String]) -> bool {
+    arguments
+        .iter()
+        // What follows `--` goes to the test binaries.
+        .take_while(|argument| *argument != "--")
+        .any(|argument| {
+            matches!(
+                argument.as_str(),
+                "-p" | "--package" | "--workspace" | "--all"
+            ) || argument.starts_with("--package=")
+                // `-pcortex-agent`. No other option of nextest starts `-p`.
+                || (argument.starts_with("-p") && !argument.starts_with("--"))
+        })
 }
 
 /// Fails with a pointer to the installer when cargo-nextest is missing,
 /// instead of cargo's "no such command".
-fn require_nextest() -> Result<()> {
+pub(crate) fn require_nextest() -> Result<()> {
     let found = Command::new(workspace::cargo())
         .args(["nextest", "--version"])
         .stdout(Stdio::null())
@@ -113,29 +166,42 @@ fn require_nextest() -> Result<()> {
 /// still fits the time budget). Building and running are separate steps so
 /// that their times are reported separately.
 fn ci_test_steps() -> Vec<Step> {
-    const RUN: [&str; 8] = [
-        "nextest",
-        "run",
-        "--workspace",
-        "--locked",
-        "--cargo-profile",
-        "ci",
-        "--profile",
-        "ci",
-    ];
-    let mut build = RUN.to_vec();
-    build.push("--no-run");
+    let run = ci_run(&[]);
+    let mut build = run.clone();
+    build.push("--no-run".to_owned());
     vec![
-        Step::cargo("build tests", &build),
-        Step::cargo("run tests", &RUN),
+        // The last run's report is not this run's. If the build fails, the
+        // tier report then says there is nothing to read.
+        Step::closure("build tests", move || {
+            workspace::forget_report(&tiers::ci_report_path())?;
+            steps::cargo(&build)
+        }),
+        Step::cargo_owned("run tests", run),
         // Each test has its own limit in .config/nextest.toml. This checks
         // what the tests of each tier took together.
         Step::function("tier budgets", tiers::check_ci_report),
     ]
 }
 
-/// `cargo xtask ci [lint|test]`
+/// `cargo nextest run` as the blocking test job runs it, for the whole
+/// workspace or for the packages named.
+fn ci_run(packages: &[String]) -> Vec<String> {
+    let mut run = vec!["nextest".to_owned(), "run".to_owned()];
+    if packages.is_empty() {
+        run.push("--workspace".to_owned());
+    }
+    for package in packages {
+        run.extend(["-p".to_owned(), package.clone()]);
+    }
+    run.extend(["--locked", "--cargo-profile", "ci", "--profile", "ci"].map(str::to_owned));
+    run
+}
+
+/// `cargo xtask ci [lint|test]`, and `cargo xtask ci --tiers ...`
 pub(crate) fn ci(arguments: &[String]) -> Result<()> {
+    if arguments.first().is_some_and(|first| first == "--tiers") {
+        return ci_tiers(&arguments[1..]);
+    }
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
     match arguments.as_slice() {
         ["lint"] => check(&[]),
@@ -152,13 +218,151 @@ pub(crate) fn ci(arguments: &[String]) -> Result<()> {
             all.extend(ci_test_steps());
             steps::run("Everything that blocks a pull request", all)
         }
-        _ => Err("usage: cargo xtask ci [lint|test]".to_owned()),
+        _ => Err(CI_USAGE.to_owned()),
     }
+}
+
+const CI_USAGE: &str = "usage: cargo xtask ci [lint|test]
+       cargo xtask ci --tiers [-p CRATE]... [--top N] [-- NEXTEST ARGUMENT...]
+       cargo xtask ci --tiers --from JUNIT.XML [--os linux|windows] [--top N]";
+
+/// How many of each tier's slowest tests `ci --tiers` lists when it is not
+/// told.
+const TIERS_TOP: usize = 10;
+
+/// What `cargo xtask ci --tiers` was asked for.
+#[derive(Debug, PartialEq)]
+struct TiersRequest {
+    /// The packages to build and test. Empty: the workspace.
+    packages: Vec<String>,
+    /// How many of each tier's slowest tests to list.
+    top: usize,
+    /// A report to read in place of running anything.
+    from: Option<PathBuf>,
+    /// The OS the report is from, which decides tier 3's budget.
+    os: tiers::Os,
+    /// What follows `--`: more arguments for nextest, a filter for example.
+    rest: Vec<String>,
+}
+
+impl TiersRequest {
+    fn parse(arguments: &[String]) -> Result<Self> {
+        let mut request = Self {
+            packages: Vec::new(),
+            top: TIERS_TOP,
+            from: None,
+            os: tiers::Os::here(),
+            rest: Vec::new(),
+        };
+        let mut os_given = false;
+        let mut rest = arguments.iter();
+        while let Some(argument) = rest.next() {
+            let mut value = |what: &str| {
+                rest.next()
+                    .ok_or_else(|| format!("`{argument}` needs {what}\n{CI_USAGE}"))
+            };
+            match argument.as_str() {
+                "--" => {
+                    request.rest = rest.cloned().collect();
+                    break;
+                }
+                "-p" | "--package" => request.packages.push(value("a crate")?.clone()),
+                "--top" => {
+                    let text = value("a number")?;
+                    request.top = text
+                        .parse()
+                        .map_err(|_| format!("`--top {text}` is not a number"))?;
+                }
+                "--from" => request.from = Some(PathBuf::from(value("a JUnit report")?)),
+                "--os" => {
+                    os_given = true;
+                    request.os = match value("`linux` or `windows`")?.as_str() {
+                        "linux" => tiers::Os::Linux,
+                        "windows" => tiers::Os::Windows,
+                        other => {
+                            return Err(format!("`--os {other}`: say `linux` or `windows`"));
+                        }
+                    };
+                }
+                other => return Err(format!("unknown argument `{other}`\n{CI_USAGE}")),
+            }
+        }
+        if request.from.is_some() && !(request.packages.is_empty() && request.rest.is_empty()) {
+            return Err(
+                "`--from` reads a report and runs nothing, so `-p` and arguments for nextest \
+                 have no meaning with it"
+                    .to_owned(),
+            );
+        }
+        if os_given && request.from.is_none() {
+            return Err(
+                "`--os` says where a report given with `--from` was made. A run made here is \
+                 measured against this machine's budgets."
+                    .to_owned(),
+            );
+        }
+        Ok(request)
+    }
+}
+
+/// `cargo xtask ci --tiers`: what each tier's tests take together, against
+/// its budget, and which tests that time is made of.
+///
+/// It builds and runs as the blocking test job does, in cargo's `ci` profile,
+/// where third-party crates are not optimised. A desk's own profile
+/// optimises them, and a test that spends its time in one (a JSON reader, a
+/// regular-expression engine) is several times slower in CI than it looks at
+/// a desk. With `--from` it runs nothing and reports on a JUnit report that
+/// is already there: the one a CI run uploads, for example.
+fn ci_tiers(arguments: &[String]) -> Result<()> {
+    let request = TiersRequest::parse(arguments)?;
+    let (top, os) = (request.top, request.os);
+    if let Some(report) = request.from {
+        return tiers::check_report(&report, os, top);
+    }
+    require_nextest()?;
+    let mut run = ci_run(&request.packages);
+    run.extend(request.rest.iter().cloned());
+    let mut build = ci_run(&request.packages);
+    build.push("--no-run".to_owned());
+    let title = if request.packages.is_empty() && request.rest.is_empty() {
+        "Test time by tier, in CI's profile".to_owned()
+    } else {
+        let mut chosen = request.packages.clone();
+        chosen.extend(request.rest.iter().cloned());
+        format!(
+            "Test time by tier, in CI's profile: {} only (the budgets are the whole workspace's)",
+            chosen.join(" ")
+        )
+    };
+    steps::run(
+        &title,
+        vec![
+            Step::closure("build tests", move || {
+                workspace::forget_report(&tiers::ci_report_path())?;
+                steps::cargo(&build)
+            }),
+            Step::cargo_owned("run tests", run),
+            Step::closure("tier budgets", move || {
+                tiers::check_report(&tiers::ci_report_path(), os, top)
+            }),
+        ],
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CHECK_STEPS, check, check_step};
+    use std::path::PathBuf;
+
+    use super::{CHECK_STEPS, TiersRequest, check, check_step, ci, ci_run, selects_packages};
+    use crate::tiers::Os;
+
+    fn strings(arguments: &[&str]) -> Vec<String> {
+        arguments
+            .iter()
+            .map(|argument| (*argument).to_owned())
+            .collect()
+    }
 
     #[test]
     fn every_listed_check_exists() {
@@ -171,6 +375,130 @@ mod tests {
     fn an_unknown_check_is_refused_before_anything_runs() {
         let error = check(&["clipy".to_owned()]).unwrap_err();
         assert!(error.contains("unknown check `clipy`"));
-        assert!(error.contains("fmt, rules, generated, clippy, deny"));
+        assert!(error.contains(&CHECK_STEPS.join(", ")));
+    }
+
+    #[test]
+    fn naming_a_package_keeps_the_rest_of_the_workspace_out() {
+        for chosen in [
+            &["-p", "cortex-agent"][..],
+            &["--package", "cortex-agent"],
+            &["--package=cortex-agent"],
+            &["-pcortex-agent"],
+            &["--profile", "fast", "-p", "cortex-agent", "denials"],
+            &["--workspace", "--exclude", "cortex-cli"],
+        ] {
+            assert!(selects_packages(&strings(chosen)), "{chosen:?}");
+        }
+    }
+
+    #[test]
+    fn a_run_of_one_crate_is_not_a_run_of_the_workspace() {
+        assert_eq!(
+            super::test_command(&strings(&["-p", "cortex-agent", "denials::"])).join(" "),
+            "nextest run -p cortex-agent denials::"
+        );
+        assert_eq!(
+            super::test_command(&strings(&["--profile", "fast"])).join(" "),
+            "nextest run --workspace --profile fast"
+        );
+        assert_eq!(
+            super::test_command(&[]).join(" "),
+            "nextest run --workspace"
+        );
+    }
+
+    #[test]
+    fn without_a_package_the_whole_workspace_is_tested() {
+        for open in [
+            &[][..],
+            &["--profile", "fast"],
+            &["denials::"],
+            &["--exclude", "cortex-cli"],
+            &["--no-fail-fast", "-E", "test(/sys_/)"],
+            // Arguments for the test binaries are not nextest's.
+            &["--", "-p"],
+            &["--", "--package"],
+        ] {
+            assert!(!selects_packages(&strings(open)), "{open:?}");
+        }
+    }
+
+    #[test]
+    fn the_ci_run_is_the_workspace_or_the_packages_named() {
+        assert_eq!(
+            ci_run(&[]).join(" "),
+            "nextest run --workspace --locked --cargo-profile ci --profile ci"
+        );
+        assert_eq!(
+            ci_run(&strings(&["cortex-agent", "cortex-tools"])).join(" "),
+            "nextest run -p cortex-agent -p cortex-tools --locked --cargo-profile ci --profile ci"
+        );
+    }
+
+    #[test]
+    fn a_tiers_request_is_read() {
+        assert_eq!(
+            TiersRequest::parse(&[]).unwrap(),
+            TiersRequest {
+                packages: vec![],
+                top: 10,
+                from: None,
+                os: Os::here(),
+                rest: vec![],
+            }
+        );
+        assert_eq!(
+            TiersRequest::parse(&strings(&[
+                "-p",
+                "cortex-llm",
+                "--top",
+                "3",
+                "--",
+                "replay::",
+                "--top",
+            ]))
+            .unwrap(),
+            TiersRequest {
+                packages: strings(&["cortex-llm"]),
+                top: 3,
+                from: None,
+                os: Os::here(),
+                // After `--` nothing is this command's, whatever it looks like.
+                rest: strings(&["replay::", "--top"]),
+            }
+        );
+        assert_eq!(
+            TiersRequest::parse(&strings(&["--from", "junit.xml", "--os", "windows"])).unwrap(),
+            TiersRequest {
+                packages: vec![],
+                top: 10,
+                from: Some(PathBuf::from("junit.xml")),
+                os: Os::Windows,
+                rest: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn a_tiers_request_that_makes_no_sense_is_refused() {
+        for (arguments, expected) in [
+            (&["--top"][..], "needs a number"),
+            (&["--top", "many"], "is not a number"),
+            (&["--os", "macos", "--from", "x"], "`linux` or `windows`"),
+            (&["--os", "windows"], "`--os` says where a report"),
+            (&["--from", "x", "-p", "cortex-llm"], "runs nothing"),
+            (&["--from", "x", "--", "replay::"], "runs nothing"),
+            (&["--fast"], "unknown argument `--fast`"),
+        ] {
+            let error = TiersRequest::parse(&strings(arguments)).unwrap_err();
+            assert!(error.contains(expected), "{arguments:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_ci_argument_is_refused_with_the_usage() {
+        let error = ci(&strings(&["tests"])).unwrap_err();
+        assert!(error.contains("ci --tiers"), "{error}");
     }
 }

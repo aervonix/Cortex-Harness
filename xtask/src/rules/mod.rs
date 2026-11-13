@@ -5,6 +5,7 @@
 //! list) to a list of violations, so it can be tested without a repository.
 //! [`check_repository`] feeds them the real thing.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -15,6 +16,8 @@ use crate::workspace;
 mod crate_graph;
 mod dependency_list;
 mod home_paths;
+mod layout;
+mod links;
 mod workflows;
 
 /// One broken rule, at a place in the repository.
@@ -59,6 +62,7 @@ pub(crate) fn check_repository(root: &Path) -> Result<Vec<Violation>> {
             violations.extend(workflows::check(file, &String::from_utf8_lossy(&bytes)));
         }
     }
+    violations.extend(check_docs(root, &files)?);
 
     let metadata = workspace::metadata(root)?;
     let manifests = metadata
@@ -76,6 +80,25 @@ pub(crate) fn check_repository(root: &Path) -> Result<Vec<Violation>> {
         .map_err(|error| format!("could not read {}: {error}", dependency_list::FILE))?;
     violations.extend(dependency_list::check(&metadata.packages, &list));
 
+    Ok(violations)
+}
+
+/// The rules about the docs alone: every link inside the repository leads
+/// somewhere, and the step records and open items are where they belong.
+/// They read text files and nothing else, so `cargo xtask links` runs them
+/// without asking cargo anything.
+pub(crate) fn check_docs(root: &Path, files: &[String]) -> Result<Vec<Violation>> {
+    let mut texts: BTreeMap<String, String> = BTreeMap::new();
+    for file in files {
+        if links::is_read(file) || layout::is_read(file) {
+            let bytes = fs::read(root.join(file))
+                .map_err(|error| format!("could not read {file}: {error}"))?;
+            texts.insert(file.clone(), String::from_utf8_lossy(&bytes).into_owned());
+        }
+    }
+    let names: BTreeSet<String> = files.iter().cloned().collect();
+    let mut violations = links::check(&texts, &names);
+    violations.extend(layout::check(&texts));
     Ok(violations)
 }
 
