@@ -298,7 +298,13 @@ async fn in_core(core: &Core, front: &mut Front<'_>) -> u8 {
     // run before anything is sent.
     if front.signalled() {
         let error = interrupted_error();
-        return finish(core, front, &collector, Some((TurnOutcome::Interrupted, error))).await;
+        return finish(
+            core,
+            front,
+            &collector,
+            Some((TurnOutcome::Interrupted, error)),
+        )
+        .await;
     }
     let started = core
         .handle(
@@ -402,7 +408,10 @@ fn denials(core: &Core, collector: &Collector) -> Vec<PermissionDenial> {
 
 async fn write_result(front: &Front<'_>, result: HeadlessResult) {
     if let Some(error) = &result.error {
-        front.say(&format!("{} ({}: {})", error.message, error.kind, error.code));
+        front.say(&format!(
+            "{} ({}: {})",
+            error.message, error.kind, error.code
+        ));
     }
     for denial in &result.permission_denials {
         front.say(&format!("denied: {} ({})", denial.summary, denial.reason));
@@ -418,7 +427,11 @@ async fn write_result(front: &Front<'_>, result: HeadlessResult) {
 async fn failed(front: &mut Front<'_>, error: ErrorData) -> u8 {
     let collector = Collector::default();
     let outcome = exit::outcome_for_kind(&error.kind);
-    let result = collector.result(Some((outcome, error)), Vec::new(), elapsed(front.plan.started));
+    let result = collector.result(
+        Some((outcome, error)),
+        Vec::new(),
+        elapsed(front.plan.started),
+    );
     let code = exit::for_outcome(
         &result.outcome,
         result.error.as_ref().map(|error| &error.kind),
@@ -435,7 +448,8 @@ fn finish_early(format: Format, run: &Run, name: &str, error: &ErrorData, starte
         eprintln!("{name}: {}", error.message);
     }
     let outcome = exit::outcome_for_kind(&error.kind);
-    let result = Collector::default().result(Some((outcome, error.clone())), Vec::new(), elapsed(started));
+    let result =
+        Collector::default().result(Some((outcome, error.clone())), Vec::new(), elapsed(started));
     let code = exit::for_outcome(&result.outcome, Some(&error.kind), None);
     if format != Format::Text {
         let mut stdout = io::stdout().lock();
@@ -505,7 +519,10 @@ fn start_core(plan: &Plan) -> Result<Core, OpError> {
     let mut options = CoreOptions::new(plan.env.clone(), Arc::new(TokioTimer));
     options.profile.clone_from(&run.common.profile);
     options.overrides = overrides(run);
-    for (texts, action) in [(&run.allow, RuleAction::Allow), (&run.deny, RuleAction::Deny)] {
+    for (texts, action) in [
+        (&run.allow, RuleAction::Allow),
+        (&run.deny, RuleAction::Deny),
+    ] {
         for text in texts {
             let rule = parse_rule(text, action).map_err(|message| {
                 Box::new(ErrorData::new(ErrorKind::Usage, "invalid_rule", message))
@@ -680,7 +697,11 @@ fn write_lines(mut lines: mpsc::Receiver<String>) {
             continue;
         }
         let mut out = stdout.lock();
-        if out.write_all(line.as_bytes()).and_then(|()| out.flush()).is_err() {
+        if out
+            .write_all(line.as_bytes())
+            .and_then(|()| out.flush())
+            .is_err()
+        {
             open = false;
         }
     }

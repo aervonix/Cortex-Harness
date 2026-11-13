@@ -423,6 +423,7 @@ fn tools(
     // goes on the last tool.
     let marked =
         (request.cache.stable_prefix && request.system.is_empty()).then(|| request.tools.len() - 1);
+    let mut budget = crate::strict::Budget::new(crate::strict::Rules::Anthropic);
     let mut list = Array::open(body.key("tools"));
     for (at, tool) in request.tools.iter().enumerate() {
         if !is_valid_tool_name(&tool.name) {
@@ -434,7 +435,15 @@ fn tools(
         let mut object = Object::open(list.item());
         object.str("name", &tool.name);
         object.str("description", &tool.description);
-        object.value("input_schema", &tool.schema);
+        // Strict tools are sent reduced to what Anthropic's strict mode
+        // takes, while the request's limits have room; any other is sent
+        // whole, and not strict.
+        let (schema, strict) = if strict {
+            budget.reduce(&tool.schema)
+        } else {
+            (std::borrow::Cow::Borrowed(&tool.schema), false)
+        };
+        object.value("input_schema", &schema);
         if strict {
             object.yes("strict");
         }

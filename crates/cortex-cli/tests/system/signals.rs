@@ -141,8 +141,8 @@ fn commanding(machine: &Machine, spec: &ChildSpec) {
 fn sys_a_second_ctrl_c_kills_running_commands_at_once() {
     let machine = Machine::new("sys_second_ctrl_c");
     let roll = Roll::new();
-    let spec = ChildSpec::new(&roll, "parent")
-        .with_child(ChildSpec::new(&roll, "grandchild").stubborn());
+    let spec =
+        ChildSpec::new(&roll, "parent").with_child(ChildSpec::new(&roll, "grandchild").stubborn());
     commanding(&machine, &spec);
     let running = Running::start(
         &machine,
@@ -172,8 +172,8 @@ fn sys_a_second_ctrl_c_kills_running_commands_at_once() {
 fn sys_a_killed_harness_leaves_no_command_running() {
     let machine = Machine::new("sys_guard");
     let roll = Roll::new();
-    let spec = ChildSpec::new(&roll, "parent")
-        .with_child(ChildSpec::new(&roll, "grandchild").stubborn());
+    let spec =
+        ChildSpec::new(&roll, "parent").with_child(ChildSpec::new(&roll, "grandchild").stubborn());
     commanding(&machine, &spec);
     // Started as a plain process, not a tree: killing it must not kill
     // anything else by itself.
@@ -190,7 +190,10 @@ fn sys_a_killed_harness_leaves_no_command_running() {
 
     harness.kill().unwrap();
     let _ = harness.wait();
-    assert!(parent.gone_within(LIMIT), "the command died with the harness");
+    assert!(
+        parent.gone_within(LIMIT),
+        "the command died with the harness"
+    );
     assert!(
         grandchild.gone_within(LIMIT),
         "the command's own child died with the harness"
@@ -208,7 +211,11 @@ fn sys_a_run_with_no_console_completes() {
     const DETACHED_PROCESS: u32 = 0x0000_0008;
 
     let machine = Machine::new("sys_no_console");
-    machine.reply_tool("toolu_1", "shell", &json!({"command": "echo \"no console\""}));
+    machine.reply_tool(
+        "toolu_1",
+        "shell",
+        &json!({"command": "echo \"no console\""}),
+    );
     machine.reply_text("Done.");
     let output = machine
         .command(&[

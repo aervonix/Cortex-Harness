@@ -128,12 +128,14 @@ impl Collector {
 
 /// The first line of `jsonl`.
 pub(crate) fn start_line(session: SessionId, model: ModelId, workspace: String) -> String {
-    line(serde_json::to_string(&HeadlessRecord::Session(HeadlessStart {
-        schema: HEADLESS_SCHEMA,
-        session_id: session,
-        model,
-        workspace,
-    })))
+    line(serde_json::to_string(&HeadlessRecord::Session(
+        HeadlessStart {
+            schema: HEADLESS_SCHEMA,
+            session_id: session,
+            model,
+            workspace,
+        },
+    )))
 }
 
 /// The last line of `jsonl`, and the whole of `json`.
@@ -180,11 +182,18 @@ fn text_of(parts: &[Part]) -> String {
         .join("")
 }
 
+/// The kinds of an editing tool's payload that say its file was written.
+/// `read` names a path too, with kinds of its own, and changes nothing.
+const WRITTEN: &[&str] = &["create", "write", "edit"];
+
 /// The files a tool's payload says it changed: `path` for the editing tools
-/// (unless nothing changed), and the shell tool's `changes`.
+/// when they wrote it, and the shell tool's `changes`.
 fn changed_files(payload: &Value, files: &mut BTreeSet<String>) {
     if let Some(path) = payload.get("path").and_then(Value::as_str)
-        && payload.get("kind").and_then(Value::as_str) != Some("unchanged")
+        && payload
+            .get("kind")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| WRITTEN.contains(&kind))
     {
         files.insert(path.to_owned());
     }
@@ -243,8 +252,26 @@ mod tests {
         let events = [
             event(1, Some("t_1"), json!({"type": "turn.started"})),
             event(2, Some("t_1"), assistant("i_1", "Looking.")),
-            event(3, Some("t_1"), tool("i_2", json!({"path": "src/a.rs", "kind": "write"}))),
-            event(4, Some("t_1"), tool("i_3", json!({"path": "src/b.rs", "kind": "unchanged"}))),
+            event(
+                3,
+                Some("t_1"),
+                tool("i_2", json!({"path": "src/a.rs", "kind": "write"})),
+            ),
+            event(
+                4,
+                Some("t_1"),
+                tool("i_3", json!({"path": "src/b.rs", "kind": "unchanged"})),
+            ),
+            event(
+                4,
+                Some("t_1"),
+                tool("i_3", json!({"path": "src/c.rs", "kind": "content"})),
+            ),
+            event(
+                4,
+                Some("t_1"),
+                tool("i_3", json!({"path": "src/d.rs", "kind": "edit"})),
+            ),
             event(
                 5,
                 Some("t_1"),
@@ -255,8 +282,12 @@ mod tests {
             ),
             event(6, Some("t_1"), assistant("i_5", "Done.")),
             // A message with no text does not replace the last one that had.
-            event(7, Some("t_1"), json!({"type": "item.completed", "item": {
-                "kind": "assistant_message", "id": "i_6", "parts": [], "stop_reason": "end"}})),
+            event(
+                7,
+                Some("t_1"),
+                json!({"type": "item.completed", "item": {
+                "kind": "assistant_message", "id": "i_6", "parts": [], "stop_reason": "end"}}),
+            ),
         ];
         for event in &events {
             assert!(!collector.observe(event));
@@ -265,8 +296,11 @@ mod tests {
         let result = collector.result(None, Vec::new(), 42);
         assert_eq!(result.outcome, TurnOutcome::Completed);
         assert_eq!(result.result, "Done.");
-        assert_eq!(result.tool_calls, 3);
-        assert_eq!(result.files_changed, ["a.txt", "src/a.rs", "z.txt"]);
+        assert_eq!(result.tool_calls, 5);
+        assert_eq!(
+            result.files_changed,
+            ["a.txt", "src/a.rs", "src/d.rs", "z.txt"]
+        );
         assert_eq!(result.requests, 2);
         assert_eq!(result.usage.input, 10);
         assert_eq!(result.costs[0].usd_nanos, 1500);

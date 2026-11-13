@@ -39,12 +39,24 @@ fn sys_a_project_trusted_with_permissions_trust_is_trusted_on_the_next_start() {
     assert!(trust_line(&machine).ends_with(": not trusted"));
     let (model, stderr) = model_of_a_run(&machine);
     assert_eq!(model, MODEL, "an untrusted project's model waits");
-    assert!(stderr.contains("model.main"), "what waits is said: {stderr}");
+    assert!(
+        stderr.contains("model.main"),
+        "what waits is said: {stderr}"
+    );
 
     let trusted = machine.run(&["permissions", "trust"]);
     trusted.expect_code(0);
-    for expected in ["allow exec make test", "deny exec make deploy", "ask read secret/**", "model.main"] {
-        assert!(trusted.stdout.contains(expected), "{expected}: {}", shown(&trusted));
+    for expected in [
+        "allow exec make test",
+        "deny exec make deploy",
+        "ask read secret/**",
+        "model.main",
+    ] {
+        assert!(
+            trusted.stdout.contains(expected),
+            "{expected}: {}",
+            shown(&trusted)
+        );
     }
     assert!(trust_line(&machine).ends_with(": trusted"));
     let (model, stderr) = model_of_a_run(&machine);
@@ -60,7 +72,11 @@ fn sys_a_project_trusted_with_permissions_trust_is_trusted_on_the_next_start() {
     assert!(trust_line(&machine).contains("rules have changed"));
     assert_eq!(model_of_a_run(&machine).0, MODEL);
     let approved = machine.run(&["permissions", "trust"]);
-    assert!(approved.expect_code(0).stdout.starts_with("Approved"), "{}", shown(&approved));
+    assert!(
+        approved.expect_code(0).stdout.starts_with("Approved"),
+        "{}",
+        shown(&approved)
+    );
     assert_eq!(model_of_a_run(&machine).0, OTHER_MODEL);
 
     machine.run(&["permissions", "untrust"]).expect_code(0);
@@ -80,12 +96,23 @@ fn sys_config_shows_and_checks_what_a_session_would_load() {
         shown(&show)
     );
     let origin = machine.run(&["config", "show", "--origin"]);
-    assert!(origin.expect_code(0).stdout.contains("# user: "), "{}", shown(&origin));
+    assert!(
+        origin.expect_code(0).stdout.contains("# user: "),
+        "{}",
+        shown(&origin)
+    );
     let layer = machine.run(&["config", "show", "--layer", "user"]);
     assert!(layer.expect_code(0).stdout.contains("retry.attempts = 1"));
-    machine.run(&["config", "show", "--layer", "nowhere"]).expect_code(2);
+    machine
+        .run(&["config", "show", "--layer", "nowhere"])
+        .expect_code(2);
     let defaults = machine.run(&["config", "defaults"]);
-    assert!(defaults.expect_code(0).stdout.contains("config_version = 1"));
+    assert!(
+        defaults
+            .expect_code(0)
+            .stdout
+            .contains("config_version = 1")
+    );
     machine.run(&["config", "check"]).expect_code(0);
 
     // An unknown key is a warning to a run, and an error to `check`.
@@ -93,7 +120,11 @@ fn sys_config_shows_and_checks_what_a_session_would_load() {
     let shown_anyway = machine.run(&["config", "show"]);
     assert!(shown_anyway.expect_code(0).stderr.contains("mian"));
     let checked = machine.run(&["config", "check"]);
-    assert!(checked.expect_code(2).stderr.contains("mian"), "{}", shown(&checked));
+    assert!(
+        checked.expect_code(2).stderr.contains("mian"),
+        "{}",
+        shown(&checked)
+    );
 }
 
 #[test]
@@ -136,7 +167,12 @@ fn sys_a_key_stored_with_auth_login_is_used_and_never_shown() {
         )
     };
     let status = without_variable(&["auth", "status"]);
-    assert!(status.expect_code(0).stdout.contains("anthropic: key from the"));
+    assert!(
+        status
+            .expect_code(0)
+            .stdout
+            .contains("anthropic: key from the")
+    );
     machine.reply_text("Done.");
     let run = without_variable(&["-p", "go"]);
     run.expect_code(0);

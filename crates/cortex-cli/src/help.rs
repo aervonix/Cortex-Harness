@@ -106,11 +106,7 @@ Commands:
 Options:
 "
     );
-    let width = FLAGS
-        .iter()
-        .map(|flag| left(flag).len())
-        .max()
-        .unwrap_or(0);
+    let width = FLAGS.iter().map(|flag| left(flag).len()).max().unwrap_or(0);
     for flag in FLAGS {
         let _ = writeln!(text, "  {:<width$}  {}", left(flag), flag.help);
     }
@@ -150,7 +146,10 @@ mod tests {
             let as_cx = help(topic, "cx");
             assert!(as_cx.contains("Usage: cx "), "{topic:?}");
             assert!(!as_cx.contains("cortex "), "{topic:?}: {as_cx}");
-            assert!(help(topic, "cortex").contains("Usage: cortex "), "{topic:?}");
+            assert!(
+                help(topic, "cortex").contains("Usage: cortex "),
+                "{topic:?}"
+            );
         }
     }
 

@@ -527,36 +527,36 @@ export interface HeadlessResult {
   /** What the run cost, one amount per basis, in whole nano-dollars: `usd_nanos / 1e9` is US dollars. Empty when no price is known. */
   costs?: Array<Cost>;
   /** Milliseconds from the start of the process to this record. */
-  duration_ms?: number;
+  duration_ms: number;
   /** The failure, when there was one. */
   error?: ErrorData | null;
   /** The files the run created, changed or deleted, relative to the workspace, sorted. */
-  files_changed?: Array<string>;
+  files_changed: Array<string>;
   /** How the run ended. */
   outcome: TurnOutcome;
   /** The calls that were refused because nothing could approve them. */
-  permission_denials?: Array<PermissionDenial>;
+  permission_denials: Array<PermissionDenial>;
   /** How many requests were made to a model. */
-  requests?: number;
+  requests: number;
   /** The text of the assistant's last message. Empty when it wrote none. */
-  result?: string;
-  /** The version of the records' shape: [`HEADLESS_SCHEMA`]. */
+  result: string;
+  /** The version of the records' shape, 1 for this one. */
   schema: number;
   /** The session. Absent when the run failed before one was started. */
   session_id?: SessionId | null;
   /** Why the last response ended. */
   stop_reason?: StopReason | null;
   /** How many tool calls were made. */
-  tool_calls?: number;
+  tool_calls: number;
   /** Tokens, by class. */
-  usage?: TokenUsage;
+  usage: TokenUsage;
 }
 
 /** The first line of `jsonl`: which session the run is, on which model, in which workspace. */
 export interface HeadlessStart {
   /** The main role's model. */
   model: ModelId;
-  /** The version of the records' shape: [`HEADLESS_SCHEMA`]. */
+  /** The version of the records' shape, 1 for this one. */
   schema: number;
   /** The session the run is in. */
   session_id: SessionId;

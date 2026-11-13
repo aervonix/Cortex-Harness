@@ -95,14 +95,15 @@ impl Core {
             .into_iter()
             .map(|provider| {
                 let variable = key_variable(settings, &provider);
-                let status = cortex_config::credentials::status(cortex_config::credentials::Lookup {
-                    provider: &provider,
-                    flag: providers.flags.get(&provider),
-                    variable: variable.as_deref(),
-                    env: &self.inner.options.env,
-                    store: providers.store.as_ref(),
-                })
-                .map_err(|failure| failure.to_string());
+                let status =
+                    cortex_config::credentials::status(cortex_config::credentials::Lookup {
+                        provider: &provider,
+                        flag: providers.flags.get(&provider),
+                        variable: variable.as_deref(),
+                        env: &self.inner.options.env,
+                        store: providers.store.as_ref(),
+                    })
+                    .map_err(|failure| failure.to_string());
                 ProviderCredential { provider, status }
             })
             .collect()
@@ -166,7 +167,11 @@ impl Core {
     /// # Errors
     ///
     /// When the state directory is unknown or the file cannot be written.
-    pub fn revoke_approvals(&self, project: &Project, ids: &[ApprovalId]) -> Result<usize, OpError> {
+    pub fn revoke_approvals(
+        &self,
+        project: &Project,
+        ids: &[ApprovalId],
+    ) -> Result<usize, OpError> {
         self.approval_store(project)?
             .remove(ids)
             .map_err(|failure| error(ErrorKind::Internal, "store_failed", failure.to_string()))
@@ -207,14 +212,17 @@ impl Core {
         // What an untrusted load holds back is what trust now turns on.
         let settings = self.load(project, ConfigTrust::Untrusted)?.withheld;
         let store = self.trust_store()?;
-        let failed =
-            |failure: cortex_policy::TrustError| error(ErrorKind::Internal, "store_failed", failure.to_string());
+        let failed = |failure: cortex_policy::TrustError| {
+            error(ErrorKind::Internal, "store_failed", failure.to_string())
+        };
         let was_trusted = store.project(&project.key).map_err(failed)?.is_trusted();
         let pin = [Definition::of_rules(&rules)];
         if was_trusted {
             store.approve(&project.key, &pin).map_err(failed)?;
         } else {
-            store.trust(&project.key, &project.shown, &pin).map_err(failed)?;
+            store
+                .trust(&project.key, &project.shown, &pin)
+                .map_err(failed)?;
         }
         Ok(Trusted {
             rules,
@@ -258,8 +266,8 @@ impl Core {
     /// Of kind `config`, with every problem of every layer, when it is not
     /// valid.
     pub fn configuration(&self, project: &Project, strict: bool) -> Result<Loaded, OpError> {
-        let trusted = self.inner.options.trust_project
-            || self.project_trust(project)? == TrustState::Trusted;
+        let trusted =
+            self.inner.options.trust_project || self.project_trust(project)? == TrustState::Trusted;
         let trust = if trusted {
             ConfigTrust::Trusted
         } else {
@@ -270,7 +278,14 @@ impl Core {
 
     fn resolver(&self, directory: &Path) -> Result<PathResolver, OpError> {
         let mut options = PathOptions::new();
-        if let Some(home) = self.inner.options.env.home().as_deref().and_then(resolve_dir) {
+        if let Some(home) = self
+            .inner
+            .options
+            .env
+            .home()
+            .as_deref()
+            .and_then(resolve_dir)
+        {
             options = options.home(home);
         }
         PathResolver::new(directory, options).map_err(|failure| {
@@ -307,7 +322,10 @@ impl Core {
                 "The project has no place for stored approvals.",
             )
         })?;
-        Ok(ApprovalStore::new(file, Arc::clone(&self.inner.options.clock)))
+        Ok(ApprovalStore::new(
+            file,
+            Arc::clone(&self.inner.options.clock),
+        ))
     }
 
     fn load(&self, project: &Project, trust: ConfigTrust) -> Result<Loaded, OpError> {

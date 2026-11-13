@@ -921,8 +921,8 @@ caught-by:
 [break] changed-rules-still-trusted
 rule: A project is trusted for its rules only while they are the ones the user saw.
 file: crates/cortex-core/src/assemble.rs
-find: if project_rules_approved(&stored, &project_rules) {
-replace: if true || project_rules_approved(&stored, &project_rules) {
+find: if project_rules_approved(&stored, &project_rules(&peek)) {
+replace: if true || project_rules_approved(&stored, &project_rules(&peek)) {
 caught-by:
     cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
 
