@@ -180,12 +180,18 @@ struct Flaky {
     /// The append, counted from 0, that fails.
     fail_append: Arc<Mutex<Option<usize>>>,
     fail_end: Arc<Mutex<bool>>,
+    /// Whether opening the session fails. The first open, when the session
+    /// starts, is before a test can set it.
+    fail_open: Arc<Mutex<bool>>,
     opens: Arc<Mutex<usize>>,
 }
 
 impl SessionStore for Flaky {
     fn open(&mut self) -> BoxFuture<'_, Result<Opened, StoreError>> {
         *lock(&self.opens) += 1;
+        if *lock(&self.fail_open) {
+            return Box::pin(std::future::ready(Err(StoreError::new("the disk is gone"))));
+        }
         self.inner.open()
     }
 
@@ -268,11 +274,20 @@ fn an_append_that_fails_fails_the_turn_and_the_item_is_not_in_the_context() {
 fn a_tool_result_that_cannot_be_appended_fails_the_turn_and_the_session_is_read_again() {
     let world = World::new(
         "store_fails_result",
-        [calls(&[("c1", "read", json!({"path": "a"}))])],
+        [
+            calls(&[
+                ("c1", "read", json!({"path": "a"})),
+                ("c2", "read", json!({"path": "b"})),
+            ]),
+            says("After."),
+        ],
     );
     let (store, rig) = flaky(&world);
-    *lock(&store.fail_append) = Some(2);
+    // The prompt, the message and the first result are appended. The second
+    // result is not: the round is half recorded.
+    *lock(&store.fail_append) = Some(3);
     turn(&world, &rig, 1);
+    assert_eq!(rig.store.items().len(), 3);
     assert_eq!(
         rig.events.ends()[0].error.as_ref().unwrap().code,
         "store_failed"
@@ -283,17 +298,141 @@ fn a_tool_result_that_cannot_be_appended_fails_the_turn_and_the_session_is_read_
         "no request goes out on a history with a hole"
     );
     // The real store repairs a call with no result when it is opened. The
-    // loop's part is to open it again.
+    // loop's part is to open it again before anything else is sent.
+    assert_eq!(*lock(&store.opens), 1);
     world.run(async {
-        for _ in 0..16 {
-            tokio::task::yield_now().await;
-        }
+        rig.prompt("again");
+        rig.events.turns(2).await;
     });
     assert_eq!(
         *lock(&store.opens),
         2,
-        "once when the session started, once after the failure"
+        "once when the session started, once before the turn after the failure"
     );
+}
+
+#[test]
+fn a_session_that_cannot_be_read_again_fails_its_turns_until_it_can() {
+    let world = World::new("reload_fails", [says("Lost."), says("Back.")]);
+    let (store, rig) = flaky(&world);
+    *lock(&store.fail_append) = Some(1);
+    turn(&world, &rig, 1);
+    assert_eq!(
+        rig.events.ends()[0].error.as_ref().unwrap().code,
+        "store_failed"
+    );
+
+    // The store cannot be opened either. No request goes out on a history
+    // that may have a hole: the turn fails, and nothing is forgotten.
+    *lock(&store.fail_open) = true;
+    world.run(async {
+        rig.prompt("again");
+        rig.events.turns(2).await;
+    });
+    let end = &rig.events.ends()[1];
+    assert_eq!(end.outcome, TurnOutcome::Failed);
+    assert!(
+        end.error
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("the disk is gone"),
+        "{end:?}"
+    );
+    assert_eq!(world.provider.requests().len(), 1, "nothing was sent");
+
+    // When the store is back, the next turn reads the session and goes on.
+    *lock(&store.fail_open) = false;
+    world.run(async {
+        rig.prompt("and again");
+        rig.events.turns(3).await;
+    });
+    assert_eq!(rig.events.ends()[2].outcome, TurnOutcome::Completed);
+    assert_eq!(*lock(&store.opens), 3);
+    let said: Vec<String> = last_request(&world.provider)
+        .messages
+        .iter()
+        .map(text_of)
+        .collect();
+    assert_eq!(
+        said,
+        ["go", "and again"],
+        "what the log holds, and the new prompt"
+    );
+}
+
+/// A verifier with a bug in it.
+struct Faulty;
+
+impl cortex_agent::Verifier for Faulty {
+    fn verify<'a>(&'a self, _cx: cortex_agent::VerifyCx<'a>) -> BoxFuture<'a, VerifyOutcome> {
+        Box::pin(async { panic!("the verifier has a bug") })
+    }
+}
+
+#[test]
+fn a_panic_in_the_loop_ends_the_turn_and_the_session_carries_on() {
+    // The loop's own parts are behind traits, and any of them can have a
+    // bug. Here the verifier panics.
+    let world = World::new(
+        "loop_panics",
+        [
+            calls(&[("c1", "write", json!({"path": "a"}))]),
+            says("Done."),
+            says("Still here."),
+        ],
+    );
+    let (store, mut setup) = (Flaky::default(), Setup::new(&world));
+    setup.memory = store.inner.clone();
+    setup.store = Some(Box::new(store.clone()));
+    setup.verifier = Some(Arc::new(Faulty));
+    let rig = setup.start(&world);
+    rig.events
+        .loop_panic_expected
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    rig.queue_after_start(&world, "queued behind the panic");
+
+    let end = &rig.events.ends()[0];
+    assert_eq!(end.outcome, TurnOutcome::Failed);
+    let error = end.error.as_ref().unwrap();
+    assert_eq!(
+        (error.kind.clone(), error.code.as_str()),
+        (ErrorKind::Internal, "loop_panicked")
+    );
+    assert!(
+        error.message.contains("the verifier has a bug"),
+        "{}",
+        error.message
+    );
+    // Nothing follows by itself, and the session is not stuck: its state
+    // says idle, with the queued prompt held.
+    let state = rig.handle.state();
+    assert_eq!((state.running_turn.clone(), state.queue_length), (None, 1));
+    assert_eq!(rig.handle.turn_state(), cortex_agent::TurnState::Idle);
+
+    // The next prompt works, on a session read again from its store, and
+    // the held prompt follows it.
+    world.provider.push(says("And the queued one."));
+    world.run(async {
+        rig.prompt("are you there?");
+        rig.events.seen("idle", 1).await;
+    });
+    assert_eq!(*lock(&store.opens), 2);
+    let outcomes: Vec<TurnOutcome> = rig
+        .events
+        .ends()
+        .into_iter()
+        .map(|end| end.outcome)
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            TurnOutcome::Failed,
+            TurnOutcome::Completed,
+            TurnOutcome::Completed
+        ]
+    );
+    assert_valid_history(&last_request(&world.provider).messages);
 }
 
 #[test]

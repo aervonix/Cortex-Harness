@@ -38,6 +38,10 @@ enum Block {
     Provider {
         raw: Option<RawJson>,
     },
+    /// A tool call that repeats the id of another call of the response.
+    /// Nothing of it is kept: a result could not say which of the two it
+    /// answers.
+    Dropped,
 }
 
 /// A tool call whose block has ended.
@@ -127,6 +131,24 @@ impl Draft {
             }
             ModelEvent::ToolCallStart { index, id, name } => {
                 let call_id = CallId::new(id);
+                if matches!(
+                    self.blocks.get(&index),
+                    Some(Block::ToolCall {
+                        arguments: Some(_),
+                        ..
+                    })
+                ) {
+                    // The block at this index has ended, and its call has
+                    // been taken: a second call cannot take its place.
+                    return Applied::Nothing;
+                }
+                let repeated = self.blocks.iter().any(|(other, block)| {
+                    *other != index && matches!(block, Block::ToolCall { id, .. } if *id == call_id)
+                });
+                if repeated {
+                    self.blocks.insert(index, Block::Dropped);
+                    return Applied::Nothing;
+                }
                 self.blocks.insert(
                     index,
                     Block::ToolCall {
@@ -167,6 +189,7 @@ impl Draft {
                 *raw = Some(block_raw);
                 Applied::Nothing
             }
+            Some(Block::Dropped) => Applied::Nothing,
             Some(Block::ToolCall {
                 id,
                 name,
@@ -217,6 +240,21 @@ impl Draft {
         )
     }
 
+    /// The index of the first tool call whose block has not ended. Until it
+    /// has, nobody knows what that call will do, so no call after it starts.
+    pub(crate) fn first_open_call(&self) -> Option<u32> {
+        self.blocks.iter().find_map(|(index, block)| {
+            matches!(
+                block,
+                Block::ToolCall {
+                    arguments: None,
+                    ..
+                }
+            )
+            .then_some(*index)
+        })
+    }
+
     /// The message's parts, in the model's order. A tool call whose block
     /// never ended is left out: its arguments are incomplete and it is
     /// never run.
@@ -248,7 +286,7 @@ impl Draft {
                     arguments: arguments.clone(),
                     raw: raw.clone(),
                 })),
-                Block::ToolCall { .. } => None,
+                Block::ToolCall { .. } | Block::Dropped => None,
                 Block::Provider { raw } => raw.as_ref().map(|raw| {
                     Part::ProviderBlock(ProviderBlockPart {
                         block_type: block_type(raw),
@@ -441,6 +479,42 @@ mod tests {
             panic!("the block ended");
         };
         assert_eq!(call.arguments, Ok(json!({})));
+    }
+
+    #[test]
+    fn a_call_that_repeats_an_id_or_an_index_is_not_a_second_call() {
+        let end = |index| ModelEvent::BlockEnd {
+            index,
+            raw: raw(&json!({})),
+        };
+        let mut draft = Draft::default();
+        for event in call_events(0, "c1", &["{}"]) {
+            draft.apply(event);
+        }
+        assert_eq!(draft.first_open_call(), Some(0));
+        assert!(matches!(draft.apply(end(0)), Applied::Call(_)));
+        assert_eq!(draft.first_open_call(), None);
+
+        // The same id on another block: a result could not tell the two
+        // apart, so the second is dropped whole.
+        for event in call_events(1, "c1", &["{\"path\":\"b\"}"]) {
+            assert_eq!(draft.apply(event), Applied::Nothing);
+        }
+        assert_eq!(draft.apply(end(1)), Applied::Nothing);
+        assert_eq!(draft.first_open_call(), None);
+
+        // Another call on an index whose call has already been taken.
+        for event in call_events(0, "c2", &["{}"]) {
+            assert_eq!(draft.apply(event), Applied::Nothing);
+        }
+        assert_eq!(draft.apply(end(0)), Applied::Nothing);
+
+        let parts = draft.parts(Calls::Keep);
+        let [Part::ToolCall(only)] = parts.as_slice() else {
+            panic!("{parts:?}");
+        };
+        assert_eq!(only.id.as_str(), "c1");
+        assert_eq!(only.arguments, json!({}));
     }
 
     #[test]

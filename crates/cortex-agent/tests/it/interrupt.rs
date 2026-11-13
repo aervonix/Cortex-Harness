@@ -340,7 +340,7 @@ fn interrupted_while_verifying() {
 }
 
 #[test]
-fn an_interrupt_that_comes_as_the_turn_finishes_changes_nothing() {
+fn an_interrupt_that_comes_as_the_turn_finishes_does_not_change_how_it_ended() {
     let (world, rig) = Rig::one("int_finishing", [says("Done.")]);
     interrupt_in(&world, &rig, TurnState::Finishing, 0);
     let end = &rig.events.ends()[0];
@@ -350,6 +350,81 @@ fn an_interrupt_that_comes_as_the_turn_finishes_changes_nothing() {
         "the turn had already ended"
     );
     assert_eq!(end.verification, Some(Verification::Skipped));
+    assert_the_next_request_is_accepted(&world, &rig);
+}
+
+#[test]
+fn an_interrupt_that_comes_as_the_turn_finishes_still_holds_the_queue() {
+    let more = Gate::new();
+    let first = Response::new()
+        .text("Done.")
+        .wait(&more)
+        .end(StopReason::End);
+    let (world, rig) = Rig::one(
+        "int_finishing_queue",
+        [first, says("Now."), says("Queued.")],
+    );
+    rig.seen.interrupt_at(TurnState::Finishing, &rig.handle);
+    world.run(async {
+        rig.prompt("go");
+        rig.events.seen("delta:text", 1).await;
+        rig.queue("second");
+        more.open();
+        rig.events.turns(1).await;
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+    });
+    // The turn completed. The interrupt still means stop: the queued prompt
+    // did not start by itself.
+    assert_eq!(rig.events.ends().len(), 1);
+    assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Completed);
+    assert_eq!(world.provider.requests().len(), 1);
+    let state = rig.handle.state();
+    assert_eq!((state.running_turn.clone(), state.queue_length), (None, 1));
+    assert!(!rig.events.labels().contains(&"idle".to_owned()));
+
+    // It follows the next prompt, as held prompts do.
+    world.run(async {
+        rig.prompt("now this");
+        rig.events.seen("idle", 1).await;
+    });
+    assert_eq!(rig.events.ends().len(), 3);
+    assert_valid_history(&last_request(&world.provider).messages);
+}
+
+#[test]
+fn an_answer_that_arrives_as_the_turn_is_interrupted_gives_the_call_one_result() {
+    let world = World::new(
+        "int_answer_in_flight",
+        [calls(&[("c1", "write", json!({"path": "a"}))])],
+    );
+    let rig = Setup::new(&world).start(&world);
+    rig.policy.decide_for("write", Decision::Ask);
+    rig.policy.wait_at(&world.gates);
+    world.run(async {
+        rig.prompt("go");
+        rig.policy.questions(1).await;
+        rig.events.seen("assistant", 1).await;
+        // The answer and the interrupt come in the same instant: the task
+        // that asked is woken first and its answer is on its way when the
+        // loop sees the interrupt and withdraws the question.
+        world.gates.open("ask write");
+        let _ = rig.handle.interrupt();
+        rig.events.turns(1).await;
+    });
+    assert_interrupted(&rig);
+    let results = results(&rig);
+    assert_eq!(results.len(), 1, "one call, one result");
+    assert_eq!(results[0].outcome, ToolOutcome::Denied);
+    assert!(world.log.lines().is_empty(), "the write did not run");
+    let shown = rig
+        .events
+        .labels()
+        .iter()
+        .filter(|label| label.starts_with("result:"))
+        .count();
+    assert_eq!(shown, 1, "and front ends saw it end once");
     assert_the_next_request_is_accepted(&world, &rig);
 }
 

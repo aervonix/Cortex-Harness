@@ -46,6 +46,7 @@
 //! - **Nothing with a side effect runs for a response that did not end.**
 
 mod assistant;
+mod guarded;
 mod round;
 mod usage;
 

@@ -42,9 +42,10 @@ use crate::config::{LoopConfig, Models, RoleModel, SessionInfo, Workspace};
 use crate::context::Context;
 use crate::events::{Emitter, EventSink};
 use crate::guard::{Repetition, RepetitionGuard};
+use crate::guarded::Guarded;
 use crate::ledger::Ledger;
 use crate::policy::Policy;
-use crate::round::{Report, Round, RoundEnv};
+use crate::round::{Report, Round, RoundEnv, Stage};
 use crate::session::{Inbox, Pending, Prompt, Queued, Running, SessionHandle, Shared};
 use crate::speed::{Moves, SpeedSettings, cooldown_notice, fallback_notice};
 use crate::state::{Observer, TurnState};
@@ -372,9 +373,50 @@ impl Session {
             self.shared.emit_updated(&self.shared.lock());
             let mut next = Some(start);
             while let Some((running, prompt)) = next.take() {
-                next = self.turn(running, prompt).await;
+                let turn = running.id.clone();
+                // A panic is a bug. It ends the turn, and the session can
+                // take the next prompt.
+                let ended = Guarded(Box::pin(self.turn(running, prompt))).await;
+                next = match ended {
+                    Ok(next) => next,
+                    Err(panic) => {
+                        self.recover(&turn, &panic);
+                        None
+                    }
+                };
             }
         }
+    }
+
+    /// Ends a turn whose code panicked: front ends get `turn.completed`
+    /// with the failure, whatever was waiting is held, and the session is
+    /// read again from its store before the next turn, because what the
+    /// loop holds in memory can no longer be trusted.
+    fn recover(&mut self, turn: &TurnId, panic: &str) {
+        let completed = TurnCompleted {
+            outcome: TurnOutcome::Failed,
+            stop_reason: None,
+            error: Some(ErrorData::new(
+                ErrorKind::Internal,
+                "loop_panicked",
+                format!(
+                    "internal error: the session's loop panicked ({panic}). The turn was ended."
+                ),
+            )),
+            usage: UsageTotals::default(),
+            verification: None,
+            duration_ms: None,
+        };
+        self.shared
+            .emitter
+            .emit(Some(turn), Event::TurnCompleted(completed));
+        self.state = TurnState::Idle;
+        let mut inbox = self.shared.lock();
+        Self::hold(&mut inbox);
+        inbox.running = None;
+        inbox.reload = true;
+        inbox.state = TurnState::Idle;
+        self.shared.emit_updated(&inbox);
     }
 
     // ------------------------------------------------------------------ idle
@@ -383,24 +425,16 @@ impl Session {
     /// session is closed.
     async fn next_prompt(&mut self) -> Option<(Running, Prompt)> {
         loop {
-            let reload = {
+            {
                 let mut inbox = self.shared.lock();
-                let reload = std::mem::take(&mut inbox.reload);
-                if !reload {
-                    if let Some(prompt) = inbox.starting.take()
-                        && let Some(running) = inbox.running.clone()
-                    {
-                        return Some((running, prompt));
-                    }
-                    if inbox.closed || self.shared.cancel.is_cancelled() {
-                        return None;
-                    }
+                if let Some(prompt) = inbox.starting.take()
+                    && let Some(running) = inbox.running.clone()
+                {
+                    return Some((running, prompt));
                 }
-                reload
-            };
-            if reload {
-                self.reload().await;
-                continue;
+                if inbox.closed || self.shared.cancel.is_cancelled() {
+                    return None;
+                }
             }
             // A wake that came since the look above is kept by the
             // notifier, so it is not missed.
@@ -414,20 +448,12 @@ impl Session {
     /// Reads the session again from its store: its items changed under the
     /// loop, or an append failed and memory must be brought back to what
     /// the log holds.
-    async fn reload(&mut self) {
-        match self.store.open().await {
-            Ok(opened) => {
-                self.context.load(&opened.items);
-                let next = self.item_ids.peek().max(opened.last_item.saturating_add(1));
-                self.item_ids = IdCounter::new(ITEM_PREFIX).after(next - 1);
-            }
-            Err(error) => self.shared.emitter.emit(
-                None,
-                Event::Notice(Notice::Info(InfoNotice {
-                    message: format!("The session could not be read again: {error}"),
-                })),
-            ),
-        }
+    async fn reload(&mut self) -> Result<(), StoreError> {
+        let opened = self.store.open().await?;
+        self.context.load(&opened.items);
+        let next = self.item_ids.peek().max(opened.last_item.saturating_add(1));
+        self.item_ids = IdCounter::new(ITEM_PREFIX).after(next - 1);
+        Ok(())
     }
 
     // ------------------------------------------------------------ the turn
@@ -457,7 +483,16 @@ impl Session {
         self.enter(TurnState::Preparing);
         self.emit(&turn, Event::TurnStarted(TurnStarted {}));
 
-        let mut phase = match self.begin(&turn, prompt).await {
+        // If the session's history changed under the loop it is read again
+        // first. When that fails the turn fails, and the next turn tries
+        // again: no request goes out on a history that may have a hole.
+        let reload = std::mem::take(&mut self.shared.lock().reload);
+        let ready = if reload { self.reload().await } else { Ok(()) };
+        let begun = match ready {
+            Ok(()) => self.begin(&turn, prompt).await,
+            Err(error) => Err(error),
+        };
+        let mut phase = match begun {
             Ok(()) => Phase::Preparing(Prep::default()),
             Err(error) => Phase::Finishing(End::store(&error)),
         };
@@ -653,7 +688,9 @@ impl Session {
                 Woke::Cancelled => return Phase::Interrupted(Some(Box::new((live, round)))),
                 Woke::Report(report) => {
                     round.handle(report);
-                    round.pump(true);
+                    round.pump(Stage::Streaming {
+                        open_call: live.draft.first_open_call(),
+                    });
                     continue;
                 }
                 // A client that ends its stream without a last word has
@@ -785,7 +822,9 @@ impl Session {
                             live.first_content
                                 .get_or_insert_with(|| self.clock.monotonic());
                             round.add_call(call, &mut self.item_ids);
-                            round.pump(true);
+                            round.pump(Stage::Streaming {
+                                open_call: live.draft.first_open_call(),
+                            });
                         }
                     }
                 }
@@ -1094,12 +1133,10 @@ impl Session {
 
     async fn tool_round(&mut self, turn: &mut Turn, mut round: Round) -> Phase {
         self.enter(TurnState::ToolRound);
-        // The response has ended, so whatever it did not ask for again is
-        // not kept, and calls with side effects may start.
-        round.discard_kept();
-        round.seal();
+        // The response has ended, so calls with side effects may start, and
+        // whatever was kept and is not asked for again is discarded.
         let interrupted = loop {
-            round.pump(false);
+            round.pump(Stage::Ended);
             if round.is_settled() {
                 break false;
             }
@@ -1108,6 +1145,7 @@ impl Session {
                 None => {
                     // Every started call still gets its result.
                     round.interrupt();
+                    round.discard_kept();
                     round.settle().await;
                     break true;
                 }
@@ -1349,9 +1387,13 @@ impl Session {
         }));
         self.emit(turn, Event::TurnCompleted(completed));
 
-        let (next, idle) = {
+        let next = {
             let mut inbox = self.shared.lock();
-            let next = if outcome == TurnOutcome::Completed {
+            // An interrupt that came as the turn was finishing does not
+            // change how the turn ended. It still means stop: nothing
+            // follows by itself. The same holds for a session that is
+            // being closed.
+            let next = if outcome == TurnOutcome::Completed && !turn.cancel.is_cancelled() {
                 self.next_turn(&mut inbox)
             } else {
                 Self::hold(&mut inbox);
@@ -1362,17 +1404,18 @@ impl Session {
                 // Memory is brought back to what the log holds.
                 inbox.reload = true;
             }
+            // Told under the lock, so that a prompt accepted from another
+            // thread is not followed by a stale "idle".
             self.shared.emit_updated(&inbox);
-            let idle = next.is_none() && inbox.queue.is_empty() && inbox.held.is_empty();
-            (next, idle)
-        };
-        if next.is_none() {
-            self.enter(TurnState::Idle);
-            if idle {
+            if next.is_none() && inbox.queue.is_empty() && inbox.held.is_empty() {
                 self.shared
                     .emitter
                     .emit(None, Event::SessionIdle(SessionIdle {}));
             }
+            next
+        };
+        if next.is_none() {
+            self.enter(TurnState::Idle);
         }
         next
     }

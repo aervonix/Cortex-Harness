@@ -565,3 +565,71 @@ fn any_round_runs_conflicting_calls_in_order_and_records_every_result() {
         },
     );
 }
+
+#[test]
+fn a_question_that_panics_is_an_error_for_its_call_and_the_next_question_is_still_put() {
+    let response = calls(&[
+        ("c1", "shell", json!({"id": "first"})),
+        ("c2", "write", json!({"path": "a"})),
+    ]);
+    let world = World::new("ask_panics", [response, says("Done.")]);
+    let rig = Setup::new(&world).start(&world);
+    rig.policy.decide_for("shell", Decision::Ask);
+    rig.policy.decide_for("write", Decision::Ask);
+    rig.policy.panic_when_asked("shell");
+    world.run(async {
+        rig.prompt("go");
+        rig.events.turns(1).await;
+    });
+
+    assert_eq!(
+        rig.policy.asked(),
+        ["shell first", "write a"],
+        "the second was asked"
+    );
+    let results = results(&rig);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].outcome, ToolOutcome::Error);
+    assert!(
+        text(&results[0]).contains("panicked"),
+        "{}",
+        text(&results[0])
+    );
+    assert_eq!(results[1].outcome, ToolOutcome::Success);
+    assert_eq!(
+        world.log.lines(),
+        ["start write a", "end write a"],
+        "the first never ran"
+    );
+    assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Completed);
+    assert_valid_history(&last_request(&world.provider).messages);
+}
+
+#[test]
+fn a_policy_that_panics_deciding_gives_the_call_an_error_and_it_does_not_run() {
+    let response = calls(&[
+        ("c1", "write", json!({"path": "a"})),
+        ("c2", "read", json!({"path": "b"})),
+    ]);
+    let world = World::new("decide_panics", [response, says("Done.")]);
+    let rig = Setup::new(&world).start(&world);
+    rig.policy.panic_when_deciding("write");
+    world.run(async {
+        rig.prompt("go");
+        rig.events.turns(1).await;
+    });
+    let results = results(&rig);
+    assert_eq!(results[0].outcome, ToolOutcome::Error);
+    assert!(
+        text(&results[0]).contains("panicked"),
+        "{}",
+        text(&results[0])
+    );
+    assert_eq!(results[1].outcome, ToolOutcome::Success);
+    assert_eq!(
+        world.log.count("start write a"),
+        0,
+        "a call nobody decided does not run"
+    );
+    assert_valid_history(&last_request(&world.provider).messages);
+}

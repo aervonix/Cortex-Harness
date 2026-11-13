@@ -87,13 +87,9 @@ fn a_call_with_side_effects_waits_for_the_response_to_end() {
     let (world, rig) = Rig::one("side_effects_wait", [response, says("Done.")]);
     world.run(async {
         rig.prompt("go");
-        // All three blocks have ended and the response has not. (The test
-        // after this one shows the same thing without relying on how long
-        // planning takes.)
-        rig.events.seen("delta:tool_args", 6).await;
-        for _ in 0..64 {
-            tokio::task::yield_now().await;
-        }
+        // All three calls have been planned and shown to the policy, so
+        // each has had its chance to start, and the response has not ended.
+        rig.policy.decisions(3).await;
         assert!(world.log.lines().is_empty(), "{:?}", world.log.lines());
         more.open();
         rig.events.turns(1).await;
@@ -279,6 +275,7 @@ fn an_early_result_the_retry_does_not_ask_for_is_discarded_and_forgotten() {
 #[test]
 fn a_retry_that_reads_the_same_file_another_way_does_not_meet_the_discarded_read() {
     let fails = Gate::new();
+    let more = Gate::new();
     let response = Response::new()
         .tool_call("c1", "read", &json!({"path": "notes.txt"}))
         .wait(&fails)
@@ -290,6 +287,9 @@ fn a_retry_that_reads_the_same_file_another_way_does_not_meet_the_discarded_read
             "read",
             &json!({"path": "notes.txt", "offset": 2, "limit": 1}),
         )
+        // The response does not end until the second read has run, so it
+        // runs while the first read's result is still being kept.
+        .wait(&more)
         .end(StopReason::ToolCalls);
     let world = World::new("retry_other_arguments", [response, says("Done.")]);
     let rig = with_real_read(&world);
@@ -297,6 +297,8 @@ fn a_retry_that_reads_the_same_file_another_way_does_not_meet_the_discarded_read
         rig.prompt("go");
         rig.events.seen("result:read:success", 1).await;
         fails.open();
+        rig.events.seen("result:read:success", 2).await;
+        more.open();
         rig.events.turns(1).await;
     });
     let results = results(&rig);
@@ -310,27 +312,35 @@ fn a_retry_that_reads_the_same_file_another_way_does_not_meet_the_discarded_read
 
 #[test]
 fn no_side_effect_runs_for_a_response_that_fails_or_is_retried() {
-    // The response fails for good after a write was asked for.
+    // The response fails for good after a write and a command were asked
+    // for, and after both were planned and could have started.
+    let fails = Gate::new();
     let failing = Response::new()
         .tool_call("c1", "write", &json!({"path": "a"}))
-        .tool_call("c2", "read", &json!({"path": "b"}))
+        .tool_call("c2", "shell", &json!({"id": "rm"}))
+        .tool_call("c3", "read", &json!({"path": "b"}))
+        .wait(&fails)
         .error(refused());
     let (world, rig) = Rig::one("no_side_effect_failed", [failing]);
     world.run(async {
         rig.prompt("go");
+        rig.policy.decisions(3).await;
+        fails.open();
         rig.events.turns(1).await;
     });
     assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Failed);
-    assert_eq!(world.log.count("start write a"), 0);
+    assert!(world.log.lines().is_empty(), "{:?}", world.log.lines());
     assert!(
         results(&rig).is_empty(),
         "and nothing of the round is recorded"
     );
 
     // The response is retried and no longer asks for the write.
+    let fails = Gate::new();
     let retried = Response::new()
         .tool_call("c1", "write", &json!({"path": "a"}))
         .tool_call("c2", "shell", &json!({"id": "rm"}))
+        .wait(&fails)
         .event(retry(2))
         .event(start())
         .text("Nothing to change.")
@@ -338,6 +348,8 @@ fn no_side_effect_runs_for_a_response_that_fails_or_is_retried() {
     let (world, rig) = Rig::one("no_side_effect_retried", [retried]);
     world.run(async {
         rig.prompt("go");
+        rig.policy.decisions(2).await;
+        fails.open();
         rig.events.turns(1).await;
     });
     assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Completed);
@@ -400,4 +412,223 @@ fn a_call_approved_while_the_model_writes_still_waits_for_the_end_if_it_has_side
         rig.events.turns(1).await;
     });
     assert_eq!(world.log.lines(), ["start write a", "end write a"]);
+}
+
+#[test]
+fn a_tool_that_declares_no_effect_but_runs_alone_does_not_start_early() {
+    // What a tool from outside looks like when its author said nothing
+    // about what it does: no effect, scheduled to run alone.
+    let more = Gate::new();
+    let response = Response::new()
+        .tool_call("c1", "solo", &json!({"id": "unknown"}))
+        .wait(&more)
+        .end(StopReason::ToolCalls);
+    let (world, rig) = Rig::one("solo_waits", [response, says("Done.")]);
+    world.run(async {
+        rig.prompt("go");
+        rig.policy.decisions(1).await;
+        assert!(world.log.lines().is_empty(), "{:?}", world.log.lines());
+        more.open();
+        rig.events.turns(1).await;
+    });
+    assert_eq!(
+        world.log.lines(),
+        ["start solo unknown", "end solo unknown"]
+    );
+    assert!(rig.events.position("assistant") < rig.events.position("started:solo"));
+}
+
+#[test]
+fn a_kept_read_is_not_used_ahead_of_a_write_the_retried_response_puts_before_it() {
+    let fails = Gate::new();
+    let response = Response::new()
+        .tool_call("c1", "read", &json!({"path": "a"}))
+        .wait(&fails)
+        .event(retry(2))
+        .event(start())
+        // The second time the model writes the file first, then reads it.
+        .tool_call("c2", "write", &json!({"path": "a"}))
+        .tool_call("c3", "read", &json!({"path": "a"}))
+        .end(StopReason::ToolCalls);
+    let (world, rig) = Rig::one("kept_read_after_write", [response, says("Done.")]);
+    world.run(async {
+        rig.prompt("go");
+        rig.events.seen("result:read:success", 1).await;
+        fails.open();
+        rig.events.turns(1).await;
+    });
+    // The read that ran for the first response saw the file before the
+    // write. The read the model now asks for comes after it.
+    assert_eq!(
+        world.log.lines(),
+        [
+            "start read a",
+            "end read a",
+            "start write a",
+            "end write a",
+            "start read a",
+            "end read a"
+        ]
+    );
+    let order: Vec<String> = results(&rig)
+        .iter()
+        .map(|result| result.call_id.to_string())
+        .collect();
+    assert_eq!(order, ["c2", "c3"]);
+    assert_valid_history(&last_request(&world.provider).messages);
+}
+
+/// The file the fake `read` says it showed, when it is told to `record`.
+fn recorded(rig: &Rig, path: &str) -> bool {
+    let file = rig.workspace.paths.resolve(path).unwrap();
+    rig.workspace.files.shown(file.abs()).is_some()
+}
+
+#[test]
+fn a_discarded_read_that_was_still_running_is_forgotten_when_it_ends() {
+    let fails = Gate::new();
+    let response = Response::new()
+        // It ignores its cancellation, and notes what it "showed" only at
+        // its end: the worst case for a run that is thrown away.
+        .tool_call(
+            "c1",
+            "read",
+            &json!({"path": "a", "gate": "slow", "stubborn": true, "record": true}),
+        )
+        .wait(&fails)
+        .event(retry(2))
+        .event(start())
+        .text("No need to read it.")
+        .end(StopReason::End);
+    let (world, rig) = Rig::one("discard_running", [response]);
+    world.run(async {
+        rig.prompt("go");
+        world.log.has("start read a").await;
+        fails.open();
+        // The response that counts has ended, and the read is still going.
+        rig.events.seen("assistant", 1).await;
+        assert!(rig.events.ends().is_empty(), "the turn waits for it");
+        world.gates.open("slow");
+        rig.events.turns(1).await;
+    });
+    assert_eq!(world.log.lines(), ["start read a", "end read a"]);
+    assert!(results(&rig).is_empty());
+    assert!(
+        !recorded(&rig, "a"),
+        "what it noted at its end was forgotten"
+    );
+}
+
+#[test]
+fn a_call_waits_for_a_discarded_read_of_the_same_file_to_end() {
+    let fails = Gate::new();
+    let more = Gate::new();
+    let response = Response::new()
+        .tool_call(
+            "c1",
+            "read",
+            &json!({"path": "a", "gate": "slow", "stubborn": true, "record": true}),
+        )
+        .wait(&fails)
+        .event(retry(2))
+        .event(start())
+        // The same file, read another way: the first read is discarded,
+        // and is still running.
+        .tool_call(
+            "c2",
+            "read",
+            &json!({"path": "a", "id": "second", "record": true}),
+        )
+        .wait(&more)
+        .end(StopReason::ToolCalls);
+    let (world, rig) = Rig::one("wait_for_discarded", [response, says("Done.")]);
+    world.run(async {
+        rig.prompt("go");
+        world.log.has("start read a").await;
+        fails.open();
+        // The second read has been planned, and could start but for the
+        // first, which may still write to the table of seen files.
+        rig.policy.decisions(2).await;
+        assert_eq!(world.log.lines(), ["start read a"]);
+        world.gates.open("slow");
+        world.log.has("end read second").await;
+        more.open();
+        rig.events.turns(1).await;
+    });
+    assert_eq!(
+        world.log.lines(),
+        [
+            "start read a",
+            "end read a",
+            "start read second",
+            "end read second"
+        ]
+    );
+    // The table holds what the second read noted, not what the first did
+    // and then lost: it was forgotten before the second began.
+    assert!(recorded(&rig, "a"));
+    assert_eq!(results(&rig).len(), 1);
+}
+
+#[test]
+fn a_call_whose_block_ends_before_an_earlier_calls_block_waits_for_it() {
+    use cortex_llm::ModelEvent;
+    use cortex_protocol::RawJson;
+    let more = Gate::new();
+    let raw = || RawJson::new("{}");
+    // The write is block 0 and the read block 1, and the read's block ends
+    // first.
+    let response = Response::new()
+        .event(ModelEvent::ToolCallStart {
+            index: 0,
+            id: "c1".to_owned(),
+            name: "write".to_owned(),
+        })
+        .event(ModelEvent::ToolCallStart {
+            index: 1,
+            id: "c2".to_owned(),
+            name: "read".to_owned(),
+        })
+        .event(ModelEvent::ToolArgsDelta {
+            index: 1,
+            json: "{\"path\":\"a\"}".to_owned(),
+        })
+        .event(ModelEvent::BlockEnd {
+            index: 1,
+            raw: raw(),
+        })
+        .wait(&more)
+        .event(ModelEvent::ToolArgsDelta {
+            index: 0,
+            json: "{\"path\":\"a\"}".to_owned(),
+        })
+        .event(ModelEvent::BlockEnd {
+            index: 0,
+            raw: raw(),
+        })
+        .end(StopReason::ToolCalls);
+    let (world, rig) = Rig::one("blocks_out_of_order", [response, says("Done.")]);
+    world.run(async {
+        rig.prompt("go");
+        // The read is planned and free of side effects, but a call before
+        // it is still being written.
+        rig.policy.decisions(1).await;
+        assert!(world.log.lines().is_empty(), "{:?}", world.log.lines());
+        more.open();
+        rig.events.turns(1).await;
+    });
+    assert_eq!(
+        world.log.lines(),
+        ["start write a", "end write a", "start read a", "end read a"]
+    );
+    let order: Vec<String> = results(&rig)
+        .iter()
+        .map(|result| result.call_id.to_string())
+        .collect();
+    assert_eq!(
+        order,
+        ["c1", "c2"],
+        "the model's order, not the order the blocks ended in"
+    );
+    assert_valid_history(&last_request(&world.provider).messages);
 }

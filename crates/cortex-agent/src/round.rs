@@ -16,9 +16,10 @@
 //!
 //! - a call waits for every **earlier** call it conflicts with
 //!   ([`Plan::conflicts_with`]), and for every earlier call whose plan is
-//!   not known yet;
+//!   not known yet, or whose block has not ended yet;
 //! - while the response is still arriving only calls **without side
-//!   effects** start;
+//!   effects** start, and a call that is not scheduled as read-only is taken
+//!   to have some;
 //! - no more than the limit run at once;
 //! - questions are asked one at a time, in call order.
 //!
@@ -33,16 +34,14 @@
 //! A response can fail part-way and be sent again. Its calls are then void
 //! ([`Round::void`]). The ones that already ran had no side effects, and
 //! their results are kept in a cache for as long as the request lasts: if
-//! the new response asks for the same call, the result is used again. One
-//! that is not asked for again is discarded, and so that nothing later
+//! the new response asks for the same call, the result is used again, when
+//! that call's turn to start comes. One that is not asked for again is
+//! discarded, and so that nothing later
 //! mistakes it for something the model saw, the files it read are forgotten
 //! by the session's table of seen files.
 
 use std::future::Future;
-use std::panic::AssertUnwindSafe;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 use std::time::Duration;
 
 use cortex_base::{AbsPath, CancelToken, IdCounter, SharedClock};
@@ -52,8 +51,8 @@ use cortex_protocol::event::{
 use cortex_protocol::item::{ToolOutcome, ToolResultItem};
 use cortex_protocol::{CallId, Item, ItemId, Part, SessionId, TurnId};
 use cortex_tools::{
-    BlockingError, Effect, Json, Plan, RunCx, Tool, ToolError, ToolOutput, ToolResult, bound,
-    execute, run_blocking,
+    BlockingError, Concurrency, Effect, Json, Plan, RunCx, Tool, ToolError, ToolOutput, ToolResult,
+    bound, execute, run_blocking,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::AbortHandle;
@@ -61,6 +60,7 @@ use tokio::task::AbortHandle;
 use crate::assistant::EndedCall;
 use crate::config::Workspace;
 use crate::events::Emitter;
+use crate::guarded::Guarded;
 use crate::policy::{Decision, PlannedCall, Policy, Verdict};
 use crate::stats::ToolStatOutcome;
 use crate::toolset::ToolSet;
@@ -100,6 +100,18 @@ pub(crate) enum Report {
     },
 }
 
+/// Where the response is when the round is asked what may start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stage {
+    /// It is still arriving. Only calls without side effects start, and
+    /// only those before `open_call`: the index of the first tool call
+    /// whose block has not ended yet, which could turn out to conflict with
+    /// anything after it.
+    Streaming { open_call: Option<u32> },
+    /// It has ended.
+    Ended,
+}
+
 /// What a planned call touches, kept after the plan itself has gone to the
 /// tool.
 struct Footprint {
@@ -123,7 +135,11 @@ impl Footprint {
         shadow.effects.clone_from(&plan.effects);
         let mut footprint = Self {
             shadow,
-            side_effects: plan.has_side_effects(),
+            // A call that is not scheduled as read-only is taken to change
+            // something, whatever effects it declares: a tool whose author
+            // never said what it does must not start early.
+            side_effects: plan.has_side_effects()
+                || !matches!(plan.concurrency, Concurrency::ReadOnly),
             paths: Vec::new(),
             reads: Vec::new(),
             writes: Vec::new(),
@@ -238,8 +254,8 @@ pub(crate) struct Round {
     cancel: CancelToken,
     tx: UnboundedSender<Report>,
     rx: UnboundedReceiver<Report>,
-    /// The calls of the response that counts, in the order their blocks
-    /// ended.
+    /// The calls of the response that counts, in the model's order: by the
+    /// index of their blocks.
     calls: Vec<Call>,
     cache: Vec<Cached>,
     draining: Vec<Draining>,
@@ -280,10 +296,11 @@ impl Round {
         !self.calls.is_empty()
     }
 
-    /// Whether every call has its result and no discarded run is still to
-    /// report.
+    /// Whether every call has its result, no run is being kept and no
+    /// discarded run is still to report.
     pub(crate) fn is_settled(&self) -> bool {
-        self.draining.is_empty()
+        self.cache.is_empty()
+            && self.draining.is_empty()
             && self
                 .calls
                 .iter()
@@ -405,17 +422,12 @@ impl Round {
                     )),
                     ToolStatOutcome::InvalidArguments,
                 );
-                self.calls.push(call);
+                self.insert(call);
                 return;
             }
         };
 
         let key = format!("{name}\u{0}{arguments}");
-        if let Some(position) = self.cache.iter().position(|cached| cached.key == key) {
-            self.adopt(position, index, call_id, name, arguments);
-            return;
-        }
-
         let mut call = self.new_call(index, call_id, &name, arguments, key, ids);
         match self.env.tools.get(&name) {
             Some(tool) => {
@@ -441,7 +453,17 @@ impl Round {
                 );
             }
         }
-        self.calls.push(call);
+        self.insert(call);
+    }
+
+    /// Puts a call among the others at the place of its block: the calls
+    /// are always in the model's order, whatever order their blocks ended
+    /// in.
+    fn insert(&mut self, call: Call) {
+        let position = self
+            .calls
+            .partition_point(|other| other.index <= call.index);
+        self.calls.insert(position, call);
     }
 
     fn new_call(
@@ -533,44 +555,37 @@ impl Round {
         });
     }
 
-    /// The new response asks for a call that already ran for the response
-    /// before it: the run, or its result, is used again.
-    fn adopt(
-        &mut self,
-        position: usize,
-        index: u32,
-        call_id: CallId,
-        name: String,
-        arguments: Json,
-    ) {
-        let cached = self.cache.remove(position);
-        let state = match cached.outcome {
+    /// The call at `position` may start, and a run of the same call was kept
+    /// from the response before this one: that run, or its result, is used
+    /// in place of a new one.
+    ///
+    /// This happens when the call's turn to start has come, and not when its
+    /// block ends, so a kept run is held back by the same rules as a new
+    /// one: a read the model placed after a write is not answered with what
+    /// was read before the write.
+    fn adopt(&mut self, position: usize, kept: usize) {
+        let cached = self.cache.remove(kept);
+        let call = &mut self.calls[position];
+        // The run reports under its own token and writes its output under
+        // its own item, so the call takes both over.
+        call.token = cached.token;
+        call.item_id = cached.item_id;
+        call.cancel = cached.cancel;
+        call.footprint = Some(cached.footprint);
+        call.shown = true;
+        call.ran = true;
+        call.state = match cached.outcome {
             Some(mut outcome) => {
-                outcome.item.call_id = call_id.clone();
+                outcome.item.call_id = call.call_id.clone();
                 CallState::Done(outcome)
             }
             None => CallState::Running,
         };
-        let call = Call {
-            token: cached.token,
-            index,
-            call_id,
-            item_id: cached.item_id,
-            name,
-            arguments,
-            key: cached.key,
-            tool: None,
-            footprint: Some(cached.footprint),
-            state,
-            cancel: cached.cancel,
-            shown: true,
-            ran: true,
-        };
-        self.emit_started(&call);
+        let call = &self.calls[position];
+        self.emit_started(call);
         if let CallState::Done(outcome) = &call.state {
             self.emit_completed(&outcome.item);
         }
-        self.calls.push(call);
     }
 
     /// Takes one report and changes the round by it. Nothing is started
@@ -605,10 +620,20 @@ impl Round {
         let Some(position) = self.position(token) else {
             return;
         };
+        let call = &self.calls[position];
+        if !matches!(call.state, CallState::Pending) || call.footprint.is_some() {
+            // It already has its plan, or its result.
+            return;
+        }
         let footprint = Footprint::of(&plan);
-        // A kept run that touched the same files is not what the model was
-        // shown: it goes before this call can meet what it left behind.
-        self.discard_where(|cached| overlap(&cached.footprint.paths, &footprint.paths));
+        // A kept run of another call that touched the same files is not what
+        // the model was shown: it goes before this call can meet what it
+        // left behind. A kept run of this same call stays, to be used when
+        // the call's turn comes.
+        let key = call.key.clone();
+        self.discard_where(|cached| {
+            cached.key != key && overlap(&cached.footprint.paths, &footprint.paths)
+        });
         self.calls[position].footprint = Some(footprint);
         if self.cancel.is_cancelled() {
             self.not_run(position);
@@ -639,6 +664,11 @@ impl Round {
         let Some(position) = self.position(token) else {
             return;
         };
+        if !matches!(self.calls[position].state, CallState::Asking) {
+            // The question was withdrawn while the answer was on its way,
+            // and the call has been given its result already.
+            return;
+        }
         if self.cancel.is_cancelled() {
             self.not_run(position);
             return;
@@ -688,12 +718,21 @@ impl Round {
         stat: ToolStatOutcome,
     ) {
         debug_assert!(result.is_bounded(), "every result passes the output policy");
+        if self
+            .asking
+            .as_ref()
+            .is_some_and(|(asked, _)| *asked == token)
+        {
+            // The task that asked ended without an answer: it panicked.
+            // The call gets the error, and the next question may be put.
+            self.asking = None;
+        }
         if let Some(position) = self.position(token) {
             let call = &self.calls[position];
-            debug_assert!(
-                !matches!(call.state, CallState::Done(_)),
-                "a call has exactly one result"
-            );
+            if matches!(call.state, CallState::Done(_)) {
+                debug_assert!(false, "a call has exactly one result");
+                return;
+            }
             let item = self.item(&call.item_id, &call.call_id, &call.name, result, duration);
             if !call.shown {
                 self.emit_started(call);
@@ -752,14 +791,22 @@ impl Round {
         }
     }
 
-    /// Starts whatever may start now. `streaming` is whether the response
-    /// is still arriving, in which case only calls without side effects
-    /// start.
-    pub(crate) fn pump(&mut self, streaming: bool) {
+    /// Starts whatever may start now.
+    pub(crate) fn pump(&mut self, stage: Stage) {
         if self.cancel.is_cancelled() {
             return;
         }
-        self.ask_next();
+        let (streaming, open_call) = match stage {
+            Stage::Streaming { open_call } => (true, open_call),
+            Stage::Ended => {
+                // No more calls are coming: a kept run that none of the
+                // calls still to start asks for was never shown to the
+                // model.
+                self.discard_unclaimed();
+                (false, None)
+            }
+        };
+        self.ask_next(open_call);
 
         let mut running = self
             .calls
@@ -771,6 +818,10 @@ impl Round {
                 break;
             }
             let call = &self.calls[position];
+            if open_call.is_some_and(|open| call.index > open) {
+                // An earlier call is still being written.
+                break;
+            }
             let (CallState::Ready(_), Some(footprint)) = (&call.state, &call.footprint) else {
                 continue;
             };
@@ -802,11 +853,14 @@ impl Round {
 
     /// Puts the next question, if none is open: the first call in order
     /// that needs an answer, once every call before it has been planned.
-    fn ask_next(&mut self) {
+    fn ask_next(&mut self, open_call: Option<u32>) {
         if self.asking.is_some() {
             return;
         }
         for position in 0..self.calls.len() {
+            if open_call.is_some_and(|open| self.calls[position].index > open) {
+                return;
+            }
             match &self.calls[position].state {
                 CallState::Pending if self.calls[position].footprint.is_none() => return,
                 CallState::NeedsAnswer(_) => {
@@ -857,6 +911,11 @@ impl Round {
     }
 
     fn start(&mut self, position: usize) {
+        let key = &self.calls[position].key;
+        if let Some(kept) = self.cache.iter().position(|cached| cached.key == *key) {
+            self.adopt(position, kept);
+            return;
+        }
         let call = &mut self.calls[position];
         let CallState::Ready(plan) = std::mem::replace(&mut call.state, CallState::Running) else {
             return;
@@ -945,6 +1004,19 @@ impl Round {
         self.discard_where(|_| true);
     }
 
+    /// Discards the kept runs that no call still to start asks for. A call
+    /// that has not started yet takes a kept run of the same call when its
+    /// turn comes, so those stay until then.
+    fn discard_unclaimed(&mut self) {
+        let claimed: Vec<String> = self
+            .calls
+            .iter()
+            .filter(|call| !matches!(call.state, CallState::Running | CallState::Done(_)))
+            .map(|call| call.key.clone())
+            .collect();
+        self.discard_where(|cached| !claimed.contains(&cached.key));
+    }
+
     fn discard_where(&mut self, discard: impl Fn(&Cached) -> bool) {
         let (gone, kept): (Vec<Cached>, Vec<Cached>) = std::mem::take(&mut self.cache)
             .into_iter()
@@ -1001,15 +1073,8 @@ impl Round {
         }
     }
 
-    /// Puts the calls in the order of their blocks: the model's order,
-    /// which is the order results are recorded in.
-    pub(crate) fn seal(&mut self) {
-        self.calls.sort_by_key(|call| call.index);
-    }
-
     /// The results, in the model's call order. The round must be settled.
     pub(crate) fn finish(&mut self) -> Vec<Finished> {
-        self.seal();
         std::mem::take(&mut self.calls)
             .into_iter()
             .filter_map(|call| {
@@ -1107,32 +1172,5 @@ impl ToolOutput for OutputDeltas {
                 }),
             }),
         );
-    }
-}
-
-/// Runs a future and turns a panic in it into an error, so that a task
-/// always has something to report
-/// (`docs/architecture/02-runtime.md`, "Panics").
-struct Guarded<F>(Pin<Box<F>>);
-
-impl<F: Future> Future for Guarded<F> {
-    type Output = Result<F::Output, String>;
-
-    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        let inner = self.0.as_mut();
-        // The future is dropped after a panic and never polled again, so
-        // whatever state the panic left in it is not observed.
-        match std::panic::catch_unwind(AssertUnwindSafe(|| inner.poll(context))) {
-            Ok(Poll::Ready(output)) => Poll::Ready(Ok(output)),
-            Ok(Poll::Pending) => Poll::Pending,
-            Err(panic) => {
-                let message = panic
-                    .downcast_ref::<&str>()
-                    .map(|text| (*text).to_owned())
-                    .or_else(|| panic.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "no message".to_owned());
-                Poll::Ready(Err(message))
-            }
-        }
     }
 }

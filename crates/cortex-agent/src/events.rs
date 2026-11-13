@@ -17,6 +17,10 @@ use cortex_protocol::{SessionId, TurnId};
 /// that cannot keep up merges or drops deltas
 /// (`docs/architecture/02-runtime.md`, "Event backpressure"), and never
 /// makes the loop wait.
+///
+/// **It must not call the session's handle.** An event can be emitted while
+/// the session's inbox is locked, so that a change and the event that tells
+/// of it cannot be reordered, and a handle's methods take that lock.
 pub trait EventSink: Send + Sync {
     /// The next event of the session. Its `seq` is one more than the last.
     fn emit(&self, event: SessionEvent);
