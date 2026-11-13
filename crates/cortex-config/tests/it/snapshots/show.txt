@@ -40,4 +40,7 @@ sandbox.protect = [
 ]
 sandbox.write = []
 session.durability = "item"
+shell.env_remove = []
+shell.max_timeout = "30m"
+shell.timeout = "2m"
 tui.theme = "dusk"

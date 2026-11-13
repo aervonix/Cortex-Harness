@@ -195,6 +195,8 @@ pub struct SandboxPolicy {
 
 The harness re-executes itself as a small launcher: `cortex` with a hidden subcommand, the policy passed on a file descriptor, then the command. The launcher is single-threaded and does nothing but apply the policy and `exec` the target. Doing this in a fresh process avoids the hazards of running setup code between `fork` and `exec` in a multi-threaded program. The cost is one extra process start of our own binary per command, which the performance budget covers.
 
+The shell tool has the hook for it since step 11 (`cortex_tools::process::Launcher`): the tool hands the shell's command line to its launcher, and starts what the launcher returns, with the bytes the launcher gives as the standard input of what is started. That input is the file descriptor the policy travels on: the launcher reads it to its end and gives the command a closed input. The process is started as a tree either way, so stopping it and cleaning up after it do not depend on the sandbox.
+
 ### Linux: in the first release
 
 | Mechanism | Used for | Needs |
@@ -202,7 +204,7 @@ The harness re-executes itself as a small launcher: `cortex` with a hidden subco
 | `no_new_privs` | Required by the two below. | Nothing. |
 | Landlock | Filesystem allow-list: read-everything, write only to the listed roots. | Kernel 5.13 or later with Landlock enabled. Rule coverage improves with newer kernels. |
 | seccomp filter | Network off (deny creating internet sockets), plus denying the calls that would let a process undo the sandbox or inspect others (new user namespaces, tracing, and similar). | Nothing. |
-| Process group and death signal | Clean-up. | Nothing. |
+| Session, process group, death signal and the guard process | Clean-up. Built in step 11, in `cortex_sandbox::tree` ([decision 0030](../decisions/0030-process-tree-control-in-cortex-sandbox.md)), and used with or without the sandbox. | Nothing. |
 
 - No root, no helper program, no user namespaces, no container runtime. This matters because Ubuntu 24.04 and later restrict unprivileged user namespaces by default, which breaks the namespace-based approach other tools use unless an administrator installs a profile.
 - **Detection.** At start-up the harness asks the kernel which Landlock version it has. If Landlock is missing or disabled, the sandbox is reported as "not enforcing" in the status line, commands that run are not confined, and the `guided` and `autonomous` levels are refused.
@@ -219,7 +221,7 @@ A namespace-based backend (mount and network namespaces, with protected paths mo
 
 | Mechanism | Used for |
 |---|---|
-| Job Object, kill on close | The whole process tree dies with the command or the harness. Limits on process count and memory are available. |
+| Job Object, kill on close | The whole process tree dies with the command or the harness. Built in step 11 (`cortex_sandbox::tree`). Limits on process count and memory are available, and are not set yet. |
 | Approvals | Every shell command that no rule allows is asked. |
 
 There is no filesystem or network confinement of child processes on Windows in the first release. The status line says "sandbox: off", and the `guided` and `autonomous` levels are not available. Extension scripts are still confined, because their confinement is the script runtime and not the OS.

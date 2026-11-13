@@ -30,8 +30,12 @@ impl Toolbox {
     }
 
     /// The tools that only read: `read`, `list` and `search`, and
-    /// `tool_search` and `tool_call` in front of `registry`. Later build
-    /// steps add the tools that write and run things.
+    /// `tool_search` and `tool_call` in front of `registry`.
+    ///
+    /// A session adds the rest with [`with`](Self::with). The `shell` tool
+    /// is one of them: [`ShellTool`](crate::ShellTool) is made for the
+    /// shell that was found on the machine, which is why it is not made
+    /// here. The tools that write files arrive with their build step.
     #[must_use]
     pub fn read_only(registry: Arc<ToolRegistry>) -> Self {
         Self::new()

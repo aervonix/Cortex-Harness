@@ -79,7 +79,9 @@ fn the_documented_classes_hold() {
         "profile",
         "log.level",
         "rpc.*",
-        "shell.*",
+        // The program that runs every command, and how it is started.
+        "shell.program",
+        "shell.args",
         // Proxy and certificate settings.
         "http.*",
         "models.*",
@@ -92,6 +94,8 @@ fn the_documented_classes_hold() {
         "limits.session.tokens",
         "limits.day.requests",
         "limits.day.time",
+        // How long a command may ask to run.
+        "shell.max_timeout",
     ] {
         assert_eq!(class_of(key), Trust::TightenOnly, "{key}");
     }

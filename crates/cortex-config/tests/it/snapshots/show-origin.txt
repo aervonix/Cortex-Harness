@@ -40,4 +40,7 @@ sandbox.protect = [
 ]
 sandbox.write = []                          # default
 session.durability = "item"                 # default
+shell.env_remove = []                       # default
+shell.max_timeout = "30m"                   # default
+shell.timeout = "2m"                        # default
 tui.theme = "dusk"                          # user: ~/cortex/config.toml:36

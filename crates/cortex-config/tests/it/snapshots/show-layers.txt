@@ -24,6 +24,9 @@ sandbox.network = "off"
 sandbox.protect = []
 sandbox.write = []
 session.durability = "item"
+shell.env_remove = []
+shell.max_timeout = "30m"
+shell.timeout = "2m"
 
 ## managed
 managed.locked = ["sandbox.enabled"]  # managed: ~/managed/config.toml:3
