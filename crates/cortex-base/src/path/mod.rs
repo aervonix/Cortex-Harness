@@ -69,6 +69,9 @@ use lexical::{Part, Root};
 
 pub use resolve::{PathOptions, PathResolver, ResolvedPath};
 
+/// How many hexadecimal digits of the hash a project key keeps: 128 bits.
+const PROJECT_KEY_DIGITS: usize = 32;
+
 /// Which operating system's rules a path follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PathStyle {
@@ -402,6 +405,30 @@ impl AbsPath {
     #[must_use]
     pub fn key(&self) -> &str {
         self.folded.as_deref().unwrap_or(&self.text)
+    }
+
+    /// The key that names the project whose workspace root is this path:
+    /// the first 32 lowercase hexadecimal digits (128 bits) of the
+    /// [`ContentHash`](crate::ContentHash) of [`key`](Self::key).
+    ///
+    /// Sessions, stored approvals, project trust, statistics and the
+    /// project's knowledge are all filed under it
+    /// (`docs/architecture/07-sessions-and-context.md`, "On-disk layout"), so
+    /// two projects must never share one: the hash is one nobody can make
+    /// collide, and 128 bits of it leave a collision between two real
+    /// workspaces out of reach. Two spellings of one Windows path have one
+    /// key, because the comparison form is hashed. The key says nothing
+    /// readable about the path, so a directory listing does not show the
+    /// names of a user's projects.
+    ///
+    /// Call it on the **resolved** root of a workspace
+    /// ([`PathResolver::root`]), so that a link to a workspace and the
+    /// workspace itself are one project.
+    #[must_use]
+    pub fn project_key(&self) -> cortex_protocol::ProjectKey {
+        let mut hex = crate::ContentHash::of(self.key().as_bytes()).to_hex();
+        hex.truncate(PROJECT_KEY_DIGITS);
+        cortex_protocol::ProjectKey::new(hex)
     }
 
     /// The names after the root, in order. Empty for a root.

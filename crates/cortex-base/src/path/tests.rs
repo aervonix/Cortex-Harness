@@ -1208,3 +1208,33 @@ fn property_folding_agrees_with_comparison() {
         },
     );
 }
+
+#[test]
+fn a_project_key_is_128_bits_of_the_paths_hash() {
+    let root = abs("/srv/dev/project", Posix);
+    let key = root.project_key();
+    assert_eq!(key.as_str().len(), 32);
+    assert!(
+        key.as_str()
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "{key}"
+    );
+    // Pinned: data is filed under the key, so it must never change for a
+    // path. This is the start of the path's SHA-256.
+    assert_eq!(key.as_str(), "43bdcbc5c0603ceb6f23b67b57b73863");
+    assert_ne!(abs("/srv/dev/project2", Posix).project_key(), key);
+    assert_ne!(abs("/srv/dev", Posix).project_key(), key);
+}
+
+#[test]
+fn two_spellings_of_one_windows_root_have_one_project_key() {
+    let first = abs(r"C:\Work\Project", Windows);
+    let second = abs("c:/work/PROJECT/", Windows);
+    assert_eq!(first.project_key(), second.project_key());
+    // A POSIX path that differs only in case is another project.
+    assert_ne!(
+        abs("/work/project", Posix).project_key(),
+        abs("/work/Project", Posix).project_key()
+    );
+}
