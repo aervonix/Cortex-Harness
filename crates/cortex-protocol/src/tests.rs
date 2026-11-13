@@ -134,6 +134,7 @@ fn the_golden_values_round_trip_exactly() {
             Some("Lease") => drop(round_trip::<Lease>(value)),
             Some("Message") => drop(round_trip::<crate::Message>(value)),
             Some("ApprovalDetail") => drop(round_trip::<ApprovalDetail>(value)),
+            Some("AddedRule") => drop(round_trip::<crate::methods::AddedRule>(value)),
             Some("TurnInterruptParams") => {
                 let params = round_trip::<TurnInterruptParams>(value);
                 assert!(params.now, "the transcript has the ordinary interrupt");
