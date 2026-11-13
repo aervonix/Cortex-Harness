@@ -79,7 +79,7 @@ The reference harnesses load extensions into the agent process with the user's f
 
 | Mitigation | Effect |
 |---|---|
-| Credentials are a `Secret` type. It prints as `[redacted]`, and it cannot be serialised. | The harness's own keys cannot reach a log or session by accident. A test greps all output of the test suite for the test key. |
+| Credentials are a `Secret` type. It prints as `[redacted]`, and it cannot be serialised. | The harness's own keys cannot reach a log or session by accident. Tests check it where a key is handled: no `Debug` or `Display` form of a secret, of a credential, of a store or of a store's error contains the test key, and an error about a malformed credentials file names a line number and never the line. A check of the whole test suite's output for the test key is planned, and is not built yet. |
 | Request logging prints an allow-list of headers. Bodies are logged only at debug level, truncated and filtered. | Keys in headers are never logged. |
 | Credentials are stored in the OS keychain or an owner-only file, never in the configuration file, and are not readable by child processes through the environment. | |
 | Session logs, artifacts, checkpoints and log files are created owner-only: mode `0600` on Linux, and on Windows an access list with the user alone and inheritance off, given to the call that creates the file ([decision 0029](decisions/0029-owner-only-files-on-windows.md)). | Other local users cannot read them. Not on a file system that keeps no permissions, such as FAT: there the harness reports that the file is not private. |

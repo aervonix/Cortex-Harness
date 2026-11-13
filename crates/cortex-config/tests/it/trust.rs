@@ -43,11 +43,14 @@ fn the_documented_classes_hold() {
     for key in [
         "model.main",
         "model.effort",
-        "model.speed",
+        "model.speed_fallback",
         "retry.attempts",
     ] {
         assert_eq!(class_of(key), Trust::Preference, "{key}");
     }
+    // A speed tier other than `standard` raises what the user spends.
+    assert_eq!(class_of("model.speed"), Trust::BySpeed);
+    assert_eq!(class_of("model.roles.*.speed"), Trust::BySpeed);
     // Can run code.
     for key in ["hooks.*", "extensions.*", "mcp.*", "verify.*"] {
         assert_eq!(class_of(key), Trust::RunsCode, "{key}");
@@ -168,7 +171,6 @@ fn an_untrusted_project_gets_its_preferences_and_nothing_that_could_hurt() {
 
     // Preferences apply, and so do the restrictions it adds.
     assert_eq!(value(&loaded, "model.main"), "\"project-model\"");
-    assert_eq!(value(&loaded, "model.speed"), "\"fast\"");
     assert_eq!(value(&loaded, "sandbox.protect"), "[\"vendor\"]");
     let rules: Vec<(String, &str)> = loaded
         .settings
@@ -203,6 +205,8 @@ fn an_untrusted_project_gets_its_preferences_and_nothing_that_could_hurt() {
         ("usage.refresh", "(not set)"),
         ("log.level", "(not set)"),
         ("compat.mcp", "true"),
+        // A fast tier costs about twice as much per token.
+        ("model.speed", "\"standard\""),
     ] {
         assert_eq!(value(&loaded, key), default, "{key}");
         assert_eq!(layer_of(&loaded, key), "default", "{key}");
@@ -230,6 +234,7 @@ fn an_untrusted_project_gets_its_preferences_and_nothing_that_could_hurt() {
                 TrustClass::RunsCode,
                 Some(48)
             ),
+            ("model.speed".to_owned(), TrustClass::RaisesCost, Some(4)),
             (
                 "permissions.rules".to_owned(),
                 TrustClass::WidensAccess,
@@ -248,7 +253,7 @@ fn an_untrusted_project_gets_its_preferences_and_nothing_that_could_hurt() {
         ]
     );
     assert_eq!(
-        loaded.withheld[2]
+        loaded.withheld[3]
             .value
             .get("match")
             .and_then(|m| m.as_str()),
@@ -292,6 +297,7 @@ fn trust_turns_on_what_needs_trust_and_never_what_is_the_users_alone() {
     let loaded = machine.trusted().load();
 
     assert!(loaded.withheld.is_empty(), "{:?}", loaded.withheld);
+    assert_eq!(value(&loaded, "model.speed"), "\"fast\"");
     assert_eq!(value(&loaded, "sandbox.network"), "\"full\"");
     assert_eq!(value(&loaded, "sandbox.write"), "[\"/\"]");
     assert_eq!(loaded.settings.permissions.rules.len(), 3);
@@ -464,4 +470,90 @@ fn a_project_cannot_select_a_profile() {
     let loaded = machine.load();
     assert_eq!(value(&loaded, "permissions.mode"), "\"unrestricted\"");
     assert_eq!(layer_of(&loaded, "profile"), "command-line");
+}
+
+/// Zac's decision of 2026-11-13: a fast tier costs about twice as much per
+/// token, so an untrusted repository must not be able to turn one on.
+#[test]
+fn a_project_raises_the_speed_only_when_trusted() {
+    let mut machine = Machine::new("trust_speed");
+    machine.layer(
+        LayerKind::Project,
+        "[model]\nspeed = \"fast\"\n[model.roles.fast]\nspeed = \"flex\"\n\
+         [model.roles.judge]\nspeed = \"standard\"\n",
+    );
+    let loaded = machine.load();
+    assert_eq!(value(&loaded, "model.speed"), "\"standard\"");
+    assert_eq!(value(&loaded, "model.roles.fast.speed"), "(not set)");
+    // Asking for `standard` is asking for nothing more.
+    assert_eq!(value(&loaded, "model.roles.judge.speed"), "\"standard\"");
+    let held: Vec<(String, TrustClass)> = loaded
+        .withheld
+        .iter()
+        .map(|held| (held.key.to_string(), held.class))
+        .collect();
+    assert_eq!(
+        held,
+        [
+            ("model.roles.fast.speed".to_owned(), TrustClass::RaisesCost),
+            ("model.speed".to_owned(), TrustClass::RaisesCost),
+        ]
+    );
+    assert!(TrustClass::RaisesCost.needs_trust());
+    assert_eq!(TrustClass::RaisesCost.as_str(), "raises cost");
+    assert!(loaded.diagnostics.is_empty());
+
+    let loaded = machine.trusted().load();
+    assert_eq!(value(&loaded, "model.speed"), "\"fast\"");
+    assert_eq!(value(&loaded, "model.roles.fast.speed"), "\"flex\"");
+    assert!(loaded.withheld.is_empty());
+
+    // A project may always bring the speed down.
+    let machine = Machine::new("trust_speed_down");
+    machine
+        .layer(LayerKind::User, "[model]\nspeed = \"fast\"\n")
+        .layer(LayerKind::Project, "[model]\nspeed = \"standard\"\n");
+    let loaded = machine.load();
+    assert_eq!(value(&loaded, "model.speed"), "\"standard\"");
+    assert_eq!(layer_of(&loaded, "model.speed"), "project");
+}
+
+/// The sandbox's writable paths are joined across layers, and joining must
+/// not be a way in: an untrusted project's entries are held back one by
+/// one, and the user's stay.
+#[test]
+fn joining_lists_does_not_let_an_untrusted_project_widen_the_sandbox() {
+    let mut machine = Machine::new("trust_joined_write");
+    machine
+        .layer(LayerKind::User, "[sandbox]\nwrite = [\"~/scratch\"]\n")
+        .layer(LayerKind::Project, "[sandbox]\nwrite = [\"/\", \"/etc\"]\n")
+        .layer(LayerKind::ProjectLocal, "[sandbox]\nwrite = [\"/var\"]\n");
+    let loaded = machine.load();
+    assert_eq!(value(&loaded, "sandbox.write"), "[\"~/scratch\"]");
+    assert_eq!(loaded.settings.sandbox.write, ["~/scratch"]);
+    let held: Vec<String> = loaded
+        .withheld
+        .iter()
+        .map(|held| format!("{} = {}", held.key, held.value))
+        .collect();
+    assert_eq!(
+        held,
+        [
+            "sandbox.write = \"/\"",
+            "sandbox.write = \"/etc\"",
+            "sandbox.write = \"/var\""
+        ]
+    );
+    assert!(
+        loaded
+            .withheld
+            .iter()
+            .all(|held| held.class == TrustClass::WidensAccess)
+    );
+
+    let loaded = machine.trusted().load();
+    assert_eq!(
+        value(&loaded, "sandbox.write"),
+        "[\"~/scratch\", \"/\", \"/etc\", \"/var\"]"
+    );
 }

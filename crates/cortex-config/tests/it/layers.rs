@@ -148,7 +148,7 @@ const CASES: &[Case] = &[
         managed: "",
         user: "[model]\nmain = \"big\"\neffort = \"low\"\n[model.roles.fast]\nspeed = \"fast\"",
         project: "[model]\neffort = \"high\"\n[model.roles.fast]\neffort = \"low\"",
-        local: "[model.roles.judge]\nspeed = \"flex\"",
+        local: "[model.roles.judge]\neffort = \"max\"",
         profile: None,
         env: &[],
         cli: &[],
@@ -157,7 +157,7 @@ const CASES: &[Case] = &[
             ("model.effort", "\"high\"", "project"),
             ("model.roles.fast.speed", "\"fast\"", "user"),
             ("model.roles.fast.effort", "\"low\"", "project"),
-            ("model.roles.judge.speed", "\"flex\"", "project-local"),
+            ("model.roles.judge.effort", "\"max\"", "project-local"),
             // A key no layer names keeps its default.
             ("model.speed", "\"standard\"", "default"),
         ],

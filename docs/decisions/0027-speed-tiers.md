@@ -98,7 +98,9 @@ Two more facts shape the design:
 | `model.speed_wait` | `"20s"` | The longest one request waits in place for a tier, in total, before it falls back. `"0s"` never waits. |
 | `model.speed_cooldown` | `"10m"` | How long requests stay at `standard` after a fallback, when the provider gives no time. |
 
-The names sit under `[model]`, beside the model and the reasoning level, because a speed is a property of how a model is run, and `model.roles.<role>` mirrors `roles.<role>` on the wire. The three fallback settings are flat keys, so that `-c model.speed_fallback=false` reads as it should. A project's file may set them, as it may set the model: all five are classed as preferences. The defaults of the last three are the ones step 5 settled for the retry layer.
+The names sit under `[model]`, beside the model and the reasoning level, because a speed is a property of how a model is run, and `model.roles.<role>` mirrors `roles.<role>` on the wire. The three fallback settings are flat keys, so that `-c model.speed_fallback=false` reads as it should. The defaults of the last three are the ones step 5 settled for the retry layer.
+
+**What a project's file may set** (the owner's decision, 2026-11-13). `standard` is a preference, for the session and for a role. Any other tier needs the user to have trusted the project, and until then is held back and listed with the other settings that wait for trust: a fast tier costs about twice as much per token, and an untrusted repository must not be able to raise what its user spends. A project can always bring the speed down. The three fallback settings are preferences.
 
 **Open, for the steps that need them:**
 

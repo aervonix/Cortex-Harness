@@ -170,8 +170,10 @@ settings! {
         /// The session's speed tier, which the main role runs at:
         /// `standard`, `fast` where the model offers it, or a provider's own
         /// tier name. The utility roles do not follow it: they run at
-        /// `standard` unless `model.roles.<role>.speed` says otherwise.
-        [Preference, Now]
+        /// `standard` unless `model.roles.<role>.speed` says otherwise. A
+        /// project's file may set `standard`; any other tier costs more,
+        /// and waits for the user to trust the project.
+        [BySpeed, Now]
         pub speed: Speed = Speed::Standard,
         /// Whether a request that a speed tier refuses is sent again at
         /// `standard`. When off, such a refusal is an ordinary rate limit.
@@ -203,7 +205,9 @@ settings! {
         [Preference, NextEpoch]
         pub effort: Option<String>,
         /// The role's speed tier. For `main` it overrides `model.speed`.
-        [Preference, Now]
+        /// From a project's file, a tier other than `standard` waits for
+        /// trust.
+        [BySpeed, Now]
         pub speed: Option<Speed>,
     }
 }

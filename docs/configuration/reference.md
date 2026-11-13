@@ -34,13 +34,13 @@ Every key a Cortex-Harness configuration file may hold. The design is in [archit
 | `model.effort` | text | not set | preference | next epoch | The reasoning level of the main role: one of the model's own levels, or `minimal`, `low`, `medium`, `high` or `max`. |
 | `model.reasoning` | `"summary"`, `"none"` | `"summary"` | preference | next epoch | How much of the model's reasoning is shown. |
 | `model.max_output` | whole number, 1 to 10000000 | not set | preference | next epoch | The most output tokens one response may have. Without it, the model's own limit applies. |
-| `model.speed` | text | `"standard"` | preference | at once | The session's speed tier, which the main role runs at: `standard`, `fast` where the model offers it, or a provider's own tier name. The utility roles do not follow it: they run at `standard` unless `model.roles.<role>.speed` says otherwise. |
+| `model.speed` | text | `"standard"` | by value: `standard` is a preference, any other tier raises cost | at once | The session's speed tier, which the main role runs at: `standard`, `fast` where the model offers it, or a provider's own tier name. The utility roles do not follow it: they run at `standard` unless `model.roles.<role>.speed` says otherwise. A project's file may set `standard`; any other tier costs more, and waits for the user to trust the project. |
 | `model.speed_fallback` | `true` or `false` | `true` | preference | at once | Whether a request that a speed tier refuses is sent again at `standard`. When off, such a refusal is an ordinary rate limit. |
 | `model.speed_wait` | length of time | `"20s"` | preference | at once | The longest one request waits in place for a speed tier before it falls back to `standard`. `"0s"` never waits. |
 | `model.speed_cooldown` | length of time | `"10m"` | preference | at once | How long requests stay at `standard` after a fallback, when the provider does not say when the tier is available again. |
 | `model.roles.*.provider` | text | not set | preference | next epoch | The provider that serves the role's model. Needed only when two providers have a model with the same name. |
 | `model.roles.*.effort` | text | not set | preference | next epoch | The role's reasoning level. For `main` it overrides `model.effort`. |
-| `model.roles.*.speed` | text | not set | preference | at once | The role's speed tier. For `main` it overrides `model.speed`. |
+| `model.roles.*.speed` | text | not set | by value: `standard` is a preference, any other tier raises cost | at once | The role's speed tier. For `main` it overrides `model.speed`. From a project's file, a tier other than `standard` waits for trust. |
 
 ## `[providers]`
 

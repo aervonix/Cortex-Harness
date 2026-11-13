@@ -82,6 +82,10 @@ pub enum Trust {
     /// The sandbox's network setting: `off` is a preference, `full` widens
     /// access.
     ByNetwork,
+    /// A speed tier: `standard` is a preference, and any other tier raises
+    /// cost. A fast tier costs about twice as much per token, and an
+    /// untrusted repository must not be able to raise what its user spends.
+    BySpeed,
     /// A limit: a value at or below the one already in effect is a
     /// preference, and so is the first limit where there was none. A higher
     /// one is the user's alone.
@@ -97,6 +101,8 @@ pub enum TrustClass {
     RunsCode,
     /// Applied after trust: it can widen access.
     WidensAccess,
+    /// Applied after trust: it can raise what the user spends.
+    RaisesCost,
     /// Never applied from a project.
     UserOnly,
 }
@@ -109,8 +115,16 @@ impl TrustClass {
             Self::Preference => "preference",
             Self::RunsCode => "runs code",
             Self::WidensAccess => "widens access",
+            Self::RaisesCost => "raises cost",
             Self::UserOnly => "user only",
         }
+    }
+
+    /// Whether a project's value of this class waits for the user to trust
+    /// the project.
+    #[must_use]
+    pub fn needs_trust(self) -> bool {
+        matches!(self, Self::RunsCode | Self::WidensAccess | Self::RaisesCost)
     }
 }
 
@@ -155,6 +169,10 @@ impl Trust {
                 Some("off") => TrustClass::Preference,
                 _ => TrustClass::WidensAccess,
             },
+            Self::BySpeed => match value.as_str() {
+                Some("standard") => TrustClass::Preference,
+                _ => TrustClass::RaisesCost,
+            },
             Self::TightenOnly => {
                 match (types::magnitude(value), current.and_then(types::magnitude)) {
                     (Some(_), None) => TrustClass::Preference,
@@ -181,6 +199,7 @@ impl Trust {
                  widens access, above it user only"
             }
             Self::ByNetwork => "by value: `off` is a preference, `full` widens access",
+            Self::BySpeed => "by value: `standard` is a preference, any other tier raises cost",
             Self::TightenOnly => {
                 "tighten only: a lower limit is a preference, a higher one user only"
             }

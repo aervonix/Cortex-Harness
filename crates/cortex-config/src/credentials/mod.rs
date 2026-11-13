@@ -139,6 +139,15 @@ pub trait CredentialStore: fmt::Debug + Send + Sync {
     /// service. Paths under the home directory are written with `~`.
     fn describe(&self, env: &Env) -> String;
 
+    /// Something the user should know about the store itself, as a
+    /// sentence, or `None` when all is well. The file store says here that
+    /// its file can be opened by other users. `cortex auth status` and the
+    /// diagnostics show it.
+    fn warning(&self, env: &Env) -> Option<String> {
+        let _ = env;
+        None
+    }
+
     /// The stored credential of a provider, or `None` when there is none.
     ///
     /// # Errors
@@ -282,6 +291,9 @@ pub struct CredentialStatus {
     /// Whether a stored credential is there and is not the one in use,
     /// because the environment variable or a flag comes first.
     pub stored_but_unused: bool,
+    /// What the store has to say about itself: a credentials file that
+    /// other users can open.
+    pub store_warning: Option<String>,
 }
 
 /// Everything a lookup needs.
@@ -336,6 +348,7 @@ pub fn status(lookup: Lookup<'_>) -> Result<CredentialStatus, CredentialError> {
         stored_but_unused: stored && earlier.is_some(),
         active: earlier.or_else(|| stored.then(|| CredentialSource::Store(lookup.store.kind()))),
         stored,
+        store_warning: lookup.store.warning(lookup.env),
     })
 }
 

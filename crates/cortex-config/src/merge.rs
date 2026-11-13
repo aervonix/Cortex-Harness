@@ -6,8 +6,9 @@
 //! 1. **A lock wins.** A key the managed file locks is not changed by any
 //!    layer above the managed file.
 //! 2. **A project's value passes the trust rules.** A harmless preference is
-//!    applied. A value that can run code or widen access is applied only in
-//!    a trusted project, and is otherwise held back and listed. A value that
+//!    applied. A value that can run code, widen access or raise cost is
+//!    applied only in a trusted project, and is otherwise held back and
+//!    listed. A value that
 //!    is the user's alone is ignored, with a warning.
 //! 3. **Then the value is applied.** Tables merge key by key. A scalar or a
 //!    list replaces what was there. The lists marked as joined in the
@@ -235,8 +236,12 @@ impl Merger {
                 });
                 false
             }
-            TrustClass::RunsCode | TrustClass::WidensAccess if self.trusted => true,
-            TrustClass::RunsCode | TrustClass::WidensAccess => {
+            TrustClass::RunsCode | TrustClass::WidensAccess | TrustClass::RaisesCost
+                if self.trusted =>
+            {
+                true
+            }
+            TrustClass::RunsCode | TrustClass::WidensAccess | TrustClass::RaisesCost => {
                 self.withheld.push(Withheld {
                     key: key.clone(),
                     class,

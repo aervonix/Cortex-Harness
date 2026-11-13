@@ -67,7 +67,7 @@ match = "**/.env*"
 action = "deny"
 
 [profiles.review]
-model.speed = "fast"
+model.reasoning = "none"
 "#;
 
 const LOCAL: &str = r#"[retry]
@@ -140,7 +140,7 @@ fn one_origin_reads_as_the_design_page_shows_it() {
         "profile review (user: ~/cortex/config.toml:32)"
     );
     assert_eq!(
-        origin("model.speed"),
+        origin("model.reasoning"),
         "profile review (project: ~/work/app/.cortex/config.toml:10)"
     );
     assert_eq!(

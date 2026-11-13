@@ -219,6 +219,21 @@ impl CredentialStore for FileStore {
         format!("the file {}", env.display_path(&self.path))
     }
 
+    fn warning(&self, env: &Env) -> Option<String> {
+        match self.is_private() {
+            Ok(Some(false)) => Some(format!(
+                "the credentials file {} can be opened by other users of this machine. It is \
+                 made private the next time a key is stored; until then, restrict it yourself",
+                env.display_path(&self.path)
+            )),
+            Ok(Some(true) | None) => None,
+            Err(error) => Some(format!(
+                "could not check who can open the credentials file {}: {error}",
+                env.display_path(&self.path)
+            )),
+        }
+    }
+
     fn get(&self, provider: &str) -> Result<Option<Secret>, CredentialError> {
         check_provider(provider)?;
         let Some(table) = self.read()? else {
