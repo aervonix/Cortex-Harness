@@ -7,6 +7,7 @@
 //! | [`conversation`] | The recorded conversations: that each request is what the builder writes today, that each begins with the one before it byte for byte, and that what the decoder put together is what was sent back. |
 //! | [`classify`] | The classification table, row by row, and the headers. |
 //! | [`live`] | By hand only: the smoke test and the recorder, against the real API. |
+//! | [`measure`] | By hand only: what building a request and decoding a response cost. |
 //!
 //! # The scenarios
 //!
@@ -22,6 +23,7 @@ pub(crate) mod conversation;
 pub(crate) mod decode;
 #[cfg(feature = "http")]
 pub(crate) mod live;
+pub(crate) mod measure;
 pub(crate) mod request;
 
 use std::collections::BTreeMap;

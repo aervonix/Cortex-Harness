@@ -52,7 +52,7 @@ The model's own latency is not ours. What the harness adds to it is.
 
 | Budget | Limit | Measured basis |
 |---|---|---|
-| Prompt submitted → request handed to the network stack, with a 200,000-token history | ≤ 10 ms (95th percentile) | To be measured in step 15. Serialising a request of that size is a few milliseconds. |
+| Prompt submitted → request handed to the network stack, with a 200,000-token history | ≤ 10 ms (95th percentile) | The whole path is to be measured in step 15. Its largest part was measured in step 14: building the request body for the `anthropic-messages` protocol (`crates/cortex-llm/tests/it/anthropic/measure.rs`, release build, on the desktop, medians of 15). A history of 3,000 messages, with a stored block for every part, is a body of 962 KB, about what 200,000 tokens of conversation come to, and takes 1.0 ms to build. 300 messages (100 KB) take 0.1 ms and 30 messages 12 µs: about a microsecond a kilobyte, checking every stored block included. Decoding goes the other way at 180 to 380 MB a second: a response of 10 KB and 69 events in 27 µs. |
 | First response byte received → first frame that shows it | ≤ 20 ms (95th percentile) | Prototype: median 8.1 to 8.6 ms, 99th percentile 16.6 to 16.9 ms. It is bounded by the 60 frames-per-second cap. |
 | Connection set-up on the first request of a session | 0, when the session has been open for 300 ms | By design: the connection is opened ahead in the background. |
 | Tool call arguments complete → read-only tool started | ≤ 1 ms | By design: planned as the block ends. |

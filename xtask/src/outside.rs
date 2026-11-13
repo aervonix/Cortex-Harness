@@ -163,6 +163,7 @@ pub(crate) fn fuzz(arguments: &[String]) -> Result<()> {
 
     let root = workspace::root();
     let package = root.join("fuzz");
+    let host = nightly_host()?;
     let mut failed = Vec::new();
     for (target, fixtures) in FUZZ_TARGETS {
         if !wanted.is_empty() && !wanted.contains(target) {
@@ -177,7 +178,11 @@ pub(crate) fn fuzz(arguments: &[String]) -> Result<()> {
         // `cargo fuzz` builds with a nightly compiler, whatever toolchain
         // this command itself was started with.
         let status = Command::new("cargo")
-            .args(["+nightly", "fuzz", "run", target, "--"])
+            // The target is named. `cargo fuzz` otherwise builds for the
+            // target it was itself built for, and a prebuilt `cargo-fuzz`
+            // is a static binary for a target the fuzzer cannot use: the
+            // sanitizer does not work with a statically linked C library.
+            .args(["+nightly", "fuzz", "run", "--target", &host, target, "--"])
             .arg(format!("-max_total_time={seconds}"))
             // A stream event is a few hundred bytes. Inputs up to this size
             // hold a whole response of several blocks.
@@ -211,6 +216,35 @@ pub(crate) fn fuzz(arguments: &[String]) -> Result<()> {
             failed.join(", ")
         ))
     }
+}
+
+/// The target the nightly compiler builds for when none is named: the
+/// machine's own.
+fn nightly_host() -> Result<String> {
+    let output = Command::new("rustc")
+        .args(["+nightly", "-vV"])
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .env_remove("RUSTC")
+        .output()
+        .map_err(|error| format!("could not run `rustc +nightly -vV`: {error}"))?;
+    if !output.status.success() {
+        return Err(
+            "`rustc +nightly -vV` failed. The fuzzer needs a nightly toolchain: `rustup \
+             toolchain install nightly`."
+                .to_owned(),
+        );
+    }
+    host_of(&String::from_utf8_lossy(&output.stdout))
+        .ok_or_else(|| "`rustc +nightly -vV` did not name a host".to_owned())
+}
+
+/// The host target in the output of `rustc -vV`.
+fn host_of(version: &str) -> Option<String> {
+    version
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .map(|host| host.trim().to_owned())
+        .filter(|host| !host.is_empty())
 }
 
 /// Copies the response streams of a fixture directory into a target's
@@ -258,6 +292,15 @@ mod tests {
         let failed = "running 1 test\ntest result: FAILED. 0 passed; 1 failed; 0 ignored;\n";
         assert!(!ran_one_test(failed));
         assert!(!ran_one_test(""));
+    }
+
+    #[test]
+    fn the_host_is_read_from_the_compilers_own_report() {
+        let report = "rustc 1.102.0-nightly (8eb778d04 2026-11-12)\nbinary: rustc\n\
+                      host: x86_64-unknown-linux-gnu\nrelease: 1.102.0-nightly\n";
+        assert_eq!(host_of(report).as_deref(), Some("x86_64-unknown-linux-gnu"));
+        assert_eq!(host_of("rustc 1.99.1\n"), None);
+        assert_eq!(host_of("host: \n"), None);
     }
 
     #[test]
