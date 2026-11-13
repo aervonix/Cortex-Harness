@@ -31,6 +31,7 @@ use crate::auth::{AuthMethod, NoAuth};
 use crate::error::{ProviderError, TransportErrorKind, code};
 use crate::event::{CooldownChange, EventSink, ModelEvent, RetryInfo, SpeedMove};
 use crate::http::HttpResponse;
+use crate::image::{ImageSource, Inlined, inline_images};
 use crate::protocol::{HttpFailure, Protocol, ProviderInfo};
 use crate::request::ModelRequest;
 use crate::retry::{Decision, RetryPolicy, RetryState};
@@ -76,6 +77,7 @@ struct Inner {
     timer: Arc<dyn Timer>,
     rng: Mutex<Box<dyn Rng>>,
     cooldowns: SpeedCooldowns,
+    images: Option<Arc<dyn ImageSource>>,
 }
 
 /// Puts a [`ProviderClient`] together.
@@ -90,6 +92,7 @@ pub struct ProviderClientBuilder {
     policy: RetryPolicy,
     rng: Box<dyn Rng>,
     cooldowns: Option<SpeedCooldowns>,
+    images: Option<Arc<dyn ImageSource>>,
 }
 
 impl ProviderClientBuilder {
@@ -123,6 +126,16 @@ impl ProviderClientBuilder {
         self
     }
 
+    /// Where stored images are loaded from. A request can refer to an
+    /// image by the artifact that holds it; the client puts the image's
+    /// bytes in the request it sends (`crate::image`). Without a source, a
+    /// request that refers to a stored image fails.
+    #[must_use]
+    pub fn images(mut self, images: Arc<dyn ImageSource>) -> Self {
+        self.images = Some(images);
+        self
+    }
+
     /// The client.
     #[must_use]
     pub fn build(self) -> ProviderClient {
@@ -140,6 +153,7 @@ impl ProviderClientBuilder {
                 timer: self.timer,
                 rng: Mutex::new(self.rng),
                 cooldowns,
+                images: self.images,
             }),
         }
     }
@@ -166,6 +180,7 @@ impl ProviderClient {
             policy: RetryPolicy::default(),
             rng: Box::new(SystemRng::new()),
             cooldowns: None,
+            images: None,
         }
     }
 
@@ -266,6 +281,21 @@ async fn run(
         } else {
             sent = Speed::Standard;
             out.emit(moved(SpeedFallbackReason::NotOffered, None)).await;
+        }
+    }
+
+    // Images that are stored as artifacts are loaded once, for every
+    // attempt, into this copy of the request.
+    match inline_images(&mut request, inner.images.as_deref(), &cancel).await {
+        Inlined::Done => {}
+        Inlined::Cancelled => {
+            out.emit(ModelEvent::Error(ProviderError::interrupted()))
+                .await;
+            return;
+        }
+        Inlined::Failed(error) => {
+            out.emit(ModelEvent::Error(error)).await;
+            return;
         }
     }
 

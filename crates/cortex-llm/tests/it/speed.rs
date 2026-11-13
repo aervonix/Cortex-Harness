@@ -221,7 +221,7 @@ fn a_short_wait_is_waited_in_place_at_the_same_speed() {
 
 #[test]
 fn a_long_wait_falls_back_to_standard_at_once_and_starts_a_cooldown() {
-    let refused = tier_refusal(429, "rate_limit").header("retry-after", "45");
+    let refused = tier_refusal(429, "rate_limit").header("retry-after", "90");
     let harness = Harness::new([refused, hello(), hello(), hello(), hello()]);
     let events = harness.run_at(Speed::Fast);
     assert_well_formed(&events);
@@ -243,7 +243,7 @@ fn a_long_wait_falls_back_to_standard_at_once_and_starts_a_cooldown() {
     assert_eq!(harness.speeds_sent(), ["fast", "standard"]);
 
     // The cooldown ends when the provider said the tier is back.
-    let until = at("2026-11-12T10:00:45Z");
+    let until = at("2026-11-12T10:01:30Z");
     let change = fallbacks(&events)[0];
     assert_eq!(change.by, SpeedFallbackBy::Harness);
     assert_eq!(change.reason, SpeedFallbackReason::RateLimited);
@@ -268,7 +268,7 @@ fn a_long_wait_falls_back_to_standard_at_once_and_starts_a_cooldown() {
 
     // During the cooldown a request that asks for fast is sent at standard,
     // and says why.
-    harness.clock.advance(secs(44));
+    harness.clock.advance(secs(89));
     let events = harness.run_at(Speed::Fast);
     assert_eq!(names(&events)[0], "speed_fallback");
     let change = fallbacks(&events)[0];
@@ -368,11 +368,77 @@ fn the_short_wait_is_a_budget_for_the_whole_request() {
             "end"
         ]
     );
-    // The cooldown runs from the fallback, for the wait the provider named.
+    // The cooldown runs from the fallback, 16 s in. The provider named 8 s,
+    // which is under the shortest cooldown, so it lasts a minute.
     assert_eq!(
         fallbacks(&events)[0].cooldown_until,
-        Some(at("2026-11-12T10:00:24Z"))
+        Some(at("2026-11-12T10:01:16Z"))
     );
+}
+
+#[test]
+fn a_provider_that_keeps_saying_soon_does_not_make_the_speed_flap() {
+    // Every refusal names 25 s: too long to wait in place, and far too
+    // short to settle. Without a shortest cooldown this session would ask
+    // for the tier again every 25 s and be refused every time.
+    let refused = || tier_refusal(429, "rate_limit").header("retry-after", "25");
+    let harness = Harness::new([refused(), hello(), hello(), hello(), refused(), hello()]);
+    let events = harness.run_at(Speed::Fast);
+    let until = at("2026-11-12T10:01:00Z");
+    assert_eq!(fallbacks(&events)[0].cooldown_until, Some(until));
+    assert_eq!(cooldowns(&events)[0].until, Some(until));
+
+    // When the provider's 25 s are up the tier is still cooling down.
+    harness.clock.advance(secs(25));
+    let events = harness.run_at(Speed::Fast);
+    assert_eq!(fallbacks(&events)[0].reason, SpeedFallbackReason::Cooldown);
+    assert_eq!(fallbacks(&events)[0].cooldown_until, Some(until));
+    // And one second before the minute is up.
+    harness.clock.advance(secs(34));
+    let events = harness.run_at(Speed::Fast);
+    assert_eq!(fallbacks(&events)[0].reason, SpeedFallbackReason::Cooldown);
+    assert_eq!(harness.speeds_sent(), ["fast", "standard", "standard", "standard"]);
+
+    // At the minute the tier is asked for again. It is refused again, and
+    // cools down for another whole minute.
+    harness.clock.advance(secs(1));
+    let events = harness.run_at(Speed::Fast);
+    assert_eq!(
+        names(&events)[..3],
+        ["speed_cooldown", "speed_fallback", "speed_cooldown"]
+    );
+    assert_eq!(
+        cooldowns(&events)[1].until,
+        Some(at("2026-11-12T10:02:00Z"))
+    );
+    assert_eq!(
+        harness.speeds_sent(),
+        ["fast", "standard", "standard", "standard", "fast", "standard"]
+    );
+    assert_eq!(harness.transport.remaining(), 0);
+}
+
+#[test]
+fn the_shortest_cooldown_is_a_setting() {
+    let policy = RetryPolicy {
+        speed: SpeedPolicy {
+            min_cooldown: secs(0),
+            ..SpeedPolicy::default()
+        },
+        ..RetryPolicy::default()
+    };
+    let refused = tier_refusal(429, "rate_limit").header("retry-after", "25");
+    let harness = Harness::with_policy([refused, hello(), hello()], policy);
+    let events = harness.run_at(Speed::Fast);
+    // With no floor the provider's own time is the cooldown.
+    assert_eq!(
+        fallbacks(&events)[0].cooldown_until,
+        Some(at("2026-11-12T10:00:25Z"))
+    );
+    harness.clock.advance(secs(25));
+    let events = harness.run_at(Speed::Fast);
+    assert_eq!(cooldowns(&events)[0].state, CooldownState::Ended);
+    assert_eq!(harness.speeds_sent(), ["fast", "standard", "fast"]);
 }
 
 #[test]
@@ -382,6 +448,7 @@ fn the_short_wait_and_the_cooldown_are_settings() {
             fallback: true,
             short_wait: secs(60),
             cooldown: secs(90),
+            min_cooldown: secs(0),
         },
         ..RetryPolicy::default()
     };
@@ -566,10 +633,10 @@ fn a_cooldown_belongs_to_one_model_and_one_tier() {
 
 #[test]
 fn a_tier_refused_again_after_its_cooldown_cools_down_again() {
-    let refused = || tier_refusal(429, "rate_limit").header("retry-after", "30");
+    let refused = || tier_refusal(429, "rate_limit").header("retry-after", "90");
     let harness = Harness::new([refused(), hello(), refused(), hello()]);
     harness.run_at(Speed::Fast);
-    harness.clock.advance(secs(30));
+    harness.clock.advance(secs(90));
     let events = harness.run_at(Speed::Fast);
     assert_eq!(
         names(&events)[..3],
@@ -579,7 +646,7 @@ fn a_tier_refused_again_after_its_cooldown_cools_down_again() {
     let changes = cooldowns(&events);
     assert_eq!(changes[0].state, CooldownState::Ended);
     assert_eq!(changes[1].state, CooldownState::Started);
-    assert_eq!(changes[1].until, Some(at("2026-11-12T10:01:00Z")));
+    assert_eq!(changes[1].until, Some(at("2026-11-12T10:03:00Z")));
     assert_eq!(
         harness.speeds_sent(),
         ["fast", "standard", "fast", "standard"]

@@ -4,8 +4,8 @@
 //! The design keeps three things apart. A **protocol** is a wire dialect,
 //! and is code. A **provider** is an endpoint that speaks one, and is data.
 //! A **model** is a catalog entry, and is data. This crate has the parts
-//! every protocol shares and no protocol of its own yet: each arrives with
-//! its own build step.
+//! every protocol shares, and one module for each protocol. The first is
+//! [`anthropic`].
 //!
 //! | Module | What it gives |
 //! |---|---|
@@ -24,6 +24,8 @@
 //! | [`usage`] | Usage normalisation and cost. |
 //! | [`catalog`] | [`Catalog`], the model catalog. |
 //! | [`time`] | The [`Timer`] trait behind every wait. |
+//! | [`image`] | [`ImageSource`]: how an image stored as an artifact reaches a request. |
+//! | [`anthropic`] | The `anthropic-messages` protocol: Anthropic's Messages API. |
 //!
 //! # What does I/O
 //!
@@ -42,12 +44,14 @@
 //! short refusal, falls back to standard on a long one and starts a
 //! cooldown, and says each of these in the stream.
 
+pub mod anthropic;
 pub mod auth;
 pub mod catalog;
 pub mod client;
 pub mod error;
 pub mod event;
 pub mod http;
+pub mod image;
 pub mod protocol;
 pub mod request;
 pub mod retry;
@@ -58,6 +62,7 @@ pub mod time;
 pub mod transport;
 pub mod usage;
 
+pub use anthropic::AnthropicMessages;
 pub use auth::{ApiKeyAuth, AuthMethod, AuthSummary, KeyPlacement, NoAuth};
 pub use catalog::{Catalog, CatalogError, ModelEntry, ToolSchemaStyle, Variants};
 pub use client::{ModelClient, ProviderClient, ProviderClientBuilder};
@@ -69,6 +74,7 @@ pub use event::{
     BlockKind, CooldownChange, EventSink, ModelEvent, ReportedUsage, RetryInfo, SpeedMove, Usage,
 };
 pub use http::{BodyStream, Headers, HttpRequest, HttpResponse, Method};
+pub use image::{ImageError, ImageSource};
 pub use protocol::{FlagValue, Flags, HttpFailure, Protocol, ProviderInfo, StreamDecoder};
 pub use request::{CacheHints, ModelRequest, Reasoning, ReasoningVisibility, ToolDefinition};
 pub use retry::{Decision, RetryPolicy, RetryState, SpeedPolicy};

@@ -58,7 +58,10 @@
 #
 # [model.flags]         What the model's protocol needs to know about it
 #                       that nothing above says. Each protocol documents
-#                       the flags it reads.
+#                       the flags it reads. For anthropic-messages:
+#                       speed_beta, the beta name a request must carry to
+#                       name a speed tier on a model whose fast mode is a
+#                       preview. None of the four models below needs one.
 #
 # [[model.speed]]       One per speed tier the model offers besides
 #                       standard (docs/decisions/0027-speed-tiers.md). A
@@ -88,7 +91,8 @@ version = "2026-11-12"
 # Anthropic
 # ---------
 #
-# Read on 2026-11-12 from platform.claude.com/docs/en:
+# Read on 2026-11-12, and every fact checked again on 2026-11-13 (step 14),
+# from platform.claude.com/docs/en:
 #   models/overview and the page of each model  (ids, limits, prices,
 #                                                reasoning, input)
 #   about-claude/pricing                        (prices, cache multipliers,
@@ -97,13 +101,29 @@ version = "2026-11-12"
 #   build-with-claude/prompt-caching            (minimum cacheable length,
 #                                                cache and speed)
 #   build-with-claude/effort                    (effort levels)
+#   build-with-claude/preserved-thinking        (which models read which
+#                                                models' reasoning)
+#   build-with-claude/mid-conversation-system-messages
 #   agents-and-tools/tool-use/strict-tool-use, build-with-claude/structured-outputs
+#
+# The second reading changed no price and no limit, so the version stands.
+# It added two things the pages now state: which models read which other
+# models' reasoning, and that all four take system messages in the middle
+# of a conversation.
 #
 # What those pages do not state, and so is not here:
 # - The exact token counts. They say "1M tokens" and "128K tokens", written
 #   below as 1,000,000 and 128,000.
-# - Which models can read which other models' reasoning.
-# - Whether system messages may appear mid-conversation.
+#
+# `reads_reasoning_from` is the provider's table "Which model switches keep
+# the reasoning on the Claude API", read by column: the models whose
+# reasoning blocks the model can read, besides its own. It is for front
+# ends to show. The harness does not act on it for Anthropic's own API: it
+# sends every reasoning block back unchanged, as the provider asks, and the
+# provider leaves out what the model cannot read
+# (docs/architecture/04-providers.md, "The conversation model"). Every
+# model also reads the blocks of Claude Opus 4.8, Claude Sonnet 5, Claude
+# Haiku 4.5 and the models before them, which are not listed.
 #
 # Fast mode, as documented: `speed: "fast"` in the request; up to 2.5 times
 # the output tokens per second, not a shorter time to first token; refused
@@ -125,7 +145,8 @@ protocol = "anthropic-messages"
 context_window = 1_000_000
 max_output = 128_000
 input = ["text", "image"]
-source = "platform.claude.com/docs/en/models/fable-5-2/overview, about-claude/pricing, build-with-claude/fast-mode; read 2026-11-12"
+reads_reasoning_from = ["claude-mythos-5-2", "claude-fable-5-1", "claude-mythos-5-1", "claude-fable-5", "claude-mythos-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
+source = "platform.claude.com/docs/en/models/fable-5-2/overview, about-claude/pricing, build-with-claude/fast-mode, build-with-claude/preserved-thinking; read 2026-11-13"
 
 [model.prices]
 input = 8.00
@@ -139,6 +160,7 @@ default = "high"
 
 [model.capabilities]
 strict_tools = true
+mid_conversation_system = true
 structured_output = true
 min_cacheable_tokens = 512
 
@@ -170,7 +192,8 @@ protocol = "anthropic-messages"
 context_window = 1_000_000
 max_output = 128_000
 input = ["text", "image"]
-source = "platform.claude.com/docs/en/models/opus-5-5/overview, about-claude/pricing, build-with-claude/fast-mode; read 2026-11-12"
+reads_reasoning_from = ["claude-opus-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
+source = "platform.claude.com/docs/en/models/opus-5-5/overview, about-claude/pricing, build-with-claude/fast-mode, build-with-claude/preserved-thinking; read 2026-11-13"
 
 [model.prices]
 input = 4.00
@@ -184,6 +207,7 @@ default = "medium"
 
 [model.capabilities]
 strict_tools = true
+mid_conversation_system = true
 structured_output = true
 min_cacheable_tokens = 512
 
@@ -218,7 +242,8 @@ protocol = "anthropic-messages"
 context_window = 1_000_000
 max_output = 128_000
 input = ["text", "image"]
-source = "platform.claude.com/docs/en/models/sonnet-5-5/overview, about-claude/pricing; read 2026-11-12"
+reads_reasoning_from = ["claude-haiku-5-5"]
+source = "platform.claude.com/docs/en/models/sonnet-5-5/overview, about-claude/pricing, build-with-claude/preserved-thinking; read 2026-11-13"
 
 [model.prices]
 input = 2.00
@@ -232,6 +257,7 @@ default = "high"
 
 [model.capabilities]
 strict_tools = true
+mid_conversation_system = true
 structured_output = true
 min_cacheable_tokens = 512
 
@@ -252,7 +278,7 @@ protocol = "anthropic-messages"
 context_window = 1_000_000
 max_output = 128_000
 input = ["text", "image"]
-source = "platform.claude.com/docs/en/models/haiku-5-5/overview, about-claude/pricing; read 2026-11-12"
+source = "platform.claude.com/docs/en/models/haiku-5-5/overview, about-claude/pricing, build-with-claude/preserved-thinking; read 2026-11-13"
 
 [model.prices]
 input = 0.10
@@ -273,6 +299,7 @@ default = "medium"
 
 [model.capabilities]
 strict_tools = true
+mid_conversation_system = true
 structured_output = true
 min_cacheable_tokens = 512
 
