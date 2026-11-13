@@ -27,6 +27,7 @@
 //! a run through `rx` gives the shared test lock back between slices.
 
 mod drive;
+mod jobs;
 mod lex;
 mod list;
 
@@ -54,6 +55,10 @@ Without one, every break.
   --report       Print what is known so far for the tree as it is. Runs nothing.
   --minutes N    Stop starting new work after N minutes, and carry on from
                  there the next time (5 when not given; 0 for no limit).
+  --jobs N       Run N breaks at a time, each in a copy of the tree and a build
+                 directory of its own (1 when not given). Each copy's first
+                 build is a whole build. The time budget is for all of them
+                 together.
   --again        Forget the chosen breaks' results first, and run them again.
                  To carry on after the time ran out, leave it off.
   --no-compile-check
@@ -79,7 +84,12 @@ struct Request {
     budget: Option<Duration>,
     again: bool,
     compile_check: bool,
+    /// How many breaks run at a time.
+    jobs: usize,
 }
+
+/// The most jobs a run may ask for: each is a whole build directory.
+const MOST_JOBS: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -97,6 +107,7 @@ impl Request {
             budget: Some(Duration::from_secs_f64(MINUTES * 60.0)),
             again: false,
             compile_check: true,
+            jobs: 1,
         };
         let mut rest = arguments.iter();
         while let Some(argument) = rest.next() {
@@ -116,6 +127,18 @@ impl Request {
                 "--report" => mode(Mode::Report)?,
                 "--again" => request.again = true,
                 "--no-compile-check" => request.compile_check = false,
+                "--jobs" | "-j" => {
+                    let text = rest
+                        .next()
+                        .ok_or_else(|| format!("`{argument}` needs a number\n\n{USAGE}"))?;
+                    request.jobs = text
+                        .parse()
+                        .ok()
+                        .filter(|jobs| (1..=MOST_JOBS).contains(jobs))
+                        .ok_or_else(|| {
+                            format!("`{argument} {text}`: a number from 1 to {MOST_JOBS}")
+                        })?;
+                }
                 "--minutes" => {
                     let text = rest
                         .next()
@@ -220,17 +243,23 @@ fn run(arguments: &[String]) -> Result<drive::Finished> {
     crate::checks::require_nextest()?;
     let started = Instant::now();
     let budget = request.budget;
-    let mut runner = drive::CargoRunner::new(&scratch);
+    let mut runners: Vec<drive::CargoRunner> = (0..request.jobs)
+        .map(|job| drive::CargoRunner::new(&scratch, job))
+        .collect();
+    let mut runners: Vec<&mut dyn drive::Runner> = runners
+        .iter_mut()
+        .map(|runner| runner as &mut dyn drive::Runner)
+        .collect();
     let options = drive::Options {
         again: request.again,
         compile_check: request.compile_check,
     };
-    drive::drive(
+    drive::drive_jobs(
         &root,
         &scratch,
         &chosen,
         &options,
-        &mut runner,
+        &mut runners,
         &mut || budget.is_some_and(|budget| started.elapsed() >= budget),
         &mut say,
     )
@@ -507,6 +536,22 @@ pub fn far_over(seconds: f64, budget: f64) -> bool {
     }
 
     #[test]
+    fn jobs_are_a_number_from_one_to_sixteen() {
+        let jobs = |text: &str| {
+            Request::parse(&strings(&["--jobs", text])).map(|request| request.jobs)
+        };
+        assert_eq!(jobs("4"), Ok(4));
+        assert_eq!(jobs("16"), Ok(16));
+        assert_eq!(Request::parse(&strings(&["-j", "2"])).unwrap().jobs, 2);
+        assert_eq!(Request::parse(&[]).unwrap().jobs, 1);
+        for wrong in ["0", "17", "many", "-1"] {
+            let error = jobs(wrong).unwrap_err();
+            assert!(error.contains("a number from 1 to 16"), "{wrong}: {error}");
+        }
+        assert!(Request::parse(&strings(&["--jobs"])).is_err());
+    }
+
+    #[test]
     fn a_break_is_made_where_its_code_is_and_nowhere_else() {
         let broken = apply(
             &one("in: far_over\nfind: seconds > 1.5 * budget\nreplace: seconds > budget\n"),
@@ -723,6 +768,7 @@ packages: cortex-nowhere
                 budget: Some(Duration::from_secs(30)),
                 again: true,
                 compile_check: false,
+                jobs: 1,
             }
         );
         assert_eq!(
