@@ -184,7 +184,10 @@ dependencies = [
  "cortex-sandbox",
  "cortex-session",
  "cortex-stats",
+ "cortex-testkit",
  "cortex-tools",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

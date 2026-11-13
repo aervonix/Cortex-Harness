@@ -28,6 +28,14 @@ Two tiers, as specified in [architecture/05-tools.md](../architecture/05-tools.m
 - A precise failure message recovers most of what a tolerant matcher would, at the cost of one extra call.
 - The staleness guard removes a class of wrong edits that matching strategy cannot.
 
+## As built in step 10
+
+Settled with the owner on 2026-11-13, and recorded in full in [architecture/05-tools.md](../architecture/05-tools.md), "`edit`":
+
+- **Both tiers match against the file's text as `read` shows it,** with every CRLF read as one line break. `read` shows lines without their endings, so an `old` copied from a CRLF file has line feeds; matched against the file's bytes, every such edit of more than one line would be a tolerant match, reported with a "text replaced" identical to `old`. Line endings are therefore not something the exact tier can get wrong, and the tolerant tier is about trailing white space and indentation.
+- **The tolerated differences, exactly:** spaces, tabs and carriage returns at the end of a line, and the same extra spaces or tabs in front of every line of one side. Tabs against spaces is not tolerated. The tier matches whole lines, is tried only when the exact tier finds nothing, and must find exactly `count` places.
+- **New text takes the file's line ending.** In a file with both kinds, the ending of the first line it replaces.
+
 ## Revisit when
 
 An evaluation over real sessions shows a material rate of failed edits that a specific extra tier would fix without wrong matches, or shows that a model family does much better with a patch format.

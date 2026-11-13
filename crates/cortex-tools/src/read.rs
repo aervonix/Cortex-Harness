@@ -16,7 +16,9 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::sync::Arc;
 
-use cortex_base::{AbsPath, CancelToken, ContentHash, ContentHasher, PathResolver, ResolvedPath};
+use cortex_base::{
+    AbsPath, CancelToken, ContentHash, ContentHasher, OpenError, PathResolver, ResolvedPath,
+};
 use cortex_protocol::ids::ArtifactId;
 use cortex_protocol::message::{ImagePart, Part};
 use serde::Deserialize;
@@ -520,25 +522,33 @@ fn read_file(
 ) -> ToolResult {
     let shown = path.display();
     let fs_path = path.to_fs_path();
-    let metadata = match std::fs::symlink_metadata(&fs_path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return missing(path, env),
-        Err(error) => return ToolResult::error(format!("`{shown}` could not be read: {error}.")),
-    };
-    if metadata.is_dir() {
-        return ToolResult::error(format!(
-            "`{shown}` is a directory. Use `list` to see what is in it."
-        ));
-    }
-    if !metadata.is_file() {
-        return ToolResult::error(format!(
-            "`{shown}` is not a regular file (it is a device, a pipe or a socket), so it is not \
-             read."
-        ));
-    }
-    let mut file = match std::fs::File::open(&fs_path) {
-        Ok(file) => file,
-        Err(error) => return ToolResult::error(format!("`{shown}` could not be read: {error}.")),
+    // The open is the check: no link is followed at the file's own name and
+    // no FIFO is waited on, whatever was put there since the path was
+    // resolved. The editing tools open the same way, so the file `read`
+    // saw is the kind of file they will change.
+    let (mut file, metadata) = match cortex_base::open_regular(&fs_path) {
+        Ok(opened) => opened,
+        Err(OpenError::NotFound) => return missing(path, env),
+        Err(OpenError::Directory) => {
+            return ToolResult::error(format!(
+                "`{shown}` is a directory. Use `list` to see what is in it."
+            ));
+        }
+        Err(OpenError::NotAFile) => {
+            return ToolResult::error(format!(
+                "`{shown}` is not a regular file (it is a device, a pipe or a socket), so it is \
+                 not read."
+            ));
+        }
+        Err(OpenError::Link) => {
+            return ToolResult::error(format!(
+                "`{shown}` is now a link, which it was not when this call was checked. It was \
+                 not followed."
+            ));
+        }
+        Err(OpenError::Io(error)) => {
+            return ToolResult::error(format!("`{shown}` could not be read: {error}."));
+        }
     };
     let scan = match scan(&mut file, call, env.limits, cancel) {
         Ok(Scanned::Text(scan)) => scan,

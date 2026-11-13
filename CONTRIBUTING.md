@@ -86,7 +86,7 @@ The lint levels are in the root `Cargo.toml` under `[workspace.lints]`, the list
   #![allow(clippy::disallowed_methods, clippy::disallowed_types, reason = "runs on the blocking pool")]
   ```
 
-- **`unsafe` is denied**, and allowed per module only in `cortex-sandbox` (process trees are there for that reason, [decision 0030](docs/decisions/0030-process-tree-control-in-cortex-sandbox.md)) and `cortex-term`, and in one Windows-only module of `cortex-base` (`private::windows`, which sets access lists; [decision 0029](docs/decisions/0029-owner-only-files-on-windows.md)). Every block has a `// SAFETY:` comment. A private file is written with `write_atomic` and `owner_only`, or created with `cortex_base::private::create_new`: no other crate needs `unsafe` for it.
+- **`unsafe` is denied**, and allowed per module only in `cortex-sandbox` (process trees are there for that reason, [decision 0030](docs/decisions/0030-process-tree-control-in-cortex-sandbox.md)) and `cortex-term`, and in one Windows-only module of `cortex-base` (`private::windows`, which sets access lists and reads a file's reparse tag; [decision 0029](docs/decisions/0029-owner-only-files-on-windows.md)). Every block has a `// SAFETY:` comment. A private file is written with `write_atomic` and `owner_only`, or created with `cortex_base::private::create_new`: no other crate needs `unsafe` for it.
 - **An `allow` or `expect` always carries a `reason`.**
 - **Public items are documented.**
 - **No `todo!`, `unimplemented!` or `dbg!`** on the main branch, and no `std::process::exit`: return an exit code, so the terminal is always restored.

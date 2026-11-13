@@ -57,7 +57,22 @@ Steps 8 (sessions) and 9 (configuration and credentials) both promise owner-only
 
 The module was reviewed independently before its first push, block by block against Microsoft's documentation and the `windows-sys` source: who allocates and who frees, what a failure returns, whether an error is read before anything can overwrite it, the sizes and alignment of every buffer, and whether a file can exist without its list. It found no memory-safety defect, no allocation leaked or freed twice, and no error read out of order. It could not settle by reading two things that only Windows can answer, and the tests on the Windows CI job answer both: that the descriptor string is accepted as written, and that the "protected" flag survives the creation of the file. It also pointed out the two limits above, and that the user is read from the process, not from the thread: a thread that impersonated someone else would create a file for the process's user. The harness never impersonates.
 
+## Amended in step 10: the module also reads a reparse tag
+
+Accepted by the owner on 2026-11-13.
+
+`private::windows` gained one more function, `reparse_tag`, which is not about access lists: it returns the reparse tag of an open file. It is the only `unsafe` added, one call (`GetFileInformationByHandleEx` with the class `FileAttributeTagInfo`) that fills a structure of two numbers which the function owns, with a `// SAFETY:` comment. Its API is safe, and it is private to the crate.
+
+**Why it is needed.** `cortex_base::open_regular` opens a file without following a link ([architecture/05-tools.md](../architecture/05-tools.md), "What resolution does not promise"). On Windows it opens the reparse point itself and must then tell two things apart: a link, which it refuses, and a placeholder of a cloud-synced or projected folder, which is an ordinary file to its user and which only an ordinary open can read. What tells them apart is the tag, and the standard library reports only whether a reparse point is a "name surrogate". That is not enough: an app execution alias and the NFS and DFS tags lead elsewhere and are not name surrogates.
+
+**The rule built on it** fails closed. A reparse point is refused unless its tag is on a short list of tags whose content a filter supplies (the cloud family, OneDrive, the projected file system, deduplication, system compression, HSM, SIS, WIM, storage sync, file placeholder). A tag this build does not know is refused as a link.
+
+**Why here.** The rule about where `unsafe` may be written does not change: it is still this one module of `cortex-base`. The alternative with no `unsafe` was to refuse every reparse point that is not a plain file, which would make every file in a OneDrive or projected folder impossible to edit.
+
+**How it is tested.** On the Windows CI job, against a real symbolic link to a file, one to a directory, and a real junction, each of which must be refused (`crates/cortex-base/tests/it/nofollow.rs`). The list of tags is a pure function, tested on both OSes. The placeholder case is not tested: a hosted runner has no cloud-synced folder.
+
 ## Revisit when
 
+- The standard library gains a way to read a file's reparse tag. `reparse_tag` is then replaced by that.
 - The standard library gains a way to create a file with a security descriptor. The module is then replaced by that, and the allowance goes.
 - A real case turns up that needs SYSTEM or the Administrators group on the list.

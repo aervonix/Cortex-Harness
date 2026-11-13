@@ -380,7 +380,10 @@ fn an_edit_whose_notice_was_delivered_does_not_hold_up_the_next_call() {
     let result = ws.call(&tool, moved_on.clone());
     assert_eq!(result.outcome(), &ToolOutcome::Error);
     let text = result.text();
-    assert!(text.contains("- removed `read` (Read the parser)"), "{text}");
+    assert!(
+        text.contains("- removed `read` (Read the parser)"),
+        "{text}"
+    );
     assert!(!text.contains("skipped `test`"), "already told: {text}");
 
     // Both delivered: the model's list, written with them, is the plan.
