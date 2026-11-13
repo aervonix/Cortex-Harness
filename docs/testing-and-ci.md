@@ -287,6 +287,31 @@ Step 6 filled `cortex-tools` (about 13,200 lines, half of them tests: 208 tests 
 - **The clean build of `cortex-tools` alone,** on the desktop pinned to 4 cores: 13.7 to 13.8 s in the `dev` profile and 8.4 s in `release`. `cortex-base` alone: 7.7 to 7.8 s and 5.1 to 5.5 s, where it was 7.1 to 7.5 s and 4.7 to 4.8 s before `sha2`.
 - **The release build** has 69 crates on Linux, 35 more than step 4's 34: the search libraries bring 26 packages, `sha2` 8, `tokio` 2 and `similar` 1, less what they share. The binary is unchanged at 0.28 MB, because nothing in it calls `cortex-tools` yet.
 
+#### After step 9: configuration and credentials
+
+Step 9 filled `cortex-config` (about 10,900 lines, more than half of them tests: 123 tests) and added owner-only files to `cortex-base` (about 1,300 lines with their tests). Its third-party crates are small: the `toml` family, 6 packages, and for Windows only the Credential Manager wrapper, 5 packages, with `windows-sys`. Measured on the step's pull request on 2026-11-13. Its first run was on the base that step 4 left, so it built this step's crates from source and nothing of step 6's:
+
+| Job | Step 4, second run | Step 9, first run |
+|---|---|---|
+| `lint-linux` | 31 s | 24 s |
+| `test-linux` | 28 s | 39 s |
+| `lint-windows` | 53 s | 50 s |
+| `test-windows` | 67 s | 60 s |
+| **Wall time, Linux** | 31 s | 39 s |
+| **Wall time, Windows** | 67 s | 60 s |
+
+| | `lint-linux` | `test-linux` | `lint-windows` | `test-windows` |
+|---|---|---|---|---|
+| The job's command once `xtask` runs | 5.0 s (clippy 4.4 s) | 13.3 s (build tests 11.6 s, run 1.6 s) | 11.5 s (clippy) | 21.7 s (build tests 19.3 s, run 2.4 s) |
+| Test time against the tier budgets | | tier 1: 4.3 s of 20 s. Tier 2: 0.7 s of 40 s. Tier 3: 0.3 s of 60 s | | tier 1: 5.1 s of 20 s. Tier 2: 1.7 s of 40 s. Tier 3: 0.5 s of 90 s |
+
+- **The step is inside the noise of the runners.** It added about 4 s of test build on Linux and 9 s on Windows over step 4's first run, with nothing of its own in the cache, and every job is within ten seconds of step 4's.
+- **The Windows-only code ran here for the first time anywhere,** and every test passed on the first run: 412 tests on the Windows job, none failed and none flaky. That is the access list of a private file, a private directory and an owner-only atomic write, read back with the current user alone and inheritance off; the same asked of `icacls`; a path over 260 characters; a link that is not followed; and a key through the real Credential Manager under an entry name of the test's own. The module could only be type-checked for the Windows target before this run, so two things about Windows itself were open until it: that the descriptor string is accepted as written, and that the "protected" flag survives the creation of a file. Both hold.
+- **`xtask` did not grow.** The configuration's generated files are checked by a test in `cortex-config`, not by the `generated` step, so `xtask` does not build the configuration crate before every job ("Lints and formatting", below).
+- **The concurrent-writers test is the slowest of the step:** four writers, each a store of its own, making 28 flushed writes of the credentials file between them. It takes 0.9 s on the desktop with six writers and four rounds, which is why it was cut to four and three. Everything else in the crate is under 0.1 s a test.
+- **The clean build of `cortex-config` alone,** on the desktop pinned to 4 cores: 8.4 to 8.6 s in the `dev` profile and 5.8 s in `release` (two runs each), against 7.1 to 7.5 s and 4.7 to 4.8 s for `cortex-base` alone in step 4. Another session's run may have been active on the desktop at the time.
+- **The release build** gains 6 packages on Linux (the `toml` family) and 13 on Windows (those, the wrapper's 5, and `windows-sys` with `windows-link`).
+
 #### The planned third-party set
 
 The skeleton cannot show what a cold cache will cost once the dependencies arrive, which is the risk this page was written around. So step 2 also built a throwaway program that depends on the whole third-party set planned for the first release (the async runtime, the HTTP and TLS stack, serde, the terminal library, the search libraries, the MCP SDK, the highlighter, the script engine, the test-kit libraries, and the Windows-only and Linux-only crates: 283 packages in its lockfile) on both runners. The program was on a scratch branch and is not in the repository. It uses each library enough to link it.
