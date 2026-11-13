@@ -110,6 +110,27 @@ pub trait Policy: Send + Sync {
     /// call came from is thrown away: the question is then withdrawn.
     fn ask<'a>(&'a self, call: PlannedCall<'a>) -> BoxFuture<'a, Verdict>;
 
+    /// Whether an answer [`ask`](Self::ask) gives may be [`Verdict::Stop`].
+    ///
+    /// The turn stops at the refused call in the model's order, so nothing
+    /// the model wrote after it that changes anything may have started
+    /// (`docs/architecture/03-agent-loop.md`, "Tool rounds"). While a
+    /// question is open, the loop therefore holds back every later call
+    /// with side effects for as long as this is `true`; calls that only
+    /// read still run beside the question.
+    ///
+    /// Return `false` only when **no** answer the front end can give is
+    /// `Stop`. Today that is a person answering: the choices of an approval
+    /// have no "stop", so a later edit may run while they decide. A front end
+    /// that gains a way to stop the turn from a question (the terminal
+    /// application, step 23; an approval answered over RPC, step 27), and a
+    /// policy that answers `Stop` when nobody can be asked
+    /// (`--fail-on-denial`), returns `true`. The default is `true`: slower,
+    /// and never wrong.
+    fn answers_may_stop(&self) -> bool {
+        true
+    }
+
     /// What a directory walk may read, entry by entry.
     fn read_gate(&self) -> Arc<dyn ReadGate> {
         Arc::new(OpenGate)

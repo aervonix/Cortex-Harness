@@ -117,14 +117,32 @@ impl ExecPattern {
     /// way.
     ///
     /// The line is cut into words at every character that is not part of a
-    /// plain word, so quotes, operators and brackets all separate. The
-    /// pattern's first word is also compared with each word's last name
-    /// (`/bin/rm` is `rm`), without `.exe`, `.cmd`, `.bat` or `.com`, and
-    /// without regard to ASCII case. A final `*`, or its absence, makes no
-    /// difference: what follows the matched words is not looked at.
+    /// plain word, so operators and brackets separate. The pattern's first
+    /// word is also compared with each word's last name (`/bin/rm` is
+    /// `rm`), without `.exe`, `.cmd`, `.bat` or `.com`, and without regard to
+    /// ASCII case. A final `*`, or its absence, makes no difference: what
+    /// follows the matched words is not looked at.
+    ///
+    /// The line is cut twice, and either cut may match. Once as it is
+    /// written, with quotes separating too, so that `bash -c 'rm y'` has the
+    /// word `rm`. And once with
+    /// every quote, backslash, back-tick and caret taken out, as the shells
+    /// take them out of a word: `"g"it`, `g\it`, `gi''t` and, in PowerShell,
+    /// ``g`it`` are `git` to the shell that runs them, and `g^it` is to
+    /// `cmd.exe` (found by the review of step 12). A deny that holds back
+    /// too much is the safe side. What no cut catches is a name the line
+    /// makes as it runs (`$(echo git) push`): a rule on the raw line of a
+    /// command the analysis does not model can be dodged that way.
     #[must_use]
     pub fn restricts(&self, line: &str) -> bool {
-        let stream = loose_words(line);
+        let unquoted: String = line
+            .chars()
+            .filter(|character| !matches!(character, '\'' | '"' | '\\' | '`' | '^'))
+            .collect();
+        self.restricts_words(&loose_words(line)) || self.restricts_words(&loose_words(&unquoted))
+    }
+
+    fn restricts_words(&self, stream: &[String]) -> bool {
         if self.words.is_empty() {
             // `*` alone: every line that has a word.
             return !stream.is_empty();
@@ -319,6 +337,18 @@ mod tests {
             ("rm *", "rmdir x", false),
             ("rm *", "cargo test --rm", false),
             ("rm *", "ls format", false),
+            // A name split by quotes or escapes is one name to the shell.
+            // Found by the review of step 12.
+            ("git push *", "\"g\"it push origin main # note", true),
+            ("git push *", "g\\it push origin main", true),
+            ("git push *", "gi''t push origin $BRANCH", true),
+            ("git push *", "g`it push", true),
+            ("git push *", "g^it push", true),
+            ("git push *", "git 'pu'sh", true),
+            ("rm *", "r\\m -rf x", true),
+            // Taking quotes out never loses a word the first cut has.
+            ("rm *", "echo 'x'rm y", true),
+            ("rm *", r"C:\tools\rm.exe y", true),
             ("git push *", "git push origin main", true),
             ("git push *", "git push", true),
             ("git push *", "cd repo && git push", true),

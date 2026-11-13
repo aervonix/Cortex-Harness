@@ -56,6 +56,7 @@ pub mod lease;
 pub mod level;
 pub mod rules;
 pub mod secrets;
+mod store_lock;
 pub mod trust;
 
 pub use approvals::{ApprovalError, ApprovalStore, SessionApprovals};

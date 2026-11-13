@@ -26,8 +26,6 @@ fn the_command_table_at_the_default_level() {
             "grep -n TODO src/main.rs | sort | uniq -c | sort -rn | head -5",
             ReadOnly,
         ),
-        ("rg -n 'fn main' crates", ReadOnly),
-        ("rg TODO", ReadOnly),
         ("git log --oneline -5 && git diff", ReadOnly),
         ("find . -name '*.rs' -type f", ReadOnly),
         ("wc -l src/main.rs && pwd", ReadOnly),
@@ -40,14 +38,18 @@ fn the_command_table_at_the_default_level() {
         ("date", ReadOnly),
         ("ls 2>/dev/null", ReadOnly),
         ("ls > /dev/null 2>&1", ReadOnly),
-        ("cd src && ls", ReadOnly),
-        ("cd src && cat main.rs && cd .. && git status", ReadOnly),
+        ("cd ./src && ls", ReadOnly),
+        ("cd ./src && cat main.rs && cd .. && git status", ReadOnly),
         ("cd src", ReadOnly),
+        // A `cd` to a plain name is looked for in `CDPATH` first, so it is
+        // not followed: the line is asked about, as a line with a `cd` the
+        // analysis cannot follow.
+        ("cd src && ls", Ask),
         ("ls\npwd\n", ReadOnly),
         ("cat < Cargo.toml", ReadOnly),
         ("cat < /dev/null", ReadOnly),
-        ("ls; cd src && cat main.rs", ReadOnly),
-        ("ls && cd src && cat main.rs | head -3", ReadOnly),
+        ("ls; cd ./src && cat main.rs", ReadOnly),
+        ("ls && cd ./src && cat main.rs | head -3", ReadOnly),
         ("ls || cd src", ReadOnly),
         // Reading, and writing inside the workspace by a redirection: the
         // command is safe, the edit is in scope, and it is not read-only.
@@ -93,6 +95,29 @@ fn the_command_table_at_the_default_level() {
         ("git -c core.pager=evil log", Ask),
         ("sed -i s/a/b/ f", Ask),
         ("rg --pre cat x", Ask),
+        // `rg` is not on the table in any form: through the shell it is an
+        // ordinary command. What it leaves out of a search, the workspace
+        // can change (`rg -t sh` names `.env`; a `.ignore` with `!.env`).
+        // Found by the review of step 12.
+        ("rg -n 'fn main' crates", Ask),
+        ("rg TODO", Ask),
+        ("rg -t sh API_TOKEN", Ask),
+        ("rg --type sh API_TOKEN", Ask),
+        // Searches of what git does not track, ignored files included.
+        ("git grep --no-index API_TOKEN", Ask),
+        ("git grep --untracked API_TOKEN", Ask),
+        ("git diff --no-index src .", Ask),
+        // An option that takes its value only attached, then one that
+        // writes: git reads `--output` as its own.
+        ("git diff --relative --output=.git/hooks/pre-commit", Ask),
+        ("git log --pretty --output=.git/hooks/pre-commit", Ask),
+        ("git show --pretty --output=.git/hooks/pre-commit", Ask),
+        (
+            "git stash list --pretty --output=.git/hooks/pre-commit",
+            Ask,
+        ),
+        ("git diff -U --output=x", Ask),
+        ("git log --format --output=x", Ask),
         ("tail -f log.txt", Ask),
         // A search of a whole tree that reads hidden files, where the
         // files that look like secrets are.
@@ -142,8 +167,6 @@ fn the_command_table_at_the_default_level() {
         ("cat ~/.local/state/cortex-harness/trust.toml", Deny),
         ("ls ~/.local/share/cortex-harness/sessions/bbbb2222", Deny),
         ("cd ~/.config/cortex-harness && ls", Deny),
-        // A tree with the harness's files somewhere in it.
-        ("rg token /users/dev", Ask),
         // Redirections that write outside the workspace, or to a secret or
         // a protected path.
         ("echo x > /tmp/elsewhere.txt", Ask),
@@ -155,28 +178,28 @@ fn the_command_table_at_the_default_level() {
         ("echo x > .cortex/config.toml", Ask),
         ("ls > *.txt", Ask),
         // A `cd` whose effect cannot be known.
-        ("cd src; ls", Ask),
-        ("cd src || ls", Ask),
-        ("ls | cd src && cat x", Ask),
+        ("cd ./src; ls", Ask),
+        ("cd ./src || ls", Ask),
+        ("ls | cd ./src && cat x", Ask),
         ("cd && ls", Ask),
         ("cd - && ls", Ask),
         ("cd a b && ls", Ask),
-        ("cd src > log && ls", Ask),
+        ("cd ./src > log && ls", Ask),
         // A `cd` that may not run, or after which a part runs whether it
         // succeeded or not. Each of these reads `/work/notes.txt`, outside
         // the workspace, if the `cd` is taken to have happened when it has
         // not, or the other way round.
-        ("true || cd src && cat ../notes.txt", Ask),
-        ("false || cd src && cat ../notes.txt", Ask),
-        ("ls || cd src && cat main.rs", Ask),
+        ("true || cd ./src && cat ../notes.txt", Ask),
+        ("false || cd ./src && cat ../notes.txt", Ask),
+        ("ls || cd ./src && cat main.rs", Ask),
         ("cd nowhere && ls; cat ../notes.txt", Ask),
-        ("cd src && ls; cat ../notes.txt", Ask),
-        ("cd src && false || cat ../notes.txt", Ask),
-        ("cd src && ls || cat ../notes.txt", Ask),
-        ("cd src && ls\ncat ../notes.txt", Ask),
-        ("true || cd src && echo key >> ../authorized_keys", Ask),
+        ("cd ./src && ls; cat ../notes.txt", Ask),
+        ("cd ./src && false || cat ../notes.txt", Ask),
+        ("cd ./src && ls || cat ../notes.txt", Ask),
+        ("cd ./src && ls\ncat ../notes.txt", Ask),
+        ("true || cd ./src && echo key >> ../authorized_keys", Ask),
         // A `cd` with a redirection writes the file, whatever else it does.
-        ("cd src > log", Ask),
+        ("cd ./src > log", Ask),
         ("cd . > notes.txt", Ask),
         ("cd . > ~/.bashrc", Ask),
         ("cd . > ../outside.txt", Ask),
@@ -259,24 +282,16 @@ fn the_command_table_with_rules() {
         ("cat ~/.config/cortex-harness/credentials.toml", Deny),
         ("git add ~/.config/cortex-harness/credentials.toml", Deny),
         ("git add src/.env", Ask),
-        // A search reads files nobody named: asked about where a rule
-        // protects something in the tree it searches.
-        ("rg KEY", Ask),
-        ("rg KEY .", Ask),
-        ("rg -e KEY", Ask),
-        ("rg --files", Ask),
-        ("rg KEY secrets", Ask),
-        ("rg KEY private/deep", Ask),
-        ("rg KEY src", ReadOnly),
-        ("rg KEY src tests", ReadOnly),
-        ("rg KEY src .", Ask),
-        ("cd src && rg KEY", ReadOnly),
-        ("cd src && rg KEY ..", Ask),
+        // A git command that prints what tracked files hold reads files
+        // nobody named: asked about where a rule protects something in the
+        // repository.
         ("git grep KEY", Ask),
         ("git diff", Ask),
         ("git show HEAD", Ask),
         ("git log -p", Ask),
         ("cd src && git log -p", Ask),
+        ("cd ./src && git log -p", Ask),
+        ("cd ./src && git log --oneline", ReadOnly),
         ("git log --oneline -5", ReadOnly),
         ("git status --short", ReadOnly),
         // Commands that print names, and not what files hold.
@@ -332,7 +347,7 @@ fn a_denial_and_a_question_say_why() {
     assert_eq!(said(&refused), Deny);
     assert!(reason(&refused).contains("built-in rule"), "{refused:?}");
     let searching = with_rules(vec![user(Effect::Read, "secrets/**", RuleAction::Deny)]);
-    let asked = reason(&shell(&searching, "rg KEY"));
+    let asked = reason(&shell(&searching, "git grep KEY"));
     assert!(
         asked.contains("reads every file it finds in `/work/app`")
             && asked.contains("`deny read secrets/**`")

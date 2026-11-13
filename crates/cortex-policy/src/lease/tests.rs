@@ -6,7 +6,7 @@ use cortex_protocol::lease::{Effect, OutOfScopeStop, SpendingStop, VerificationF
 use cortex_testkit::cases::{self, Outcome, ensure};
 
 use super::*;
-use crate::level::{NoSandbox, rank};
+use crate::level::NoSandbox;
 
 const POSIX: PathStyle = PathStyle::Posix;
 
@@ -607,22 +607,83 @@ fn the_standing_lease_lasts_the_session_and_is_the_users() {
     assert!(standing_lease(LeaseId::new("l_5"), terms(Level::Unrestricted), off).is_ok());
 }
 
+#[test]
+fn narrow_refuses_a_level_the_child_could_not_be_started_at() {
+    let off = SandboxState::NotEnforcing(NoSandbox::NotBuilt);
+    let parent = lease("l_parent", Level::Unrestricted);
+    let level_of = |requested: Level, sandbox| {
+        parent
+            .narrow(&lease("l_child", requested), sandbox)
+            .map(|child| child.grant.level)
+    };
+    assert_eq!(
+        level_of(Level::Autonomous, SandboxState::Enforcing),
+        Ok(Level::Autonomous)
+    );
+    assert_eq!(level_of(Level::Supervised, off), Ok(Level::Supervised));
+    assert_eq!(level_of(Level::ReadOnly, off), Ok(Level::ReadOnly));
+    // `autonomous` where nothing confines the child's commands, however it
+    // came about: asked for, or `unrestricted` capped. Found by the review
+    // of step 12.
+    for requested in [Level::Autonomous, Level::Unrestricted] {
+        assert!(
+            matches!(
+                level_of(requested.clone(), off),
+                Err(NarrowError::Level(LevelError::SandboxRequired { .. }))
+            ),
+            "{requested:?}"
+        );
+    }
+    // `guided` before task leases exist, and a level this build does not
+    // know.
+    assert_eq!(
+        level_of(Level::Guided, SandboxState::Enforcing),
+        Err(NarrowError::Level(LevelError::GuidedNotAvailable))
+    );
+    assert!(matches!(
+        level_of(Level::Unknown("later".to_owned()), SandboxState::Enforcing),
+        Err(NarrowError::Level(LevelError::Unknown { .. }))
+    ));
+}
+
 // ------------------------------------------------------------- properties
 
-const ROOTS: [&str; 7] = [
+/// Roots that share a prefix of their text without one being inside the
+/// other (`/work` and `/work2`, `/work/app` and `/work/ap`), that differ only
+/// in case, that are spelled with `.`, `..` or two slashes, and one that is
+/// not absolute, which names nothing. Found missing by the review of step
+/// 12.
+const ROOTS: [&str; 17] = [
     "/work",
+    "/work/",
+    "/work2",
+    "/wor",
+    "/Work",
     "/work/app",
+    "/work/ap",
+    "/work/app2",
+    "/work/./app",
+    "/work/app/../x",
+    "//work",
     "/work/app/src",
     "/work/app/tests",
     "/tmp/session",
     "/srv/data",
+    "/",
     "relative/root",
 ];
 
-const TIMES: [&str; 4] = [
+/// Times that are one moment in several spellings (`10:00+01:00` is `09:00Z`),
+/// a fraction of a second apart, far apart, and one nobody can read.
+const TIMES: [&str; 9] = [
     "2026-11-13T09:00:00Z",
+    "2026-11-13T10:00:00+01:00",
+    "2026-11-13T09:00:00.000Z",
+    "2026-11-13T09:00:00.5Z",
+    "2026-11-13T08:59:59-00:00",
     "2026-11-13T10:00:00Z",
     "2026-11-13T12:30:00Z",
+    "0001-01-01T00:00:00Z",
     "not a time",
 ];
 
@@ -740,34 +801,129 @@ fn any_lease(rng: &mut SeededRng, id: &str) -> Lease {
     }
 }
 
-/// The paths a property asks about: each root, something under it, and
-/// places no root covers.
-fn probes() -> Vec<AbsPath> {
-    [
-        "/",
-        "/work",
-        "/work/app",
-        "/work/app/src",
-        "/work/app/src/x.rs",
-        "/work/app/tests/t.rs",
-        "/work/other",
-        "/tmp/session/a",
-        "/tmp",
-        "/srv/data/d",
-        "/srv",
-        "/etc/passwd",
-    ]
-    .into_iter()
-    .map(|path| AbsPath::parse(path, POSIX).unwrap())
-    .collect()
+// The oracle: what "no wider" means, worked out from the leases' text by
+// rules of its own. It calls nothing of the code it checks (`covers`,
+// `deadline`, `event_rank`, `rank`, `is_within_in`), so that the two cannot
+// be wrong together.
+
+/// The names of an absolute POSIX path, with `.` and `..` taken as text the
+/// way the lease reads a root. `None` for a path that is not absolute,
+/// which names nothing.
+fn oracle_names(text: &str) -> Option<Vec<&str>> {
+    if !text.starts_with('/') {
+        return None;
+    }
+    let mut names = Vec::new();
+    for name in text.split('/') {
+        match name {
+            "" | "." => {}
+            ".." => {
+                names.pop();
+            }
+            other => names.push(other),
+        }
+    }
+    Some(names)
 }
 
-/// What a narrowed lease may not exceed, stated field by field and without
-/// [`is_within_in`], so that the two cannot be wrong together.
+/// Whether `path` is `root` or lies under it, name by name, in exact case.
+fn oracle_inside(path: &str, root: &str) -> bool {
+    match (oracle_names(path), oracle_names(root)) {
+        (Some(path), Some(root)) => path.starts_with(&root),
+        _ => false,
+    }
+}
+
+fn oracle_covers(set: &PathSet, path: &str) -> bool {
+    set.all || set.roots.iter().any(|root| oracle_inside(path, root))
+}
+
+/// The paths a property asks about: each root, something under it and
+/// beside it, and places no root covers.
+fn probes() -> Vec<String> {
+    let mut probes: Vec<String> = [
+        "/etc/passwd",
+        "/work/other",
+        "/work/app/src/x.rs",
+        "/tmp",
+        "/srv",
+    ]
+    .iter()
+    .map(|path| (*path).to_owned())
+    .collect();
+    for root in ROOTS {
+        probes.push(root.to_owned());
+        probes.push(format!("{root}/x"));
+        probes.push(format!("{root}x"));
+    }
+    probes
+}
+
+/// The order of the levels, read from the ladder in the docs. `None` for a
+/// level this build does not know.
+fn oracle_rank(level: &Level) -> Option<u8> {
+    match level {
+        Level::ReadOnly => Some(0),
+        Level::Supervised => Some(1),
+        Level::Guided => Some(2),
+        Level::Autonomous => Some(3),
+        Level::Unrestricted => Some(4),
+        Level::Unknown(_) => None,
+    }
+}
+
+/// A moment in milliseconds. One nobody can read has long passed.
+fn oracle_millis(text: &Timestamp) -> i64 {
+    UtcTime::parse(text.as_str()).map_or(i64::MIN, |time| {
+        time.unix_secs() * 1000 + i64::from(time.subsec_nanos() / 1_000_000)
+    })
+}
+
+/// When to ask whether a lease is still in force: at each moment of the
+/// times above, a millisecond either side and ten minutes on, long before
+/// any of them, and at each stage of a session: 0 while the task runs, 1
+/// once the task has ended, 2 once the session has.
+fn oracle_moments() -> Vec<(i64, u8)> {
+    let mut moments = Vec::new();
+    let mut at = vec![-1_000_000_000_000_i64, 0];
+    for text in TIMES {
+        if let Ok(time) = UtcTime::parse(text) {
+            let millis = time.unix_secs() * 1000 + i64::from(time.subsec_nanos() / 1_000_000);
+            at.extend([millis - 1, millis, millis + 1, millis + 600_000]);
+        }
+    }
+    for now in at {
+        for stage in 0..3 {
+            moments.push((now, stage));
+        }
+    }
+    moments
+}
+
+/// Whether a lease is in force at a moment and a stage.
+fn oracle_alive(lease: &Lease, now: i64, stage: u8) -> bool {
+    let ended = match lease.expires.kind {
+        ExpiryKind::Never => false,
+        ExpiryKind::At => lease
+            .expires
+            .at
+            .as_ref()
+            .is_none_or(|at| now >= oracle_millis(at)),
+        ExpiryKind::EndOfTask => stage >= 1,
+        ExpiryKind::EndOfSession => stage >= 2,
+    };
+    let stopped = lease.stop_when.iter().any(|condition| {
+        matches!(condition, StopCondition::Time(stop) if now >= oracle_millis(&stop.at))
+    });
+    !ended && !stopped
+}
+
+/// What a narrowed lease may not exceed, stated field by field by the
+/// oracle above.
 fn never_wider(child: &Lease, parent: &Lease) -> Outcome {
     let (ours, theirs) = (&child.grant, &parent.grant);
     // Level.
-    match (rank(&ours.level), rank(&theirs.level)) {
+    match (oracle_rank(&ours.level), oracle_rank(&theirs.level)) {
         (Some(child_rank), Some(parent_rank)) => {
             ensure!(child_rank <= parent_rank, "the level went up");
         }
@@ -791,30 +947,42 @@ fn never_wider(child: &Lease, parent: &Lease) -> Outcome {
             "{rule:?} is an allow the parent does not have"
         );
     }
-    // Paths: nothing the child may read or write that the parent may not,
-    // and nothing the parent protects that the child does not.
+    // Paths: every root the child may read or write lies inside one of the
+    // parent's, and every root the parent protects the child protects.
+    for (child_set, parent_set, what) in [
+        (&ours.sandbox.write, &theirs.sandbox.write, "write"),
+        (&ours.sandbox.read, &theirs.sandbox.read, "read"),
+    ] {
+        if child_set.all {
+            ensure!(parent_set.all, "the child may {what} everything");
+        }
+        for root in &child_set.roots {
+            ensure!(
+                oracle_names(root).is_none() || oracle_covers(parent_set, root),
+                "the child may {what} {root}, outside {parent_set:?}"
+            );
+        }
+    }
+    if theirs.sandbox.protect.all {
+        ensure!(ours.sandbox.protect.all, "the child protects less than all");
+    }
+    for root in &theirs.sandbox.protect.roots {
+        ensure!(
+            ours.sandbox.protect.roots.contains(root) || oracle_covers(&ours.sandbox.protect, root),
+            "the protected root {root} was dropped"
+        );
+    }
     for path in probes() {
         ensure!(
-            !covers(&ours.sandbox.write, &path, POSIX)
-                || covers(&theirs.sandbox.write, &path, POSIX),
+            !oracle_covers(&ours.sandbox.write, &path)
+                || oracle_covers(&theirs.sandbox.write, &path),
             "{path} became writable"
         );
         ensure!(
-            !covers(&ours.sandbox.read, &path, POSIX) || covers(&theirs.sandbox.read, &path, POSIX),
-            "{path} became readable"
-        );
-        ensure!(
-            !covers(&theirs.sandbox.protect, &path, POSIX)
-                || covers(&ours.sandbox.protect, &path, POSIX),
+            !oracle_covers(&theirs.sandbox.protect, &path)
+                || oracle_covers(&ours.sandbox.protect, &path),
             "{path} lost its protection"
         );
-    }
-    for root in &theirs.sandbox.protect.roots {
-        let still_protected = ours.sandbox.protect.all
-            || ours.sandbox.protect.roots.contains(root)
-            || AbsPath::parse(root, POSIX)
-                .is_ok_and(|path| covers(&ours.sandbox.protect, &path, POSIX));
-        ensure!(still_protected, "the protected root {root} was dropped");
     }
     ensure!(
         ours.sandbox.network == NetworkAccess::Off || theirs.sandbox.network == NetworkAccess::Full,
@@ -855,25 +1023,43 @@ fn never_wider(child: &Lease, parent: &Lease) -> Outcome {
         !ours.limits.merge_to_main || theirs.limits.merge_to_main,
         "merging to the main branch came on"
     );
-    // Stop conditions and expiry.
+    // Stop conditions, and when the lease is in force.
     for condition in &parent.stop_when {
         ensure!(
             child.stop_when.contains(condition),
             "{condition:?} was dropped"
         );
     }
-    ensure!(
-        event_rank(child.expires.kind) >= event_rank(parent.expires.kind),
-        "the child ends at a later event"
-    );
-    if let Some(parent_deadline) = deadline(parent) {
+    for (now, stage) in oracle_moments() {
         ensure!(
-            deadline(child).is_some_and(|child_deadline| child_deadline <= parent_deadline),
-            "the child ends later: {:?} after {parent_deadline}",
-            deadline(child)
+            !oracle_alive(child, now, stage) || oracle_alive(parent, now, stage),
+            "the child is in force at {now} ms, stage {stage}, and the parent is not"
         );
     }
     Ok(())
+}
+
+#[test]
+fn the_oracle_reads_roots_and_times_as_the_docs_say() {
+    // A shared prefix of text is not a shared folder.
+    assert!(oracle_inside("/work/app", "/work"));
+    assert!(!oracle_inside("/work2", "/work"));
+    assert!(!oracle_inside("/work/app2", "/work/app"));
+    assert!(!oracle_inside("/Work", "/work"));
+    assert!(oracle_inside("/work/app/../x", "/work"));
+    assert!(oracle_inside("//work/./app", "/work/app"));
+    assert!(!oracle_inside("relative/root", "/"));
+    // One moment in two spellings.
+    let one = oracle_millis(&Timestamp::new("2026-11-13T10:00:00+01:00"));
+    assert_eq!(one, oracle_millis(&Timestamp::new("2026-11-13T09:00:00Z")));
+    assert_eq!(oracle_millis(&Timestamp::new("not a time")), i64::MIN);
+    let mut lease = lease("l", Level::Supervised);
+    lease.expires = at("2026-11-13T09:00:00Z");
+    assert!(oracle_alive(&lease, one - 1, 0));
+    assert!(!oracle_alive(&lease, one, 0));
+    lease.expires = ends(ExpiryKind::EndOfTask);
+    assert!(oracle_alive(&lease, one, 0));
+    assert!(!oracle_alive(&lease, one, 1));
 }
 
 #[test]
@@ -988,6 +1174,46 @@ fn narrowing_a_lease_under_itself_gives_nothing_it_did_not_have() {
             Ok(())
         },
     );
+}
+
+#[test]
+fn whatever_is_within_its_parent_is_no_wider_by_the_oracle() {
+    let positives = std::cell::Cell::new(0_u32);
+    cases::check(
+        "within_is_sound",
+        600,
+        |rng| {
+            let parent = any_lease(rng, "l_parent");
+            let mut child = narrow_in(&parent, &any_lease(rng, "l_child"), POSIX)
+                .unwrap_or_else(|_| parent.clone());
+            // Then one field from a lease made at random: often not within
+            // any more, and is_within must see that.
+            let stray = any_lease(rng, "l_stray");
+            match rng.below(7) {
+                0 => child.grant.sandbox.write = stray.grant.sandbox.write,
+                1 => child.grant.sandbox.read = stray.grant.sandbox.read,
+                2 => child.grant.sandbox.protect = stray.grant.sandbox.protect,
+                3 => child.expires = stray.expires,
+                4 => child.stop_when = stray.stop_when,
+                5 => {
+                    child.expires = stray.expires;
+                    child.stop_when = stray.stop_when;
+                }
+                _ => {}
+            }
+            (parent, child)
+        },
+        |(parent, child)| {
+            if is_within_in(child, parent, POSIX) {
+                positives.set(positives.get() + 1);
+                if child.grant.level != Level::Unrestricted {
+                    never_wider(child, parent)?;
+                }
+            }
+            Ok(())
+        },
+    );
+    assert!(positives.get() > 50, "only {} were within", positives.get());
 }
 
 #[test]

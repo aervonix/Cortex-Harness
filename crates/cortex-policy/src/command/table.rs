@@ -20,21 +20,25 @@
 //! - **A word the shell would expand takes the command off the table.** A
 //!   glob can expand to a name that begins with `-`, which the program
 //!   then reads as an option.
-//! - **No option that follows links is listed** (`grep -R`, `rg -L`,
-//!   `find -L`, `ls -L`, `tree -l`), and `diff` is not on the table: it
-//!   reads through the links inside the directories it compares. The files
-//!   a command names are checked one by one; what it finds by walking a
-//!   tree must stay in the tree.
-//! - **A search of a whole tree is on the table only where it leaves hidden
-//!   files out.** `grep -r` reads every file under a directory, a `.env`
-//!   included, and none of them is named on the command line to be checked;
-//!   it is not on the table, and `grep` of named files is. `rg` leaves out
-//!   hidden and ignored files unless told otherwise, and is on the table
-//!   without the options that tell it otherwise. What remains is stated in
-//!   `docs/security.md`: a secret in a file that is not hidden
-//!   (`server.pem`), or a file a rule protects, inside a tree `rg` searches;
-//!   and tracked content that `git diff`, `git show`, `git log -p` and `git
-//!   grep` print.
+//! - **No option that follows links is listed** (`grep -R`, `find -L`,
+//!   `ls -L`, `tree -l`), and `diff` is not on the table: it reads through
+//!   the links inside the directories it compares. The files a command
+//!   names are checked one by one; what it finds by walking a tree must stay
+//!   in the tree.
+//! - **No search that reads the content of a whole tree is on it.** `grep
+//!   -r` and `rg` read files nobody named, and what they leave out (hidden
+//!   files, what an ignore file names) the workspace itself can change: a
+//!   `.ignore` with `!.env` in it, or `rg -t sh`, whose type names `.env`.
+//!   The `search` tool makes that search with every file put to the read
+//!   rules. `grep` of named files is on the table. What remains is the
+//!   tracked content that `git diff`, `git show`, `git log -p` and `git grep`
+//!   print, stated in `docs/security.md`.
+//! - **A value an option takes only attached is never the next word.** The
+//!   table would skip that word as the value, and the program would read it
+//!   as an option of its own: `git log --pretty --output=f` writes `f`. Each
+//!   `SV` and `LV` entry has been checked against the real program, and a
+//!   `git` line with a word holding `--out` is never on the table, whatever
+//!   option comes before it.
 //! - **No shell builtin that can run code is on it.** `printf` and `test`
 //!   evaluate an array subscript in their arguments in bash, which runs a
 //!   command substitution written there, quoted or not.
@@ -129,9 +133,6 @@ enum Searches {
     /// Nothing: `cat`, `grep` of named files, and every command that
     /// prints names and not content (`ls -R`, `find`, `tree`).
     Nothing,
-    /// Every file under each directory it names, and under the directory
-    /// it runs in when it names none: `rg`.
-    Trees,
     /// The tracked files of the repository: `git diff`, `git grep`.
     Repository,
     /// The tracked files of the repository, when one of these options is
@@ -213,10 +214,6 @@ pub struct Named {
     /// that may be a git revision instead: if it cannot be read as a path,
     /// it is not one.
     pub must_resolve: bool,
-    /// Whether the command reads the content of every file under it, when
-    /// it is a directory. Those files are named nowhere, so the caller asks
-    /// whether a rule protects anything in the tree.
-    pub searched: bool,
 }
 
 /// What a command that only reads will read.
@@ -314,39 +311,6 @@ const GREP: &[Opt] = &[
     LV("after-context", T), LV("before-context", T), LV("context", T), LV("max-count", T),
     LV("regexp", T), LV("include", T), LV("exclude", T), LV("exclude-dir", T),
     LV("binary-files", T), LV("label", T),
-];
-
-#[rustfmt::skip]
-/// `rg` searches a tree, and by default it leaves out hidden files and
-/// what ignore files name, which is where most files that look like
-/// secrets are (`.env`, `.netrc`, `.npmrc`). So it is on the table without
-/// the options that bring those back: `--hidden`, `-.`, `-u`,
-/// `--no-ignore…`, and `-g`, `--glob` and `--iglob`, because a glob that
-/// names a hidden file overrides the hidden-file rule. Also not here:
-/// `--pre` and `--hostname-bin` (run a program), `-z` (starts a
-/// decompressor), `-f` and `-L`.
-const RG: &[Opt] = &[
-    S('n'), S('N'), S('i'), S('l'), S('c'), S('v'), S('w'), S('x'), S('F'), S('S'), S('s'),
-    S('H'), S('I'), S('o'), S('q'), S('U'), S('a'), S('p'), S('P'),
-    S('b'), S('0'),
-    SV('e', T), SV('t', T), SV('T', T), SV('A', T), SV('B', T), SV('C', T),
-    SV('m', T), SV('d', T), SV('j', T), SV('M', T), SV('r', T), SV('E', T),
-    L("files"),
-    L("line-number"), L("no-line-number"), L("ignore-case"), L("smart-case"),
-    L("case-sensitive"), L("files-with-matches"), L("files-without-match"), L("count"),
-    L("count-matches"), L("invert-match"), L("word-regexp"), L("line-regexp"),
-    L("fixed-strings"), L("no-heading"), L("heading"), L("json"), L("stats"), L("vimgrep"),
-    L("column"), L("no-column"), L("multiline"), L("multiline-dotall"),
-    L("text"), L("pretty"), L("pcre2"), L("only-matching"), L("quiet"), L("with-filename"),
-    L("no-filename"), L("null"), L("trim"), L("no-messages"), L("byte-offset"),
-    L("crlf"), L("one-file-system"), L("no-config"), L("type-list"),
-    L("sort-files"), L("passthru"), L("no-unicode"), L("debug"),
-    LV("regexp", T), LV("type", T), LV("type-not", T),
-    LV("after-context", T), LV("before-context", T), LV("context", T), LV("max-count", T),
-    LV("max-depth", T), LV("maxdepth", T), LV("max-columns", T), LV("max-filesize", T),
-    LV("threads", T), LV("color", T), LV("colors", T), LV("sort", T), LV("sortr", T),
-    LV("replace", T), LV("encoding", T), LV("engine", T), LV("field-match-separator", T),
-    LV("context-separator", T), LV("path-separator", T),
 ];
 
 #[rustfmt::skip]
@@ -486,30 +450,44 @@ const GIT_STATUS: &[Opt] = &[
 /// The options of `git diff`, `git show` and `git log` that choose what is
 /// shown. Not here, on purpose: `--output` (writes a file), `--ext-diff`
 /// and `--textconv` (run a program the repository's configuration names;
-/// their `--no-` forms are listed), and `-O<file>`.
+/// their `--no-` forms are listed), `-O<file>`, and `--no-index`, which
+/// compares any two paths and so prints ignored and hidden files, a `.env`
+/// included.
+///
+/// **An option that takes its value only attached is `SO` or `LO`**, never
+/// `SV` or `LV`: the table would skip the next word as the value, and git
+/// would read it as an option of its own (`git diff -U --output=f`). Checked
+/// against git 2.53 by putting `--output=<file>` after each option that
+/// takes a value: `-U`, `--unified` and `--relative` take theirs only
+/// attached, and every `SV` and `LV` here takes the next word.
 #[rustfmt::skip]
 const GIT_DIFF: &[Opt] = &[
     S('p'), S('u'), S('s'), S('w'), S('b'), S('z'), S('R'), S('a'),
-    SV('U', T), SO('M'), SO('C'), SV('S', T), SV('G', T),
+    SO('U'), SO('M'), SO('C'), SV('S', T), SV('G', T),
     L("patch"), L("no-patch"), L("stat"), L("shortstat"), L("numstat"), L("summary"),
     L("name-only"), L("name-status"), L("cached"), L("staged"), L("merge-base"), L("check"),
     L("no-color"), L("no-ext-diff"), L("no-textconv"), L("no-renames"),
     L("ignore-all-space"), L("ignore-space-change"), L("ignore-space-at-eol"),
     L("ignore-blank-lines"), L("ignore-cr-at-eol"), L("minimal"), L("patience"),
     L("histogram"), L("text"), L("raw"), L("patch-with-stat"), L("compact-summary"),
-    L("full-index"), L("binary"), L("exit-code"), L("quiet"), L("no-index"),
+    L("full-index"), L("binary"), L("exit-code"), L("quiet"),
     L("function-context"), L("pickaxe-all"), L("pickaxe-regex"), L("no-prefix"),
     LO("color"), LO("word-diff"), LO("color-words"), LO("color-moved"), LO("abbrev"),
-    LO("find-renames"), LO("find-copies"), LO("dirstat"), LO("submodule"),
-    LV("unified", T), LV("diff-filter", T), LV("diff-algorithm", T), LV("inter-hunk-context", T),
-    LV("word-diff-regex", T), LV("relative", T), LV("src-prefix", T), LV("dst-prefix", T),
+    LO("find-renames"), LO("find-copies"), LO("dirstat"), LO("submodule"), LO("unified"),
+    LO("relative"),
+    LV("diff-filter", T), LV("diff-algorithm", T), LV("inter-hunk-context", T),
+    LV("word-diff-regex", T), LV("src-prefix", T), LV("dst-prefix", T),
     LV("line-prefix", T), LV("ignore-matching-lines", T),
 ];
 
+/// The options of `git log` and `git show`. As for [`GIT_DIFF`], checked
+/// against git 2.53: `-U`, `--unified`, `--pretty`, `--format`,
+/// `--min-parents` and `--max-parents` take their value only attached
+/// (`--pretty` and `--format` are read by hand in git's `revision.c`).
 #[rustfmt::skip]
 const GIT_LOG: &[Opt] = &[
     S('p'), S('u'), S('s'), S('w'), S('b'), S('z'), S('i'), S('E'), S('F'),
-    SV('n', T), SV('U', T), SV('S', T), SV('G', T), SV('L', T), SO('M'), SO('C'),
+    SV('n', T), SO('U'), SV('S', T), SV('G', T), SV('L', T), SO('M'), SO('C'),
     L("oneline"), L("graph"), L("all"), L("branches"), L("tags"), L("remotes"),
     L("patch"), L("no-patch"), L("stat"), L("shortstat"), L("numstat"), L("summary"),
     L("name-only"), L("name-status"), L("no-color"), L("no-ext-diff"), L("no-textconv"),
@@ -522,11 +500,11 @@ const GIT_LOG: &[Opt] = &[
     L("extended-regexp"), L("fixed-strings"), L("all-match"), L("invert-grep"),
     L("relative-date"), L("parents"), L("children"), L("pickaxe-all"), L("pickaxe-regex"),
     LO("decorate"), LO("color"), LO("abbrev"), LO("word-diff"), LO("find-renames"),
-    LO("show-notes"), LO("notes"),
-    LV("format", T), LV("pretty", T), LV("since", T), LV("until", T), LV("after", T),
+    LO("show-notes"), LO("notes"), LO("format"), LO("pretty"), LO("unified"),
+    LO("min-parents"), LO("max-parents"),
+    LV("since", T), LV("until", T), LV("after", T),
     LV("before", T), LV("author", T), LV("committer", T), LV("grep", T), LV("date", T),
-    LV("max-count", T), LV("skip", T), LV("unified", T), LV("diff-filter", T),
-    LV("min-parents", T), LV("max-parents", T), LV("decorate-refs", T),
+    LV("max-count", T), LV("skip", T), LV("diff-filter", T), LV("decorate-refs", T),
     LV("decorate-refs-exclude", T), LV("diff-algorithm", T),
 ];
 
@@ -584,7 +562,8 @@ const GIT_DESCRIBE: &[Opt] = &[
 ];
 
 /// The options of `git grep`. Not here: `-O` and `--open-files-in-pager`,
-/// which start a program, and `-f`.
+/// which start a program, `-f`, and `--untracked` and `--no-index`, which
+/// search files git does not track, ignored and hidden ones included.
 #[rustfmt::skip]
 const GIT_GREP: &[Opt] = &[
     S('n'), S('i'), S('l'), S('L'), S('w'), S('c'), S('v'), S('h'), S('H'), S('E'), S('F'),
@@ -594,7 +573,7 @@ const GIT_GREP: &[Opt] = &[
     L("files-without-match"), L("word-regexp"), L("count"), L("invert-match"),
     L("extended-regexp"), L("fixed-strings"), L("basic-regexp"), L("perl-regexp"),
     L("text"), L("only-matching"), L("quiet"), L("null"), L("show-function"),
-    L("function-context"), L("cached"), L("untracked"), L("no-index"), L("no-color"),
+    L("function-context"), L("cached"), L("no-color"),
     L("full-name"), L("column"), L("heading"), L("break"), L("all-match"), L("and"),
     L("or"), L("not"), L("no-textconv"), L("recursive"), L("no-recursive"),
     LO("color"), LV("max-depth", T), LV("max-count", T), LV("threads", T),
@@ -606,8 +585,8 @@ const GIT_STASH_LIST: &[Opt] = &[
     L("oneline"),
     L("stat"),
     SV('n', T),
-    LV("format", T),
-    LV("pretty", T),
+    LO("format"),
+    LO("pretty"),
 ];
 
 #[rustfmt::skip]
@@ -720,7 +699,6 @@ const POSIX: &[Entry] = &[
     row(&["tail"], counted(HEAD, PATHS)),
     row(&["wc"], unix(WC, PATHS)),
     row(&["grep", "egrep", "fgrep"], unix(GREP, PATHS)),
-    row(&["rg"], searching(RG, PATHS, Searches::Trees)),
     row(&["fd", "fdfind"], unix(FD, PATHS)),
     row(&["find"], Shape::Find),
     row(&["sort"], unix(SORT, PATHS)),
@@ -768,7 +746,6 @@ const POWERSHELL: &[Entry] = &[
     row(&["get-filehash"], ps(PS_FILE_HASH, PATHS)),
     row(&["whoami"], unix(NONE, NO_OPERANDS)),
     row(&["hostname"], unix(NONE, NO_OPERANDS)),
-    row(&["rg"], searching(RG, PATHS, Searches::Trees)),
     row(&["fd"], unix(FD, PATHS)),
     Entry { names: &["git"], shape: Shape::Subcommands(GIT), needs_trust: true },
 ];
@@ -827,6 +804,19 @@ pub fn read_only(part: &Part, syntax: ShellSyntax, trusted: bool) -> Option<Read
     if entry.needs_trust && !trusted {
         return None;
     }
+    // `git diff`, `git log` and `git show` write any file with `--output`,
+    // and the table's reading of what comes before it could be wrong: one
+    // option misread as taking the next word is enough to hide it. So a git
+    // line with `--out` anywhere in a word is off the table, whatever the
+    // options around it.
+    if entry.names.contains(&"git")
+        && part
+            .arguments()
+            .iter()
+            .any(|word| word.text.contains("--out"))
+    {
+        return None;
+    }
     let mut reading = Reading::default();
     shape_allows(&entry.shape, part.arguments(), &mut reading).then_some(reading)
 }
@@ -861,13 +851,11 @@ fn record(kind: Kind, text: &str, named: &mut Vec<Named>) {
         Kind::Path => named.push(Named {
             text: text.to_owned(),
             must_resolve: true,
-            searched: false,
         }),
         Kind::RevisionOrPath => {
             named.push(Named {
                 text: text.to_owned(),
                 must_resolve: false,
-                searched: false,
             });
             // `HEAD:src/main.rs` shows the file `src/main.rs`.
             if let Some((_, path)) = text.rsplit_once(':')
@@ -876,7 +864,6 @@ fn record(kind: Kind, text: &str, named: &mut Vec<Named>) {
                 named.push(Named {
                     text: path.to_owned(),
                     must_resolve: false,
-                    searched: false,
                 });
             }
         }
@@ -885,9 +872,6 @@ fn record(kind: Kind, text: &str, named: &mut Vec<Named>) {
 
 fn unix_allows(spec: &Spec, arguments: &[Word], reading: &mut Reading) -> bool {
     let named = &mut reading.named;
-    // Whether an option gave the pattern, or said there is none: then
-    // every operand of a search is a path.
-    let mut pattern_given = false;
     // Whether an option was given that makes the command print content.
     let mut content = false;
     let shows_content = |name: &str| matches!(spec.searches, Searches::RepositoryWith(names) if names.contains(&name));
@@ -915,7 +899,6 @@ fn unix_allows(spec: &Spec, arguments: &[Word], reading: &mut Reading) -> bool {
                 matches!(option, Opt::Long(known) | Opt::LongValue(known, _) | Opt::LongOptional(known)
                     if *known == name)
             });
-            pattern_given |= matches!(name, "regexp" | "files" | "type-list");
             content |= shows_content(name);
             match (found, attached) {
                 (Some(Opt::Long(_) | Opt::LongOptional(_)), None)
@@ -946,7 +929,6 @@ fn unix_allows(spec: &Spec, arguments: &[Word], reading: &mut Reading) -> bool {
                 Some(Opt::Short(_)) => {}
                 Some(Opt::ShortOptional(_)) => break,
                 Some(Opt::ShortValue(_, kind)) => {
-                    pattern_given |= letter == 'e';
                     let rest = cluster.get(at + letter.len_utf8()..).unwrap_or("");
                     if rest.is_empty() {
                         let Some(value) = words.next() else {
@@ -965,7 +947,6 @@ fn unix_allows(spec: &Spec, arguments: &[Word], reading: &mut Reading) -> bool {
     if spec.operands.most.is_some_and(|most| operands.len() > most) {
         return false;
     }
-    let before = named.len();
     for operand in &operands {
         if operand.text != "-" {
             record(spec.operands.kind, &operand.text, named);
@@ -973,21 +954,6 @@ fn unix_allows(spec: &Spec, arguments: &[Word], reading: &mut Reading) -> bool {
     }
     match spec.searches {
         Searches::Nothing => {}
-        Searches::Trees => {
-            // The pattern is an operand too, and is treated as a path: that
-            // can only ask about more. With no path given, the search is
-            // of the directory the command runs in.
-            for name in named.iter_mut().skip(before) {
-                name.searched = true;
-            }
-            if operands.len() <= usize::from(!pattern_given) {
-                named.push(Named {
-                    text: ".".to_owned(),
-                    must_resolve: true,
-                    searched: true,
-                });
-            }
-        }
         Searches::Repository => reading.repository = true,
         Searches::RepositoryWith(_) => reading.repository = content,
     }

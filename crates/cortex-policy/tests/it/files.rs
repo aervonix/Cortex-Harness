@@ -11,6 +11,7 @@ use cortex_policy::{
 };
 use cortex_protocol::ids::LeaseId;
 use cortex_protocol::lease::{Budget, Effect, HardLimits, Level, RuleAction};
+use cortex_protocol::methods::ApprovalChoice;
 
 use crate::Said::{Allow, Ask, Deny, ReadOnly};
 use crate::{
@@ -196,7 +197,16 @@ fn a_question_about_a_path_offers_that_one_path() {
     assert_eq!(asked.lifts[0].effect, Effect::Read);
     assert_eq!(asked.lifts[0].pattern, "/etc/hosts");
     assert_eq!(asked.lifts[0].action, RuleAction::Allow);
-    assert_eq!(asked.choices().len(), 4);
+    // With nowhere to keep it, "always allow in this project" is not on
+    // offer (found by the review of step 12).
+    assert_eq!(
+        asked.choices(),
+        [
+            ApprovalChoice::AllowOnce,
+            ApprovalChoice::AllowSession,
+            ApprovalChoice::Deny
+        ]
+    );
     // A path whose name has pattern characters is still that one path.
     let odd = question(write(&engine, "/data/a*b/[x]/{y}.txt"));
     assert_eq!(odd.lifts[0].pattern, "/data/a[*]b/[[]x[]]/[{]y[}].txt");

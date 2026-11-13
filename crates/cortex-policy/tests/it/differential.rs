@@ -11,6 +11,11 @@
 //! - **PowerShell** parses each line with its own parser. The line must be
 //!   one command, with no operator, whose elements are constants with the
 //!   texts the analysis gave.
+//! - **What a program receives from PowerShell**, on Windows: each line is
+//!   run with its command replaced by a program that prints its arguments,
+//!   through Windows PowerShell 5.1 and through pwsh, in pwsh's own way of
+//!   passing arguments and in the old one it keeps for `.cmd` and `.bat`
+//!   programs. The parser can read one word where the program receives two.
 //!
 //! A line the analysis refuses is not looked at: refusing too much costs a
 //! question, never a wrong answer. The tests start a shell, hence `sys_`.
@@ -317,7 +322,7 @@ const PS_PLAIN: [&str; 30] = [
     "-Path:x",
 ];
 
-const PS_QUOTED: [&str; 16] = [
+const PS_QUOTED: [&str; 26] = [
     "'a b'",
     "''",
     "'it''s'",
@@ -334,6 +339,16 @@ const PS_QUOTED: [&str; 16] = [
     "\"é ü\"",
     "'-NotAParameter'",
     "\"C:\\Program Files\\x\"",
+    "';(){}@,#'",
+    "\";(){}@,#\"",
+    "'a  b'",
+    "' lead'",
+    "'trail '",
+    "'a\\b c'",
+    "'a\\'",
+    "'a \\'",
+    "'x&y'",
+    "'--opt=a b'",
 ];
 
 const PS_SPECIAL: [&str; 6] = ["*", "?", "*.rs", "~", "~\\x", "a*b"];
@@ -495,6 +510,129 @@ fn sys_powershell_reads_a_modelled_line_as_the_analysis_does() {
         differences.join("\n")
     );
     println!("{} lines compared", lines.len());
+}
+
+/// What a program receives when PowerShell runs a modelled line: exactly
+/// the words the analysis gives, through Windows PowerShell 5.1, through
+/// pwsh, and through pwsh in the old way of passing arguments, which it
+/// keeps for `.cmd` and `.bat` programs. The parser comparison above cannot
+/// see this: 5.1 drops an empty text and passes a `"` on unescaped, so the
+/// program can receive more words than the parser read (found by the review
+/// of step 12).
+#[cfg(windows)]
+#[test]
+fn sys_a_program_receives_the_words_the_analysis_gives_from_every_powershell() {
+    use cortex_testkit::children::{echo_arguments, echoed};
+
+    // Lines that bear on how words reach a program, then generated ones.
+    // The echoing program is started once per line, so there are few.
+    let mut arguments: Vec<String> = [
+        "'a b' c",
+        "'a  b' ' lead' 'trail '",
+        r"'C:\Program Files\x' 'a\b c'",
+        "--opt=1.5 -5.5 - -- -.5",
+        "'-NotAParameter' \"-a:b\"",
+        "'it''s' \"a b\"",
+        r"'a\' b",
+        r"a\ b\\",
+        "x=y --src-prefix=a/",
+        "'(x)' '{y}' '@z' ',w' '#v' ';u'",
+    ]
+    .iter()
+    .map(|text| (*text).to_owned())
+    .collect();
+    let mut rng = SeededRng::new(0x5eed_0212);
+    while arguments.len() < 40 {
+        let line = powershell_line(&mut rng);
+        let Some((_, rest)) = line.trim_start().split_once(' ') else {
+            continue;
+        };
+        if rest.is_ascii() {
+            arguments.push(rest.to_owned());
+        }
+    }
+    let mut lines = Vec::new();
+    let mut expected: Vec<Vec<String>> = Vec::new();
+    for rest in &arguments {
+        let line = format!("Show-It {rest}");
+        let Analysis::Parts(parts) = analyse(&line, ShellSyntax::PowerShell) else {
+            continue;
+        };
+        expected.push(
+            parts[0].words[1..]
+                .iter()
+                .map(|word| word.text.clone())
+                .collect(),
+        );
+        lines.push(rest.clone());
+    }
+    assert!(
+        lines.len() >= 20,
+        "too few lines are modelled: {}",
+        lines.len()
+    );
+
+    let scratch = cortex_testkit::scratch!("powershell_argv");
+    let (program, prefix) = echo_arguments(crate::ENTRY);
+    let mut script = String::from(
+        "param([string]$Mode)\n\
+         $ErrorActionPreference = 'Stop'\n\
+         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n\
+         if ($Mode) { $PSNativeCommandArgumentPassing = $Mode }\n",
+    );
+    let call = format!("& '{}' {}", program.replace('\'', "''"), prefix.join(" "));
+    for rest in &lines {
+        script.push_str(&format!("{call} {rest}\n"));
+    }
+    // With a byte-order mark, which Windows PowerShell needs to read the
+    // file as UTF-8.
+    let file = scratch.file("argv.ps1", &format!("\u{feff}{script}"));
+    for (shell, mode) in [("powershell", ""), ("pwsh", ""), ("pwsh", "Legacy")] {
+        let output = Command::new(shell)
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(&file)
+            .arg(mode)
+            .stdin(Stdio::null())
+            .output();
+        let output = match output {
+            Ok(output) => output,
+            Err(error) => {
+                assert!(!in_ci(), "`{shell}` is needed in CI: {error}");
+                println!("skipped {shell}: {error}");
+                continue;
+            }
+        };
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{shell} {mode} failed: {}\n{text}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let got = echoed(&text);
+        assert_eq!(got.len(), lines.len(), "{shell} {mode}: {text}");
+        let differences: Vec<String> = lines
+            .iter()
+            .zip(&expected)
+            .zip(&got)
+            .filter(|((_, expected), got)| expected != got)
+            .map(|((line, expected), got)| {
+                format!("{line:?}\n  the program received: {got:?}\n  the analysis: {expected:?}")
+            })
+            .collect();
+        assert!(
+            differences.is_empty(),
+            "{shell} {mode} passed other words than the analysis gave:\n{}",
+            differences.join("\n")
+        );
+        println!("{shell} {mode}: {} lines compared", lines.len());
+    }
 }
 
 #[test]

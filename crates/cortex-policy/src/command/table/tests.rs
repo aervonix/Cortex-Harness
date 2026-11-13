@@ -53,15 +53,6 @@ fn commands_that_only_read_are_on_the_table_with_what_they_name() {
         ("grep -e pattern -A 2 file.txt", &["file.txt"]),
         ("grep -c x -- -file", &["x", "-file"]),
         ("egrep 'a|b' f", &["a|b", "f"]),
-        ("rg -n TODO src", &["TODO", "src"]),
-        // With no path, `rg` searches the directory it runs in.
-        ("rg TODO", &["TODO", "."]),
-        ("rg -e TODO", &["."]),
-        ("rg -ie TODO src", &["src"]),
-        ("rg --regexp=TODO src", &["src"]),
-        ("rg --files", &["."]),
-        ("rg --files src", &["src"]),
-        ("rg -t rust -C3 'fn main' crates", &["fn main", "crates"]),
         ("fd -e rs main src", &["main", "src"]),
         ("find . -name '*.rs' -type f", &["."]),
         (
@@ -116,9 +107,14 @@ fn commands_that_only_read_are_on_the_table_with_what_they_name() {
         ("git diff --cached -- src/main.rs", &["src/main.rs"]),
         ("git diff main..feature --name-only", &["main..feature"]),
         ("git diff -U5 --no-ext-diff a b", &["a", "b"]),
+        ("git diff --unified=5 --relative=src", &[]),
+        ("git diff -U a b", &["a", "b"]),
         ("git log", &[]),
         ("git log --oneline -20", &[]),
         ("git log -n 5 --format=%H --since=2.weeks -- src", &["src"]),
+        ("git log --pretty=oneline --min-parents=2 HEAD", &["HEAD"]),
+        ("git log --pretty HEAD", &["HEAD"]),
+        ("git log -U3 -p", &[]),
         ("git log -p --follow src/lib.rs", &["src/lib.rs"]),
         ("git show HEAD", &["HEAD"]),
         (
@@ -140,6 +136,7 @@ fn commands_that_only_read_are_on_the_table_with_what_they_name() {
         ("git grep -n TODO -- src", &["TODO", "src"]),
         ("git remote -v", &[]),
         ("git stash list", &[]),
+        ("git stash list --pretty=%h -n 3", &[]),
         ("git version", &[]),
         ("git --version", &[]),
     ];
@@ -174,6 +171,26 @@ fn a_command_with_anything_unlisted_is_not_on_the_table() {
         "git diff --output patch.diff",
         "git log --output=x",
         "git show --output=x HEAD",
+        // An option that takes its value only attached, then one that
+        // writes: git reads `--output` as its own option. Found by the
+        // review of step 12 with git 2.53.
+        "git diff --relative --output=.git/hooks/pre-commit",
+        "git diff -U --output=.git/config",
+        "git diff --unified --output=x",
+        "git log --pretty --output=.git/hooks/pre-commit",
+        "git show --pretty --output=.git/hooks/pre-commit",
+        "git log -U --output=x",
+        "git log --min-parents --output=x",
+        "git log --max-parents --output=x",
+        "git log --format --output=x",
+        "git stash list --pretty --output=x",
+        "git stash list --format --output=x",
+        // Whatever comes before it, a git line with `--out` in a word is
+        // off the table: here git would take `--output=x` as the pattern.
+        "git log --grep --output=x",
+        "git log --author --out=x",
+        "git log --grep=--output",
+        "git diff -S --output=x",
         "sed -i 's/a/b/' f",
         "sed -n -i 5p f",
         "sed -n 5p -i f",
@@ -201,6 +218,21 @@ fn a_command_with_anything_unlisted_is_not_on_the_table() {
         "fd -l",
         "git grep -O less x",
         "git grep --open-files-in-pager=less x",
+        // An option that takes its value only attached hides the next word
+        // from the table, which would then never see an option that runs a
+        // program.
+        "git diff --relative --ext-diff",
+        "git diff -U --ext-diff",
+        "git diff --unified --textconv",
+        "git log --pretty --ext-diff -p",
+        "git log --format --ext-diff -p",
+        "git log -U --ext-diff",
+        "git log --unified --ext-diff",
+        "git log --min-parents --ext-diff -p",
+        "git log --max-parents --ext-diff -p",
+        "git show --pretty --ext-diff",
+        "git stash list --pretty --ext-diff",
+        "git stash list --format --ext-diff",
         "git diff --ext-diff",
         "git diff --textconv",
         "git log --ext-diff -p",
@@ -248,28 +280,22 @@ fn a_command_with_anything_unlisted_is_not_on_the_table() {
         "git",
         "git status --no-such-option",
         "git log --outpu=x",
-        // A search of a whole tree that reads hidden and ignored files,
-        // which is where the files that look like secrets are.
+        // A search of the content of a whole tree: what it leaves out, the
+        // workspace can change.
         "grep -r x .",
         "grep -rn TODO src",
         "grep --recursive x .",
         "grep --include='*.rs' -r x .",
+        "rg x",
+        "rg -n TODO src",
+        "rg -t sh API_TOKEN",
+        "rg --type sh API_TOKEN",
         "rg --hidden x",
-        "rg -. x",
-        "rg -u x",
-        "rg -uu x",
-        "rg -uuu x",
-        "rg --unrestricted x",
-        "rg --no-ignore x",
-        "rg --no-ignore-vcs x",
-        "rg --no-ignore-parent x",
-        "rg --no-ignore-dot x",
-        "rg -g .env x",
-        "rg -g '!*.rs' x",
-        "rg --glob=.env x",
-        "rg --iglob .ENV x",
-        "rg --ignore-file=none x",
-        "rg -f patterns",
+        "rg --files",
+        // Searches of what git does not track: ignored and hidden files.
+        "git grep --no-index API_TOKEN",
+        "git grep --untracked API_TOKEN",
+        "git diff --no-index src .",
         // Shell builtins that evaluate their arguments.
         "printf '%s\\n' a b",
         "printf -v x %s 1",
@@ -283,8 +309,6 @@ fn a_command_with_anything_unlisted_is_not_on_the_table() {
         // Options that follow links out of the tree, and `diff`.
         "grep -R x .",
         "grep --dereference-recursive x .",
-        "rg -L x",
-        "rg --follow x",
         "fd -L x",
         "find -L . -name x",
         "find . -follow",
@@ -459,37 +483,14 @@ fn a_named_revision_need_not_be_a_path_and_a_named_file_must() {
     all("git status src", true);
 }
 
-/// A command that reads the content of files nobody named says so: the
-/// engine then asks whether a rule protects anything there.
+/// A git command that prints what tracked files hold says so: the engine
+/// then asks whether a rule protects anything in the repository.
 #[test]
-fn a_search_says_which_trees_it_reads_and_git_says_it_reads_the_repository() {
-    let reading = |command: &str, syntax: ShellSyntax| {
-        let part = part(command, syntax).unwrap();
-        read_only(&part, syntax, true).unwrap()
+fn git_says_when_it_reads_the_repository() {
+    let reading = |command: &str| {
+        let part = part(command, ShellSyntax::Posix).unwrap();
+        read_only(&part, ShellSyntax::Posix, true).unwrap()
     };
-    let searched = |command: &str| -> Vec<String> {
-        reading(command, ShellSyntax::Posix)
-            .named
-            .into_iter()
-            .filter(|named| named.searched)
-            .map(|named| named.text)
-            .collect()
-    };
-    assert_eq!(searched("rg TODO"), ["TODO", "."]);
-    assert_eq!(searched("rg TODO src tests"), ["TODO", "src", "tests"]);
-    assert_eq!(searched("rg -e TODO"), ["."]);
-    assert_eq!(searched("rg -e TODO src"), ["src"]);
-    assert_eq!(searched("rg --files"), ["."]);
-    // The text of an option is not a tree.
-    assert_eq!(searched("rg -t rust TODO src"), ["TODO", "src"]);
-    assert_eq!(
-        reading("rg TODO", ShellSyntax::PowerShell)
-            .named
-            .iter()
-            .filter(|named| named.searched)
-            .count(),
-        2
-    );
     // Commands that read the files they name, or print names only.
     for command in [
         "cat a.txt",
@@ -508,11 +509,7 @@ fn a_search_says_which_trees_it_reads_and_git_says_it_reads_the_repository() {
         "git log --stat --name-only --format=%H -n 5",
         "git log --follow -- src/lib.rs",
     ] {
-        assert!(searched(command).is_empty(), "{command:?}");
-        assert!(
-            !reading(command, ShellSyntax::Posix).repository,
-            "{command:?}"
-        );
+        assert!(!reading(command).repository, "{command:?}");
     }
     for command in [
         "git diff",
@@ -522,20 +519,18 @@ fn a_search_says_which_trees_it_reads_and_git_says_it_reads_the_repository() {
         "git log -p",
         "git log --oneline --patch",
         "git log -5 -U3",
+        "git log -5 -U",
         "git log -pn 3",
         "git log -S password",
         "git log -Gpassword --oneline",
         "git log --unified=3",
+        "git log --unified",
         "git log --word-diff",
         "git log -L 1,5:a.rs",
         "git grep TODO",
     ] {
-        assert!(
-            reading(command, ShellSyntax::Posix).repository,
-            "{command:?}"
-        );
+        assert!(reading(command).repository, "{command:?}");
     }
-    assert!(!reading("rg TODO", ShellSyntax::Posix).repository);
 }
 
 #[test]
@@ -603,7 +598,6 @@ fn powershell_commands_that_only_read_are_on_the_table() {
         ("hostname", &[]),
         ("git status --short", &[]),
         ("GIT.EXE log --oneline -5", &[]),
-        ("rg -n TODO src", &["TODO", "src"]),
         ("Get-Content C:\\work\\a.txt", &["C:\\work\\a.txt"]),
         ("Get-Content C:/work/a.txt", &["C:/work/a.txt"]),
         // A pattern where the command takes text is its own business.
@@ -692,6 +686,9 @@ fn a_powershell_command_with_anything_unlisted_is_not_on_the_table() {
         "hostname x",
         "git push",
         "git -c x=y status",
+        "git log --pretty --output=x",
+        "rg -n TODO src",
+        "rg -t sh API_TOKEN",
     ] {
         let Some(part) = part(command, ShellSyntax::PowerShell) else {
             continue;

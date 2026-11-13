@@ -43,10 +43,16 @@
 //!
 //! # What does not narrow
 //!
-//! A proposal that names models the parent may not use, and none it may,
-//! has no lease inside both: an empty list would mean "any configured
-//! model", which is wider. [`LeaseExt::narrow`] refuses it
-//! ([`NarrowError::NoModelInCommon`]).
+//! - A proposal that names models the parent may not use, and none it may,
+//!   has no lease inside both: an empty list would mean "any configured
+//!   model", which is wider. [`LeaseExt::narrow`] refuses it
+//!   ([`NarrowError::NoModelInCommon`]).
+//! - A lease whose level cannot be held where the child runs: `autonomous`
+//!   where the sandbox does not enforce, `guided` before task leases exist.
+//!   `narrow` checks the level it gives as a session's start checks its
+//!   own ([`level::check_standing`]), so no caller can hand a child a level
+//!   the child could not have been started at (found by the review of step
+//!   12). [`NarrowError::Level`] says why.
 
 use cortex_base::{AbsPath, PathStyle, UtcTime};
 use cortex_protocol::ids::{LeaseId, ModelId, Timestamp};
@@ -72,6 +78,9 @@ pub enum NarrowError {
         /// The models the proposal names.
         requested: Vec<String>,
     },
+    /// The narrowed lease's level cannot be held with the sandbox as it is.
+    #[error(transparent)]
+    Level(#[from] LevelError),
 }
 
 /// What a lease means between a parent and a child.
@@ -84,10 +93,15 @@ pub trait LeaseExt {
     /// parent has **left**, narrow a copy of the parent's lease whose
     /// budget is what remains ([`with_budget`](Self::with_budget)).
     ///
+    /// `sandbox` is whether the sandbox confines the child's commands. The
+    /// child's level must be one a session could be started at with it
+    /// ([`level::check_standing`]).
+    ///
     /// # Errors
     ///
-    /// When no lease is inside both ([`NarrowError`]).
-    fn narrow(&self, requested: &Lease) -> Result<Lease, NarrowError>;
+    /// When no lease is inside both, or the level inside both cannot be
+    /// held ([`NarrowError`]).
+    fn narrow(&self, requested: &Lease, sandbox: SandboxState) -> Result<Lease, NarrowError>;
 
     /// Whether everything this lease permits, `parent` permits too.
     fn is_within(&self, parent: &Lease) -> bool;
@@ -98,8 +112,10 @@ pub trait LeaseExt {
 }
 
 impl LeaseExt for Lease {
-    fn narrow(&self, requested: &Lease) -> Result<Lease, NarrowError> {
-        narrow_in(self, requested, PathStyle::NATIVE)
+    fn narrow(&self, requested: &Lease, sandbox: SandboxState) -> Result<Lease, NarrowError> {
+        let child = narrow_in(self, requested, PathStyle::NATIVE)?;
+        level::check_standing(&child.grant.level, sandbox)?;
+        Ok(child)
     }
 
     fn is_within(&self, parent: &Lease) -> bool {

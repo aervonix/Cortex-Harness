@@ -12,7 +12,8 @@
 //! - One command: a name, then arguments separated by spaces or tabs.
 //! - Words of ASCII letters, digits and `_ - . / \ : = +`.
 //! - A whole word in single quotes, where `''` is one quote, or in double
-//!   quotes with no `$` and no back-tick, where `""` is one quote.
+//!   quotes with no `$` and no back-tick. Not empty, with no `"` in it, no
+//!   `\` at its end and none of `& | < > ^ %`: see below.
 //! - `~` as a whole word or before a separator: the home directory.
 //! - `*` and `?` in an argument. The word is flagged as a pattern.
 //!
@@ -26,6 +27,7 @@
 //! | `@`, `,`, `%`, `#`, `!`, `<`, `>` | Splatting and arrays, the `ForEach-Object` alias and the stop-parsing token `--%`, a comment, negation, redirection. |
 //! | A parameter with a `.` or a `:` in it: `-Path.5`, `-Path:x` | PowerShell ends a parameter's name there and reads the rest as another word. |
 //! | A quote that is not a whole word | PowerShell splits `"a b"c` in a way that depends on what follows. |
+//! | A quoted text that is empty, holds a `"`, ends with `\`, or holds one of `& \| < > ^ %` | Windows PowerShell, and pwsh for a `.cmd` or `.bat` program, pass it on so that the program receives other words than the parser read ([`reaches_a_program_whole`]). |
 //! | Any character outside ASCII that is not inside quotes | PowerShell reads several dashes as `-` and several spaces as a space. |
 //! | A typographic quote, anywhere | PowerShell reads `‘ ’ ‚ ‛` as `'` and `“ ” „` as `"`, inside a quoted text too. |
 //! | A quoted command name, or one that is not a plain name or path | It is an expression, not a command. |
@@ -185,12 +187,66 @@ fn quoted(
         }
         text.push(character);
     }
+    reaches_a_program_whole(&text)?;
     Ok(Word {
         text,
         quoted: true,
         glob: false,
         home: false,
     })
+}
+
+/// Checks that a quoted text reaches a program as the one word PowerShell's
+/// parser reads, whichever PowerShell runs it.
+///
+/// PowerShell's parser is not the last word on what a program receives.
+/// Windows PowerShell 5.1, and pwsh 7.3 and later for a `.cmd` or `.bat`
+/// target (`npm.cmd`, `gradlew.bat`), build the program's command line the
+/// old way: a text with a space in it is put in double quotes and nothing
+/// in it is escaped, and a text with none is passed bare. So:
+///
+/// - **a `"` in the text** ends that quoting early, and the rest of the text
+///   becomes words of their own: `'a " --output=x'` reaches git as `a ` and
+///   `--output=x`;
+/// - **a `\` at the end** of a text that is quoted for the command line
+///   escapes the closing quote, and the next words join the text up to a
+///   later quote: `'a \' x 'y --output=f'` reaches git with `--output=f` as
+///   a word;
+/// - **an empty text** is dropped, and the words after it move up one;
+/// - **`&`, `|`, `<`, `>`, `^` and `%`** in a text without a space are passed
+///   bare, and `cmd.exe`, which runs a `.cmd` or `.bat` file, reads them as
+///   its own: `npm test 'x&calc'` runs `calc`.
+///
+/// Each of these is refused, in every PowerShell line, since the analysis
+/// cannot know which PowerShell runs it or what the program is.
+fn reaches_a_program_whole(text: &str) -> Result<(), NotModelled> {
+    if text.is_empty() {
+        return refuse(
+            "an empty quoted text, which Windows PowerShell drops on its way to a program",
+        );
+    }
+    if text.contains('"') {
+        return refuse(
+            "a `\"` inside a quoted text, which Windows PowerShell passes on unescaped, so that \
+             the program receives more words than the line shows",
+        );
+    }
+    if text.ends_with('\\') {
+        return refuse(
+            "a quoted text that ends with `\\`, which Windows PowerShell passes on so that it \
+             escapes the quote after it, and the program receives other words than the line shows",
+        );
+    }
+    if let Some(special) = text
+        .chars()
+        .find(|character| matches!(character, '&' | '|' | '<' | '>' | '^' | '%'))
+    {
+        return refuse(format!(
+            "`{special}` inside a quoted text, which `cmd.exe` reads as its own when PowerShell \
+             runs a `.cmd` or `.bat` program"
+        ));
+    }
+    Ok(())
 }
 
 /// Reads a word with no quotes in it.
@@ -342,18 +398,23 @@ mod tests {
             words("Select-String -Pattern 'a b' -Path \"my file.txt\""),
             ["Select-String", "-Pattern", "a b", "-Path", "my file.txt"]
         );
-        // A doubled quote is the quote itself.
+        // A doubled single quote is the quote itself.
         assert_eq!(words("echo 'it''s'"), ["echo", "it's"]);
-        assert_eq!(words("echo \"say \"\"hi\"\"\""), ["echo", "say \"hi\""]);
         // Everything but `$` and the back-tick is literal in double quotes,
-        // and everything is in single quotes.
+        // and everything is in single quotes, apart from what cannot reach a
+        // program whole (below).
         assert_eq!(
-            words("echo '$env:PATH `n ; | & ( ) { } @ , % # é'"),
-            ["echo", "$env:PATH `n ; | & ( ) { } @ , % # é"]
+            words("echo '$env:PATH `n ; ( ) { } @ , # é'"),
+            ["echo", "$env:PATH `n ; ( ) { } @ , # é"]
         );
         assert_eq!(
-            words("echo \"; | & ( ) { } @ , % #\""),
-            ["echo", "; | & ( ) { } @ , % #"]
+            words("echo \"; ( ) { } @ , #\""),
+            ["echo", "; ( ) { } @ , #"]
+        );
+        // A backslash is plain, except at the end of a quoted text.
+        assert_eq!(
+            words(r"git log 'C:\Program Files\x' 'a\b c'"),
+            ["git", "log", r"C:\Program Files\x", r"a\b c"]
         );
         assert_eq!(words("ls *.rs"), ["ls", "*.rs(glob)"]);
         assert_eq!(words(r"ls ~\notes"), ["ls", r"~\notes(home)"]);
@@ -437,6 +498,31 @@ mod tests {
             "cargo test -p:x",
             "echo 'unterminated",
             "echo \"unterminated",
+            // A quoted text that a program would receive as other words than
+            // the parser read: Windows PowerShell passes a `"` in it on
+            // unescaped, drops an empty one, and lets a `\` at its end
+            // escape the quote it adds; `cmd.exe` reads `& | < > ^ %` when
+            // PowerShell runs a `.cmd` or `.bat` program. Found by the review
+            // of step 12.
+            r#"git diff 'HEAD" "--output=.git/hooks/pre-commit'"#,
+            r#"git log 'HEAD" "--output=x'"#,
+            r#"git diff --src-prefix 'a/ " --output=.git/hooks/pre-commit'"#,
+            r#"git log --grep 'x " --output=.git/hooks/pre-commit'"#,
+            "echo \"say \"\"hi\"\"\"",
+            "echo '\"'",
+            "git log '' --output=x",
+            "git log \"\" x",
+            r"git log 'a \' x 'y --output=f'",
+            r"git log 'C:\Program Files\'",
+            r"echo 'x\'",
+            "npm test 'x&calc'",
+            "npm test \"x&calc\"",
+            "npm test 'a|b'",
+            "npm test 'a<b'",
+            "npm test 'a>b'",
+            "npm test 'a^b'",
+            "npm test '%PATH%'",
+            "npm test 'a b & c'",
             // Characters PowerShell reads as their ASCII look-alikes.
             "echo \u{2018}x\u{2019}",
             "echo 'a\u{2019}; rm x'",
