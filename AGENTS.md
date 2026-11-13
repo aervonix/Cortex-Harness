@@ -15,7 +15,7 @@ These are the rules of the build plan. They hold in every change.
 
 1. **Original work.** Other harnesses may be studied to understand a problem. Nothing is copied from them: no code, structure, names, prompt text, UI or configuration format. No dependency that is a port or extract of their code.
 2. **Speed and efficiency are priorities**, in the product and in the tooling. The blocking pull-request checks finish in under 5 minutes per OS on GitHub-hosted runners. Anything slower goes in a non-blocking tier.
-3. **No personal details.** The owner's name and email never appear in commits, trailers, docs, code, configuration or fixtures. No absolute home-directory paths: write `~` or a repo-relative path. Commits use the repository's own git identity, never a personal one. CI checks every pull request and every push to `main` for the owner's details, against a secret only the owner holds (`cargo xtask owner-guard`).
+3. **No personal details.** The owner's name and email never appear in commits, trailers, docs, code, configuration or fixtures. No absolute home-directory paths: write `~` or a repo-relative path. Commits use the repository's own git identity, never a personal one. CI checks every pull request from this repository, and every push to `main`, for the owner's details, against a secret only the owner holds (`cargo xtask owner-guard`).
 4. **Everything fresh.** Nothing is carried over from earlier attempts.
 5. **The brand is Cortex-Harness.** Crates use the `cortex-` prefix. The command is `cortex`, with the alias `cx`.
 6. **The docs are the specification.** If the code must differ from a doc, change the doc in the same change. If a decision changes, add or amend a decision record.
