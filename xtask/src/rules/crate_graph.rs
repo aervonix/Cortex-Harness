@@ -117,6 +117,7 @@ pub(crate) fn check(packages: &[Package], manifests: &[(String, String)]) -> Vec
         check_edges(package, &mut violations);
         check_confined(package, &mut violations);
         check_protocol_dependencies(package, &mut violations);
+        check_test_hooks(package, &mut violations);
         let manifest = manifests
             .iter()
             .find(|(path, _)| *path == package.manifest)
@@ -124,6 +125,64 @@ pub(crate) fn check(packages: &[Package], manifests: &[(String, String)]) -> Vec
         check_conventions(package, manifest, &mut violations);
     }
     violations
+}
+
+/// The feature a crate puts its test-only switches behind.
+const TEST_HOOKS: &str = "test-hooks";
+
+/// A `test-hooks` feature is turned on by dev-dependencies and by nothing
+/// else. Anything else that turned it on would compile a switch meant for
+/// tests into every build of the product, the released one included. There
+/// are three other ways to turn a feature on, and each is refused:
+///
+/// - a normal or build dependency that asks for it;
+/// - the crate that has it listing it in another of its features, `default`
+///   above all;
+/// - a feature of another crate that passes it on (`cortex-tools/test-hooks`).
+fn check_test_hooks(package: &Package, violations: &mut Vec<Violation>) {
+    const WHY: &str = "Why: the feature holds switches for tests (a seeded order of events, \
+                       docs/testing-and-ci.md). Asked for under `[dev-dependencies]` it is \
+                       built into test builds only. Turned on any other way it is built into \
+                       the released binary.";
+    for dependency in &package.dependencies {
+        if dependency.kind != DepKind::Dev
+            && dependency
+                .features
+                .iter()
+                .any(|feature| feature == TEST_HOOKS)
+        {
+            violations.push(Violation::new(
+                &package.manifest,
+                None,
+                format!(
+                    "`{}` turns on the `{TEST_HOOKS}` feature of `{}` outside its \
+                     dev-dependencies.\n    {WHY}\n    Move the feature to the crate's \
+                     `[dev-dependencies]` entry.",
+                    package.name, dependency.name
+                ),
+            ));
+        }
+    }
+    for (feature, turns_on) in &package.features {
+        for turned_on in turns_on {
+            // `test-hooks`, `dep/test-hooks` or `dep?/test-hooks`.
+            let passed_on = turned_on
+                .rsplit_once('/')
+                .is_some_and(|(_, feature)| feature == TEST_HOOKS);
+            if turned_on == TEST_HOOKS || passed_on {
+                violations.push(Violation::new(
+                    &package.manifest,
+                    None,
+                    format!(
+                        "the feature `{feature}` of `{}` turns on `{turned_on}`.\n    {WHY}\n    \
+                         Take it out of the feature: a crate's tests ask for `{TEST_HOOKS}` in \
+                         their `[dev-dependencies]`.",
+                        package.name
+                    ),
+                ));
+            }
+        }
+    }
 }
 
 fn allowed_for(name: &str) -> Option<&'static [&'static str]> {
@@ -396,6 +455,7 @@ mod tests {
                 kinds: vec!["lib".to_owned()],
                 doctest: false,
             }],
+            features: Vec::new(),
         }
     }
 
@@ -607,6 +667,84 @@ mod tests {
             &messages(&krate("cortex-agent", vec![with_http])),
             &["rule 2"],
         );
+    }
+
+    #[test]
+    fn test_hooks_are_turned_on_by_dev_dependencies_only() {
+        let hooks = |dependency: Dependency| Dependency {
+            features: vec!["test-hooks".to_owned()],
+            ..dependency
+        };
+        // As the loop's tests do: the crate itself without, its tests with.
+        let in_tests = krate(
+            "cortex-agent",
+            vec![dep("cortex-tools"), hooks(dev("cortex-tools"))],
+        );
+        assert!(messages(&in_tests).is_empty(), "{:#?}", messages(&in_tests));
+
+        let in_the_product = krate("cortex-core", vec![hooks(dep("cortex-tools"))]);
+        assert_one(
+            &messages(&in_the_product),
+            &[
+                "`cortex-core` turns on the `test-hooks` feature of `cortex-tools`",
+                "[dev-dependencies]",
+            ],
+        );
+
+        let in_a_build_script = krate(
+            "cortex-core",
+            vec![Dependency {
+                kind: DepKind::Build,
+                ..hooks(dep("cortex-tools"))
+            }],
+        );
+        assert_one(&messages(&in_a_build_script), &["`test-hooks`"]);
+    }
+
+    #[test]
+    fn no_feature_turns_test_hooks_on() {
+        let with_features = |name: &str, features: &[(&str, &[&str])]| Package {
+            features: features
+                .iter()
+                .map(|(feature, turns_on)| {
+                    (
+                        (*feature).to_owned(),
+                        turns_on.iter().map(|one| (*one).to_owned()).collect(),
+                    )
+                })
+                .collect(),
+            ..krate(name, vec![dep("cortex-tools")])
+        };
+
+        // Having the feature is not turning it on.
+        let has_it = with_features("cortex-agent", &[("test-hooks", &[]), ("default", &[])]);
+        assert!(messages(&has_it).is_empty(), "{:#?}", messages(&has_it));
+
+        // On by default, in the crate that has it.
+        let by_default = with_features(
+            "cortex-agent",
+            &[("default", &["test-hooks"]), ("test-hooks", &[])],
+        );
+        assert_one(
+            &messages(&by_default),
+            &["the feature `default` of `cortex-agent` turns on `test-hooks`"],
+        );
+
+        // Passed on by a feature of a crate that depends on it, with or
+        // without the mark for an optional dependency.
+        for passed_on in ["cortex-tools/test-hooks", "cortex-tools?/test-hooks"] {
+            let forwards = with_features("cortex-agent", &[("seeded", &[passed_on])]);
+            assert_one(
+                &messages(&forwards),
+                &[&format!(
+                    "the feature `seeded` of `cortex-agent` turns on `{passed_on}`"
+                )],
+            );
+        }
+
+        // Another feature with a name that only ends the same way.
+        let other = with_features("cortex-agent", &[("x", &["cortex-tools/no-test-hooks"])]);
+        assert!(messages(&other).is_empty(), "{:#?}", messages(&other));
     }
 
     #[test]

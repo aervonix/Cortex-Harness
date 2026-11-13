@@ -1,0 +1,10 @@
+# What `cargo xtask mutate` needs of nextest: every test run whatever fails,
+# and a JUnit report of the run.
+[profile.mutate]
+fail-fast = false
+status-level = "fail"
+final-status-level = "fail"
+failure-output = "final"
+
+[profile.mutate.junit]
+path = "junit.xml"

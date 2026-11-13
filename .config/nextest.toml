@@ -67,3 +67,24 @@ failure-output = "immediate-final"
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# `cargo xtask mutate` and `cargo xtask stress` read which tests failed from
+# the JUnit report, so each has a profile that writes one, runs every test
+# whatever fails, and prints only the failures.
+[profile.mutate]
+fail-fast = false
+status-level = "fail"
+final-status-level = "fail"
+failure-output = "final"
+
+[profile.mutate.junit]
+path = "junit.xml"
+
+[profile.stress]
+fail-fast = false
+status-level = "fail"
+final-status-level = "fail"
+failure-output = "final"
+
+[profile.stress.junit]
+path = "junit.xml"

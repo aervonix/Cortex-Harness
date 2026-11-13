@@ -19,11 +19,14 @@ use std::process::ExitCode;
 
 mod alias;
 mod checks;
+mod junit;
+mod mutate;
 mod nonblocking;
 mod outside;
 mod rules;
 mod schema;
 mod steps;
+mod stress;
 mod tiers;
 mod workspace;
 
@@ -36,13 +39,35 @@ Developer commands for the Cortex-Harness repository.
 Usage: cargo xtask <command> [arguments]        (or: ./x <command> [arguments])
 
 Checks and tests
-  check [STEP...]   Static checks (tier 0): fmt, rules, generated, clippy, deny.
-                    With step names, only those steps.
+  check [STEP...]   Static checks (tier 0): fmt, rules, breaks, generated, clippy,
+                    deny. With step names, only those steps.
   test [ARGS...]    All tests, with nextest. Arguments go to `cargo nextest run`,
                     for example: test --profile fast     (tiers 1 and 2 only)
+                                 test -p cortex-agent    (one crate, and only it)
   ci [lint|test]    Exactly what the blocking CI jobs run. No argument: both.
+  ci --tiers [-p CRATE]... [--top N]
+                    Build and run the tests as CI does (third-party crates not
+                    optimised) and report each tier's time against its budget
+                    and its slowest tests. With --from JUNIT.XML [--os
+                    linux|windows], report on a run that was already made:
+                    the report a CI job uploads, for example.
   rules             The repo-rule checks alone: no home-directory paths, the
-                    crate dependency rules, docs/dependencies.md, workflows.
+                    crate dependency rules, docs/dependencies.md, workflows,
+                    links and the layout of the step records.
+  links             The part of `rules` that is about the docs: every link
+                    inside the repository leads to a file and a heading that
+                    are there, and docs/steps/ and docs/outstanding/ hold
+                    what they should. It asks cargo nothing.
+
+Showing that the tests bite
+  stress -p CRATE... [--count N] [--first-seed S] [ARGS...]
+                    Run the crates' tests N times over (100 when not given),
+                    each time under the next seed, and report the tests that
+                    fail on some, with the seed that brings each failure back.
+  mutate [BREAK...] Break the code on purpose, one break of mutations/*.breaks
+                    at a time, on a copy of the tree, and report which tests
+                    fail. --check only checks that every break still applies
+                    (`check` runs that). `mutate --help` has the rest.
 
 Not blocking (the `main` and `nightly` workflows run these)
   size [--check]    Build the `dist` profile and report the binary's size and
@@ -91,6 +116,7 @@ fn main() -> ExitCode {
         Some("test") => checks::test(&rest),
         Some("ci") => checks::ci(&rest),
         Some("rules") => checks::rules(),
+        Some("links") => checks::links(),
         Some("fmt") => checks::fmt(),
         Some("gen") => generate(),
         Some("schema") => schema::run(&rest),
@@ -98,6 +124,8 @@ fn main() -> ExitCode {
         Some("unused") => nonblocking::unused(),
         Some("advisories") => nonblocking::advisories(),
         Some("alias") => alias::run(&rest),
+        Some("mutate") => return mutate::main(&rest),
+        Some("stress") => stress::run(&rest),
         Some("fuzz") => outside::fuzz(&rest),
         Some("live") => outside::live(&rest),
         Some("record") => outside::record(&rest),

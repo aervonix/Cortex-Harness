@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nextest-run" tests="13" skipped="0" failures="2" errors="0" uuid="00000000-0000-4000-8000-000000000000" timestamp="2026-11-13T09:00:00.000+00:00" time="12.4">
+    <testsuite name="cortex-base" tests="4" skipped="0" errors="0" failures="0">
+        <testcase name="framing::tests::every_split_into_three" classname="cortex-base" timestamp="2026-11-13T09:00:00.001+00:00" time="1.500"/>
+        <testcase name="text::tests::wraps_at_the_width" classname="cortex-base" timestamp="2026-11-13T09:00:00.001+00:00" time="1.000"/>
+        <testcase name="hash::tests::the_empty_input" classname="cortex-base" timestamp="2026-11-13T09:00:00.002+00:00" time="0.300"/>
+        <testcase name="clock::tests::parses_sys_times" classname="cortex-base" timestamp="2026-11-13T09:00:00.002+00:00" time="0.200"/>
+    </testsuite>
+    <testsuite name="cortex-policy" tests="1" skipped="0" errors="0" failures="0">
+        <testcase name="rules::tests::a_deny_beats_an_allow_in_any_order" classname="cortex-policy" timestamp="2026-11-13T09:00:00.003+00:00" time="3.000"/>
+    </testsuite>
+    <testsuite name="cortex-agent::it" tests="3" skipped="0" errors="0" failures="1">
+        <testcase name="rounds::two_reads_run_together" classname="cortex-agent::it" timestamp="2026-11-13T09:00:01.000+00:00" time="1.050"/>
+        <testcase name="denials::a_refused_call_stops_the_turn" classname="cortex-agent::it" timestamp="2026-11-13T09:00:01.000+00:00" time="2.500">
+            <failure message="thread &apos;denials::a_refused_call_stops_the_turn&apos; panicked at crates/cortex-agent/tests/it/denials.rs:120:5" type="test failure with exit code 101">assertion `left == right` failed
+  left: [&quot;start write a&quot;]
+ right: [&quot;start write a&quot;, &quot;end write a&quot;]</failure>
+            <system-out>
+running 1 test
+event-order seed 0 (run it again with CORTEX_TEST_SEED=0)
+test denials::a_refused_call_stops_the_turn ... FAILED
+</system-out>
+        </testcase>
+        <testcase name="steering::a_note_waits_for_the_round" classname="cortex-agent::it" timestamp="2026-11-13T09:00:01.100+00:00" time="0.200"/>
+    </testsuite>
+    <testsuite name="cortex-llm::it" tests="1" skipped="0" errors="0" failures="0">
+        <testcase name="anthropic::replay::every_fixture_cut_in_two" classname="cortex-llm::it" timestamp="2026-11-13T09:00:02.000+00:00" time="6.250"/>
+    </testsuite>
+    <testsuite name="cortex-policy::it" tests="1" skipped="0" errors="0" failures="1">
+        <testcase name="differential::sys_bash_agrees" classname="cortex-policy::it" timestamp="2026-11-13T09:00:03.000+00:00" time="10.000">
+            <failure type="test timeout"/>
+        </testcase>
+    </testsuite>
+    <testsuite name="cortex-tools::it" tests="2" skipped="0" errors="0" failures="0">
+        <testcase name="shell::sys_the_exit_status_is_the_commands" classname="cortex-tools::it" timestamp="2026-11-13T09:00:04.000+00:00" time="2.500"/>
+        <testcase name="process::sys_a_grandchild_is_gone" classname="cortex-tools::it" timestamp="2026-11-13T09:00:04.000+00:00" time="0.500"/>
+    </testsuite>
+    <testsuite name="xtask::bin/xtask" tests="1" skipped="0" errors="0" failures="0">
+        <testcase name="rules::tests::sys_the_repository_follows_its_own_rules" classname="xtask::bin/xtask" timestamp="2026-11-13T09:00:05.000+00:00" time="2.000"/>
+    </testsuite>
+</testsuites>
