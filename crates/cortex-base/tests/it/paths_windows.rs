@@ -458,11 +458,16 @@ fn sys_a_junction_that_leaves_the_workspace_resolves_outside() {
 #[test]
 fn a_short_name_resolves_to_the_same_path_as_the_long_one() {
     // Short ("8.3") names are a per-volume setting, so try the build's
-    // volume and then the temporary directory's.
-    let volumes = [
+    // volume, then the temporary directory's, then the system disk's own
+    // temporary directory: CI points `TEMP` at the workspace's disk, which
+    // makes no short names on a hosted runner, and the system disk does.
+    let mut volumes = vec![
         Path::new(env!("CARGO_TARGET_TMPDIR")).to_path_buf(),
         std::env::temp_dir(),
     ];
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        volumes.push(Path::new(&local).join("Temp"));
+    }
     for volume in &volumes {
         let scratch = Scratch::under(volume, "win_short_names");
         scratch.file("ws/secret-settings.env", "TOKEN=1");
