@@ -259,12 +259,14 @@ fn world_config_path_placeholder() -> &'static str {
 /// "Built-in deny rules protect the harness's own files and credentials":
 /// no allow and no level lifts them. The stored keys are closed to reading
 /// wherever they are kept: in the configuration directory on Linux, and on
-/// Windows in the local folder, which is the data directory and is
-/// otherwise closed only to writing (`docs/architecture/08-configuration.md`,
-/// "Where each system keeps the harness's files"). Both layouts are given
-/// to the core on every system, as `Dirs::from_env` makes them. The files
-/// are the ones the real store leaves: the keys and their lock. Found on
-/// Windows by the review of step 13a.
+/// Windows in a folder of their own in the local folder, which is the data
+/// directory and is otherwise closed only to writing
+/// (`docs/architecture/08-configuration.md`, "Where each system keeps the
+/// harness's files"). Both layouts are given to the core on every system,
+/// as `Dirs::from_env` makes them. The files are the ones the real store
+/// leaves (the keys and their lock), and the temporary file of a write that
+/// was killed, which holds every key. Found on Windows by the review of
+/// step 13a, and the temporary file by the review of its fixes.
 #[test]
 fn the_stored_keys_are_closed_to_the_tools_in_each_systems_layout() {
     for windows in [false, true] {
@@ -278,8 +280,10 @@ fn the_stored_keys_are_closed_to_the_tools_in_each_systems_layout() {
         );
         let mut dirs = world.dirs();
         if windows {
-            // `%LOCALAPPDATA%\cortex-harness`, beside the sessions.
-            dirs.credentials.clone_from(&dirs.data);
+            // `%LOCALAPPDATA%\cortex-harness\credentials`, beside the
+            // sessions.
+            // (`cortex-config`'s own test pins that layout.)
+            dirs.credentials = dirs.data.as_ref().map(|data| data.join("credentials"));
         } else {
             // `~/.config/cortex-harness`, beside the configuration.
             dirs.credentials.clone_from(&dirs.config);
@@ -308,6 +312,19 @@ fn the_stored_keys_are_closed_to_the_tools_in_each_systems_layout() {
                 .collect();
         files.sort();
         assert_eq!(files.len(), 2, "the keys and their lock: {files:?}");
+        // What a write that was killed between its temporary file and the
+        // rename leaves beside the file: every key.
+        let left = dirs
+            .credentials
+            .as_ref()
+            .unwrap()
+            .join(".cortex-0123456789abcdef.tmp");
+        std::fs::write(
+            &left,
+            "[openrouter]\nkey = \"stored-key-material-0000000000\"\n",
+        )
+        .unwrap();
+        files.push(left);
         for (index, file) in files.iter().enumerate() {
             world.provider.push(calls(&[(
                 &format!("c{index}"),

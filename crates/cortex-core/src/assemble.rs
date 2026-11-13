@@ -452,12 +452,11 @@ fn engine_parts(
         protected = protected.closed(config);
     }
     // The stored keys, wherever they are kept: in the configuration
-    // directory on Linux, and on Windows in the local folder, which is the
-    // data directory and so is closed only to writing. Its lock beside it.
-    for file in credential_files(dirs) {
-        if let Some(file) = resolve_dir(&file) {
-            protected = protected.closed(file);
-        }
+    // directory on Linux, and on Windows in a folder of their own beside the
+    // data directory's sessions. The folder is closed whole: the file, its
+    // lock, and a temporary file a write that was killed left behind.
+    if let Some(folder) = dirs.credentials.as_deref().and_then(resolve_dir) {
+        protected = protected.closed(folder);
     }
     // The user's configuration file, which `CORTEX_CONFIG` can put outside
     // the configuration directory: it holds the level and the rules the
@@ -510,17 +509,6 @@ fn engine_parts(
         store,
         clock: Arc::clone(&inner.options.clock),
     }
-}
-
-/// The credentials file and its lock (`cortex_config`'s file store), where
-/// `dirs` puts them.
-fn credential_files(dirs: &cortex_config::Dirs) -> Vec<PathBuf> {
-    let Some(file) = dirs.credentials_file() else {
-        return Vec::new();
-    };
-    let mut lock = file.clone().into_os_string();
-    lock.push(".lock");
-    vec![file, PathBuf::from(lock)]
 }
 
 /// Starts an engine, with its failure as the error a front end is shown.

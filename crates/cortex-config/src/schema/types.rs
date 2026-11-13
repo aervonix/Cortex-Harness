@@ -451,8 +451,8 @@ choice! {
         /// owner-only file on Linux.
         Auto => "auto",
         /// An owner-only file, `credentials.toml`: in the configuration
-        /// directory on Linux, and in `%LOCALAPPDATA%\cortex-harness` on
-        /// Windows, which does not roam to the user's other machines.
+        /// directory on Linux, and in `%LOCALAPPDATA%\cortex-harness\credentials`
+        /// on Windows, which does not roam to the user's other machines.
         File => "file",
         /// The OS keychain: Windows Credential Manager, or on Linux the
         /// Secret Service in a build that has it.

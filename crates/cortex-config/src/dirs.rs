@@ -31,6 +31,10 @@ pub const PROJECT_DIR: &str = ".cortex";
 /// The name of the credentials file, in [`Dirs::credentials`].
 pub const CREDENTIALS_FILE: &str = "credentials.toml";
 
+/// The name of the credentials file's own folder on Windows, in the local
+/// application data folder.
+const CREDENTIALS_DIR: &str = "credentials";
+
 /// The directories and files of one user on one machine. A location is
 /// `None` when the environment does not say where it is (no home directory),
 /// and whatever would live there is then simply absent.
@@ -41,11 +45,14 @@ pub struct Dirs {
     /// The configuration directory.
     pub config: Option<PathBuf>,
     /// Where the credentials file lives: the configuration directory on
-    /// Linux, and on Windows the local application data folder
-    /// (`%LOCALAPPDATA%\cortex-harness`), not the roaming one beside the
-    /// configuration. A stored key stays on its machine (decision 0018),
-    /// and Windows copies a roaming profile to every machine the user signs
-    /// in to.
+    /// Linux, and on Windows a folder of its own in the local application
+    /// data folder (`%LOCALAPPDATA%\cortex-harness\credentials`), not the
+    /// roaming one beside the configuration. A stored key stays on its
+    /// machine (decision 0018), and Windows copies a roaming profile to
+    /// every machine the user signs in to. The folder is the file's alone,
+    /// so that the harness closes all of it to the tools, a temporary file
+    /// a write left behind included: the local folder itself is the data
+    /// directory, which the tools may read.
     pub credentials: Option<PathBuf>,
     /// The user's configuration file: `config.toml` in the configuration
     /// directory, unless `CORTEX_CONFIG` names another file.
@@ -104,7 +111,7 @@ impl Dirs {
                     local.as_ref().map(|local| local.join("state")),
                     local.clone(),
                     app(env.absolute_path("ProgramData")).map(|dir| dir.join(CONFIG_FILE)),
-                    local,
+                    local.as_ref().map(|local| local.join(CREDENTIALS_DIR)),
                 )
             }
         };
@@ -439,10 +446,12 @@ mod tests {
         assert_eq!(dirs.state, Some(local.join("state")));
         // A stored key stays on its machine: the credentials file is in the
         // local folder, which Windows does not copy to the user's other
-        // machines, not in the roaming one beside the configuration.
+        // machines, not in the roaming one beside the configuration; and in
+        // a folder of its own there, which the harness closes whole.
+        assert_eq!(dirs.credentials, Some(local.join("credentials")));
         assert_eq!(
             dirs.credentials_file(),
-            Some(local.join("credentials.toml"))
+            Some(local.join("credentials").join("credentials.toml"))
         );
         assert_eq!(dirs.data, Some(local));
         assert_eq!(
@@ -463,7 +472,7 @@ mod tests {
         expected.extend(["AppData", "Roaming", "cortex-harness"]);
         assert_eq!(bare.config, Some(expected));
         let mut expected = PathBuf::from(r"C:\People\someone");
-        expected.extend(["AppData", "Local", "cortex-harness"]);
+        expected.extend(["AppData", "Local", "cortex-harness", "credentials"]);
         assert_eq!(bare.credentials, Some(expected));
         assert_eq!(bare.managed_config, None);
     }

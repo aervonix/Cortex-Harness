@@ -202,7 +202,7 @@ A pattern that ends in `/**`, or in a separator, matches the directory itself as
 |---|---|
 | The configuration directory (configuration, and credentials on Linux) | Reading and writing. |
 | The user's configuration file, wherever `CORTEX_CONFIG` puts it | Reading and writing. |
-| The credentials file and its lock, wherever they are kept (on Windows, the local folder that is the data directory) | Reading and writing. |
+| The credentials file and its lock, wherever they are kept, and on Windows their own folder (`%LOCALAPPDATA%\cortex-harness\credentials`), with any temporary file a write left there | Reading and writing. |
 | The state directory (trust, stored approvals, what was learned) | Reading and writing. |
 | The data directory | Writing. |
 | The session directories of other projects | Reading. This project's own are outside the workspace, so reading one asks. |
