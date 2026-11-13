@@ -103,7 +103,7 @@ Each direct dependency must earn its place. The rules:
 
 1. Prefer the standard library, then a small focused crate, then a framework.
 2. Default features off. Opt in to what is used.
-3. A dependency that compiles C or C++ needs a decision record that states its measured build cost on both OSes. A dependency that needs build tools beyond the platform's own compiler (CMake, NASM, Perl, Go) is not accepted. Today that rules out aws-lc-rs, and it has kept out bundled SQLite and parser grammars on cost. The script engine is the one accepted C dependency ([decision 0005](../decisions/0005-extension-mechanism.md)).
+3. A dependency that compiles C or C++ needs a decision record that states its measured build cost on both OSes. A dependency that needs build tools beyond the platform's own compiler (CMake, NASM, Perl, Go) is not accepted. Today that rules out aws-lc-rs, and it has kept out bundled SQLite and parser grammars on cost. Two dependencies with C code are accepted: the script engine ([decision 0005](../decisions/0005-extension-mechanism.md)), and `ring`, the cryptography under TLS ([decision 0004](../decisions/0004-http-and-tls.md)), which has been in the build since step 5.
 4. Licences must be compatible with the project's MIT licence. The allow-list is in [../testing-and-ci.md](../testing-and-ci.md).
 5. No dependency that is a port or extract of Pi or Opencode code.
 6. Every direct dependency is listed with its purpose and owner crate in `docs/dependencies.md`, which the repo skeleton step creates. CI fails if `Cargo.toml` and that list disagree.
