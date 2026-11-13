@@ -1036,23 +1036,34 @@ mod tests {
     fn on_fake_disk(scratch: &Scratch, durability: Durability) -> (Session, FakeDisk) {
         let project = ProjectSessions::at(scratch.0.join("project"));
         let root = AbsPath::parse(&scratch.0.to_string_lossy(), PathStyle::NATIVE).unwrap();
-        // Created without flushing, which is slow and not what is tested.
-        let mut session = Session::create(
-            &project,
-            SessionId::new("s_1"),
-            &root,
-            options(Durability::Never),
-        )
-        .unwrap();
-        session.append(None, user("first")).unwrap();
-        session.options.durability = durability;
-        let disk = FakeDisk::default();
-        *disk.bytes.lock().unwrap() = fs::read(session.dir().log()).unwrap();
-        let State::Live { writer, .. } = &mut session.state else {
-            panic!("born")
+        let mut session =
+            Session::create(&project, SessionId::new("s_1"), &root, options(durability)).unwrap();
+        // Born on the fake disk: the held entries are written there, as
+        // the real birth writes them to a new file, and nothing touches the
+        // real disk but the stand-in for the lock.
+        let State::Unborn { pending } = std::mem::replace(
+            &mut session.state,
+            State::Unborn {
+                pending: Vec::new(),
+            },
+        ) else {
+            panic!("a new session is unborn")
         };
-        let end = writer.end();
-        *writer = Writer::new(disk.file(), session.log.dir.log(), end, durability);
+        let disk = FakeDisk::default();
+        let mut writer = Writer::new(disk.file(), session.log.dir.log(), 0, durability);
+        for (entry, line) in pending {
+            let offset = writer.append(&line).unwrap();
+            session.log.add(&entry, offset, line.len() - 1);
+        }
+        let stand_in = scratch.0.join("lock");
+        if !stand_in.exists() {
+            fs::write(&stand_in, b"").unwrap();
+        }
+        session.state = State::Live {
+            writer,
+            lock: File::open(&stand_in).unwrap(),
+        };
+        session.append(None, user("first")).unwrap();
         (session, disk)
     }
 
@@ -1134,8 +1145,6 @@ mod tests {
             let id = session.append(None, user("second")).unwrap();
             assert_eq!(session.active(), Some(&id));
             agree(&session, &disk).unwrap();
-            drop(session);
-            fs::remove_dir_all(scratch.0.join("project")).unwrap();
         }
     }
 
@@ -1144,7 +1153,7 @@ mod tests {
         let scratch = Scratch::new();
         cases::check(
             "failed_writes_agree",
-            60,
+            150,
             |rng| {
                 let steps: Vec<(u64, u64, u64)> = (0..cases::small(rng, 24))
                     .map(|_| (rng.next_u64(), rng.below(12), rng.below(400)))
@@ -1152,7 +1161,6 @@ mod tests {
                 steps
             },
             |steps| {
-                let _ = fs::remove_dir_all(scratch.0.join("project"));
                 let (mut session, disk) = on_fake_disk(&scratch, Durability::Item);
                 for (n, &(seed, fault, at)) in steps.iter().enumerate() {
                     let mut rng = SeededRng::new(seed);
