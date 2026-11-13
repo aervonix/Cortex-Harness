@@ -261,8 +261,11 @@ fn sys_undo_puts_back_what_a_command_changed_where_git_still_has_it() {
     let committed = std::fs::read(world.workspace.join("tracked.txt")).unwrap();
     let core = world.core_with(|options| {
         options.trust_project = true;
-        // The shell is looked for and asked its version, as in the real
-        // program, and the tool's description names it.
+        // The shell is looked for, as in the real program, and the tool's
+        // description names it. Its version is asked on the side and kept
+        // for the runs after this one (`shell_cache`; the binary's system
+        // test `sys_the_shells_version_is_kept_for_the_runs_after_the_first`
+        // shows the next run naming it).
         options.shell = None;
     });
     world.run(async {
@@ -275,10 +278,10 @@ fn sys_undo_puts_back_what_a_command_changed_where_git_still_has_it() {
             .map(|tool| tool.description.clone())
             .expect("a shell tool");
         assert!(
-            description
-                .chars()
-                .any(|character| character.is_ascii_digit()),
-            "the shell's version is not in the tool's description: {description}"
+            ["bash", "sh", "PowerShell", "cmd"]
+                .iter()
+                .any(|shell| description.contains(shell)),
+            "the shell is not named in the tool's description: {description}"
         );
         let keep = front
             .items()

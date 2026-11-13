@@ -85,10 +85,19 @@ fn sys_anthropic_strict_tools_carry_no_keyword_strict_mode_refuses() {
         let run = machine.run(&["-p", "say hello"]);
         run.expect_code(0);
     }
-    let (first, tools) = tools_sent(&machine, 0);
-    let (second, _) = tools_sent(&machine, 1);
+    let (_, tools) = tools_sent(&machine, 0);
+    let (_, again) = tools_sent(&machine, 1);
+    // The schemas, reduced, are the same bytes every time. (The shell
+    // tool's description gains the shell's version once a run has kept it.)
+    let schemas = |tools: &[Value]| -> Vec<String> {
+        tools
+            .iter()
+            .map(|tool| tool["input_schema"].to_string())
+            .collect()
+    };
     assert_eq!(
-        first, second,
+        schemas(&tools),
+        schemas(&again),
         "the same tools are the same bytes every time"
     );
     let names: Vec<&str> = tools
@@ -198,4 +207,36 @@ fn optional_parameters(schema: &Value) -> usize {
         }
     }
     count
+}
+
+/// The shell's version is in the shell tool's description. A session does
+/// not start the shell to ask it on its way to the first request: the
+/// first run on a machine goes without it and has the shell asked on the
+/// side, and the runs after it read the answer from the state directory.
+#[test]
+fn sys_the_shells_version_is_kept_for_the_runs_after_the_first() {
+    let shell = if cfg!(windows) { "pwsh" } else { "bash" };
+    let machine = Machine::new("sys_shell_version");
+    machine.user_config(&format!("shell.program = \"{shell}\"\n"));
+    let kept = machine.dirs().state.unwrap().join("shells.json");
+
+    machine.reply_text("Done.");
+    machine.run(&["-p", "first"]).expect_code(0);
+    cortex_testkit::children::until(
+        std::time::Duration::from_secs(30),
+        "the shell's version is kept",
+        || kept.exists(),
+    );
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(&kept).unwrap()).unwrap();
+    let version = file["shells"][0]["version"].as_str().unwrap().to_owned();
+
+    machine.reply_text("Done.");
+    machine.run(&["-p", "second"]).expect_code(0);
+    let (_, tools) = tools_sent(&machine, 1);
+    let shell_tool = tools.iter().find(|tool| tool["name"] == "shell").unwrap();
+    let description = shell_tool["description"].as_str().unwrap();
+    assert!(
+        description.contains(&version),
+        "the second run's description names {version}: {description}"
+    );
 }

@@ -267,7 +267,7 @@ Runs a command in the platform shell and returns its output. Built in step 11: t
 
 - A configured program is the one used, and nothing else: one that is not found is an error, not a reason to use another.
 - How a shell is spoken to follows its program's name: `bash`, `pwsh`, `powershell` and `cmd` each by their own rules, and any other name as a POSIX shell that reads `-c <command>`.
-- Finding the shell looks at `PATH` and starts nothing. Asking it for its version starts it once: about a millisecond for bash, and longer for PowerShell 7, so a harness does that off its start-up path. Windows PowerShell is 5.1, and is not asked.
+- Finding the shell looks at `PATH` and starts nothing. Asking it for its version starts it once: about a millisecond for bash, and longer for PowerShell 7, so a harness does that off its start-up path. Windows PowerShell is 5.1, and is not asked. **As built (step 13b):** the core keeps the answer in the state directory (`shells.json`, owner-only), under the shell's resolved path, its size and its modification time, so a replaced or updated shell is asked again. On a miss the session's description names the shell without its version, and the shell is asked on a thread of its own for the runs after. Only the description reads the version: nothing that decides what a command may do depends on it. Measured on a hosted Windows runner, asking PowerShell 7 was about 180 ms of a headless run's 212 ms to its first request.
 
 All three Windows shells are supported and tested: each has its own quoting, its own way to merge the output streams, and its own exit-status rules, and the tool handles each explicitly. Nothing requires a Unix-style shell on Windows.
 
