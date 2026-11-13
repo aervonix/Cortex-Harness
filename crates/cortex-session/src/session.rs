@@ -1354,25 +1354,35 @@ mod tests {
                 ..Meta::default()
             })
         };
+        // A limit longer than every line already written (the first holds
+        // the workspace's path, which is long on Windows): the line of a
+        // title longer than all of them.
+        let longest = disk
+            .contents()
+            .split(|&byte| byte == b'\n')
+            .map(<[u8]>::len)
+            .max()
+            .unwrap_or(0);
+        let title = longest + 100;
         let probe = Entry {
             id: EntryId::new("e_0002"),
             parent: None,
             ts: session.options.clock.now().to_timestamp(),
             turn: None,
-            body: meta(100),
+            body: meta(title),
         };
         let limit = entry::encode(&probe, &NoRedaction).unwrap().len() - 1;
         session.max_line = limit;
 
         let before = disk.contents();
-        let refused = session.append(None, meta(101));
+        let refused = session.append(None, meta(title + 1));
         assert!(
             matches!(refused, Err(SessionError::EntryTooLarge { bytes, limit: most })
                 if bytes == limit as u64 + 1 && most == limit as u64),
             "{refused:?}"
         );
         assert_eq!(disk.contents(), before, "nothing was written");
-        let kept = session.append(None, meta(100)).unwrap();
+        let kept = session.append(None, meta(title)).unwrap();
         agree(&session, &disk).unwrap();
         let scan = Scan::read_limited(Trickle(&disk.contents()), limit)
             .unwrap()
@@ -1386,7 +1396,7 @@ mod tests {
             entry::encode(
                 &Entry {
                     id: EntryId::new("e_0003"),
-                    body: meta(101),
+                    body: meta(title + 1),
                     ..probe
                 },
                 &NoRedaction,
