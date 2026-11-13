@@ -495,7 +495,7 @@ impl Tool for Probe {
             if let (true, Some(path)) = (args.record, &args.path) {
                 let snapshot = cortex_tools::FileSnapshot::of_content(b"one line\n", None);
                 let shown = cortex_tools::Shown {
-                    hash: snapshot.hash.clone(),
+                    hash: snapshot.hash,
                     lines: cortex_tools::LineRanges::of(1, 1),
                     total_lines: 1,
                     turn: cx.turn,
