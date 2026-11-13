@@ -70,3 +70,13 @@ Through the coordinator, after the report of the second review's fixes.
 | **`network = "full"` as an allow-list,** Unix sockets still refused. | **Accepted as built.** | [decision 0032](../../decisions/0032-what-the-linux-sandbox-needs.md) |
 | **The look at protected paths over the budget** (the conflict this step raised under rule 11). | **Merged as it is,** with a row in the budgets that gives today's figures and marks them as over what is wanted; step 33 makes the look incremental. | [performance-budgets.md](../../performance-budgets.md), "Latency the harness adds"; [outstanding/the-cost-of-the-look-at-protected-paths.md](../../outstanding/the-cost-of-the-look-at-protected-paths.md) |
 | **The changes outside the core's three items:** `cortex-session`'s check for links, `SessionHandle::set_sandbox` in `cortex-agent`, and the core's additions for the stop. | **Approved by the coordinator.** | This file, above |
+
+# After the rebase onto the step 13a fixes, 2026-11-13
+
+The coordinator asked for two checks against what the fixes changed.
+
+| Check | What was found | What was done |
+|---|---|---|
+| **The harness's closed files against what the sandbox counts as its own.** The fixes keep Windows' credentials in a folder of their own, and close the user's configuration file wherever `CORTEX_CONFIG` or a link puts it. | The credentials folder was already counted: on Linux it is the configuration directory, on Windows it lies inside the data directory. **The configuration file was not,** where a link leads outside the configuration directory (a dotfiles repository): a write root that held it let a confined command change the level and rules the next session starts with. | **Counted,** as named and where it leads, like the launcher's program. Test: `sandbox::a_write_root_that_holds_the_user_configuration_a_link_leads_to_is_not_confined`. |
+| **The launcher starts the program `cortex_base::program` found.** | It does: the shell is the absolute path the search found, the command line hands it to the launcher, and the launcher starts that path with no search of its own. The launcher itself is the binary's own path. | Nothing to change. |
+| **What the textual merge could not show.** The fixes gave tools a `preview`, which an approval shows. | The guard this step puts round every tool (`StopsWithTurn`) did not pass it on, so a question about a change to a file lost the change: two of the fixes' own tests failed on the rebased branch. | **Passed on,** by the guard and by the shell's wrapper. A break removes it, and the fixes' tests catch it. |
