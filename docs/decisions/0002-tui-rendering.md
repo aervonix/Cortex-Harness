@@ -40,7 +40,7 @@ The framework's build and size cost is in [measurements/dependency-costs.md](../
 - **Inline by default.** The transcript goes into the terminal's own scrollback. The harness owns a small live region at the bottom.
 - **Commit as soon as stable.** Content leaves the live region the moment it can no longer change, so the live region stays a few lines tall however long the answer is.
 - **Panels live in the live region**, bounded, opening and closing as needed.
-- **Our own line-based renderer** in `cortex-term`, on crossterm for input and terminal modes. Components produce styled lines. A frame is one write inside a synchronized update: committed lines, then the changed lines of the live region. No clear-and-redraw, no scroll regions, no cursor queries.
+- **Our own line-based renderer** in `cortex-term`, with no terminal library under it: raw mode, console modes and input are ours too ("Amended in step 20" below; the decision first said crossterm for those). Components produce styled lines. A frame is one write inside a synchronized update: committed lines, then the changed lines of the live region. No clear-and-redraw, no scroll regions, no cursor queries.
 - **A full-screen presenter** over the same lines, selectable by flag or setting, for terminals where inline misbehaves and for people who prefer it. It is where side-by-side panes can exist.
 - **A viewer** (a temporary full-screen view) for long output, diffs and summaries, which is how inline mode offers "expand".
 - No cell-grid framework dependency.
@@ -72,6 +72,20 @@ The Windows Terminal checklist ([measurements/windows-terminal-checklist.md](../
 - **Over SSH** (check 12) was not run.
 
 So inline by default, on our own line renderer, is confirmed as it stands.
+
+## Amended in step 20
+
+**No terminal library: the terminal modes and the input decoding are our own,** on `libc` and `windows-sys`, which were in the build already. The owner approved it on 2026-11-13, during step 20, on the coordinator's recommendation.
+
+| | crossterm 0.29 (only `events` and `windows`) | Our own |
+|---|---|---|
+| Packages in its tree | 19 on Linux (among them `mio`, `signal-hook`, `parking_lot`, `rustix` and a procedural macro), 13 on Windows (among them `winapi` and `crossterm_winapi`), counting crossterm; some the build has already. 29 and 23 with its default features, which bring `syn` | None new: `libc` and `windows-sys` were in the lockfile |
+| Input on Windows | Console input records: every key with its modifiers, in every console host | Virtual-terminal input, the same sequences as on Linux, read by one decoder; plus Windows Terminal's win32 input mode where the terminal says it has it, which carries every key with its modifiers through that same decoder |
+| What it costs | A second input path on Windows, tested only there | About 900 lines, with the `unsafe` code in one module for each system (`sys::unix`, `sys::windows`) |
+
+Counted on 2026-11-13 with `cargo tree` for each target, on a program that depends on the crate alone. The test kit was weighed the same way and given its own virtual terminal and pseudo-terminal driver: `portable-pty` has 18 packages in its tree on Linux and 25 on Windows, built into every test build (among them `nix`, `winapi`, `anyhow` and `syn`); `vt100` has 6, but it does not show what each action inside a frame did, which the flicker checks need.
+
+**What virtual-terminal input gives up** without the win32 input mode, which the old console host does not have: `Shift+Enter` arrives as `Enter`, `Ctrl+Enter` as `Ctrl+J`, `Ctrl+Tab` as `Tab`, `Ctrl+Shift` with a letter as `Ctrl` with it, and a lone `Esc` must wait a moment (50 ms) to be told from the start of a sequence. crossterm, reading console records, would have had `Shift+Enter` in every console host. A new line in the editor is `Alt+Enter` or `Ctrl+J` where `Shift+Enter` cannot be seen ([architecture/09-tui.md](../architecture/09-tui.md), "Windows").
 
 ## Revisit when
 
