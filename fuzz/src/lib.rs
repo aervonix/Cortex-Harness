@@ -13,11 +13,16 @@
 //! |---|---|
 //! | [`sse_parser`] | No input makes the parser panic. The same bytes give the same events, or the same error, however they are cut. |
 //! | [`anthropic_decoder`] | No input makes the decoder panic. The same bytes give the same events however they are cut. A response ends at most once, and nothing follows its end. A block ends only after it started. Every block the decoder stores is one JSON object, so it can be sent back. |
+//! | [`openai_chat_decoder`] | The same properties as the other decoder, for servers with each kind of flag: reasoning under a named member, reasoning in tags inside the text, a model that is asked for a speed tier and one that is not. |
 
 use std::sync::Arc;
 
 use cortex_llm::anthropic::{self, AnthropicMessages};
-use cortex_llm::{Catalog, EventSink, ModelEntry, ModelEvent, ModelRequest, Protocol, SseParser};
+use cortex_llm::openai_chat::{self, OpenAiChat};
+use cortex_llm::{
+    Catalog, EventSink, FlagValue, ModelEntry, ModelEvent, ModelRequest, Protocol, ProviderInfo,
+    SseParser,
+};
 use cortex_protocol::model::ModelRole;
 use cortex_protocol::{ModelId, ProviderId, Speed};
 
@@ -86,17 +91,22 @@ pub fn sse_parser(data: &[u8]) {
     assert_eq!(whole, cut, "the cuts changed what was parsed");
 }
 
-fn model(id: &str) -> Arc<ModelEntry> {
+fn model(provider: &str, id: &str) -> Arc<ModelEntry> {
     let catalog = Catalog::builtin().expect("the built-in catalog loads");
     let entry = catalog
-        .get(&ProviderId::new(anthropic::PROVIDER), &ModelId::new(id))
+        .get(&ProviderId::new(provider), &ModelId::new(id))
         .expect("the built-in catalog has the model");
     Arc::clone(entry)
 }
 
-fn decode(request: &ModelRequest, stream: &[u8], cuts: &[usize]) -> Result<Vec<ModelEvent>, String> {
-    let provider = anthropic::provider();
-    let mut decoder = AnthropicMessages.decoder(request, &provider);
+fn decode(
+    protocol: &dyn Protocol,
+    provider: &ProviderInfo,
+    request: &ModelRequest,
+    stream: &[u8],
+    cuts: &[usize],
+) -> Result<Vec<ModelEvent>, String> {
+    let mut decoder = protocol.decoder(request, provider);
     let mut parser = SseParser::new();
     let mut sink = EventSink::sent_at(request.speed.clone());
     for piece in pieces(stream, cuts) {
@@ -125,16 +135,26 @@ pub fn anthropic_decoder(data: &[u8]) {
     // Half the inputs are decoded as the response to a request at fast
     // speed, where an error in the stream can belong to the tier.
     let fast = data.first().is_some_and(|byte| byte & 1 == 1);
-    let mut request = ModelRequest::new(model("claude-opus-5-5"), ModelRole::Main);
+    let mut request =
+        ModelRequest::new(model(anthropic::PROVIDER, "claude-opus-5-5"), ModelRole::Main);
     if fast {
         request.speed = Speed::Fast;
     }
 
-    let whole = decode(&request, stream, &[]);
-    let cut = decode(&request, stream, &cuts);
+    let provider = anthropic::provider();
+    let whole = decode(&AnthropicMessages, &provider, &request, stream, &[]);
+    let cut = decode(&AnthropicMessages, &provider, &request, stream, &cuts);
     assert_eq!(whole, cut, "the cuts changed what was decoded");
 
     let Ok(events) = whole else { return };
+    well_formed(&events);
+}
+
+/// What every decoder's events must be, whatever the bytes were: a response
+/// ends at most once and nothing follows its end, a block starts once and
+/// holds nothing before it started, and every block that is stored is one
+/// JSON object, so that it can be sent back.
+fn well_formed(events: &[ModelEvent]) {
     let endings = events.iter().filter(|event| event.is_terminal()).count();
     assert!(endings <= 1, "a response ended {endings} times");
     if endings == 1 {
@@ -144,7 +164,7 @@ pub fn anthropic_decoder(data: &[u8]) {
         );
     }
     let mut started = Vec::new();
-    for event in &events {
+    for event in events {
         match event {
             ModelEvent::BlockStart { index, .. } => {
                 assert!(!started.contains(index), "the block {index} started twice");
@@ -167,6 +187,53 @@ pub fn anthropic_decoder(data: &[u8]) {
             _ => {}
         }
     }
+}
+
+/// The decoder of the `openai-chat` protocol.
+///
+/// The first byte of the input chooses the server: which member reasoning
+/// is read from, whether it is looked for in tags inside the text, and
+/// whether the model is one that is asked for a speed tier, at fast speed
+/// or at standard.
+///
+/// # Panics
+///
+/// When a property does not hold: that is how a fuzz target reports.
+pub fn openai_chat_decoder(data: &[u8]) {
+    let (cuts, stream) = cuts(data);
+    let choice = data.first().copied().unwrap_or(0);
+    let mut provider = openai_chat::providers::builtin(openai_chat::providers::OPENROUTER)
+        .expect("the provider is built in")
+        .info;
+    // A model with tiers that are asked for by name, or a model with none.
+    let id = if choice & 1 == 0 {
+        "openai/gpt-6-luna"
+    } else {
+        "z-ai/glm-5.3-flash"
+    };
+    let mut request =
+        ModelRequest::new(model(openai_chat::providers::OPENROUTER, id), ModelRole::Main);
+    if choice & 0b11 == 0b10 {
+        request.speed = Speed::Fast;
+    }
+    if choice & 0b100 != 0 {
+        provider
+            .flags
+            .set(openai_chat::flag::REASONING_TAGS, FlagValue::Bool(true));
+    }
+    if choice & 0b1000 != 0 {
+        provider.flags.set(
+            openai_chat::flag::REASONING_FIELD,
+            FlagValue::Text("reasoning".to_owned()),
+        );
+    }
+
+    let whole = decode(&OpenAiChat, &provider, &request, stream, &[]);
+    let cut = decode(&OpenAiChat, &provider, &request, stream, &cuts);
+    assert_eq!(whole, cut, "the cuts changed what was decoded");
+
+    let Ok(events) = whole else { return };
+    well_formed(&events);
 }
 
 #[cfg(test)]
@@ -196,6 +263,15 @@ mod tests {
         for nonsense in [&b""[..], b"\xff", b"\x01\x02data: {\n\n", b"zz\r\r\n\ndata\n\n: x\n"] {
             sse_parser(nonsense);
             anthropic_decoder(nonsense);
+            openai_chat_decoder(nonsense);
+        }
+        // A stream of the other dialect, for each choice of server: the
+        // first byte of the input chooses the server.
+        let chat = b"data: {\"id\":\"c\",\"model\":\"m\",\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"<think>hm</think>hi\",\"reasoning\":\"so\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"c\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"r\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n";
+        for choice in 0..16u8 {
+            let mut input = vec![choice, 0x05];
+            input.extend_from_slice(chat);
+            openai_chat_decoder(&input);
         }
     }
 }

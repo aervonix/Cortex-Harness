@@ -1,0 +1,8 @@
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-fixture9001","object":"chat.completion.chunk","created":1794500000,"model":"z-ai/glm-5.3-flash","provider":"Example","choices":[{"index":0,"delta":{"content":"The weather","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-fixture9001","object":"chat.completion.chunk","created":1794500000,"model":"z-ai/glm-5.3-flash","provider":"Example","error":{"code":502,"message":"Provider disconnected unexpectedly"},"choices":[{"index":0,"delta":{"content":""},"finish_reason":"error","native_finish_reason":null}]}
+
+data: [DONE]
+

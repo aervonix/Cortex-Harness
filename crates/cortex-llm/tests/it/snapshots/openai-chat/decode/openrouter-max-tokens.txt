@@ -1,0 +1,17 @@
+start id=id_fixture0009 model=z-ai/glm-5.3-flash
+block_start 0 Reasoning
+reasoning 0 "The"
+reasoning 0 " user wants numbers"
+reasoning 0 " 1 to"
+reasoning 0 " 200,"
+reasoning 0 " one per line"
+reasoning 0 ". That's"
+reasoning 0 " long"
+reasoning 0 " but straightforward."
+block_end 0 {"reasoning":"The user wants numbers 1 to 200, one per line. That's long but straightforward.","reasoning_details":[{"type":"reasoning.text","text":"The user wants numbers 1 to 200, one per line. That's long but straightforward.","format":"unknown","index":0}]}
+block_start 1 Text
+text 1 "1\n"
+text 1 "2"
+block_end 1 {"content":"1\n2"}
+usage input=26 cache_read=0 cache_write=0[] output=24 reasoning=20 speed=standard asked=-
+end stop=max_output raw=length detail=length input=26 cache_read=0 cache_write=0[] output=24 reasoning=20 speed=standard asked=-

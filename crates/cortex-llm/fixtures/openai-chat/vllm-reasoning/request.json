@@ -1,0 +1,1 @@
+{"model":"Qwen/Qwen3-8B","stream":true,"stream_options":{"include_usage":true},"max_completion_tokens":512,"messages":[{"role":"user","content":"A farmer has 17 sheep and buys 23 more, then sells a quarter of the flock. How many sheep are left?"}]}

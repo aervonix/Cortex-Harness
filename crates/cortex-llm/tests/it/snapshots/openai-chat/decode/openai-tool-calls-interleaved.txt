@@ -1,0 +1,14 @@
+start id=chatcmpl-fixture9001 model=gpt-6-luna
+block_start 0 ToolCall
+tool_call 0 id=call_fixture9001 name=get_weather
+block_start 1 ToolCall
+tool_call 1 id=call_fixture9002 name=get_weather
+tool_args 1 "{\"ci"
+tool_args 0 "{\"city\":"
+tool_args 1 "ty\":\"Cai"
+tool_args 0 "\"Oslo\"}"
+tool_args 1 "ro\"}"
+block_end 0 {"tool_calls":[{"id":"call_fixture9001","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Oslo\"}"}}]}
+block_end 1 {"tool_calls":[{"id":"call_fixture9002","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Cairo\"}"}}]}
+usage input=310 cache_read=0 cache_write=0[] output=38 reasoning=0 speed=standard asked=-
+end stop=tool_calls raw=tool_calls detail=- input=310 cache_read=0 cache_write=0[] output=38 reasoning=0 speed=standard asked=-

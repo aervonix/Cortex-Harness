@@ -1,0 +1,6 @@
+start id=id_fixture0021 model=openai/gpt-6-luna
+block_start 0 Text
+text 0 "ready"
+block_end 0 {"content":"ready"}
+usage input=13 cache_read=0 cache_write=0[] output=5 reasoning=0 speed=fast asked=-
+end stop=end raw=stop detail=completed input=13 cache_read=0 cache_write=0[] output=5 reasoning=0 speed=fast asked=-

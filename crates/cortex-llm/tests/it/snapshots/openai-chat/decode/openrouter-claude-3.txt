@@ -1,0 +1,30 @@
+start id=id_fixture0026 model=anthropic/claude-haiku-5.5
+block_start 0 Reasoning
+reasoning 0 "I need the"
+reasoning 0 " Cairo reading before I"
+reasoning 0 " can compare, and"
+reasoning 0 " they haven't said which C"
+reasoning 0 "airo they mean. I'"
+reasoning 0 "ll ask which one they"
+reasoning 0 " want."
+reasoning 0 "\n\n"
+block_end 0 {"reasoning":"I need the Cairo reading before I can compare, and they haven't said which Cairo they mean. I'll ask which one they want.\n\n","reasoning_details":[{"type":"reasoning.text","text":"I need the Cairo reading before I can compare, and they haven't said which Cairo they mean. I'll ask which one they want.\n\n","format":"anthropic-claude-v1","index":0,"signature":"fixture-signature-02"}]}
+block_start 1 Text
+text 1 "I can"
+text 1 "'t compare them"
+text 1 " yet. I still need to know"
+text 1 " which Cairo you mean"
+text 1 ","
+text 1 " Cairo, Egypt"
+text 1 " or"
+text 1 " Cairo, Illin"
+text 1 "ois, USA. Once you"
+text 1 " t"
+text 1 "ell me, I'll check its"
+text 1 " weather and say"
+text 1 " which city"
+text 1 " is warmer and by how many"
+text 1 " degrees."
+block_end 1 {"content":"I can't compare them yet. I still need to know which Cairo you mean, Cairo, Egypt or Cairo, Illinois, USA. Once you tell me, I'll check its weather and say which city is warmer and by how many degrees."}
+usage input=4 cache_read=1923 cache_write=89[] output=151 reasoning=73 speed=standard asked=-
+end stop=end raw=stop detail=end_turn input=4 cache_read=1923 cache_write=89[] output=151 reasoning=73 speed=standard asked=-

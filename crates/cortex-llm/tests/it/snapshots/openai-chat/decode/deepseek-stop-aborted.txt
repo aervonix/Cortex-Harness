@@ -1,0 +1,6 @@
+start id=fixture9001-0000-0000-0000-000000000000 model=deepseek-flash
+block_start 0 Text
+text 0 "Hello to"
+block_end 0 {"content":"Hello to"}
+usage input=19 cache_read=0 cache_write=0[] output=2 reasoning=- speed=standard asked=-
+end stop=openai:aborted raw=aborted detail=- input=19 cache_read=0 cache_write=0[] output=2 reasoning=- speed=standard asked=-

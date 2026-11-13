@@ -1,0 +1,12 @@
+start id=id_fixture0001 model=z-ai/glm-5.3-flash
+block_start 0 Reasoning
+reasoning 0 "Respond"
+reasoning 0 " briefly: \"Hello,"
+reasoning 0 " test suite!\""
+block_end 0 {"reasoning":"Respond briefly: \"Hello, test suite!\"","reasoning_details":[{"type":"reasoning.text","text":"Respond briefly: \"Hello, test suite!\"","format":"unknown","index":0}]}
+block_start 1 Text
+text 1 "Hello"
+text 1 ", test suite!"
+block_end 1 {"content":"Hello, test suite!"}
+usage input=27 cache_read=0 cache_write=0[] output=16 reasoning=10 speed=standard asked=-
+end stop=end raw=stop detail=stop input=27 cache_read=0 cache_write=0[] output=16 reasoning=10 speed=standard asked=-

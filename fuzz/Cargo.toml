@@ -41,5 +41,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "openai_chat_decoder"
+path = "fuzz_targets/openai_chat_decoder.rs"
+test = false
+doc = false
+bench = false
+
 # Its own workspace: the repository's is not to grow a nightly-only member.
 [workspace]

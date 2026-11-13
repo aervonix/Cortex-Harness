@@ -1,0 +1,5 @@
+start id=fixture9001-0000-0000-0000-000000000000 model=deepseek-flash
+block_start 0 Reasoning
+reasoning 0 "The user wants"
+usage input=19 cache_read=0 cache_write=0[] output=3 reasoning=3 speed=standard asked=-
+error kind=transient code=insufficient_system_resource status=None throttle=Some(Overload) tier=- retry_after=None id=- message="The provider ended the response with the stop reason `insufficient_system_resource`."

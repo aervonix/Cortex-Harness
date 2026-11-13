@@ -1,0 +1,34 @@
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","choices":[{"index":0,"delta":{"content":"Oslo is 18 ","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","choices":[{"index":0,"delta":{"content":"degrees Celsius with","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","choices":[{"index":0,"delta":{"content":" a clear sky and light w","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","choices":[{"index":0,"delta":{"content":"ind.\n\nC","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","choices":[{"index":0,"delta":{"content":"airo could ref","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","choices":[{"index":0,"delta":{"content":"er to more","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","choices":[{"index":0,"delta":{"content":" than one place, so","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","choices":[{"index":0,"delta":{"content":" which","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","choices":[{"index":0,"delta":{"content":" one do","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","choices":[{"index":0,"delta":{"content":" you mean? For","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","choices":[{"index":0,"delta":{"content":" example, Cairo,","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","choices":[{"index":0,"delta":{"content":" Egypt, or Cair","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","choices":[{"index":0,"delta":{"content":"o, Illinois, US","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","choices":[{"index":0,"delta":{"content":"A.","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop","native_finish_reason":"end_turn"}]}
+
+data: {"id":"id_fixture0025","object":"chat.completion.chunk","created":1794560005,"model":"anthropic/claude-haiku-5.5","provider":"Claude Platform on AWS","service_tier":"default","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop","native_finish_reason":"end_turn"}],"usage":{"prompt_tokens":1925,"completion_tokens":77,"total_tokens":2002,"cost":0.000107035,"is_byok":false,"prompt_tokens_details":{"cached_tokens":1496,"cache_write_tokens":427,"audio_tokens":0,"video_tokens":0},"cost_details":{"upstream_inference_cost":0.000107035,"upstream_inference_prompt_cost":0.000068535,"upstream_inference_completions_cost":0.0000385},"completion_tokens_details":{"reasoning_tokens":0,"image_tokens":0,"audio_tokens":0}}}
+
+data: [DONE]
+

@@ -1,0 +1,1 @@
+{"model":"not-a-model-0","stream":true,"stream_options":{"include_usage":true},"max_tokens":512,"reasoning_effort":"none","messages":[{"role":"system","content":"You answer in one short sentence."},{"role":"user","content":"Say hello to the test suite."}]}

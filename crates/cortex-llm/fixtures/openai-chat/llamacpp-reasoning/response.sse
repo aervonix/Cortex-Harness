@@ -1,0 +1,16 @@
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"role":"assistant","content":null}}],"created":1794500000,"id":"chatcmpl-fixture9001llamacpp","model":"qwen3-8b-q4_k_m.gguf","system_fingerprint":"b0000-fixture","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"reasoning_content":"17 plus 23"}}],"created":1794500000,"id":"chatcmpl-fixture9001llamacpp","model":"qwen3-8b-q4_k_m.gguf","system_fingerprint":"b0000-fixture","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"reasoning_content":" is 40. A quarter is 10."}}],"created":1794500000,"id":"chatcmpl-fixture9001llamacpp","model":"qwen3-8b-q4_k_m.gguf","system_fingerprint":"b0000-fixture","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":"30"}}],"created":1794500000,"id":"chatcmpl-fixture9001llamacpp","model":"qwen3-8b-q4_k_m.gguf","system_fingerprint":"b0000-fixture","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":" sheep are left."}}],"created":1794500000,"id":"chatcmpl-fixture9001llamacpp","model":"qwen3-8b-q4_k_m.gguf","system_fingerprint":"b0000-fixture","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":"stop","index":0,"delta":{}}],"created":1794500000,"id":"chatcmpl-fixture9001llamacpp","model":"qwen3-8b-q4_k_m.gguf","system_fingerprint":"b0000-fixture","object":"chat.completion.chunk"}
+
+data: {"choices":[],"created":1794500000,"id":"chatcmpl-fixture9001llamacpp","model":"qwen3-8b-q4_k_m.gguf","system_fingerprint":"b0000-fixture","object":"chat.completion.chunk","usage":{"completion_tokens":22,"prompt_tokens":41,"total_tokens":63,"prompt_tokens_details":{"cached_tokens":32}},"timings":{"cache_n":32,"prompt_n":9,"prompt_ms":31.5,"predicted_n":22,"predicted_ms":410.2,"predicted_per_second":53.6}}
+
+data: [DONE]
+

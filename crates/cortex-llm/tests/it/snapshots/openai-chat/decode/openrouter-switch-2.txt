@@ -1,0 +1,13 @@
+start id=id_fixture0003 model=z-ai/glm-5.3-flash
+block_start 0 Text
+text 0 "Reykjavík is at"
+text 0 " 18 degrees Celsius with"
+text 0 " a clear sky and light"
+text 0 " wind. Cairo is also"
+text 0 " at 18 degrees Celsius with"
+text 0 " a clear sky and light wind. The"
+text 0 " two cities are currently"
+text 0 " the same temperature."
+block_end 0 {"content":"Reykjavík is at 18 degrees Celsius with a clear sky and light wind. Cairo is also at 18 degrees Celsius with a clear sky and light wind. The two cities are currently the same temperature."}
+usage input=153 cache_read=1024 cache_write=0[] output=46 reasoning=1 speed=standard asked=-
+end stop=end raw=stop detail=stop input=153 cache_read=1024 cache_write=0[] output=46 reasoning=1 speed=standard asked=-

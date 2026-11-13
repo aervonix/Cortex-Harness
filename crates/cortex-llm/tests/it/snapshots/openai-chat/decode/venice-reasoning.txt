@@ -1,0 +1,37 @@
+start id=id_fixture0002 model=deepseek-v4-flash-0731
+block_start 0 Reasoning
+reasoning 0 "We"
+reasoning 0 " need answer. Need be"
+reasoning 0 " careful."
+reasoning 0 " Farmer"
+reasoning 0 " has 17 sheep buys"
+reasoning 0 " 23 more = 40"
+reasoning 0 ". Sells a quarter of"
+reasoning 0 " the"
+reasoning 0 " flock = 10. Left"
+reasoning 0 " 30. Need"
+reasoning 0 " \"Think it"
+reasoning 0 " through briefly\" maybe"
+reasoning 0 " include brief"
+reasoning 0 ". Ensure"
+reasoning 0 " no trap"
+reasoning 0 "? \"quarter"
+reasoning 0 " of the flock\" after"
+reasoning 0 " buys"
+reasoning 0 "? Usually"
+reasoning 0 " flock is"
+reasoning 0 " 40. Left"
+reasoning 0 " 30. Final concise."
+block_end 0 {"reasoning_content":"We need answer. Need be careful. Farmer has 17 sheep buys 23 more = 40. Sells a quarter of the flock = 10. Left 30. Need \"Think it through briefly\" maybe include brief. Ensure no trap? \"quarter of the flock\" after buys? Usually flock is 40. Left 30. Final concise."}
+block_start 1 Text
+text 1 "17"
+text 1 " + 23 = 40"
+text 1 " sheep.\n\nA quarter of "
+text 1 "40 is 10,"
+text 1 " so the"
+text 1 " farmer sells 10 sheep"
+text 1 ".\n\n40 - 10 ="
+text 1 " 30 sheep left."
+block_end 1 {"content":"17 + 23 = 40 sheep.\n\nA quarter of 40 is 10, so the farmer sells 10 sheep.\n\n40 - 10 = 30 sheep left."}
+usage input=117 cache_read=0 cache_write=0[] output=111 reasoning=73 speed=standard asked=-
+end stop=end raw=stop detail=- input=117 cache_read=0 cache_write=0[] output=111 reasoning=73 speed=standard asked=-

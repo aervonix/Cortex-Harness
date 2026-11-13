@@ -1,0 +1,12 @@
+start id=id_fixture0001 model=deepseek-flash
+block_start 0 ToolCall
+tool_call 0 id=id_fixture0002 name=get_weather
+tool_args 0 "{\""
+tool_args 0 "city"
+tool_args 0 "\""
+tool_args 0 ": \""
+tool_args 0 "Paris"
+tool_args 0 "\""
+block_end 0 {"tool_calls":[{"id":"id_fixture0002","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"Paris\""}}]}
+usage input=319 cache_read=0 cache_write=0[] output=28 reasoning=- speed=standard asked=-
+end stop=max_output raw=length detail=- input=319 cache_read=0 cache_write=0[] output=28 reasoning=- speed=standard asked=-

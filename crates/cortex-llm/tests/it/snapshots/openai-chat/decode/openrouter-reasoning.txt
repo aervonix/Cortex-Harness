@@ -1,0 +1,27 @@
+start id=id_fixture0002 model=z-ai/glm-5.3-flash
+block_start 0 Reasoning
+reasoning 0 "17"
+reasoning 0 " + 23 = 40"
+reasoning 0 ". Sells"
+reasoning 0 " a quarter of"
+reasoning 0 " 40 = 10."
+reasoning 0 " Left"
+reasoning 0 ": 30."
+block_end 0 {"reasoning":"17 + 23 = 40. Sells a quarter of 40 = 10. Left: 30.","reasoning_details":[{"type":"reasoning.text","text":"17 + 23 = 40. Sells a quarter of 40 = 10. Left: 30.","format":"unknown","index":0}]}
+block_start 1 Text
+text 1 "**"
+text 1 "Step by"
+text 1 " step:**\n- Starts"
+text 1 " with 17 sheep,"
+text 1 " buys 23 more"
+text 1 ": 17 + 23"
+text 1 " = **40 sheep**\n-"
+text 1 " Sells a quarter of the"
+text 1 " flock: 40 ÷"
+text 1 " 4 = 10 sheep"
+text 1 " sold\n- Sheep left:"
+text 1 " 40 − 10 ="
+text 1 " **30 sheep**"
+block_end 1 {"content":"**Step by step:**\n- Starts with 17 sheep, buys 23 more: 17 + 23 = **40 sheep**\n- Sells a quarter of the flock: 40 ÷ 4 = 10 sheep sold\n- Sheep left: 40 − 10 = **30 sheep**"}
+usage input=46 cache_read=0 cache_write=0[] output=89 reasoning=25 speed=standard asked=-
+end stop=end raw=stop detail=stop input=46 cache_read=0 cache_write=0[] output=89 reasoning=25 speed=standard asked=-

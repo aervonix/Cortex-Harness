@@ -37,7 +37,6 @@
 
 mod classify;
 mod decode;
-mod json;
 mod request;
 
 use cortex_base::{Secret, UtcTime};

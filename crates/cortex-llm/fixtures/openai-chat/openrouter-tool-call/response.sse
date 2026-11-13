@@ -1,0 +1,12 @@
+data: {"id":"id_fixture0003","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"id":"id_fixture0004","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0003","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":""}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0003","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":"{\"city\": \"Paris\"}"}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"id_fixture0003","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"tool_calls","native_finish_reason":"tool_calls"}]}
+
+data: {"id":"id_fixture0003","object":"chat.completion.chunk","created":1794559990,"model":"z-ai/glm-5.3-flash","provider":"InferenceNet","service_tier":null,"choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"tool_calls","native_finish_reason":"tool_calls"}],"usage":{"prompt_tokens":181,"completion_tokens":12,"total_tokens":193,"cost":0.000023748,"is_byok":false,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":0,"audio_tokens":0,"video_tokens":0},"cost_details":{"upstream_inference_cost":0.000023748,"upstream_inference_prompt_cost":0.000019548,"upstream_inference_completions_cost":0.0000042},"completion_tokens_details":{"reasoning_tokens":1,"image_tokens":0,"audio_tokens":0}}}
+
+data: [DONE]
+

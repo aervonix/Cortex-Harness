@@ -62,6 +62,14 @@
 #                       speed_beta, the beta name a request must carry to
 #                       name a speed tier on a model whose fast mode is a
 #                       preview. None of the four models below needs one.
+#                       For openai-chat: cache_control (the model caches
+#                       only where a request marks it), speed_model_<tier>
+#                       (the model id that serves a tier, at a server that
+#                       sells a speed as a separate model),
+#                       speed_max_output_<tier> (that model's output limit,
+#                       where it is smaller), tools_reasoning
+#                       (the one reasoning level at which the model takes
+#                       tools on this protocol) and reasoning_tags.
 #
 # [[model.speed]]       One per speed tier the model offers besides
 #                       standard (docs/decisions/0027-speed-tiers.md). A
@@ -86,7 +94,7 @@
 #
 # An unknown key anywhere is an error.
 
-version = "2026-11-12"
+version = "2026-11-13"
 
 # Anthropic
 # ---------
@@ -307,3 +315,352 @@ min_cacheable_tokens = 512
 edit_format = "replace"
 tool_schema = "strict"
 prompt_style = "concise"
+
+# The servers that speak openai-chat
+# ----------------------------------
+#
+# Added on 2026-11-13 (step 31). Each entry's `source` says where its facts
+# were read. Three things hold for all of them:
+#
+# - **These are the models the protocol's fixtures were recorded from,** and
+#   one entry for OpenAI itself. It is not a list of what each server
+#   offers: OpenRouter and Venice.ai each serve hundreds of models, and a
+#   user adds the ones they use (docs/architecture/04-providers.md, "Model
+#   catalog").
+# - **An aggregator's price is the price of one route.** OpenRouter sends a
+#   request to whichever upstream provider it chooses, and the price is that
+#   provider's. The prices here are the ones its model list gives for the
+#   model. Its responses state the cost of each request, and that figure
+#   overrides the calculation from these prices.
+# - **A local server has no entry.** What a user runs on their own machine
+#   is theirs to describe.
+#
+# OpenAI
+# ------
+#
+# Read on 2026-11-13 from developers.openai.com/api/docs:
+#   models/gpt-6-luna              (limits, prices, reasoning levels,
+#                                   endpoints, service tiers)
+#   pricing                        (every tier's rate card, the long-context
+#                                   rule)
+#   guides/fast-mode               (the fast tier: how it is asked for, what
+#                                   the response says, the downgrade)
+#   guides/flex-processing         (the flex tier, and its refusal)
+#   guides/prompt-caching          (cache writes and their two lifetimes)
+#
+# Not checked against the real API: there was no key.
+#
+# - **On Chat Completions this model takes tools only at the reasoning
+#   level `none`.** Its page says so ("Chat Completions supports function
+#   calling only when reasoning_effort is none"). The flag `tools_reasoning`
+#   makes the protocol send that level whenever tools are sent, and refuse
+#   a request that names another. OpenAI's newer models (GPT-6.1 Terra's
+#   page: "tool calling requires the Responses API") have no entry here at
+#   all: they wait for the `openai-responses` protocol.
+# - **The fast tier** (`service_tier: "priority"`, which the API also takes
+#   as `"fast"`): "up to 2.5x faster speeds", twice the standard price,
+#   the same rate limit as standard, and when traffic ramps too fast "the
+#   system may downgrade some Fast mode requests to standard speeds and
+#   charge standard rates", which the response shows as
+#   `service_tier: "default"`. Whether it shares the prompt cache with
+#   standard is not stated.
+# - **The flex tier** (`service_tier: "flex"`): batch prices, slower, and a
+#   429 "Resource Unavailable", not charged, when there is no capacity.
+# - **The cache-write classes** are the two lifetimes the pricing page
+#   lists, the default first.
+
+[[model]]
+provider = "openai"
+id = "gpt-6-luna"
+name = "GPT-6 Luna"
+protocol = "openai-chat"
+context_window = 1_050_000
+max_output = 128_000
+input = ["text", "image"]
+source = "developers.openai.com/api/docs/models/gpt-6-luna, pricing, guides/fast-mode, guides/flex-processing; read 2026-11-13; documentation only"
+
+[model.prices]
+input = 0.10
+output = 0.50
+cache_read = 0.01
+cache_write = [{ class = "30m", price = 0.125 }, { class = "12h", price = 0.25 }]
+above = [{ input_tokens = 272_000, input = 0.20, output = 0.75, cache_read = 0.02, cache_write = [{ class = "30m", price = 0.25 }, { class = "12h", price = 0.50 }] }]
+
+[model.reasoning]
+levels = ["none", "low", "medium", "high", "xhigh", "max"]
+default = "medium"
+
+[model.capabilities]
+strict_tools = true
+structured_output = true
+min_cacheable_tokens = 1024
+
+[model.flags]
+tools_reasoning = "none"
+
+[[model.speed]]
+name = "fast"
+label = "Fast mode"
+effect = "faster_output"
+when_unavailable = "downgrade"
+separate_limit = false
+
+[model.speed.prices]
+input = 0.20
+output = 1.00
+cache_read = 0.02
+cache_write = [{ class = "30m", price = 0.25 }, { class = "12h", price = 0.50 }]
+above = [{ input_tokens = 272_000, input = 0.40, output = 1.50, cache_read = 0.04, cache_write = [{ class = "30m", price = 0.50 }, { class = "12h", price = 1.00 }] }]
+
+[[model.speed]]
+name = "flex"
+label = "Flex processing"
+effect = "deferred"
+when_unavailable = "error"
+separate_limit = false
+
+[model.speed.prices]
+input = 0.05
+output = 0.25
+cache_read = 0.005
+cache_write = [{ class = "30m", price = 0.0625 }, { class = "12h", price = 0.125 }]
+
+# OpenRouter
+# ----------
+#
+# Read on 2026-11-13 from openrouter.ai:
+#   api/v1/models                  (its public model list: ids, limits,
+#                                   prices, reasoning levels, input)
+#   api/v1/models/<id>/endpoints   (the endpoints of a model, among them
+#                                   the ones of each service tier, with
+#                                   their prices)
+#   docs/guides/features/service-tiers
+#   docs/guides/best-practices/reasoning-tokens, prompt-caching
+#
+# - **Service tiers.** `service_tier` in the request, and the tier that
+#   served it at the top level of the response. A `priority` request that
+#   no priority endpoint can take "falls back to default endpoints, billed
+#   at the standard rate"; a `flex` request with no endpoint at or below
+#   the flex price gets a capacity error.
+# - **Reasoning levels** are the ones the model list gives for each model.
+#   A model marked `mandatory` there cannot have its reasoning turned off,
+#   so its levels have no `none`.
+# - **Claude through OpenRouter** caches only where a request marks it,
+#   with Anthropic's own markers: the flag `cache_control`.
+
+[[model]]
+provider = "openrouter"
+id = "z-ai/glm-5.3-flash"
+name = "GLM 5.3 Flash (OpenRouter)"
+protocol = "openai-chat"
+context_window = 1_048_576
+max_output = 131_072
+input = ["text", "image"]
+source = "openrouter.ai/api/v1/models; read 2026-11-13"
+
+[model.prices]
+input = 0.0399
+output = 0.0784
+cache_read = 0.03
+
+[model.reasoning]
+levels = ["low", "high", "max"]
+default = "max"
+
+[model.capabilities]
+structured_output = true
+
+[[model]]
+provider = "openrouter"
+id = "openai/gpt-6-luna"
+name = "GPT-6 Luna (OpenRouter)"
+protocol = "openai-chat"
+context_window = 1_050_000
+max_output = 128_000
+input = ["text", "image"]
+source = "openrouter.ai/api/v1/models, api/v1/models/openai/gpt-6-luna/endpoints, docs/guides/features/service-tiers; read 2026-11-13"
+
+[model.prices]
+input = 0.10
+output = 0.50
+cache_read = 0.01
+cache_write = [{ class = "30m", price = 0.125 }]
+above = [{ input_tokens = 272_000, input = 0.20, output = 0.75, cache_read = 0.02, cache_write = [{ class = "30m", price = 0.25 }] }]
+
+[model.reasoning]
+levels = ["none", "low", "medium", "high", "xhigh", "max"]
+default = "medium"
+
+[model.capabilities]
+structured_output = true
+
+[[model.speed]]
+name = "fast"
+label = "Priority tier"
+effect = "faster_output"
+when_unavailable = "downgrade"
+separate_limit = false
+
+[model.speed.prices]
+input = 0.20
+output = 1.00
+cache_read = 0.02
+cache_write = [{ class = "30m", price = 0.25 }]
+
+[[model.speed]]
+name = "flex"
+label = "Flex tier"
+effect = "deferred"
+when_unavailable = "error"
+separate_limit = false
+
+[model.speed.prices]
+input = 0.05
+output = 0.25
+cache_read = 0.005
+cache_write = [{ class = "30m", price = 0.0625 }]
+
+[[model]]
+provider = "openrouter"
+id = "anthropic/claude-haiku-5.5"
+name = "Claude Haiku 5.5 (OpenRouter)"
+protocol = "openai-chat"
+context_window = 1_000_000
+max_output = 128_000
+input = ["text", "image"]
+source = "openrouter.ai/api/v1/models, docs/guides/best-practices/prompt-caching; read 2026-11-13"
+
+[model.prices]
+input = 0.10
+output = 0.50
+cache_read = 0.01
+cache_write = [{ class = "5m", price = 0.125 }, { class = "1h", price = 0.20 }]
+above = [{ input_tokens = 100_000, input = 0.50, output = 2.50, cache_read = 0.05, cache_write = [{ class = "5m", price = 0.625 }, { class = "1h", price = 1.00 }] }]
+
+[model.reasoning]
+levels = ["none", "low", "medium", "high", "xhigh", "max"]
+default = "medium"
+
+[model.capabilities]
+structured_output = true
+
+[model.flags]
+cache_control = true
+
+# DeepSeek
+# --------
+#
+# Read on 2026-11-13 from api-docs.deepseek.com:
+#   quick_start/pricing            (ids, limits, prices, features)
+#   api/create-chat-completion     (reasoning levels, the output limit)
+#   guides/thinking_mode           (reasoning, and sending it back)
+#   guides/kv_cache                (the cache, which is automatic)
+#
+# - **The prices are the peak prices.** The pricing page gives two rate
+#   cards: off-peak is half of peak, and peak is 01:00 to 04:00 and 06:00 to
+#   10:00 UTC on weekdays. This file has one rate card for a speed, so the
+#   dearer one is entered, and a request made off-peak costs half of what
+#   is recorded for it. A price that depends on the time of day is the case
+#   docs/decisions/0027-speed-tiers.md lists under "Revisit when".
+# - **Limits.** The page says "1M" for the context and "384K" for the
+#   output; the API reference gives the output limit as 393,216.
+# - **Reasoning** is on by default, at `high`. The API takes `none`, `low`,
+#   `high` and `max`, and maps other names onto these.
+# - **No speed tier.**
+
+[[model]]
+provider = "deepseek"
+id = "deepseek-flash"
+name = "DeepSeek Flash"
+protocol = "openai-chat"
+context_window = 1_000_000
+max_output = 393_216
+input = ["text", "image"]
+source = "api-docs.deepseek.com/quick_start/pricing, api/create-chat-completion, guides/thinking_mode; read 2026-11-13; peak prices"
+
+[model.prices]
+input = 0.30
+output = 1.20
+cache_read = 0.006
+
+[model.reasoning]
+levels = ["none", "low", "high", "max"]
+default = "high"
+
+[[model]]
+provider = "deepseek"
+id = "deepseek-v4-pro"
+name = "DeepSeek V4 Pro"
+protocol = "openai-chat"
+context_window = 1_000_000
+max_output = 393_216
+input = ["text"]
+source = "api-docs.deepseek.com/quick_start/pricing, api/create-chat-completion, guides/thinking_mode; read 2026-11-13; peak prices"
+
+[model.prices]
+input = 1.32
+output = 3.96
+cache_read = 0.044
+
+[model.reasoning]
+levels = ["none", "low", "high", "max"]
+default = "high"
+
+# Venice.ai
+# ---------
+#
+# Read on 2026-11-13 from api.venice.ai/api/v1/models (its public model
+# list: ids, limits, prices, reasoning levels) and docs.venice.ai
+# (overview/pricing, api-reference/rate-limiting).
+#
+# - **A speed is another model.** Venice.ai has no `service_tier`. It lists
+#   a faster variant of some models as a model of its own, at its own
+#   price: `deepseek-v4-flash-0731-fast` beside `deepseek-v4-flash-0731`.
+#   The flag `speed_model_fast` names that id, and a request at `fast` is
+#   sent to it. Its rate limits are per model and per key, so the fast
+#   variant has limits of its own. What happens when it has no capacity is
+#   an error (429 `MODEL_OVERLOADED`, or 503 `MODEL_AT_CAPACITY`): nothing
+#   says it is served by the standard model. Whether the two share a cache
+#   is not stated.
+# - **The fast variant's output limit is smaller:** 32,768 tokens, where
+#   the standard model's is 262,144. An entry has one output limit, so the
+#   flag `speed_max_output_fast` gives the variant's, and a request at
+#   `fast` is held to it.
+
+[[model]]
+provider = "venice"
+id = "deepseek-v4-flash-0731"
+name = "DeepSeek V4 Flash 0731 (Venice.ai)"
+protocol = "openai-chat"
+context_window = 1_000_000
+max_output = 262_144
+input = ["text"]
+source = "api.venice.ai/api/v1/models, docs.venice.ai/overview/pricing, api-reference/rate-limiting; read 2026-11-13"
+
+[model.prices]
+input = 0.13
+output = 0.26
+cache_read = 0.028
+
+[model.reasoning]
+levels = ["none", "low", "high", "max"]
+default = "high"
+
+[model.capabilities]
+structured_output = true
+
+[model.flags]
+speed_model_fast = "deepseek-v4-flash-0731-fast"
+speed_max_output_fast = 32_768
+
+[[model.speed]]
+name = "fast"
+label = "DeepSeek V4 Flash 0731 Fast"
+effect = "faster_output"
+when_unavailable = "error"
+separate_limit = true
+
+[model.speed.prices]
+input = 0.35
+output = 0.70
+cache_read = 0.0875

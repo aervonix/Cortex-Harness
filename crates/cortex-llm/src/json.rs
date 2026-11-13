@@ -17,7 +17,9 @@
 
 use std::fmt::Write as _;
 
+use serde::Deserialize;
 use serde_json::Value;
+use serde_json::value::RawValue;
 
 /// Appends `text` as a JSON string, with its quotes.
 pub(crate) fn string(out: &mut String, text: &str) {
@@ -171,8 +173,106 @@ impl<'a> Array<'a> {
     }
 }
 
+/// How many members an object has before the reader keeps an index of
+/// their keys. Below it, looking through them is quicker than hashing.
+const INDEXED_FROM: usize = 32;
+
+/// The members of a JSON object in the order they were written, each as
+/// its own text.
+pub(crate) fn ordered_members(
+    raw: &RawValue,
+) -> Result<Vec<(String, Box<RawValue>)>, serde_json::Error> {
+    struct Ordered(Vec<(String, Box<RawValue>)>);
+
+    impl<'de> Deserialize<'de> for Ordered {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct Visitor;
+
+            impl<'de> serde::de::Visitor<'de> for Visitor {
+                type Value = Ordered;
+
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("a JSON object")
+                }
+
+                fn visit_map<A: serde::de::MapAccess<'de>>(
+                    self,
+                    mut map: A,
+                ) -> Result<Ordered, A::Error> {
+                    let mut members: Vec<(String, Box<RawValue>)> = Vec::new();
+                    // Where each key is, once there are enough of them that
+                    // looking through all of them for every new one would
+                    // cost the square of their number: an object from a
+                    // server may have millions.
+                    let mut places: Option<std::collections::HashMap<String, usize>> = None;
+                    while let Some((key, value)) = map.next_entry::<String, Box<RawValue>>()? {
+                        if places.is_none() && members.len() >= INDEXED_FROM {
+                            places = Some(
+                                members
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(at, (known, _))| (known.clone(), at))
+                                    .collect(),
+                            );
+                        }
+                        let at = match &places {
+                            Some(places) => places.get(&key).copied(),
+                            None => members.iter().position(|(known, _)| *known == key),
+                        };
+                        // A key written twice keeps its last value, as a
+                        // JSON reader would.
+                        match at {
+                            Some(at) => members[at].1 = value,
+                            None => {
+                                if let Some(places) = &mut places {
+                                    places.insert(key.clone(), members.len());
+                                }
+                                members.push((key, value));
+                            }
+                        }
+                    }
+                    Ok(Ordered(members))
+                }
+            }
+
+            deserializer.deserialize_map(Visitor)
+        }
+    }
+
+    serde_json::from_str::<Ordered>(raw.get()).map(|ordered| ordered.0)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_object_with_very_many_members_is_read_in_order_and_quickly() {
+        // Enough members that looking through all of them for each new one
+        // would be 2.5 thousand million comparisons: with an index of the
+        // keys it is fifty thousand lookups.
+        let count = 50_000;
+        let mut text = String::from("{");
+        for at in 0..count {
+            text.push_str(&format!("\"k{at}\":{at},"));
+        }
+        // Two keys written again, on either side of where the index
+        // begins: each keeps its place and takes its last value.
+        text.push_str("\"k3\":\"again\",\"k40000\":\"again\"}");
+        let raw: Box<RawValue> = serde_json::from_str(&text).unwrap();
+        let members = ordered_members(&raw).unwrap();
+        assert_eq!(members.len(), count);
+        for at in [0, 1, 31, 32, 33, 49_999] {
+            assert_eq!(members[at].0, format!("k{at}"));
+            assert_eq!(members[at].1.get(), at.to_string());
+        }
+        assert_eq!(members[3].1.get(), "\"again\"");
+        assert_eq!(members[40_000].1.get(), "\"again\"");
+        // A small object goes the same way.
+        let small: Box<RawValue> = serde_json::from_str(r#"{"a":1,"b":2,"a":3}"#).unwrap();
+        let members = ordered_members(&small).unwrap();
+        assert_eq!(members.len(), 2);
+        assert_eq!((members[0].0.as_str(), members[0].1.get()), ("a", "3"));
+    }
+
     use cortex_base::Rng as _;
     use cortex_testkit::cases;
     use serde_json::json;
@@ -199,7 +299,7 @@ mod tests {
     #[test]
     fn every_string_reads_back_as_itself() {
         cases::check(
-            "anthropic json string round trip",
+            "json string round trip",
             300,
             |rng| {
                 let length = rng.below(40);

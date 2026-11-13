@@ -402,6 +402,7 @@ async fn attempt(
     };
 
     // One limit runs from the send to the first event of the response.
+    let sent_at = inner.clock.monotonic();
     let mut first_event = inner.timer.sleep(first_event_limit);
     let sending = inner.transport.send(http, cancel.clone());
     let response = match race(sending, cancel, &mut first_event).await {
@@ -458,8 +459,11 @@ async fn attempt(
 
     let mut decoder = inner.protocol.decoder(request, &inner.provider);
     let mut parser = SseParser::new();
-    // The limit on the first event, until there is one.
+    // The limit on the first event, until there is one. `at_ceiling` says
+    // that what is left of it is the last of all the request may wait.
     let mut first_event = Some(first_event);
+    let mut at_ceiling = false;
+    let longest = first_event_limit.saturating_mul(QUEUE_PATIENCE);
     let failed = |sink: &EventSink, error: ProviderError| {
         let id = sink.known_request_id().map(str::to_owned);
         Attempt::Failed(if error.request_id.is_none() {
@@ -475,7 +479,11 @@ async fn attempt(
                 Raced::TimedOut => {
                     let error = timed_out(
                         code::FIRST_EVENT_TIMEOUT,
-                        first_event_limit,
+                        if at_ceiling {
+                            longest
+                        } else {
+                            first_event_limit
+                        },
                         "The response did not begin",
                     );
                     return failed(&sink, error);
@@ -509,6 +517,26 @@ async fn attempt(
             Some(Ok(bytes)) => bytes,
         };
 
+        // Bytes that are not yet an event show that the connection is
+        // alive: a server that has queued the request sends keep-alive
+        // comments until it begins. The wait for the first event starts
+        // again, so a queue is waited out and a dead connection is not.
+        // But not for ever: a server that only ever says it is alive is
+        // given up on after `QUEUE_PATIENCE` limits in all.
+        if let Some(limit) = first_event.as_mut() {
+            let waited = inner.clock.monotonic().saturating_sub(sent_at);
+            let left = longest.saturating_sub(waited);
+            at_ceiling = left <= first_event_limit;
+            if left.is_zero() {
+                let error = timed_out(
+                    code::FIRST_EVENT_TIMEOUT,
+                    longest,
+                    "The response did not begin",
+                );
+                return failed(&sink, error);
+            }
+            *limit = inner.timer.sleep(first_event_limit.min(left));
+        }
         parser.push(&bytes);
         loop {
             let event = match parser.next_event() {
@@ -550,6 +578,14 @@ async fn attempt(
     );
     failed(&sink, error)
 }
+
+/// How many first-event limits a request may wait for its first event in
+/// all, while bytes that are not an event keep arriving: ten, which is ten
+/// minutes at the default limit. One server documents that it holds a
+/// queued request for up to ten minutes and then closes the connection
+/// itself; a server that sends keep-alives for longer than that is not
+/// going to answer.
+const QUEUE_PATIENCE: u32 = 10;
 
 /// What handing over the sink's events came to.
 struct Forwarded {

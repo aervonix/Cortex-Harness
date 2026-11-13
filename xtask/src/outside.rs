@@ -4,14 +4,16 @@
 //!
 //! # `live` and `record`
 //!
-//! Both run ignored tests of `cortex-llm` (`tests/it/anthropic/live.rs`),
-//! which is where the HTTP client is. Doing it here would mean building the
-//! whole HTTP and TLS stack into this crate, which every CI job builds
-//! before it does anything else.
+//! Both run ignored tests of `cortex-llm` (the `live` module of each
+//! protocol's tests), which is where the HTTP client is. Doing it here
+//! would mean building the whole HTTP and TLS stack into this crate, which
+//! every CI job builds before it does anything else.
 //!
-//! The API key is never an argument and never in the environment. The
-//! environment names a **file**, in [`KEY_FILE`], and the test reads the
-//! key from it. Without the variable these commands say so and stop.
+//! Each takes the provider to talk to ([`PROVIDERS`]); without one it is
+//! Anthropic. The API key is never an argument and never in the
+//! environment. The environment names a **file**, in the provider's own
+//! variable, and the test reads the key from it. Without the variable
+//! these commands say so and stop.
 //!
 //! # `fuzz`
 //!
@@ -30,8 +32,58 @@ use std::process::{Command, Stdio};
 use crate::Result;
 use crate::workspace;
 
-/// The environment variable that names the file the API key is in.
-const KEY_FILE: &str = "CORTEX_LIVE_ANTHROPIC_KEY_FILE";
+/// A provider the live commands can talk to.
+struct LiveProvider {
+    /// The name the commands take.
+    name: &'static str,
+    /// The environment variable that names the file its API key is in.
+    key_file: &'static str,
+    /// Its smoke test and its recorder: ignored tests of `cortex-llm`.
+    smoke: &'static str,
+    record: &'static str,
+}
+
+/// The providers the live commands can talk to. The first is the one a
+/// command talks to when it names none.
+const PROVIDERS: &[LiveProvider] = &[
+    LiveProvider {
+        name: "anthropic",
+        key_file: "CORTEX_LIVE_ANTHROPIC_KEY_FILE",
+        smoke: "anthropic::live::live_smoke",
+        record: "anthropic::live::live_record",
+    },
+    LiveProvider {
+        name: "openrouter",
+        key_file: "CORTEX_LIVE_OPENROUTER_KEY_FILE",
+        smoke: "openai_chat::live::live_smoke_openrouter",
+        record: "openai_chat::live::live_record_openrouter",
+    },
+    LiveProvider {
+        name: "deepseek",
+        key_file: "CORTEX_LIVE_DEEPSEEK_KEY_FILE",
+        smoke: "openai_chat::live::live_smoke_deepseek",
+        record: "openai_chat::live::live_record_deepseek",
+    },
+    LiveProvider {
+        name: "venice",
+        key_file: "CORTEX_LIVE_VENICE_KEY_FILE",
+        smoke: "openai_chat::live::live_smoke_venice",
+        record: "openai_chat::live::live_record_venice",
+    },
+];
+
+fn live_provider(name: &str) -> Result<&'static LiveProvider> {
+    PROVIDERS
+        .iter()
+        .find(|provider| provider.name == name)
+        .ok_or_else(|| {
+            let known: Vec<&str> = PROVIDERS.iter().map(|provider| provider.name).collect();
+            format!(
+                "there are no live tests for a provider `{name}`. The providers are: {}",
+                known.join(", ")
+            )
+        })
+}
 
 /// The environment variable the recorder reads its scenarios from.
 const SCENARIOS: &str = "CORTEX_LIVE_SCENARIOS";
@@ -41,18 +93,21 @@ const SCENARIOS: &str = "CORTEX_LIVE_SCENARIOS";
 const FUZZ_TARGETS: &[(&str, &str)] = &[
     ("sse_parser", "anthropic-messages"),
     ("anthropic_decoder", "anthropic-messages"),
+    ("openai_chat_decoder", "openai-chat"),
 ];
 
 /// How long each fuzz target runs when no time is given, in seconds.
 const FUZZ_SECONDS: u64 = 60;
 
-fn require_key_file() -> Result<()> {
-    match std::env::var_os(KEY_FILE) {
+fn require_key_file(provider: &LiveProvider) -> Result<()> {
+    let variable = provider.key_file;
+    match std::env::var_os(variable) {
         Some(path) if !path.is_empty() => Ok(()),
         _ => Err(format!(
-            "{KEY_FILE} is not set. Set it to the path of a file that holds the API key and \
-             nothing else. The key itself is never given on a command line or in the \
-             environment. Nothing was sent."
+            "{variable} is not set. Set it to the path of a file that holds the API key of \
+             `{}` and nothing else. The key itself is never given on a command line or in \
+             the environment. Nothing was sent.",
+            provider.name
         )),
     }
 }
@@ -110,28 +165,52 @@ fn ran_one_test(output: &str) -> bool {
         .any(|line| line.starts_with("test result: ok. 1 passed; 0 failed;"))
 }
 
-/// `cargo xtask live`: the smoke test against the real API.
+/// `cargo xtask live [PROVIDER]`: the smoke test against a real API.
+/// Anthropic's when no provider is named.
 pub(crate) fn live(arguments: &[String]) -> Result<()> {
-    if let Some(argument) = arguments.first() {
-        return Err(format!(
-            "`live` takes no arguments, and was given `{argument}`"
-        ));
-    }
-    require_key_file()?;
-    ignored_test("anthropic::live::live_smoke", &[])
+    let provider = match arguments {
+        [] => &PROVIDERS[0],
+        [name] => live_provider(name)?,
+        [_, extra, ..] => {
+            return Err(format!(
+                "`live` takes one provider at most, and was also given `{extra}`"
+            ));
+        }
+    };
+    require_key_file(provider)?;
+    ignored_test(provider.smoke, &[])
 }
 
-/// `cargo xtask record [SCENARIO…]`: record fixtures from the real API.
-/// With no scenario named, all of them.
+/// `cargo xtask record [--provider PROVIDER] [SCENARIO…]`: record fixtures
+/// from a real API, Anthropic's when no provider is named. With no scenario
+/// named, all of them.
 pub(crate) fn record(arguments: &[String]) -> Result<()> {
-    if let Some(flag) = arguments.iter().find(|argument| argument.starts_with('-')) {
-        return Err(format!(
-            "`record` takes scenario names only, and was given `{flag}`"
-        ));
+    let (provider, scenarios) = record_arguments(arguments)?;
+    require_key_file(provider)?;
+    let scenarios = scenarios.join(",");
+    ignored_test(provider.record, &[(SCENARIOS, &scenarios)])
+}
+
+/// The provider and the scenarios `record` was asked for.
+fn record_arguments(arguments: &[String]) -> Result<(&'static LiveProvider, Vec<&str>)> {
+    let mut provider = &PROVIDERS[0];
+    let mut scenarios = Vec::new();
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
+        if argument == "--provider" {
+            let name = rest
+                .next()
+                .ok_or("`--provider` needs the provider's name after it")?;
+            provider = live_provider(name)?;
+        } else if argument.starts_with('-') {
+            return Err(format!(
+                "`record` takes `--provider NAME` and scenario names, and was given `{argument}`"
+            ));
+        } else {
+            scenarios.push(argument.as_str());
+        }
     }
-    require_key_file()?;
-    let scenarios = arguments.join(",");
-    ignored_test("anthropic::live::live_record", &[(SCENARIOS, &scenarios)])
+    Ok((provider, scenarios))
 }
 
 /// `cargo xtask fuzz [--seconds N] [TARGET…]`: run the fuzz targets, each
@@ -307,6 +386,42 @@ mod tests {
         assert_eq!(host_of(report).as_deref(), Some("x86_64-unknown-linux-gnu"));
         assert_eq!(host_of("rustc 1.99.1\n"), None);
         assert_eq!(host_of("host: \n"), None);
+    }
+
+    #[test]
+    fn the_live_commands_know_their_providers() {
+        let strings = |arguments: &[&str]| -> Vec<String> {
+            arguments
+                .iter()
+                .map(|argument| (*argument).to_owned())
+                .collect()
+        };
+        // No provider named: Anthropic, as before this command took one.
+        let arguments = strings(&["text", "fast"]);
+        let (provider, scenarios) = record_arguments(&arguments).unwrap();
+        assert_eq!(provider.name, "anthropic");
+        assert_eq!(scenarios, ["text", "fast"]);
+        let arguments = strings(&["text", "--provider", "deepseek", "switch"]);
+        let (provider, scenarios) = record_arguments(&arguments).unwrap();
+        assert_eq!(provider.name, "deepseek");
+        assert_eq!(provider.key_file, "CORTEX_LIVE_DEEPSEEK_KEY_FILE");
+        assert_eq!(scenarios, ["text", "switch"]);
+        for bad in [&["--provider"][..], &["--provider", "openai"], &["--all"]] {
+            assert!(record_arguments(&strings(bad)).is_err(), "{bad:?}");
+        }
+        // Each provider has a key file of its own, and tests of its own.
+        for (at, provider) in PROVIDERS.iter().enumerate() {
+            for other in &PROVIDERS[at + 1..] {
+                assert_ne!(provider.name, other.name);
+                assert_ne!(provider.key_file, other.key_file);
+                assert_ne!(provider.smoke, other.smoke);
+                assert_ne!(provider.record, other.record);
+            }
+            assert!(provider.key_file.starts_with("CORTEX_LIVE_"));
+            assert!(provider.key_file.ends_with("_KEY_FILE"));
+        }
+        assert!(live(&strings(&["openrouter", "deepseek"])).is_err());
+        assert!(live(&strings(&["nobody"])).is_err());
     }
 
     #[test]

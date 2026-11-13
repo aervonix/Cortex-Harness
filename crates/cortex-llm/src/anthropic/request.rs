@@ -46,10 +46,10 @@ use cortex_protocol::message::ImagePart;
 use cortex_protocol::model::{Modality, ReasoningControlKind};
 use cortex_protocol::{Message, Part, RawJson, Role};
 
-use super::json::{self, Array, Object};
 use super::{NAME, flags};
 use crate::catalog::ToolSchemaStyle;
 use crate::error::BuildError;
+use crate::json::{self, Array, Object};
 use crate::protocol::ProviderInfo;
 use crate::request::{ModelRequest, ReasoningVisibility, is_valid_tool_name};
 

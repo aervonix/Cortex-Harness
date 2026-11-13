@@ -1,0 +1,1 @@
+{"error":{"message":"Invalid API key: this is not an OpenRouter API key. OpenRouter keys start with \"sk-or-\". If you use an OpenAI or Anthropic SDK, check that it is not picking up OPENAI_API_KEY or ANTHROPIC_API_KEY instead of your OpenRouter key","code":401}}

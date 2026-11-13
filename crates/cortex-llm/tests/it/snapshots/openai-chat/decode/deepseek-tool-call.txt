@@ -1,0 +1,26 @@
+start id=id_fixture0003 model=deepseek-flash
+block_start 0 Reasoning
+reasoning 0 "The"
+reasoning 0 " user"
+reasoning 0 " wants"
+reasoning 0 " weather"
+reasoning 0 " in"
+reasoning 0 " Paris"
+reasoning 0 "."
+reasoning 0 " Call"
+reasoning 0 " the"
+reasoning 0 " tool"
+reasoning 0 "."
+block_end 0 {"reasoning_content":"The user wants weather in Paris. Call the tool."}
+block_start 1 ToolCall
+tool_call 1 id=id_fixture0004 name=get_weather
+tool_args 1 "{\""
+tool_args 1 "city"
+tool_args 1 "\""
+tool_args 1 ": \""
+tool_args 1 "Paris"
+tool_args 1 "\""
+tool_args 1 "}"
+block_end 1 {"tool_calls":[{"id":"id_fixture0004","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"Paris\"}"}}]}
+usage input=316 cache_read=0 cache_write=0[] output=50 reasoning=11 speed=standard asked=-
+end stop=tool_calls raw=tool_calls detail=- input=316 cache_read=0 cache_write=0[] output=50 reasoning=11 speed=standard asked=-

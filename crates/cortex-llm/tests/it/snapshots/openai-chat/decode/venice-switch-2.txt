@@ -1,0 +1,17 @@
+start id=id_fixture0002 model=deepseek-v4-flash-0731
+block_start 0 Reasoning
+reasoning 0 "Both"
+reasoning 0 " are 18 degrees Celsius,"
+reasoning 0 " so neither is warmer;"
+reasoning 0 " they are"
+reasoning 0 " equal."
+block_end 0 {"reasoning_content":"Both are 18 degrees Celsius, so neither is warmer; they are equal."}
+block_start 1 Text
+text 1 "Os"
+text 1 "lo and Cairo are both at"
+text 1 " 18 degrees Celsius, so"
+text 1 " neither is warmer —"
+text 1 " they are tied."
+block_end 1 {"content":"Oslo and Cairo are both at 18 degrees Celsius, so neither is warmer — they are tied."}
+usage input=1338 cache_read=0 cache_write=0[] output=39 reasoning=16 speed=standard asked=-
+end stop=end raw=stop detail=- input=1338 cache_read=0 cache_write=0[] output=39 reasoning=16 speed=standard asked=-

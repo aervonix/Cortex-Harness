@@ -1,0 +1,24 @@
+data: {"service_tier":null,"id":"id_fixture0013","object":"chat.completion.chunk","created":1794560039,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0013","object":"chat.completion.chunk","created":1794560039,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0013","object":"chat.completion.chunk","created":1794560039,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":"In","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0013","object":"chat.completion.chunk","created":1794560039,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" Oslo it","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0013","object":"chat.completion.chunk","created":1794560039,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" is 18 degrees Celsius with","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0013","object":"chat.completion.chunk","created":1794560039,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" a clear sky and light wind","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0013","object":"chat.completion.chunk","created":1794560039,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":". In Cairo it is also","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0013","object":"chat.completion.chunk","created":1794560039,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" 18 degrees Celsius with a","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0013","object":"chat.completion.chunk","created":1794560039,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":" clear sky and light wind.","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0013","object":"chat.completion.chunk","created":1794560039,"model":"deepseek-v4-flash-0731","choices":[{"index":0,"delta":{"role":null,"content":null,"reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":"stop"}],"usage":null}
+
+data: {"service_tier":"priority","id":"id_fixture0013","object":"chat.completion.chunk","created":1794560039,"model":"deepseek-v4-flash-0731","choices":[],"usage":{"prompt_tokens":1254,"completion_tokens":35,"total_tokens":1289,"prompt_tokens_details":{"cached_tokens":1024},"cache_read_input_tokens":1024,"completion_tokens_details":{"reasoning_tokens":0}},"cost":{"usd":0.000067672,"diem":0}}
+
+data: [DONE]
+

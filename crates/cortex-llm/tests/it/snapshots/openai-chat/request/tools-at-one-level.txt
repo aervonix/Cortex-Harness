@@ -1,0 +1,42 @@
+POST https://api.openai.com/v1/chat/completions
+content-type: application/json
+accept: text/event-stream
+
+{
+  "model": "gpt-6-luna",
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  },
+  "reasoning_effort": "none",
+  "service_tier": "default",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the current weather in a city.",
+        "parameters": {
+          "additionalProperties": false,
+          "properties": {
+            "city": {
+              "description": "The city's name.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "type": "object"
+        },
+        "strict": true
+      }
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Paris?"
+    }
+  ]
+}
