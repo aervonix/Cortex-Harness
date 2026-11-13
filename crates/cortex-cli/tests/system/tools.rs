@@ -240,3 +240,166 @@ fn sys_the_shells_version_is_kept_for_the_runs_after_the_first() {
         "the second run's description names {version}: {description}"
     );
 }
+
+/// The providers the toolbox fixtures of `cortex-llm` are recorded from:
+/// each with its cheapest model of the built-in catalog, the variable its
+/// key is in, and the fixture the scripted server answers with.
+const TOOLBOX: &[(&str, &str, &str, &str, &str)] = &[
+    (
+        "anthropic",
+        "claude-haiku-5-5",
+        "ANTHROPIC_API_KEY",
+        "anthropic-messages",
+        "text",
+    ),
+    (
+        "deepseek",
+        "deepseek-flash",
+        "DEEPSEEK_API_KEY",
+        "openai-chat",
+        "deepseek-text",
+    ),
+    (
+        "openrouter",
+        "z-ai/glm-5.3-flash",
+        "OPENROUTER_API_KEY",
+        "openai-chat",
+        "openrouter-text",
+    ),
+    (
+        "venice",
+        "deepseek-v4-flash-0731",
+        "VENICE_API_KEY",
+        "openai-chat",
+        "venice-text",
+    ),
+];
+
+/// Where the tools the binary sent each provider are kept.
+fn kept_tools(provider: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../cortex-llm/fixtures/toolbox")
+        .join(format!("{provider}.json"))
+}
+
+/// The tools as they are compared: the shell tool's description names the
+/// shell the machine has, and is left out.
+fn comparable(tools: &[Value]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            let mut tool = tool.clone();
+            let name = tool["name"]
+                .as_str()
+                .or_else(|| tool["function"]["name"].as_str())
+                .unwrap_or("")
+                .to_owned();
+            if name == "shell" {
+                if let Some(function) = tool.get_mut("function") {
+                    function["description"] = Value::Null;
+                } else {
+                    tool["description"] = Value::Null;
+                }
+            }
+            tool
+        })
+        .collect()
+}
+
+/// The tools the binary sends each provider's cheapest model, against
+/// those the toolbox fixtures of `cortex-llm` were recorded with
+/// (`docs/testing-and-ci.md`, "The toolbox fixtures"). A difference is a
+/// warning, not a failure: the provider may well accept the new tools, and
+/// only a recording shows it. With `CORTEX_UPDATE_TOOLBOX` set, the tools
+/// are written there instead, which `cargo xtask record --toolbox` does
+/// before it records.
+///
+/// Not compared on Windows, where the shell tool is PowerShell's: the kept
+/// tools are a Linux machine's.
+#[test]
+fn sys_the_toolbox_the_binary_sends_is_the_one_its_fixtures_were_recorded_with() {
+    let update = std::env::var_os("CORTEX_UPDATE_TOOLBOX").is_some();
+    if cfg!(windows) && !update {
+        return;
+    }
+    let mut changed = Vec::new();
+    for (provider, model, variable, protocol, reply) in TOOLBOX {
+        let machine = Machine::new(&format!("sys_toolbox_{provider}"));
+        if *provider != "anthropic" {
+            machine.user_config(&format!(
+                "model.roles.main.provider = \"{provider}\"\nproviders.{provider}.base_url = \"{}\"\n",
+                machine.server.base_url()
+            ));
+        }
+        machine.reply_fixture_of(protocol, reply);
+        let output = machine
+            .command(&["-p", "say hello", "--model", model])
+            .env(variable, crate::KEY)
+            .output()
+            .unwrap();
+        let run = crate::Run::of(output);
+        run.expect_code(0);
+        let (_, tools) = tools_sent(&machine, 0);
+        assert!(tools.len() >= 5, "{provider}: {}", shown(&run));
+        let file = kept_tools(provider);
+        if update {
+            let kept = serde_json::json!({ "provider": provider, "model": model, "tools": tools });
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(
+                &file,
+                format!("{}\n", serde_json::to_string_pretty(&kept).unwrap()),
+            )
+            .unwrap();
+            continue;
+        }
+        let kept: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let kept_tools = kept["tools"].as_array().cloned().unwrap_or_default();
+        if kept["model"] != *model || comparable(&kept_tools) != comparable(&tools) {
+            changed.push(*provider);
+        }
+    }
+    if changed.is_empty() {
+        return;
+    }
+    let warning = format!(
+        "The tools the binary sends to {} are not the ones the toolbox fixtures were recorded \
+         with (crates/cortex-llm/fixtures/toolbox/). Whether the provider still accepts them is \
+         known only from a recording: `cargo xtask record --toolbox` (docs/testing-and-ci.md, \
+         \"The toolbox fixtures\").",
+        changed.join(", ")
+    );
+    eprintln!("warning: {warning}");
+    // A test's output is shown only when it fails; the job's summary page
+    // is where a warning that passes can be seen.
+    if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+        use std::io::Write as _;
+        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(summary) {
+            let _ = writeln!(file, "\n> **Warning:** {warning}\n");
+        }
+    }
+}
+
+#[test]
+fn the_shells_description_is_all_that_is_left_out_of_the_comparison() {
+    let anthropic = serde_json::json!([
+        {"name": "shell", "description": "Runs bash 5.2", "input_schema": {"type": "object"}},
+        {"name": "read", "description": "Reads a file", "input_schema": {"type": "object"}}
+    ]);
+    let other = serde_json::json!([
+        {"name": "shell", "description": "Runs pwsh 7.5", "input_schema": {"type": "object"}},
+        {"name": "read", "description": "Reads a file", "input_schema": {"type": "object"}}
+    ]);
+    let tools = |value: &Value| value.as_array().unwrap().clone();
+    assert_eq!(comparable(&tools(&anthropic)), comparable(&tools(&other)));
+    let changed = serde_json::json!([
+        {"name": "shell", "description": "Runs bash 5.2", "input_schema": {"type": "object"}},
+        {"name": "read", "description": "Reads a file, now longer", "input_schema": {"type": "object"}}
+    ]);
+    assert_ne!(comparable(&tools(&anthropic)), comparable(&tools(&changed)));
+    let functions = serde_json::json!([
+        {"type": "function", "function": {"name": "shell", "description": "bash", "parameters": {}}}
+    ]);
+    let compared = comparable(&tools(&functions));
+    assert_eq!(compared[0]["function"]["description"], Value::Null);
+    assert_eq!(compared[0]["function"]["name"], "shell");
+}

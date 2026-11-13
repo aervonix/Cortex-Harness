@@ -19,6 +19,7 @@ mod live;
 mod openai_chat;
 mod retry;
 mod speed;
+mod toolbox;
 #[cfg(feature = "http")]
 mod transport;
 

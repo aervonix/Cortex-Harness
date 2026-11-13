@@ -366,11 +366,15 @@ pub(crate) fn live(arguments: &[String]) -> Result<()> {
 /// named, all of them.
 pub(crate) fn record(arguments: &[String]) -> Result<()> {
     let dry_run = arguments.iter().any(|argument| argument == "--dry-run");
+    let toolbox = arguments.iter().any(|argument| argument == "--toolbox");
     let arguments: Vec<String> = arguments
         .iter()
-        .filter(|argument| *argument != "--dry-run")
+        .filter(|argument| *argument != "--dry-run" && *argument != "--toolbox")
         .cloned()
         .collect();
+    if toolbox {
+        return record_toolbox(&arguments);
+    }
     let (provider, scenarios) = record_arguments(&arguments)?;
     let scenarios = scenarios.join(",");
     if dry_run {
@@ -392,6 +396,74 @@ pub(crate) fn record(arguments: &[String]) -> Result<()> {
     require_key_file(provider)?;
     let (name, path) = ledger_variable()?;
     ignored_test(provider.record, &[(SCENARIOS, &scenarios), (name, &path)])
+}
+
+/// The system test of `cortex-cli` that keeps the tools the binary sends
+/// each provider (`docs/testing-and-ci.md`, "The toolbox fixtures").
+const TOOLBOX_CAPTURE: &str =
+    "tools::sys_the_toolbox_the_binary_sends_is_the_one_its_fixtures_were_recorded_with";
+
+/// `cargo xtask record --toolbox [--provider PROVIDER]`: keeps the tools the
+/// binary sends now, and records the toolbox fixture of the provider named,
+/// or of every provider whose key file is named in the environment.
+fn record_toolbox(arguments: &[String]) -> Result<()> {
+    let named = match arguments {
+        [] => None,
+        [flag, name] if flag == "--provider" => Some(live_provider(name)?),
+        _ => return Err("usage: cargo xtask record --toolbox [--provider PROVIDER]".to_owned()),
+    };
+    let chosen: Vec<&LiveProvider> = match named {
+        Some(provider) => {
+            require_key_file(provider)?;
+            vec![provider]
+        }
+        None => PROVIDERS
+            .iter()
+            .filter(|provider| {
+                std::env::var_os(provider.key_file).is_some_and(|path| !path.is_empty())
+            })
+            .collect(),
+    };
+    if chosen.is_empty() {
+        return Err(
+            "no provider's key file is named in the environment (CORTEX_LIVE_<PROVIDER>_KEY_FILE), \
+             so nothing would be recorded. Nothing was sent."
+                .to_owned(),
+        );
+    }
+    println!("Keeping the tools the binary sends each provider ...");
+    crate::steps::cargo_with(
+        &[
+            "test",
+            "--locked",
+            "-p",
+            "cortex-cli",
+            "--test",
+            "system",
+            "--",
+            "--exact",
+            TOOLBOX_CAPTURE,
+        ],
+        &[("CORTEX_UPDATE_TOOLBOX", "1")],
+    )?;
+    let (name, path) = ledger_variable()?;
+    for provider in &chosen {
+        println!("Recording the toolbox fixture of `{}` ...", provider.name);
+        ignored_test(provider.record, &[(SCENARIOS, "toolbox"), (name, &path)])?;
+    }
+    let skipped: Vec<&str> = PROVIDERS
+        .iter()
+        .filter(|provider| !chosen.iter().any(|chosen| chosen.name == provider.name))
+        .map(|provider| provider.name)
+        .collect();
+    if !skipped.is_empty() {
+        println!(
+            "Not recorded, for want of a key file: {}. Their fixtures no longer match the kept \
+             tools if the tools changed.",
+            skipped.join(", ")
+        );
+    }
+    Ok(())
 }
 
 /// The provider and the scenarios `record` was asked for.
