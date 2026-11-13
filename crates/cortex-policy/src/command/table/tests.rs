@@ -313,6 +313,9 @@ fn a_command_with_anything_unlisted_is_not_on_the_table() {
         "git diff main feature",
         "git diff HEAD -- src",
         "git diff a b c",
+        "git diff src/../docs src/..",
+        "git diff ./a ../b",
+        "git diff a/ b/",
         // Shell builtins that evaluate their arguments.
         "printf '%s\\n' a b",
         "printf -v x %s 1",

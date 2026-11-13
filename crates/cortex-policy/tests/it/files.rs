@@ -345,6 +345,7 @@ fn windows_parts(rules: Vec<cortex_policy::SourcedRule>) -> Parts {
         workspace,
         home: Some(home.clone()),
         trusted: true,
+        repository_trusted: true,
         protected: Protected::none()
             .closed(windows(r"C:\People\Dev\AppData\Roaming\cortex-harness")),
         shell: ShellSyntax::PowerShell,

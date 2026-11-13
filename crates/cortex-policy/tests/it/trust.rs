@@ -153,8 +153,10 @@ fn a_projects_allow_rules_are_disabled_when_its_rules_change_after_trust() {
     let engine_for = |rules: &[cortex_protocol::lease::Rule]| {
         let trust = store.project(&key).unwrap();
         let trusted = trust.rules_approved(rules);
+        let repository_trusted = trust.is_trusted();
         engine_with(|parts| {
             parts.trusted = trusted;
+            parts.repository_trusted = repository_trusted;
             parts.rules = rules
                 .iter()
                 .map(|rule| project(rule.effect.clone(), &rule.pattern, rule.action))
@@ -187,6 +189,15 @@ fn a_projects_allow_rules_are_disabled_when_its_rules_change_after_trust() {
     let engine = engine_for(&tighter);
     assert_eq!(said(&shell(&engine, "make deploy")), crate::Said::Deny);
     assert_eq!(said(&shell(&engine, "make test")), Ask);
+    // The project is still trusted: git's forms that only read stay on the
+    // table, while its allow rules wait.
+    for command in ["git status", "git diff", "git log --oneline -5"] {
+        assert_eq!(
+            said(&shell(&engine, command)),
+            crate::Said::ReadOnly,
+            "{command:?}"
+        );
+    }
 
     // The user approves the new rules.
     store

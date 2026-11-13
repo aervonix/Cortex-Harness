@@ -300,9 +300,19 @@ pub struct Parts {
     pub workspace: AbsPath,
     /// The home directory.
     pub home: Option<AbsPath>,
-    /// Whether the user has trusted the project, and its allow rules are
-    /// the ones they approved ([`crate::trust::ProjectTrust::rules_approved`]).
+    /// Whether the project's allow rules apply: the user has trusted the
+    /// project, and its rules are the ones they approved
+    /// ([`crate::trust::ProjectTrust::rules_approved`]). Any change to the
+    /// project's rules sets this to `false` until the user approves them
+    /// again.
     pub trusted: bool,
+    /// Whether the user has trusted the project at all
+    /// ([`crate::trust::ProjectTrust::is_trusted`]): whether git commands
+    /// that read the repository's own configuration (`git status`, `git
+    /// diff`) may be on the table of commands that only read. A project
+    /// that adds a rule that holds back keeps them, though its allow rules
+    /// wait for the user.
+    pub repository_trusted: bool,
     /// The harness's own files.
     pub protected: Protected,
     /// The language the shell tool's commands are written in.
@@ -360,6 +370,7 @@ pub struct Engine {
     workspace: AbsPath,
     home: Option<AbsPath>,
     trusted: bool,
+    repository_trusted: bool,
     protected: Protected,
     shell: ShellSyntax,
     sandbox: SandboxState,
@@ -418,93 +429,150 @@ struct Directory {
 }
 
 /// Where the parts after a `cd` the analysis could not follow may be
-/// running: the directory before it, the workspace root (`cd -` and
-/// `cd` back again), and where each `cd` since would lead with no `CDPATH`.
-/// Checking a path from every one of them can only ask once too often.
+/// running. Any `cd` may have failed, and then the next ran from where the
+/// one before left the shell. So each later `cd` is applied from every
+/// place so far, and the places only grow: the directories the line was in
+/// before (`cd -` goes back to one of them), the workspace root, and where
+/// each `cd` since would lead with no `CDPATH`. Checking a path from every
+/// one of them can only ask once too often. Past [`MOST_PLACES`] the parts
+/// after are not placed at all, and are asked about. Found by the second
+/// independent review of the fixes to step 12: `cd nope; cd
+/// .github/workflows; cp x ci.yml` wrote the workflow unasked.
 #[derive(Debug)]
 struct Lost {
-    places: Vec<AbsPath>,
-    /// Where the shell would believe it is, had every `cd` gone where its
-    /// text says. `None` once one could not be read.
-    guess: Option<AbsPath>,
+    /// Where the shell may believe it is, and where that really is.
+    places: Vec<Directory>,
     /// Where a `cd` to a pattern may have led: the directory it started
-    /// from, and the pattern with any `cd` after it joined on (`.gi?`,
+    /// from, and the pattern with every `cd` after it joined on (`.gi?`,
     /// then `.gi?/hooks`). A path a later part names is tried under each.
     patterns: Vec<(AbsPath, String)>,
+    /// Whether there were more places than are kept.
+    overflowed: bool,
 }
 
+/// The most places and patterns a line that lost track of its directory
+/// is followed through.
+const MOST_PLACES: usize = 32;
+
 impl Lost {
-    /// The places after the `cd` of `part`, run from `directory`.
-    fn after(engine: &Engine, directory: &Directory, part: &Part) -> Self {
-        let mut places = vec![directory.real.clone()];
-        if !places.contains(&engine.workspace) {
-            places.push(engine.workspace.clone());
-        }
+    /// The places after the `cd` of `part`, for a line that has been in the
+    /// directories `visited`.
+    fn after(engine: &Engine, visited: &[Directory], part: &Part) -> Self {
         let mut lost = Self {
-            places,
-            guess: Some(directory.logical.clone()),
+            places: Vec::new(),
             patterns: Vec::new(),
+            overflowed: false,
         };
+        for directory in visited {
+            lost.add(directory.clone());
+        }
+        lost.add(Directory {
+            logical: engine.workspace.clone(),
+            real: engine.workspace.clone(),
+        });
         lost.moved_by(engine, part);
         lost
     }
 
-    /// Adds where the `cd` of `part` would lead.
+    fn add(&mut self, directory: Directory) {
+        if self
+            .places
+            .iter()
+            .any(|place| place.logical == directory.logical && place.real == directory.real)
+        {
+            return;
+        }
+        if self.places.len() + self.patterns.len() >= MOST_PLACES {
+            self.overflowed = true;
+            return;
+        }
+        self.places.push(directory);
+    }
+
+    fn add_pattern(&mut self, base: AbsPath, pattern: String) {
+        if self
+            .patterns
+            .iter()
+            .any(|(held, text)| *held == base && *text == pattern)
+        {
+            return;
+        }
+        if self.places.len() + self.patterns.len() >= MOST_PLACES {
+            self.overflowed = true;
+            return;
+        }
+        self.patterns.push((base, pattern));
+    }
+
+    /// The real directories, each once.
+    fn reals(&self) -> Vec<AbsPath> {
+        let mut reals: Vec<AbsPath> = Vec::new();
+        for place in &self.places {
+            if !reals.contains(&place.real) {
+                reals.push(place.real.clone());
+            }
+        }
+        reals
+    }
+
+    /// Adds where the `cd` of `part` would lead, from every place so far.
     fn moved_by(&mut self, engine: &Engine, part: &Part) {
         let (target, physical) = match cd_operand(part) {
-            CdOperand::Directory { target, physical } => (Some(target), physical),
-            CdOperand::Home | CdOperand::Unknown => (None, false),
-        };
-        // `cd -P` takes `..` through links: where the file system leads
-        // from the real directory is a place too.
-        if physical
-            && let (Some(target), Some(from)) = (target, self.guess.as_ref())
-            && let Some(real) = engine
-                .locate
-                .locate(from, from.as_str())
-                .and_then(|from| engine.locate.locate(&from, &target.text))
-            && !self.places.contains(&real)
-        {
-            self.places.push(real);
-        }
-        let starts_anywhere =
-            |target: &Word| target.home || starts_elsewhere(&target.text, engine.workspace.style());
-        self.guess = match (self.guess.take(), target) {
-            // A pattern: it may lead to any directory it matches.
-            (Some(from), Some(target)) if !target.is_fixed() => {
-                let base = engine.locate.locate(&from, from.as_str()).unwrap_or(from);
-                self.patterns.push((base, target.text.clone()));
-                None
-            }
-            (Some(from), Some(target)) => engine.cd_target(&from, target, false),
-            // After a pattern, a `cd` that does not start anywhere of its
-            // own goes on from wherever the pattern led.
-            (None, Some(target)) if !starts_anywhere(target) && !self.patterns.is_empty() => {
-                if let Some((_, pattern)) = self.patterns.last_mut() {
-                    pattern.push('/');
-                    pattern.push_str(&target.text);
+            CdOperand::Directory { target, physical } => (target, physical),
+            CdOperand::Home => {
+                if let Some(home) = &engine.home
+                    && let Some(real) = engine.locate.locate(home, home.as_str())
+                {
+                    self.add(Directory {
+                        logical: home.clone(),
+                        real,
+                    });
                 }
-                None
+                return;
             }
-            (None, Some(target)) if !target.is_fixed() => {
-                self.patterns
-                    .push((engine.workspace.clone(), target.text.clone()));
-                None
+            // Back to a directory the line was in: a place already.
+            CdOperand::Back => return,
+            // Anywhere: nothing after it can be placed.
+            CdOperand::Unknown => {
+                self.overflowed = true;
+                return;
             }
-            (None, Some(target)) if starts_anywhere(target) => {
-                engine.cd_target(&engine.workspace, target, false)
-            }
-            // `cd` alone, or with only options, goes home.
-            (_, None) if matches!(cd_operand(part), CdOperand::Home) => engine.home.clone(),
-            _ => None,
         };
-        if let Some(real) = self
-            .guess
-            .as_ref()
-            .and_then(|guess| engine.locate.locate(guess, guess.as_str()))
-            && !self.places.contains(&real)
-        {
-            self.places.push(real);
+        let starts_anywhere =
+            target.home || starts_elsewhere(&target.text, engine.workspace.style());
+        let from = self.places.clone();
+        let earlier = self.patterns.clone();
+        if !target.is_fixed() {
+            // A pattern: it may lead to any directory it matches.
+            if starts_anywhere {
+                self.add_pattern(engine.workspace.clone(), target.text.clone());
+            } else {
+                for place in &from {
+                    self.add_pattern(place.real.clone(), target.text.clone());
+                }
+            }
+        } else {
+            for place in &from {
+                if let Some(logical) = engine.cd_target(&place.logical, target, false)
+                    && let Some(real) = engine.locate.locate(&logical, logical.as_str())
+                {
+                    self.add(Directory { logical, real });
+                }
+                // `cd -P` takes `..` through links: where the file system
+                // leads from the real directory is a place too.
+                if physical && let Some(real) = engine.locate.locate(&place.real, &target.text) {
+                    self.add(Directory {
+                        logical: real.clone(),
+                        real,
+                    });
+                }
+            }
+        }
+        // After a pattern, on from wherever it led.
+        if !starts_anywhere {
+            for (base, pattern) in earlier {
+                self.add_pattern(base, format!("{pattern}/{}", target.text));
+            }
         }
     }
 }
@@ -517,8 +585,9 @@ enum CdOperand<'a> {
     /// One directory, and whether `-P` asks for `..` to be taken through
     /// links.
     Directory { target: &'a Word, physical: bool },
-    /// Anything else: an option this does not know, `-` (the directory
-    /// before), several directories.
+    /// `-`: back to the directory before.
+    Back,
+    /// Anything else: an option this does not know, several directories.
     Unknown,
 }
 
@@ -561,7 +630,7 @@ fn cd_operand(part: &Part) -> CdOperand<'_> {
     }
     match operands.as_slice() {
         [] => CdOperand::Home,
-        [target] if target.text == "-" => CdOperand::Unknown,
+        [target] if target.text == "-" => CdOperand::Back,
         [target] => CdOperand::Directory { target, physical },
         _ => CdOperand::Unknown,
     }
@@ -631,6 +700,7 @@ impl Engine {
             workspace: parts.workspace,
             home: parts.home,
             trusted: parts.trusted,
+            repository_trusted: parts.repository_trusted,
             protected: parts.protected,
             shell: parts.shell,
             sandbox: parts.sandbox,
@@ -1040,6 +1110,9 @@ impl Engine {
             logical: cwd.clone(),
             real: cwd.clone(),
         };
+        // Every directory the line has been in, for `cd -` after a `cd` that
+        // could not be followed.
+        let mut visited = vec![directory.clone()];
         let mut lost: Option<Lost> = None;
         let mut only_reads = true;
         for (index, part) in parts.iter().enumerate() {
@@ -1059,11 +1132,14 @@ impl Engine {
                 // followed where its effect is certain.
                 if !later.is_empty() {
                     match self.follow_cd(part, later, &directory.logical) {
-                        Some(next) => directory = next,
+                        Some(next) => {
+                            directory = next;
+                            visited.push(directory.clone());
+                        }
                         None => {
                             only_reads = false;
                             findings.push(self.lost_finding());
-                            lost = Some(Lost::after(self, &directory, part));
+                            lost = Some(Lost::after(self, &visited, part));
                         }
                     }
                 }
@@ -1075,7 +1151,7 @@ impl Engine {
                 // what it writes, below, and not followed.
                 only_reads = false;
                 findings.push(self.lost_finding());
-                lost = Some(Lost::after(self, &directory, part));
+                lost = Some(Lost::after(self, &visited, part));
             }
             let (standing, found) = self.judge_part(rules, part, &here);
             findings.extend(found);
@@ -1245,6 +1321,14 @@ impl Engine {
     ) -> Vec<Finding> {
         let shown = words_of(part).join(" ");
         let mut findings = Vec::new();
+        if lost.overflowed && level::decider(self.level(), Matter::WriteBeyond) != Decider::Holder
+        {
+            findings.push(Finding::ask(format!(
+                "`{shown}` runs after more changes of directory than the analysis follows, so \
+                 what it names cannot be placed."
+            )));
+        }
+        let places = lost.reals();
         let mut relative = Vec::new();
         for redirect in &part.redirects {
             let (target, effect) = match redirect {
@@ -1255,8 +1339,12 @@ impl Engine {
             if target.text == "/dev/null" && self.shell == ShellSyntax::Posix {
                 continue;
             }
+            let reads = effect == Effect::Read;
             if !target.is_fixed() {
-                relative.push((target.text.as_str(), true));
+                relative.push((target.text.as_str(), true, reads));
+                if !reads && let Some(found) = self.pattern_outside(&target.text, &places, &shown) {
+                    findings.push(found);
+                }
             } else if target.home || starts_elsewhere(&target.text, self.workspace.style()) {
                 match self.locate.locate(&self.workspace, &target.text) {
                     Some(path) => {
@@ -1269,23 +1357,39 @@ impl Engine {
                     ))),
                 }
             } else {
-                relative.push((target.text.as_str(), false));
+                relative.push((target.text.as_str(), false, reads));
             }
         }
-        for (text, pattern) in relative {
+        for (text, pattern, reads) in relative {
             let found = if pattern {
-                self.judge_pattern(rules, text, &lost.places, &shown)
+                self.judge_pattern(rules, text, &places, &shown, reads)
             } else {
-                self.judge_name(rules, text, &lost.places, &shown)
+                self.judge_name(rules, text, &places, &shown, reads)
             };
-            if let Some(found) = found.or_else(|| self.judge_under(rules, text, lost, &shown)) {
+            if let Some(found) =
+                found.or_else(|| self.judge_under(rules, text, lost, &shown, reads))
+            {
                 findings.push(found);
             }
         }
         if arguments {
-            findings.extend(self.judge_named(rules, part, &lost.places, Some(lost), &shown));
+            let reads = self.only_reads_but_for_patterns(part);
+            findings.extend(self.judge_named(rules, part, &places, Some(lost), &shown, reads));
         }
         findings
+    }
+
+    /// Whether a part would be on the table of commands that only read but
+    /// for the patterns among its words: what it names it only reads.
+    fn only_reads_but_for_patterns(&self, part: &Part) -> bool {
+        let mut fixed = part.clone();
+        for word in &mut fixed.words {
+            word.glob = false;
+        }
+        part.redirects
+            .iter()
+            .all(|redirect| !matches!(redirect, Redirect::Write { .. }))
+            && table::read_only(&fixed, self.shell, self.repository_trusted).is_some()
     }
 
     /// Judges a path a part names, after a `cd` to a pattern, as the pattern
@@ -1298,6 +1402,7 @@ impl Engine {
         text: &str,
         lost: &Lost,
         shown: &str,
+        reads: bool,
     ) -> Option<Finding> {
         if text.starts_with('~') || starts_elsewhere(text, self.workspace.style()) {
             return None;
@@ -1308,6 +1413,7 @@ impl Engine {
                 &format!("{pattern}/{text}"),
                 std::slice::from_ref(base),
                 shown,
+                reads,
             )
         })
     }
@@ -1318,8 +1424,17 @@ impl Engine {
     /// from every place in `places`.
     ///
     /// A word the shell expands as a pattern names every path it could
-    /// match ([`judge_pattern`](Self::judge_pattern)). After a `cd` to a
-    /// pattern, a path is also tried under the pattern (`lost`).
+    /// match ([`judge_pattern`](Self::judge_pattern)): in PowerShell, whose
+    /// own commands expand a pattern, quoted or not. After a `cd` to a
+    /// pattern, a path is also tried under the pattern (`lost`). With
+    /// `reads`, the command only reads what it names, and a path is judged
+    /// as a read.
+    ///
+    /// A `~` is the home directory only where the shell takes it as one: at
+    /// the start of the word, unquoted. Anywhere else it is a name, and the
+    /// text is tried as one too (`"~/../.github/workflows/ci.yml"` is under
+    /// a folder named `~` in the workspace). In PowerShell, whose own
+    /// commands read a quoted `~` as home, both are tried.
     fn judge_named(
         &self,
         rules: &RuleSet,
@@ -1327,16 +1442,31 @@ impl Engine {
         places: &[AbsPath],
         lost: Option<&Lost>,
         shown: &str,
+        reads: bool,
     ) -> Vec<Finding> {
         let mut findings = Vec::new();
         for word in part.arguments() {
+            let pattern_word = !word.is_fixed() || self.shell == ShellSyntax::PowerShell;
             let found = may_name(&word.text).into_iter().find_map(|text| {
-                let here = if !word.is_fixed() && has_wildcards(text) {
-                    self.judge_pattern(rules, text, places, shown)
-                } else {
-                    self.judge_name(rules, text, places, shown)
-                };
-                here.or_else(|| lost.and_then(|lost| self.judge_under(rules, text, lost, shown)))
+                let home_written = word.home && text.len() == word.text.len();
+                let as_name = (text.starts_with('~') && !home_written).then(|| format!("./{text}"));
+                let mut texts: Vec<&str> = Vec::new();
+                if let Some(as_name) = &as_name {
+                    texts.push(as_name);
+                }
+                if as_name.is_none() || self.shell == ShellSyntax::PowerShell {
+                    texts.push(text);
+                }
+                texts.into_iter().find_map(|text| {
+                    let here = if pattern_word && has_wildcards(text) {
+                        self.judge_pattern(rules, text, places, shown, reads)
+                    } else {
+                        self.judge_name(rules, text, places, shown, reads)
+                    };
+                    here.or_else(|| {
+                        lost.and_then(|lost| self.judge_under(rules, text, lost, shown, reads))
+                    })
+                })
             });
             if let Some(found) = found {
                 findings.push(found);
@@ -1362,11 +1492,45 @@ impl Engine {
         text: &str,
         places: &[AbsPath],
         shown: &str,
+        reads: bool,
     ) -> Option<Finding> {
         places.iter().find_map(|place| {
             let path = self.locate.locate(place, text)?;
-            self.judge_named_path(rules, &path, shown)
+            if reads {
+                self.judge_read_path(rules, &path, shown)
+            } else {
+                self.judge_named_path(rules, &path, shown)
+            }
         })
+    }
+
+    /// The finding for one path a command that only reads names: `None`
+    /// when reading it is not held back. A file that looks like a secret is
+    /// asked about, as a read of it is.
+    fn judge_read_path(&self, rules: &RuleSet, path: &AbsPath, shown: &str) -> Option<Finding> {
+        match rules.path(&Effect::Read, path) {
+            Some(hit) if hit.action == RuleAction::Allow => None,
+            Some(hit) => {
+                let reason = format!(
+                    "`{shown}` names `{path}`, which is protected by {}.",
+                    hit.describe()
+                );
+                Some(match hit.by {
+                    By::Builtin(_) => Finding::Deny {
+                        reason,
+                        built_in: true,
+                    },
+                    By::Rule(_) => Finding::ask(reason),
+                })
+            }
+            None => (self.is_secret(path)
+                && level::decider(self.level(), Matter::ReadBeyond) != Decider::Holder)
+                .then(|| {
+                    Finding::ask(format!(
+                        "`{shown}` names `{path}`, which looks like a file that holds secrets."
+                    ))
+                }),
+        }
     }
 
     /// The finding for one path a command names: `None` when nothing holds
@@ -1424,18 +1588,12 @@ impl Engine {
         text: &str,
         places: &[AbsPath],
         shown: &str,
+        reads: bool,
     ) -> Option<Finding> {
-        let separators: &[char] = if self.shell == ShellSyntax::PowerShell {
-            &['/', '\\']
-        } else {
-            &['/']
-        };
         let hidden_rule = self.shell == ShellSyntax::Posix;
-        let first = text.find(['*', '?', '['])?;
-        let cut = text.get(..first)?.rfind(separators).map_or(0, |at| at + 1);
-        let (prefix, rest) = text.split_at(cut);
+        let (_, rest) = self.split_pattern(text)?;
         let names: Vec<&str> = rest
-            .split(separators)
+            .split(self.separators())
             .filter(|name| !name.is_empty() && *name != ".")
             .collect();
         let patterns: Vec<NamePattern> =
@@ -1449,18 +1607,21 @@ impl Engine {
             ))
         };
         places.iter().find_map(|place| {
-            let base = if prefix.is_empty() {
-                place.clone()
-            } else {
-                let trimmed = prefix.trim_end_matches(separators);
-                if trimmed.is_empty() {
-                    AbsPath::parse(prefix, place.style()).ok()?
-                } else {
-                    self.locate.locate(place, trimmed)?
-                }
+            let Some(base) = self.pattern_base(text, place) else {
+                // Where the pattern starts cannot be found: it is not a
+                // path that can be checked.
+                return Some(Finding::ask(format!(
+                    "`{shown}` names `{text}`, a pattern that does not start at a path that can be \
+                     checked."
+                )));
             };
-            if let Some(found) = self.judge_named_path(rules, &base, shown) {
-                return Some(found);
+            let found = if reads {
+                self.judge_read_path(rules, &base, shown)
+            } else {
+                self.judge_named_path(rules, &base, shown)
+            };
+            if found.is_some() {
+                return found;
             }
             if let Some(hit) = rules.protected_under(&base) {
                 return Some(Finding::ask(format!(
@@ -1468,6 +1629,28 @@ impl Engine {
                      by {}.",
                     hit.describe()
                 )));
+            }
+            let secret_names = || {
+                std::iter::once("HEAD".to_owned())
+                    .chain(secret_patterns())
+                    .chain([".yarnrc".to_owned(), ".yarnrc.yml".to_owned()])
+            };
+            if reads {
+                // What a command that only reads could read: a file that
+                // looks like a secret is asked about, as a read of it is.
+                let could_be_secret = names.contains(&"..")
+                    || patterns.last().is_some_and(|last| {
+                        secret_patterns()
+                            .any(|name| last.could_match(&NamePattern::parse(&name), hidden_rule))
+                    });
+                return (could_be_secret
+                    && level::decider(self.level(), Matter::ReadBeyond) != Decider::Holder)
+                    .then(|| {
+                        Finding::ask(format!(
+                            "`{shown}` reads `{text}`, a pattern the shell may expand to a file \
+                             that looks like a secret."
+                        ))
+                    });
             }
             if level::decider(self.level(), Matter::WriteBeyond) == Decider::Holder {
                 return None;
@@ -1478,10 +1661,8 @@ impl Engine {
             }
             let last = patterns.last()?;
             let repository = patterns.iter().any(|pattern| could(pattern, ".git"));
-            let secret = std::iter::once("HEAD".to_owned())
-                .chain(secret_patterns())
-                .chain([".yarnrc".to_owned(), ".yarnrc.yml".to_owned()])
-                .any(|name| last.could_match(&NamePattern::parse(&name), hidden_rule));
+            let secret =
+                secret_names().any(|name| last.could_match(&NamePattern::parse(&name), hidden_rule));
             let in_cargo = |at: usize| match at.checked_sub(1) {
                 Some(before) => could(&patterns[before], ".cargo"),
                 None => base
@@ -1503,6 +1684,63 @@ impl Engine {
             });
             (repository || secret || cargo || guarded).then(flagged)
         })
+    }
+
+    /// The separators of a path in the engine's shell.
+    fn separators(&self) -> &'static [char] {
+        if self.shell == ShellSyntax::PowerShell {
+            &['/', '\\']
+        } else {
+            &['/']
+        }
+    }
+
+    /// A pattern cut where its first name with a wildcard begins: the path
+    /// before it, with its last separator, and the rest. `None` for a text
+    /// with no wildcard.
+    fn split_pattern<'t>(&self, text: &'t str) -> Option<(&'t str, &'t str)> {
+        let first = text.find(['*', '?', '['])?;
+        let cut = text
+            .get(..first)?
+            .rfind(self.separators())
+            .map_or(0, |at| at + 1);
+        Some(text.split_at(cut))
+    }
+
+    /// Where a pattern starts, from `place`: the directory before its first
+    /// name with a wildcard. A root, a drive or a share is read as it is;
+    /// `C:` alone, which depends on a current drive nobody stated, is not a
+    /// place.
+    fn pattern_base(&self, text: &str, place: &AbsPath) -> Option<AbsPath> {
+        let (prefix, _) = self.split_pattern(text)?;
+        if prefix.is_empty() {
+            return Some(place.clone());
+        }
+        let trimmed = prefix.trim_end_matches(self.separators());
+        if trimmed.is_empty() || trimmed.ends_with(':') {
+            return AbsPath::parse(prefix, place.style()).ok();
+        }
+        self.locate.locate(place, trimmed)
+    }
+
+    /// The finding for a redirection to a pattern that starts outside the
+    /// lease's scope, from any of `places`: a write there, as for a file
+    /// named outright (found by the second independent review of the fixes
+    /// to step 12: `echo key >> ~/.ssh/authorized_key?`).
+    fn pattern_outside(&self, text: &str, places: &[AbsPath], shown: &str) -> Option<Finding> {
+        if level::decider(self.level(), Matter::WriteBeyond) == Decider::Holder {
+            return None;
+        }
+        places
+            .iter()
+            .filter_map(|place| self.pattern_base(text, place))
+            .find(|base| !self.in_scope(base))
+            .map(|base| {
+                Finding::ask(format!(
+                    "`{shown}` writes `{text}`, a pattern under `{base}`, which is outside the \
+                     workspace."
+                ))
+            })
     }
 
     /// Judges one simple command, run in `here`: how it is allowed, and
@@ -1533,9 +1771,12 @@ impl Engine {
                 // pattern could match is checked as for an argument.
                 to_pattern = true;
                 writes = true;
-                if let Some(found) =
-                    self.judge_pattern(rules, &target.text, std::slice::from_ref(here), &shown)
-                {
+                let reads = effect == Effect::Read;
+                let at = std::slice::from_ref(here);
+                if let Some(found) = self.judge_pattern(rules, &target.text, at, &shown, reads) {
+                    findings.push(found);
+                }
+                if !reads && let Some(found) = self.pattern_outside(&target.text, at, &shown) {
                     findings.push(found);
                 }
                 continue;
@@ -1555,7 +1796,7 @@ impl Engine {
             )));
         }
 
-        let named = table::read_only(part, self.shell, self.trusted);
+        let named = table::read_only(part, self.shell, self.repository_trusted);
         let standing = match (&named, rules.exec_allowance(part, self.shell)) {
             (Some(_), _) if !writes => Standing::ReadOnly,
             (Some(_), _) | (None, Some(_)) => Standing::Safe,
@@ -1612,12 +1853,14 @@ impl Engine {
             // secret makes the command one to ask about, whatever allows
             // the command. The harness's own files stay refused.
             None => {
+                let reads = !writes && self.only_reads_but_for_patterns(part);
                 findings.extend(self.judge_named(
                     rules,
                     part,
                     std::slice::from_ref(here),
                     None,
                     &shown,
+                    reads,
                 ));
             }
         }
@@ -1999,7 +2242,7 @@ fn combine(findings: Vec<Finding>, read_only: bool, storable: bool) -> Outcome {
 /// the program opens, for checking each against what is protected:
 ///
 /// - the argument itself, unless it is an option;
-/// - the value after its last `=`: `--target-directory=.git/hooks`;
+/// - the value after each `=`: `--target-directory=.git/hooks`;
 /// - for an option of one dash, every text from its third character on.
 ///   A short option takes its value attached, after one letter or after a
 ///   cluster of them (`cp -t.git/hooks`, `sort -o.git/config`, `tar
@@ -2014,8 +2257,9 @@ fn may_name(text: &str) -> Vec<&str> {
     if !text.starts_with('-') {
         texts.push(text);
     }
-    if let Some((_, value)) = text.rsplit_once('=') {
-        texts.push(value);
+    // The value after each `=`: `dd of=.github/workflows/a=b.yml`.
+    for (at, _) in text.match_indices('=') {
+        texts.push(&text[at + 1..]);
     }
     if text.starts_with('-') && !text.starts_with("--") {
         texts.extend(text.char_indices().skip(2).map(|(at, _)| &text[at..]));
@@ -2062,7 +2306,7 @@ fn is_change_of_directory(part: &Part, shell: ShellSyntax) -> bool {
 ///   can send anything.
 /// - Windows programs and PowerShell commands that start or schedule
 ///   others, or download.
-const EXACT_LINE: [&str; 136] = [
+const EXACT_LINE: [&str; 152] = [
     // Wrappers that run what follows them.
     "sudo",
     "doas",
@@ -2210,6 +2454,25 @@ const EXACT_LINE: [&str; 136] = [
     "gcloud",
     "az",
     "s3cmd",
+    // PowerShell's names for starting and fetching, and more programs that
+    // run what follows them (found by the second independent review of the
+    // fixes to step 12).
+    "iwr",
+    "irm",
+    "saps",
+    "start",
+    "icm",
+    "ii",
+    "invoke-item",
+    "start-job",
+    "py",
+    "nodejs",
+    "perf",
+    "valgrind",
+    "hyperfine",
+    "nix-shell",
+    "nix",
+    "unbuffer",
 ];
 
 /// Programs that do their work through subcommands, each with the
@@ -2227,7 +2490,7 @@ const EXACT_LINE: [&str; 136] = [
 /// clone` reach the network and take a program to run there
 /// (`--receive-pack`, `--upload-pack`); `git grep -O` starts a pager; `git
 /// init --template` copies in hooks; `go run` fetches a module and runs it.
-const SUBCOMMANDS: [(&str, &[&str]); 22] = [
+const SUBCOMMANDS: [(&str, &[&str]); 25] = [
     (
         "git",
         &[
@@ -2287,6 +2550,10 @@ const SUBCOMMANDS: [(&str, &[&str]); 22] = [
     ("systemctl", &["status"]),
     ("dnf", &[]),
     ("just", &[]),
+    // `bundle exec`, `pipenv run`, `direnv exec`: a command given.
+    ("bundle", &[]),
+    ("pipenv", &[]),
+    ("direnv", &[]),
 ];
 
 /// The allow rule an approval of this command adds: the program and its
@@ -2309,7 +2576,11 @@ fn approval_rule(part: &Part) -> Option<Rule> {
         .next()
         .unwrap_or(&program.text)
         .to_ascii_lowercase();
-    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    // `npm.cmd` is `npm`, as Windows finds it.
+    let name = [".exe", ".cmd", ".bat", ".com", ".ps1"]
+        .iter()
+        .find_map(|ending| name.strip_suffix(ending))
+        .unwrap_or(&name);
     // `python3.12` is `python`, and `ruby3.2` is `ruby`: a version after
     // the name changes nothing about what the program does with its
     // arguments.
@@ -2443,6 +2714,9 @@ mod tests {
             ("fd -x ls", Some("fd -x ls")),
             ("man ls", Some("man ls")),
             ("aws s3 ls", Some("aws s3 ls")),
+            ("npm.cmd exec x", Some("npm.cmd exec x")),
+            ("bundle exec rake", Some("bundle exec rake")),
+            ("valgrind ./app", Some("valgrind ./app")),
             (
                 "CURL.EXE http://x.example",
                 Some("CURL.EXE http://x.example"),
