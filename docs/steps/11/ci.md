@@ -24,3 +24,40 @@ Step 11 added process trees to `cortex-sandbox` (about 1,600 lines), the runner 
 - **Breaking the code fails the tests.** Forty-five rules of the step were each broken on purpose, one at a time, and the tests run: every one failed at least one test. The list is in the step's report.
 - **What the hosted runners measured of starting a command,** in the unoptimised `ci` build, 30 runs: on Windows, `cmd.exe` alone 6.7 ms, and 16.1 ms through the runner; on Linux, bash alone 1.5 ms, and 5.6 ms through the runner. The Linux figure is what led to reading less of the process table ([performance-budgets.md](../../performance-budgets.md)): the desktop, with thirty processes, had hidden what a machine with a few hundred shows.
 - **The clean build of `cortex-tools` alone,** on the desktop pinned to 4 cores: 14.1 s in the `dev` profile and 8.1 s in `release`, with 54 packages, against 13.7 to 13.8 s and 8.4 s after step 6. `cortex-sandbox` alone: 8.6 s and 5.0 s, with 27 packages, nearly all of it `cortex-base` and what that needs. No other session's run was active: the desktop's test lock lets one run at a time.
+
+## Windows CI health, 2026-11-13
+
+A job after wave 5 looked at the Windows checks: a test of `shell::cmd` stopped at 60 s in about one run in seven, the unit tier over its budget and the integration tier at it. What was found in step 11's code is in [answered.md](answered.md). This is what was measured.
+
+**The timeouts.** Five of about 35 runs of the blocking workflow on 2026-11-13 lost one `shell::cmd` test to its 60 s limit, a different test each time.
+
+| | Runs | What happened |
+|---|---|---|
+| The `cmd.exe` tests alone, repeated (`windows-try` with `count`) | 150 repeats of 8 tests (run 43429640301) | No failure. |
+| All of `cortex-tools`, repeated | 40 repeats (run 43430875016) | No failure. |
+| The whole workspace, four times in one job, nothing changed | run 43431467457 | The same test stopped at 60 s in the first two. |
+| The whole workspace with a trace printed as it happened | 24 runs in four jobs | No failure: printing hid it. |
+| The whole workspace with the trace kept in memory | run 43435383403 | One hang caught, with the cause in its trace. |
+| A command started, waited for, and the job asked at once, 120 times, on a quiet runner | six rounds in run 43435383403 | The job still listed the command 18, 49, 51, 52, 55 and 62 times. |
+| The new system test (40 exits) on the old count, 30 repeats | run 43437537149 | Failed 6 times. |
+| The same on the fix, 30 repeats | run 43437508068 | Passed every time: 1,200 exits. |
+
+**The tiers.** Hosted Windows runners come in speeds. The fastest starts a test process in 6 ms and the slowest in 12, and a tier's total follows: the same commit gave 17.0 and 22.7 s for the unit tier on two of them. So a run is compared with a run on a runner of the same speed, told by its fastest tests.
+
+| Windows tier, test time | Before | After | Runner |
+|---|---|---|---|
+| Unit, before step 13a merged (1,009 tests) | 17.0 s | 11.5 s | fast (6 ms a process) |
+| Integration, the same (848 tests) | 28.2 s | 19.5 s | fast |
+| Unit, the same commit before, on slower runners | 21.9, 22.7 s | | slow (10 to 12 ms) |
+| Integration, the same | 38.4, 40.6 s | | slow |
+| Unit, with step 13a (1,084 tests), temporary files on `C:` | | 22.0, 22.0 s | slow, one job |
+| Unit, the same, temporary files on `D:` | | 20.9, 20.4 s | the same job |
+| Integration, with step 13a (907 tests), temporary files on `C:` | | 43.5, 41.8 s | the same job |
+| Integration, the same, temporary files on `D:` | | 39.3, 39.6 s | the same job |
+| System, the same, `C:` then `D:` | | 67.3, 63.1 s, then 61.4, 61.3 s | the same job |
+
+Step 13a's own five runs, before any of this, gave 19.3 to 28.2 s for the unit tier and 35.0 to 52.0 s for the integration tier.
+
+- **What was changed:** the heaviest exhaustive tests and properties sample on a pull request and run whole in the nightly run; the decoder replays cut each stream at half as many places; `serde_json` and `sha2` are optimised in the `ci` profile; two tests made more files than they needed; the scripted server no longer has its own wake-up connection refused, which cost one test 2.0 s in half the runs; and the Windows test job's temporary directory is on the workspace's disk ([testing-and-ci.md](../../testing-and-ci.md)). No test was removed.
+- **The unit tier's floor is the start of a process.** nextest runs each test in a process of its own. On the slowest runners that is 12 ms a test: 13 s of the unit tier's 20 for 1,084 tests, before any test does anything, and 1.2 s more for every hundred tests added. After the cuts no unit test takes more than 0.25 s there, and the tier is at 20.4 to 20.9 s. **On the slowest runners the 20 s budget cannot be met by making tests faster, and 80% of it not on any but the fastest.** This is put to the owner with a recommendation in the job's report: a budget that grows with the number of tests, or a Windows budget of its own as the system tier has.
+- **What a `cortex-core` test costs,** which step 13a asked: not the product's start. Starting a core takes 0.3 to 2 ms on a Windows runner and `session/new` 9.5 to 12 ms; the owner-only access lists take 1.2 ms for the first two directories of a process and 0.3 ms after. A test's 0.11 s was a machine of its own (a home directory, configuration, the built-in catalog read in an unoptimised build), a turn, and its removal, all in the temporary directory on the slow disk: half of it went with the move to `D:`.
