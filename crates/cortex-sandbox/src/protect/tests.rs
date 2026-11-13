@@ -47,7 +47,10 @@ fn changes(scratch: &Scratch, change: impl FnOnce(&Path)) -> Vec<(String, Change
         .into_iter()
         .map(|changed| {
             let relative = changed.path.strip_prefix(&ws).unwrap();
-            (relative.display().to_string().replace('\\', "/"), changed.change)
+            (
+                relative.display().to_string().replace('\\', "/"),
+                changed.change,
+            )
         })
         .collect()
 }
@@ -103,8 +106,12 @@ fn what_was_there_before_is_kept_to_put_back() {
         .find(|changed| changed.path.ends_with("ci.yml"))
         .unwrap();
     assert_eq!(workflow.before, Before::Absent);
-    assert!(changed.iter().any(|changed| changed.path.ends_with(".github/workflows")
-        && changed.change == Change::Created));
+    assert!(
+        changed
+            .iter()
+            .any(|changed| changed.path.ends_with(".github/workflows")
+                && changed.change == Change::Created)
+    );
 }
 
 #[test]
@@ -174,7 +181,11 @@ fn protected_names_are_found_at_any_depth() {
         assert!(paths.contains(&expected), "{expected} not in {paths:?}");
     }
     // Names that only look alike are not protected.
-    assert!(!paths.iter().any(|path| path.ends_with(".git") && path.starts_with("sub")));
+    assert!(
+        !paths
+            .iter()
+            .any(|path| path.ends_with(".git") && path.starts_with("sub"))
+    );
     assert!(!paths.contains(&"lib.git"));
 }
 
@@ -188,7 +199,10 @@ fn a_link_is_compared_and_never_followed() {
         std::os::unix::fs::symlink(&target, ws.join(".git/hooks/pre-push")).unwrap();
         std::os::unix::fs::symlink(&target, ws.join("linked")).unwrap();
     });
-    assert_eq!(found, vec![(".git/hooks/pre-push".to_owned(), Change::Created)]);
+    assert_eq!(
+        found,
+        vec![(".git/hooks/pre-push".to_owned(), Change::Created)]
+    );
 }
 
 #[test]
@@ -208,7 +222,11 @@ fn past_its_limits_a_look_says_it_is_incomplete() {
     // A change to what was looked at is still found.
     fs::write(ws.join(".git/config"), "[core]\nx = 1\n").unwrap();
     let (changed, _) = watch.changes_since(&before);
-    assert!(changed.iter().any(|changed| changed.path.ends_with(".git/config")));
+    assert!(
+        changed
+            .iter()
+            .any(|changed| changed.path.ends_with(".git/config"))
+    );
 
     // Content past the limits is compared by size and times, not kept.
     let small = Limits {

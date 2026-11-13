@@ -332,10 +332,11 @@ impl Session {
         });
         let model = models.main().clone();
         let catalog_version = models.catalog_version().to_owned();
-        let (level, lease_id, title) = (
+        let (level, lease_id, title, sandbox) = (
             info.level.clone(),
             info.lease_id.clone(),
             info.title.clone(),
+            info.sandbox.clone(),
         );
         let shared = Arc::new(Shared {
             info,
@@ -354,6 +355,7 @@ impl Session {
                 models,
                 level,
                 lease_id,
+                sandbox,
                 title,
                 state: TurnState::Idle,
                 usage: cortex_protocol::usage::SessionUsage::default(),

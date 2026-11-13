@@ -47,7 +47,8 @@ pub enum Assessment {
     NotEnforcing(Unconfined),
 }
 
-/// Why commands are not confined.
+/// Why commands are not confined. The sentence a user is shown for each is
+/// the permission engine's (`cortex_policy::NoSandbox`), which this maps to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Unconfined {
     /// This build has no sandbox.
@@ -80,38 +81,12 @@ impl Support {
                     gaps,
                 }
             }
-            Self::Landlock(version) => Assessment::NotEnforcing(Unconfined::LandlockTooOld(version)),
+            Self::Landlock(version) => {
+                Assessment::NotEnforcing(Unconfined::LandlockTooOld(version))
+            }
             Self::NoLandlock => Assessment::NotEnforcing(Unconfined::NoLandlock),
             Self::NotBuilt => Assessment::NotEnforcing(Unconfined::NotBuilt),
             Self::UnsupportedSystem => Assessment::NotEnforcing(Unconfined::UnsupportedSystem),
-        }
-    }
-}
-
-impl Unconfined {
-    /// The reason in a sentence, for a status line's detail.
-    #[must_use]
-    pub fn explain(self) -> String {
-        match self {
-            Self::NotBuilt => "This build of Cortex-Harness has no sandbox, so a command that runs \
-                               is not confined."
-                .to_owned(),
-            Self::UnsupportedSystem => "Cortex-Harness has no sandbox for this operating system \
-                                        yet, so a command that runs is not confined."
-                .to_owned(),
-            Self::NoLandlock => "This kernel has no Landlock, or it is turned off, so a command \
-                                 that runs is not confined."
-                .to_owned(),
-            Self::LandlockTooOld(version) => format!(
-                "This kernel's Landlock is version {version}, and the sandbox needs version 3 \
-                 (Linux 6.2): without it a command could empty any file you can write, outside \
-                 the workspace too{}. So a command that runs is not confined.",
-                if version < 2 {
-                    ", and every rename from one directory to another would fail"
-                } else {
-                    ""
-                }
-            ),
         }
     }
 }
@@ -218,15 +193,6 @@ mod tests {
             Support::UnsupportedSystem.assess(),
             Assessment::NotEnforcing(Unconfined::UnsupportedSystem)
         );
-    }
-
-    #[test]
-    fn an_old_landlock_names_what_it_lacks() {
-        let two = Unconfined::LandlockTooOld(2).explain();
-        assert!(two.contains("version 2") && two.contains("empty any file"), "{two}");
-        assert!(!two.contains("rename"), "{two}");
-        let one = Unconfined::LandlockTooOld(1).explain();
-        assert!(one.contains("rename"), "{one}");
     }
 
     #[test]

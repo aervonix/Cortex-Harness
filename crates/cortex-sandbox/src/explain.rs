@@ -153,7 +153,10 @@ mod tests {
     fn a_refused_write_outside_the_roots_is_named() {
         let policy = policy(Network::Off);
         for (output, path) in [
-            ("touch: cannot touch '/home/u/x': Permission denied", "/home/u/x"),
+            (
+                "touch: cannot touch '/home/u/x': Permission denied",
+                "/home/u/x",
+            ),
             ("bash: /etc/hosts: Permission denied", "/etc/hosts"),
             (
                 "/bin/sh: 1: cannot create /home/u/new: Permission denied",
@@ -196,7 +199,11 @@ mod tests {
         }
         // A command that succeeded is left alone, whatever it printed.
         assert_eq!(
-            explain(&policy, Some(0), "touch: cannot touch '/etc/x': Permission denied"),
+            explain(
+                &policy,
+                Some(0),
+                "touch: cannot touch '/etc/x': Permission denied"
+            ),
             None
         );
     }
@@ -218,9 +225,14 @@ mod tests {
 
     #[test]
     fn the_launchers_own_line_says_why_the_command_did_not_run() {
-        let output = format!("{MARK} the sandbox could not be applied, so the command was not run: seccomp: x");
+        let output = format!(
+            "{MARK} the sandbox could not be applied, so the command was not run: seccomp: x"
+        );
         let line = explain(&policy(Network::Off), Some(FAILED), &output).unwrap();
-        assert!(line.contains("seccomp: x") && line.contains("not run"), "{line}");
+        assert!(
+            line.contains("seccomp: x") && line.contains("not run"),
+            "{line}"
+        );
         // The same text from a command that exited otherwise is not the
         // launcher's.
         assert_eq!(explain(&policy(Network::Full), Some(3), &output), None);

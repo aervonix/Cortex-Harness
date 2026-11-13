@@ -45,13 +45,13 @@ use cortex_base::{AbsPath, CancelToken, PathOptions, PathResolver};
 use cortex_config::{LayerKind, LoadOptions, Loaded, Override, Settings, StateDir};
 use cortex_llm::{BoxFuture, ImageError, ImageSource};
 use cortex_policy::{
-    ApprovalStore, Engine, NoSandbox, Parts, Protected, RuleSource, SandboxState, ShellSyntax,
-    SourcedRule, StartError, TrustStore, default_sandbox,
+    ApprovalStore, Engine, Parts, Protected, RuleSource, ShellSyntax, SourcedRule, StartError,
+    TrustStore, default_sandbox,
 };
 use cortex_protocol::event::{Event, Notice, SandboxNotice};
 use cortex_protocol::lease::{Budget, HardLimits, Rule};
 use cortex_protocol::model::ModelRole;
-use cortex_protocol::session::{SandboxStatus, SessionSettings};
+use cortex_protocol::session::SessionSettings;
 use cortex_protocol::{ArtifactId, ErrorData, ErrorKind, LeaseId, Plan, SessionId};
 use cortex_session::entry::{LeaseEvent, LeaseRecord, Meta};
 use cortex_session::{
@@ -72,6 +72,7 @@ use crate::events::SessionSink;
 use crate::policy::{EnginePolicy, PolicyParts};
 use crate::provider;
 use crate::redact::LogRedactor;
+use crate::sandbox::{self, SessionSandbox, Temp, status_of};
 use crate::shell_cache;
 use crate::store::{Disk, Hooks, Kept, LogStore, SharedLog};
 use cortex_tools::shell::ShellKind;
@@ -153,6 +154,7 @@ pub(crate) struct Assembled {
     pub(crate) hooks: Arc<Hooks>,
     pub(crate) policy: Arc<EnginePolicy>,
     pub(crate) board: Arc<PlanBoard>,
+    pub(crate) sandbox: Arc<SessionSandbox>,
     pub(crate) template: EngineTemplate,
     pub(crate) loaded: Arc<Loaded>,
     pub(crate) images: Arc<dyn ImageSource>,
@@ -438,7 +440,7 @@ fn engine_parts(
             .and_then(resolve_dir)
             .map_or_else(|| entry.clone(), |resolved| resolved.as_str().to_owned())
     };
-    let temporary = std::env::temp_dir().join(format!("cortex-harness-{session}"));
+    let temporary = sandbox::temp_path(session);
     let mut writable: Vec<String> = resolve_dir(&temporary)
         .map(|path| path.as_str().to_owned())
         .into_iter()
@@ -490,12 +492,12 @@ fn engine_parts(
         level: settings.permissions.mode.clone(),
         rules,
         approved,
-        sandbox_policy: default_sandbox(&root, &writable, &protect),
-        sandbox: SandboxState::NotEnforcing(if settings.sandbox.enabled {
-            NoSandbox::NotBuilt
-        } else {
-            NoSandbox::TurnedOff
-        }),
+        sandbox_policy: {
+            let mut policy = default_sandbox(&root, &writable, &protect);
+            policy.network = settings.sandbox.network;
+            policy
+        },
+        sandbox: inner.sandbox.state(settings.sandbox.enabled).0,
         models: Vec::new(),
         budget: budget(&settings.limits.session),
         limits: HardLimits::default(),
@@ -954,6 +956,36 @@ pub(crate) fn assemble(
     let lease = engine.lease().clone();
     let sandbox_notice = engine.sandbox_notice();
     let level = engine.level().clone();
+
+    // ------------------------------------------------------- the sandbox
+    let (state, enforcing_with) = inner.sandbox.state(loaded.settings.sandbox.enabled);
+    let temp_path = resolve_dir(&sandbox::temp_path(&id))
+        .map_or_else(|| sandbox::temp_path(&id), |path| path.to_fs_path());
+    let made = match sandbox::make_temp(&temp_path) {
+        Ok(_) => true,
+        Err(failure) => {
+            told.push(format!(
+                "The session's private temporary directory could not be made, so commands are \
+                 not given one: {failure}"
+            ));
+            false
+        }
+    };
+    let landlock = enforcing_with.as_ref().map(|(landlock, _)| *landlock);
+    if let Some((_, gaps)) = &enforcing_with {
+        told.extend(gaps.iter().map(|gap| format!("sandbox: {gap}")));
+    }
+    let sandbox = Arc::new(SessionSandbox::new(
+        &inner.sandbox,
+        state,
+        landlock,
+        &level,
+        &lease.grant.sandbox,
+        Temp {
+            path: temp_path,
+            made,
+        },
+    ));
     let policy = Arc::new(EnginePolicy::new(PolicyParts {
         engine,
         clients: Arc::clone(&inner.clients),
@@ -962,7 +994,7 @@ pub(crate) fn assemble(
         timer: Arc::clone(&options.timer),
         timeout: options.approval_timeout,
         fail_on_denial: options.fail_on_denial,
-        sandboxed: false,
+        sandboxed: sandbox.confines(),
     }));
 
     // ------------------------------------------------------------ the tools
@@ -999,9 +1031,7 @@ pub(crate) fn assemble(
             repository_trusted,
         };
         let mut tool = ShellTool::new(shell, config).with_runner(runner(inner));
-        if let Some(launcher) = &options.launcher {
-            tool = tool.with_launcher(Arc::clone(launcher));
-        }
+        tool = tool.with_launcher(Arc::clone(&sandbox) as Arc<dyn cortex_tools::process::Launcher>);
         if let Some(inherited) = &options.shell_env {
             tool = tool.with_inherited_env(inherited.iter().cloned());
         }
@@ -1075,7 +1105,13 @@ pub(crate) fn assemble(
         parent,
         level,
         lease_id: Some(lease_id),
-        sandbox: SandboxStatus::Off,
+        // Nothing is confined at `unrestricted`, wherever the sandbox
+        // enforces.
+        sandbox: if sandbox.confines() {
+            cortex_protocol::session::SandboxStatus::Enforcing
+        } else {
+            cortex_protocol::session::SandboxStatus::Off
+        },
     };
     let ledger = Ledger::new(Arc::clone(&clock))
         .with_account(Account::for_lease(&lease, Arc::clone(&clock)))
@@ -1110,7 +1146,7 @@ pub(crate) fn assemble(
     if let Some(message) = sandbox_notice {
         notices.push(Event::Notice(Notice::Sandbox(SandboxNotice {
             message,
-            status: SandboxStatus::Off,
+            status: status_of(state),
         })));
     }
     notices.extend(told.into_iter().map(|message| {
@@ -1124,6 +1160,7 @@ pub(crate) fn assemble(
         hooks,
         policy,
         board,
+        sandbox,
         template,
         loaded: Arc::clone(&loaded),
         images,

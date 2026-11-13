@@ -203,6 +203,7 @@ fn autonomous_is_refused_where_the_sandbox_does_not_enforce() {
         NoSandbox::NotBuilt,
         NoSandbox::UnsupportedSystem,
         NoSandbox::NoLandlock,
+        NoSandbox::LandlockTooOld(2),
         NoSandbox::TurnedOff,
     ] {
         let mut wanted = parts();
@@ -215,7 +216,7 @@ fn autonomous_is_refused_where_the_sandbox_does_not_enforce() {
         assert_eq!(data.code, code::SANDBOX_REQUIRED);
         assert!(data.message.contains("`autonomous`"), "{}", data.message);
         assert!(data.message.contains("`supervised`"), "{}", data.message);
-        assert!(data.message.contains(why.explain()), "{}", data.message);
+        assert!(data.message.contains(&why.explain()), "{}", data.message);
 
         // The other levels start, and say plainly that nothing is confined.
         for level in [Level::ReadOnly, Level::Supervised, Level::Unrestricted] {

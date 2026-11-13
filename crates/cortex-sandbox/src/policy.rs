@@ -387,18 +387,18 @@ mod tests {
 
     #[test]
     fn an_unknown_field_or_value_refuses_the_whole_policy() {
-        refused(
-            |text| text.replace("end\0", "share\0/x\0end\0"),
-            "`share`",
-        );
+        refused(|text| text.replace("end\0", "share\0/x\0end\0"), "`share`");
         refused(|text| text.replace("off", "loopback"), "`loopback`");
-        refused(|text| text.replace("landlock\x006", "landlock\x0042"), "`42`");
-        refused(|text| text.replace("landlock\x006", "landlock\x000"), "`0`");
-        refused(|text| text.replace("read\0all", "read\0most"), "not absolute");
         refused(
-            |text| text.replacen("\x001\0", "\x002\0", 1),
-            "version `2`",
+            |text| text.replace("landlock\x006", "landlock\x0042"),
+            "`42`",
         );
+        refused(|text| text.replace("landlock\x006", "landlock\x000"), "`0`");
+        refused(
+            |text| text.replace("read\0all", "read\0most"),
+            "not absolute",
+        );
+        refused(|text| text.replacen("\x001\0", "\x002\0", 1), "version `2`");
     }
 
     #[test]
@@ -411,7 +411,10 @@ mod tests {
             |text| text.replace("end\0", "read\0all\0end\0"),
             "given twice",
         );
-        refused(|text| text.replace("network\0off\0", ""), "`network` is missing");
+        refused(
+            |text| text.replace("network\0off\0", ""),
+            "`network` is missing",
+        );
         refused(
             |text| text.replace("landlock\x006\0", ""),
             "`landlock` is missing",

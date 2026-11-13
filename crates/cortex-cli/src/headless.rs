@@ -620,6 +620,13 @@ fn start_core(plan: &Plan) -> Result<Core, OpError> {
     options.fail_on_denial = run.fail_on_denial;
     options.system_append.clone_from(&run.system_append);
     options.guard.clone_from(&plan.guard);
+    // The same executable, under the other hidden subcommand: the sandbox
+    // launcher every command is started through where the sandbox
+    // enforces.
+    options.launcher = plan
+        .guard
+        .as_ref()
+        .map(|(exe, _)| (exe.clone(), vec![OsString::from(crate::args::SANDBOX)]));
     options.cancel = CancelToken::new();
     if let Some(log) = &plan.log {
         let log = log.clone();

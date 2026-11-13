@@ -396,7 +396,10 @@ impl Look {
             .filter_map(|child| child.file_name().and_then(|name| name.to_str()))
             .collect();
         // A bare repository made of plain files.
-        if ["HEAD", "objects", "refs"].iter().all(|name| names.contains(name)) {
+        if ["HEAD", "objects", "refs"]
+            .iter()
+            .all(|name| names.contains(name))
+        {
             self.record_git(directory);
         }
         for child in &children {

@@ -64,6 +64,12 @@ fn main() -> ExitCode {
         cortex_sandbox::tree::run_guard();
         return ExitCode::SUCCESS;
     }
+    // The sandbox launcher: it confines itself and becomes the command, and
+    // returns only when it could not.
+    if rest.first().is_some_and(|first| first == args::SANDBOX) {
+        let code = cortex_sandbox::launch::run(rest.into_iter().skip(1).collect());
+        return ExitCode::from(u8::try_from(code).unwrap_or(1));
+    }
 
     let command = match args::parse(rest) {
         Ok(command) => command,

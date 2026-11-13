@@ -75,8 +75,10 @@ pub(crate) struct EnginePolicy {
     /// takes.
     timeout: Option<Duration>,
     fail_on_denial: bool,
-    /// Whether commands run confined: what an approval's detail says.
-    sandboxed: bool,
+    /// Whether commands run confined: what an approval's detail says. It
+    /// follows the session's level, since nothing is confined at
+    /// `unrestricted`.
+    sandboxed: std::sync::atomic::AtomicBool,
     denials: Mutex<Vec<PermissionDenial>>,
 }
 
@@ -111,7 +113,7 @@ impl EnginePolicy {
             timer: parts.timer,
             timeout: parts.timeout,
             fail_on_denial: parts.fail_on_denial,
-            sandboxed: parts.sandboxed,
+            sandboxed: std::sync::atomic::AtomicBool::new(parts.sandboxed),
             denials: Mutex::new(Vec::new()),
         }
     }
@@ -119,6 +121,12 @@ impl EnginePolicy {
     /// The engine in force.
     pub(crate) fn engine(&self) -> Arc<Engine> {
         Arc::clone(&self.engine.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Says whether commands run confined from now on.
+    pub(crate) fn set_sandboxed(&self, sandboxed: bool) {
+        self.sandboxed
+            .store(sandboxed, std::sync::atomic::Ordering::Release);
     }
 
     /// Puts another engine in force: the session's level changed.
@@ -320,7 +328,10 @@ impl Policy for EnginePolicy {
                 call_id: call.call_id.clone(),
                 tool: call.spec.name.clone(),
                 summary: call.plan.summary.clone(),
-                detail: detail(&call, self.sandboxed),
+                detail: detail(
+                    &call,
+                    self.sandboxed.load(std::sync::atomic::Ordering::Acquire),
+                ),
                 choices: question.choices(),
                 reasons: question.reasons.clone(),
                 adds: question

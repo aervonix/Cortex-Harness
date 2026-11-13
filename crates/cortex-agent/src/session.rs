@@ -139,6 +139,9 @@ pub(crate) struct Inbox {
     /// The level of the lease in force, and the lease.
     pub(crate) level: Level,
     pub(crate) lease_id: Option<LeaseId>,
+    /// Whether the sandbox confines the session's commands: it follows the
+    /// level, since nothing is confined at `unrestricted`.
+    pub(crate) sandbox: cortex_protocol::session::SandboxStatus,
     /// The session's title.
     pub(crate) title: Option<String>,
     pub(crate) state: TurnState,
@@ -190,7 +193,7 @@ impl Shared {
             parent: self.info.parent.clone(),
             level: inbox.level.clone(),
             lease_id: inbox.lease_id.clone(),
-            sandbox: self.info.sandbox.clone(),
+            sandbox: inbox.sandbox.clone(),
             speed: inbox.speeds.session.clone(),
             roles: inbox
                 .models
@@ -466,6 +469,16 @@ impl SessionHandle {
         if inbox.level != level || inbox.lease_id != lease_id {
             inbox.level = level;
             inbox.lease_id = lease_id;
+            self.shared.emit_updated(&inbox);
+        }
+    }
+
+    /// Records whether the sandbox confines the session's commands from
+    /// now on: what the session's state reports.
+    pub fn set_sandbox(&self, sandbox: cortex_protocol::session::SandboxStatus) {
+        let mut inbox = self.shared.lock();
+        if inbox.sandbox != sandbox {
+            inbox.sandbox = sandbox;
             self.shared.emit_updated(&inbox);
         }
     }

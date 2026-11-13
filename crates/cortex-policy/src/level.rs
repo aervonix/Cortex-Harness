@@ -176,6 +176,9 @@ pub enum NoSandbox {
     UnsupportedSystem,
     /// The kernel has no Landlock, or it is turned off.
     NoLandlock,
+    /// The kernel's Landlock is older than the sandbox needs: this version
+    /// (`docs/decisions/0032-what-the-linux-sandbox-needs.md`).
+    LandlockTooOld(u8),
     /// The user turned the sandbox off (`sandbox.enabled = false`).
     TurnedOff,
 }
@@ -184,24 +187,32 @@ impl NoSandbox {
     /// The reason in a sentence, for the status line's detail and for the
     /// refusal of a level.
     #[must_use]
-    pub fn explain(self) -> &'static str {
+    pub fn explain(self) -> String {
         match self {
             Self::NotBuilt => {
-                "This version of Cortex-Harness has no sandbox yet, so a command that runs is not \
-                 confined."
+                "This build of Cortex-Harness has no sandbox, so a command that runs \
+                               is not confined."
+                    .to_owned()
             }
-            Self::UnsupportedSystem => {
-                "Cortex-Harness has no sandbox for this operating system yet, so a command that \
-                 runs is not confined."
-            }
-            Self::NoLandlock => {
-                "This kernel has no Landlock, or it is turned off, so a command that runs is not \
-                 confined."
-            }
-            Self::TurnedOff => {
-                "The sandbox is turned off in configuration (`sandbox.enabled = false`), so a \
-                 command that runs is not confined."
-            }
+            Self::UnsupportedSystem => "Cortex-Harness has no sandbox for this operating system \
+                                        yet, so a command that runs is not confined."
+                .to_owned(),
+            Self::NoLandlock => "This kernel has no Landlock, or it is turned off, so a command \
+                                 that runs is not confined."
+                .to_owned(),
+            Self::LandlockTooOld(version) => format!(
+                "This kernel's Landlock is version {version}, and the sandbox needs version 3 \
+                 (Linux 6.2): without it a command could empty any file you can write, outside \
+                 the workspace too{}. So a command that runs is not confined.",
+                if version < 2 {
+                    ", and every rename from one directory to another would fail"
+                } else {
+                    ""
+                }
+            ),
+            Self::TurnedOff => "The sandbox is turned off in configuration (`sandbox.enabled = \
+                                false`), so a command that runs is not confined."
+                .to_owned(),
         }
     }
 }
@@ -379,11 +390,24 @@ mod tests {
     }
 
     #[test]
+    fn an_old_landlock_names_what_it_lacks() {
+        let two = NoSandbox::LandlockTooOld(2).explain();
+        assert!(
+            two.contains("version 2") && two.contains("empty any file"),
+            "{two}"
+        );
+        assert!(!two.contains("rename"), "{two}");
+        let one = NoSandbox::LandlockTooOld(1).explain();
+        assert!(one.contains("rename"), "{one}");
+    }
+
+    #[test]
     fn autonomous_is_refused_where_the_sandbox_does_not_enforce() {
         for why in [
             NoSandbox::NotBuilt,
             NoSandbox::UnsupportedSystem,
             NoSandbox::NoLandlock,
+            NoSandbox::LandlockTooOld(2),
             NoSandbox::TurnedOff,
         ] {
             let error =
@@ -400,7 +424,7 @@ mod tests {
             assert_eq!(data.kind, ErrorKind::Permission);
             // The refusal names the level, says why, and says what to use.
             assert!(data.message.contains("`autonomous`"), "{}", data.message);
-            assert!(data.message.contains(why.explain()), "{}", data.message);
+            assert!(data.message.contains(&why.explain()), "{}", data.message);
             assert!(data.message.contains("`supervised`"), "{}", data.message);
             // The levels that do not depend on the sandbox still start.
             for level in [Level::ReadOnly, Level::Supervised, Level::Unrestricted] {
@@ -443,7 +467,7 @@ mod tests {
         let off = SandboxState::NotEnforcing(NoSandbox::NotBuilt);
         let supervised = sandbox_notice(&Level::Supervised, off).unwrap();
         assert!(supervised.starts_with("sandbox: off."), "{supervised}");
-        assert!(supervised.contains("no sandbox yet"), "{supervised}");
+        assert!(supervised.contains("has no sandbox"), "{supervised}");
         assert!(
             supervised.contains("`autonomous` is not available"),
             "{supervised}"

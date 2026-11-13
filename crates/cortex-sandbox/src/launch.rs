@@ -224,7 +224,9 @@ fn become_command(
     _arguments: &[OsString],
     _temp: Option<&Path>,
 ) -> Result<Never, Failure> {
-    Err(Failure::sandbox("there is no sandbox launcher on this system"))
+    Err(Failure::sandbox(
+        "there is no sandbox launcher on this system",
+    ))
 }
 
 /// Marks every descriptor above the standard three to be closed when the

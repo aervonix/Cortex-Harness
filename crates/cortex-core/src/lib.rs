@@ -35,6 +35,7 @@ mod policy;
 mod provider;
 mod redact;
 mod rules;
+mod sandbox;
 mod shell_cache;
 mod store;
 

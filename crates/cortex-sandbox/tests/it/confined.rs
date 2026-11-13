@@ -145,7 +145,14 @@ fn run_with(
 fn sh(place: &Place, policy: Policy, script: &str) -> Ran {
     let launcher = launcher(policy);
     let stdin = launcher.policy().encode();
-    run_with(&launcher, &stdin, &[], &place.ws(), "/bin/sh", &["-c", script])
+    run_with(
+        &launcher,
+        &stdin,
+        &[],
+        &place.ws(),
+        "/bin/sh",
+        &["-c", script],
+    )
 }
 
 #[test]
@@ -209,7 +216,10 @@ fn sys_a_read_policy_keeps_reads_to_its_roots() {
     );
     let ran = sh(&place, policy, &script);
     assert!(ran.output.contains("workspace"), "{ran:?}");
-    assert!(ran.output.contains("refused") && !ran.output.contains("keep me"), "{ran:?}");
+    assert!(
+        ran.output.contains("refused") && !ran.output.contains("keep me"),
+        "{ran:?}"
+    );
 }
 
 /// Runs this binary as a network helper inside the sandbox.
@@ -273,7 +283,11 @@ fn sys_with_the_network_off_no_socket_reaches_anything() {
     }
     for (kind, at) in &cases {
         let ran = net(&place, Network::Off, landlock, &[kind, at]);
-        assert_eq!(verdict(&ran), "refused PermissionDenied", "{kind} {at}: {ran:?}");
+        assert_eq!(
+            verdict(&ran),
+            "refused PermissionDenied",
+            "{kind} {at}: {ran:?}"
+        );
     }
     // A pair of connected Unix sockets reaches only the command's own
     // processes, and netlink only the kernel: both stay.
@@ -285,7 +299,11 @@ fn sys_with_the_network_off_no_socket_reaches_anything() {
     // With the network on, the same connections are made.
     for (kind, at) in [("tcp", tcp_at.as_str()), ("unix", unix_at.as_str())] {
         let ran = net(&place, Network::Full, landlock, &[kind, at]);
-        assert_eq!(verdict(&ran), "ok", "{kind} {at} with the network on: {ran:?}");
+        assert_eq!(
+            verdict(&ran),
+            "ok",
+            "{kind} {at} with the network on: {ran:?}"
+        );
     }
 }
 
@@ -308,7 +326,10 @@ fn sys_a_signal_to_a_process_outside_the_sandbox_is_refused() {
     let ran = sh(&place, place.policy(Network::Off, landlock), &script);
     let _ = outsider.kill();
     let _ = outsider.wait();
-    assert!(ran.output.contains("refused") && !ran.output.contains("reached"), "{ran:?}");
+    assert!(
+        ran.output.contains("refused") && !ran.output.contains("reached"),
+        "{ran:?}"
+    );
     // Its own processes it can still signal.
     assert!(ran.output.contains("own"), "{ran:?}");
 }
@@ -326,7 +347,10 @@ fn sys_a_new_user_namespace_is_refused() {
         place.policy(Network::Off, landlock),
         "unshare --user true && echo made || echo refused",
     );
-    assert!(ran.output.contains("refused") && !ran.output.contains("made"), "{ran:?}");
+    assert!(
+        ran.output.contains("refused") && !ran.output.contains("made"),
+        "{ran:?}"
+    );
 }
 
 #[test]
@@ -337,9 +361,19 @@ fn sys_a_policy_that_is_not_understood_runs_nothing() {
     let mut stdin = launcher.policy().encode();
     let at = stdin.len() - 4;
     stdin.splice(at..at, b"share\0/\0".iter().copied());
-    let ran = run_with(&launcher, &stdin, &[], &place.ws(), "/bin/sh", &["-c", "echo ran > ran"]);
+    let ran = run_with(
+        &launcher,
+        &stdin,
+        &[],
+        &place.ws(),
+        "/bin/sh",
+        &["-c", "echo ran > ran"],
+    );
     assert_eq!(ran.code, Some(FAILED), "{ran:?}");
-    assert!(ran.output.contains(MARK) && ran.output.contains("`share`"), "{ran:?}");
+    assert!(
+        ran.output.contains(MARK) && ran.output.contains("`share`"),
+        "{ran:?}"
+    );
     assert!(!place.ws().join("ran").exists());
     let line = launcher.explain(ran.code, &ran.output).expect("explained");
     assert!(line.contains("not run"), "{line}");
