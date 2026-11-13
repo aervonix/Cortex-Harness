@@ -425,7 +425,9 @@ const NAMES: [&str; 4] = ["a.txt", "src/b.rs", "docs/c.md", "new/d.txt"];
 fn property_undo_restores_the_workspace_whatever_the_tools_did() {
     cases::check(
         "undo_restores_the_workspace",
-        25,
+        // Each case is a session, a workspace and a runtime of its own:
+        // few cases here, and fifty times as many in the nightly run.
+        12,
         |rng: &mut SeededRng| {
             // Three files to start with, with either kind of line ending.
             let files: Vec<String> = (0..3)

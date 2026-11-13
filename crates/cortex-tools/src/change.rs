@@ -706,11 +706,21 @@ mod tests {
     #[test]
     fn a_file_of_too_many_lines_is_refused_before_its_lines_are_listed() {
         let bench = Bench::new("lines");
-        let target = bench.seen("blank.txt", &vec![b'\n'; MAX_LINES + 1]);
-        let Ok(Found::File(existing)) = target.find(&bench.env) else {
-            panic!("it opens");
+        let target = bench.target("blank.txt");
+        // The content as it would have been read: no file of this size has
+        // to be written for the test.
+        let read = |lines: usize| Existing {
+            bytes: vec![b'\n'; lines],
+            hash: ContentHash::of(b""),
+            stamp: Stamp {
+                len: lines as u64,
+                modified: None,
+                identity: None,
+            },
         };
-        let refused = target.text(&existing).expect_err("too many lines");
+        let refused = target
+            .text(&read(MAX_LINES + 1))
+            .expect_err("too many lines");
         assert_eq!(
             refused.text(),
             "`blank.txt` has 2,000,001 lines, and the editing tools change files of up to \
@@ -718,11 +728,7 @@ mod tests {
              `sed`, or a short script)."
         );
         // At the bound it is text like any other.
-        let target = bench.seen("fits.txt", &vec![b'\n'; MAX_LINES]);
-        let Ok(Found::File(existing)) = target.find(&bench.env) else {
-            panic!("it opens");
-        };
-        assert!(target.text(&existing).is_ok());
+        assert!(target.text(&read(MAX_LINES)).is_ok());
     }
 
     /// The token is asked once, before the write. A call cancelled while it
