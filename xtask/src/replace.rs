@@ -82,7 +82,8 @@ impl Request {
 }
 
 fn read(path: &str) -> Result<String> {
-    let text = fs::read_to_string(path).map_err(|error| format!("could not read {path}: {error}"))?;
+    let text =
+        fs::read_to_string(path).map_err(|error| format!("could not read {path}: {error}"))?;
     // A file written for the purpose ends with a line break that is not
     // part of the code.
     Ok(text.strip_suffix('\n').unwrap_or(&text).to_owned())
@@ -204,7 +205,10 @@ fn budget(tier: Tier, os: Os) -> f64 {
         );
         for source in [BEFORE_FORMAT, AFTER_FORMAT] {
             let (edited, shown) = edit(source, &asked, "budget.rs").unwrap();
-            assert!(edited.contains("(Tier::System, Os::Windows) => 120.0,"), "{edited}");
+            assert!(
+                edited.contains("(Tier::System, Os::Windows) => 120.0,"),
+                "{edited}"
+            );
             assert!(!edited.contains("90.0"), "{edited}");
             // Only the match changed.
             assert_eq!(edited.len(), source.len() + 1, "{edited}");
@@ -238,22 +242,42 @@ fn budget(tier: Tier, os: Os) -> f64 {
         let mut second = request("Tier::", "Level::");
         second.occurrence = Some(2);
         let (edited, _) = edit(AFTER_FORMAT, &second, "budget.rs").unwrap();
-        assert!(edited.contains("(Tier::Unit, _)") && edited.contains("(Level::System"), "{edited}");
+        assert!(
+            edited.contains("(Tier::Unit, _)") && edited.contains("(Level::System"),
+            "{edited}"
+        );
 
         let mut inside = request("match", "match");
         inside.within = Some("cost".to_owned());
         let error = edit(AFTER_FORMAT, &inside, "budget.rs").unwrap_err();
         assert!(error.contains("no item called `cost`"), "{error}");
 
-        let same = edit(AFTER_FORMAT, &request("_ => 60.0", "_  =>  60.0"), "budget.rs");
+        let same = edit(
+            AFTER_FORMAT,
+            &request("_ => 60.0", "_  =>  60.0"),
+            "budget.rs",
+        );
         assert!(same.unwrap_err().contains("the same code"));
     }
 
     #[test]
     fn a_request_is_read() {
-        let strings = |words: &[&str]| words.iter().map(|word| (*word).to_owned()).collect::<Vec<_>>();
+        let strings = |words: &[&str]| {
+            words
+                .iter()
+                .map(|word| (*word).to_owned())
+                .collect::<Vec<_>>()
+        };
         let asked = Request::parse(&strings(&[
-            "src/a.rs", "--from", "x + 1", "--to", "x + 2", "--in", "f", "--occurrence", "2",
+            "src/a.rs",
+            "--from",
+            "x + 1",
+            "--to",
+            "x + 2",
+            "--in",
+            "f",
+            "--occurrence",
+            "2",
             "--dry-run",
         ]))
         .unwrap();
@@ -266,8 +290,14 @@ fn budget(tier: Tier, os: Os) -> f64 {
             (&["--from", "x", "--to", "y"][..], "which file?"),
             (&["a.rs", "--to", "y"], "--from"),
             (&["a.rs", "--from", "x"], "--to"),
-            (&["a.rs", "b.rs", "--from", "x", "--to", "y"], "one file at a time"),
-            (&["a.rs", "--from", "x", "--to", "y", "--occurrence", "0"], "a number from 1"),
+            (
+                &["a.rs", "b.rs", "--from", "x", "--to", "y"],
+                "one file at a time",
+            ),
+            (
+                &["a.rs", "--from", "x", "--to", "y", "--occurrence", "0"],
+                "a number from 1",
+            ),
             (&["a.rs", "--from"], "needs a value"),
         ] {
             let error = Request::parse(&strings(words)).unwrap_err();

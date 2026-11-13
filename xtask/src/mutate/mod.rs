@@ -537,9 +537,8 @@ pub fn far_over(seconds: f64, budget: f64) -> bool {
 
     #[test]
     fn jobs_are_a_number_from_one_to_sixteen() {
-        let jobs = |text: &str| {
-            Request::parse(&strings(&["--jobs", text])).map(|request| request.jobs)
-        };
+        let jobs =
+            |text: &str| Request::parse(&strings(&["--jobs", text])).map(|request| request.jobs);
         assert_eq!(jobs("4"), Ok(4));
         assert_eq!(jobs("16"), Ok(16));
         assert_eq!(Request::parse(&strings(&["-j", "2"])).unwrap().jobs, 2);

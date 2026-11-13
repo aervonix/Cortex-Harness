@@ -19,6 +19,7 @@
 mod approvals;
 mod bypasses;
 mod commands;
+mod decide;
 mod differential;
 mod files;
 mod levels;

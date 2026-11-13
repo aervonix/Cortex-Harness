@@ -20,14 +20,15 @@ use std::process::ExitCode;
 mod alias;
 mod checks;
 mod compare;
+mod decide;
 mod junit;
 mod load;
 mod mutate;
 mod nonblocking;
 mod outside;
-mod replace;
 mod owner_guard;
 mod perf;
+mod replace;
 mod rules;
 mod runs;
 mod schema;
@@ -130,6 +131,9 @@ By hand only, against a real provider (never in CI)
 
 Working on the code
   fmt               Format the workspace.
+  decide [--level L] [--rule RULE]... [--untrusted] [--] COMMAND...
+                    What the permission engine decides of a shell command,
+                    with its reasons. `decide --help` has the rest.
   replace FILE --from CODE --to CODE [--in ITEM] [--occurrence N] [--dry-run]
                     Replace Rust code found by its tokens, so the match holds
                     however rustfmt laid it out. It must be there once.
@@ -180,6 +184,7 @@ fn run(command: &str, rest: &[String]) -> Result<()> {
         "rules" => checks::rules(),
         "links" => checks::links(),
         "fmt" => checks::fmt(),
+        "decide" => decide::run(rest),
         "gen" => generate(),
         "schema" => schema::run(rest),
         "size" => nonblocking::size(rest),
