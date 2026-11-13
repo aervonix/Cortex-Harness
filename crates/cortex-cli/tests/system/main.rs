@@ -356,15 +356,6 @@ pub fn jsonl(stdout: &str) -> Vec<Value> {
     lines
 }
 
-/// Waits until the server has received `count` requests.
-pub fn until_requests(machine: &Machine, count: usize) {
-    cortex_testkit::children::until(
-        std::time::Duration::from_secs(30),
-        "the request reaches the server",
-        || machine.server.requests().len() >= count,
-    );
-}
-
 /// Prints a run's streams when a test that started it fails later.
 pub fn shown(run: &Run) -> String {
     format!("stdout:\n{}\nstderr:\n{}", run.stdout, run.stderr)

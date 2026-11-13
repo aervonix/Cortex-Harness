@@ -164,8 +164,10 @@ impl ServerReply {
 
     /// Sends nothing more and keeps the connection open until the client
     /// closes it, then opens `closed`. This is a stalled response, and it
-    /// is how a test sees that a cancelled request really hung up. Dropping
-    /// the server ends the hold too, and opens the gate.
+    /// is how a test sees that a cancelled request really hung up. A client
+    /// that hangs up before the script gets here, so that an earlier write
+    /// fails, opens the gate too. Dropping the server ends the hold, and
+    /// opens the gate.
     #[must_use]
     pub fn hang_until_closed(mut self, closed: &Gate) -> Self {
         self.steps.push(Step::Hang(closed.clone()));
@@ -367,7 +369,6 @@ fn accept(listener: &TcpListener, shared: &Arc<Shared>) {
 fn serve(connection: &TcpStream, shared: &Shared) -> std::io::Result<()> {
     connection.set_read_timeout(Some(STOP_CHECK))?;
     let mut reader = BufReader::new(UntilStopped { connection, shared });
-    let mut writer = connection;
 
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -411,6 +412,31 @@ fn serve(connection: &TcpStream, shared: &Shared) -> std::io::Result<()> {
         ServerReply::status(500).send("the scripted server has no reply left for this request")
     });
 
+    // A client may hang up before the script gets to `hang_until_closed`:
+    // a process stopped in the instant after its request arrived. It has
+    // closed the connection all the same, and a write to it fails, so the
+    // gate is opened then. Without that, a test that waits for the gate
+    // waits out its limit for a hang-up that did happen.
+    let hang = reply.steps.iter().find_map(|step| match step {
+        Step::Hang(closed) => Some(closed.clone()),
+        _ => None,
+    });
+    let played = play(reply, &mut reader, connection, shared);
+    if played.is_err()
+        && let Some(closed) = hang
+    {
+        closed.open();
+    }
+    played
+}
+
+/// Plays `reply` on a connection whose request has been read.
+fn play(
+    reply: ServerReply,
+    reader: &mut impl Read,
+    mut writer: &TcpStream,
+    shared: &Shared,
+) -> std::io::Result<()> {
     if let Some(hold) = &reply.hold
         && !shared.wait_for(hold)
     {
@@ -545,6 +571,34 @@ mod tests {
         }
         assert!(!closed.is_open(), "the server is holding the connection");
         drop(connection);
+        assert!(closed.wait(PATIENCE), "the server saw the client hang up");
+    }
+
+    /// What a process stopped by a signal does: it hangs up after its
+    /// request arrived and before the response got to its hold.
+    #[test]
+    fn a_client_that_hangs_up_before_the_hold_still_opens_its_gate() {
+        let server = SseServer::start();
+        let (answered, go_on, closed) = (Gate::new(), Gate::new(), Gate::new());
+        server.push(
+            ServerReply::sse()
+                .mark(&answered)
+                .wait(&go_on)
+                .send("data: never read\n\n")
+                .hang_until_closed(&closed),
+        );
+        let mut connection = TcpStream::connect(server.address).unwrap();
+        connection
+            .write_all(b"POST / HTTP/1.1\r\nContent-Length: 0\r\n\r\n")
+            .unwrap();
+        assert!(answered.wait(PATIENCE), "the server sent the head");
+        // One byte of the head is read and the rest is left, so closing is
+        // a reset, and the server's next write fails rather than reaching
+        // the hold.
+        let mut first = [0u8; 1];
+        connection.read_exact(&mut first).unwrap();
+        drop(connection);
+        go_on.open();
         assert!(closed.wait(PATIENCE), "the server saw the client hang up");
     }
 
