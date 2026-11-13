@@ -269,6 +269,9 @@ name = "cortex-sandbox"
 version = "0.0.0"
 dependencies = [
  "cortex-base",
+ "cortex-testkit",
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -315,6 +318,7 @@ version = "0.0.0"
 dependencies = [
  "cortex-base",
  "cortex-protocol",
+ "cortex-sandbox",
  "cortex-testkit",
  "globset",
  "grep-matcher",

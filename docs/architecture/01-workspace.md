@@ -11,8 +11,8 @@ All crates use the `cortex-` prefix, live under `crates/`, and set `publish = fa
 | `cortex-protocol` | The public data model: `Op`, `Event`, items, messages, parts, usage, stop reasons, error codes, RPC envelopes. Serde types only, no logic. JSON Schema generation behind a feature. | none | serde, serde_json (schemars behind `schema`) |
 | `cortex-base` | Small shared primitives: error kinds, `Secret`, ids, clock and RNG traits with their fakes, cancellation, workspace paths, text utilities (width, wrapping, truncation), atomic file writes, owner-only files and directories on both OSes, content hashes, the newline-delimited JSON reader and writer, and the modification-time check behind hot-reload. No async runtime: what touches the file system blocks and is called on the blocking pool, and the cancellation tokens are built on the standard library's wakers. One Windows-only module, `private::windows`, may use `unsafe`, to set access lists ([decision 0029](../decisions/0029-owner-only-files-on-windows.md)); the rest of the crate may not. | protocol | unicode-width, unicode-segmentation, thiserror, sha2 (none of them heavy; serde and serde_json come with the protocol crate); windows-sys on Windows |
 | `cortex-llm` | Provider abstraction: model request and model event types, the `Protocol` and `Transport` traits, SSE parser, retry classification and backoff, speed-tier cooldowns, usage normalisation, the model catalog. One module per protocol. Without the `http` feature it links no network stack and no async runtime: its waits are on a timer trait. | protocol, base | reqwest, rustls and tokio (all behind `http`); futures-core, serde, serde_json, thiserror; toml in its build script only |
-| `cortex-tools` | Built-in tools and the `Tool` trait, the output policy, file snapshots, the process runner for shell commands, and the registry of dynamic tools behind `tool_search` and `tool_call`. | protocol, base | ignore, grep-searcher, grep-regex, grep-matcher, globset, similar, tokio |
-| `cortex-sandbox` | Sandbox policy types and the per-OS launchers (Landlock and seccomp on Linux, Job Objects on Windows). | base | landlock, seccompiler (Linux), windows-sys (Windows) |
+| `cortex-tools` | Built-in tools and the `Tool` trait, the output policy, file snapshots, the process runner for shell commands, and the registry of dynamic tools behind `tool_search` and `tool_call`. | protocol, base, sandbox (for process trees) | ignore, grep-searcher, grep-regex, grep-matcher, globset, similar, tokio |
+| `cortex-sandbox` | Process trees: a command and everything it starts, stopped as one and gone with the harness (process groups, signals and a guard process on Linux; Job Objects on Windows), in the module `tree`, the one place the operating-system calls for it are made ([decision 0030](../decisions/0030-process-tree-control-in-cortex-sandbox.md)). Sandbox policy types and the per-OS launchers (Landlock and seccomp on Linux). | base | libc (Unix), windows-sys (Windows); landlock and seccompiler (Linux) behind a feature, from step 26 |
 | `cortex-policy` | Levels and leases, permission rules, shell-command analysis, approval bookkeeping, project trust. | protocol, base | none |
 | `cortex-session` | Session log (JSONL), tree and branches, resume and repair, artifacts, checkpoints, the session index. | protocol, base | none |
 | `cortex-config` | Configuration layers, merging with provenance, validation, the generated schema and reference, reloading, credential storage and lookup, the state directory's layout, discovery of other tools' files. | protocol, base | toml; on Windows a thin Credential Manager wrapper (windows-native-keyring-store with keyring-core) |
@@ -37,7 +37,7 @@ All crates use the `cortex-` prefix, live under `crates/`, and set `publish = fa
 
 ```
 protocol ◄─ base ◄─┬─ llm ◄──────────────┐
-                   ├─ tools ◄────────────┤
+                   ├─ sandbox ◄─ tools ◄─┤
                    ├─ sandbox ◄──────────┤
                    ├─ policy ◄───────────┼─ agent ◄─┐
                    ├─ session ◄──────────┤          │
@@ -58,6 +58,7 @@ Rules, enforced by a workspace test that reads `cargo metadata`:
 5. Only `cortex-llm` (feature `http`) links the HTTP and TLS stack. Only `cortex-mcp` links the MCP SDK. Only `cortex-tools` links the search libraries. Only `cortex-ext` links the script engine. A change elsewhere does not rebuild them.
 6. Test support lives in `cortex-testkit`, never behind `cfg(test)` exports of production crates. The fake clock and the seeded random-number generator are the one case that looks like an exception and is not: they are ordinary public types of `cortex-base`, beside the traits they implement, because `cortex-base` tests itself with them and cannot depend on the test kit, which depends on it. The test kit re-exports them.
 7. `cortex-usage` depends only on `cortex-base` and `cortex-stats`, and links no network code. Reading other tools' files stays apart from everything that can send.
+8. `cortex-tools` depends on `cortex-sandbox` for process trees, and must not link the sandbox backends through it. The backends (`landlock`, `seccompiler`) are behind a feature of `cortex-sandbox`, off by default, which `cortex-core`'s `sandbox` feature turns on. Step 26 adds the backends and the feature together.
 
 ## Why this split
 
@@ -76,7 +77,7 @@ Features exist to keep build cost optional, not to create product variants.
 | `schema` | `cortex-protocol` | off | JSON Schema derivation. On only for `xtask` and the schema test. |
 | `mcp` | `cortex-core` | on | Links `cortex-mcp`. |
 | `scripts` | `cortex-core` | on | Links the script engine in `cortex-ext`. Without it, extensions are limited to custom commands, skills and hook commands. |
-| `sandbox` | `cortex-core` | on | Links the OS sandbox backends. |
+| `sandbox` | `cortex-core` | on | Links the OS sandbox backends, by turning on the feature of `cortex-sandbox` that holds them (from step 26). Process trees are not behind it: every build can stop a command. |
 | `highlight` | `cortex-tui` | on | Syntax highlighting for code blocks and diffs. |
 | `keychain` | `cortex-config` | off | Reserved for the Linux keychain: the Secret Service backend of the credential store, which is not built yet ([08-configuration.md](08-configuration.md), [decision 0018](../decisions/0018-credential-storage.md)). It adds nothing today. Windows needs no feature: Credential Manager is always compiled there, as a dependency for that OS only. |
 

@@ -12,6 +12,7 @@ doctest = false
 [dependencies]
 cortex-protocol.workspace = true
 cortex-base.workspace = true
+cortex-sandbox.workspace = true
 globset.workspace = true
 grep-matcher.workspace = true
 grep-regex.workspace = true
@@ -21,10 +22,11 @@ serde.workspace = true
 serde_json.workspace = true
 similar.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["rt", "time"] }
 
 [dev-dependencies]
-# For the property-test helper (`cortex_testkit::cases`).
+# For the property-test helper (`cortex_testkit::cases`), and for the child
+# processes of the process tests (`cortex_testkit::children`).
 cortex-testkit.workspace = true
 
 [lints]
