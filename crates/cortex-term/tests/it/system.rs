@@ -81,6 +81,13 @@ fn restored(session: &mut Session) {
         screen.keyboard().is_empty(),
         "the keyboard protocol was left on"
     );
+    // ConPTY asks the terminal for the win32 input mode itself, and draws
+    // with automatic wrap as it likes, so on Windows these say nothing about
+    // the demo.
+    if cfg!(unix) {
+        assert!(!modes.win32_input, "the win32 input mode was left on");
+        assert!(modes.autowrap, "automatic wrap was left off");
+    }
     session.wait_exit(LIMIT);
 }
 
@@ -111,6 +118,13 @@ fn sys_keys_are_drawn_and_the_terminal_is_put_back_after_a_normal_exit() {
     session.send(b"?");
     session.wait_for(LIMIT, "the echo after a resize", |t| {
         editor_shows(t, "hi!?")
+    });
+    // The rule under the text is as wide as a line may be at the new width
+    // (59 columns), which only a frame drawn after the resize was seen has.
+    session.wait_for(LIMIT, "the live region drawn at the new width", |t| {
+        t.screen().iter().any(|row| {
+            row.chars().count() == 59 && row.chars().all(|c| c == '-' || c == '\u{2500}')
+        })
     });
     let status_rows = session
         .screen()
@@ -219,6 +233,40 @@ fn sys_keys_arrive_with_their_modifiers() {
         session.send(&bytes);
         last_key(&mut session, name);
     }
+    session.send(b"\x03");
+    session.wait_exit(LIMIT);
+}
+
+#[cfg(unix)]
+#[test]
+fn sys_after_ctrl_z_and_fg_everything_is_on_again() {
+    let mut session =
+        Session::start(&this_binary(), &child_arguments(DEMO, "rate=400"), 100, 30).answering();
+    session.wait_for(LIMIT, "the first frame", |t| {
+        t.shows(STATUS_MARK) && t.modes().bracketed_paste && t.modes().win32_input
+    });
+    // Ctrl+Z: the demo erases its live region, puts the terminal back and
+    // stops.
+    session.send(b"\x1a");
+    session.wait_for(LIMIT, "the terminal put back while stopped", |t| {
+        !t.modes().bracketed_paste && !t.modes().win32_input && t.modes().autowrap
+    });
+    assert!(
+        !session.screen().shows(STATUS_MARK),
+        "\n{}",
+        session.screen().dump()
+    );
+    // `fg`: it goes on, turns everything on again and draws.
+    cortex_term::pty::continue_process(session.pid()).unwrap();
+    session.wait_for(LIMIT, "everything on again, and a frame", |t| {
+        t.shows(STATUS_MARK)
+            && t.modes().bracketed_paste
+            && t.modes().focus
+            && t.modes().win32_input
+            && !t.modes().autowrap
+    });
+    session.send(b"k");
+    session.wait_for(LIMIT, "a key after resuming", |t| editor_shows(t, "k"));
     session.send(b"\x03");
     session.wait_exit(LIMIT);
 }

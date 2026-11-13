@@ -58,6 +58,8 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// The event that wakes a wait. 0 until it exists.
 static WAKE: AtomicIsize = AtomicIsize::new(0);
 static WOKEN: AtomicBool = AtomicBool::new(false);
+/// A resize seen in the console's input, not reported yet.
+static RESIZED: AtomicBool = AtomicBool::new(false);
 static HANDLER: AtomicBool = AtomicBool::new(false);
 /// The first half of a character outside the Basic Multilingual Plane,
 /// waiting for its second half in the next record.
@@ -179,7 +181,7 @@ pub(crate) fn emergency() {
     if !ACTIVE.swap(false, Ordering::SeqCst) {
         return;
     }
-    let _ = write(restore_sequence());
+    let _ = write_all(restore_sequence());
     restore_modes();
 }
 
@@ -237,7 +239,19 @@ pub(crate) fn size() -> io::Result<(u16, u16)> {
 
 /// Writes all of `bytes` to standard output: one call, unless the console
 /// takes only part of it.
+///
+/// Once the console has been put back (a panic on another thread, a control
+/// event), nothing more is written: a frame would turn modes on again in a
+/// console that is no longer the program's, or show as text in one whose
+/// virtual-terminal processing is off again.
 pub(crate) fn write(bytes: &[u8]) -> io::Result<()> {
+    if !ACTIVE.load(Ordering::SeqCst) {
+        return Err(io::Error::other("the console has been put back"));
+    }
+    write_all(bytes)
+}
+
+fn write_all(bytes: &[u8]) -> io::Result<()> {
     let output = handle(STD_OUTPUT_HANDLE);
     let mut rest = bytes;
     while !rest.is_empty() {
@@ -275,6 +289,9 @@ pub(crate) fn wait(timeout: Option<Duration>, into: &mut Vec<u8>) -> io::Result<
     });
     let handles = [input, wake];
     loop {
+        if RESIZED.swap(false, Ordering::SeqCst) {
+            return Ok(Ready::Resize);
+        }
         if WOKEN.swap(false, Ordering::SeqCst) {
             return Ok(Ready::Woken);
         }
@@ -318,7 +335,7 @@ pub(crate) fn wait(timeout: Option<Duration>, into: &mut Vec<u8>) -> io::Result<
         if ok == 0 {
             return Err(io::Error::last_os_error());
         }
-        let mut resized = false;
+
         let before = into.len();
         for record in &records[..usize::try_from(read).unwrap_or(0)] {
             match u32::from(record.EventType) {
@@ -334,14 +351,16 @@ pub(crate) fn wait(timeout: Option<Duration>, into: &mut Vec<u8>) -> io::Result<
                         }
                     }
                 }
-                WINDOW_BUFFER_SIZE_EVENT => resized = true,
+                // Kept until it is reported: a read that also brought keys
+                // reports them first, and the resize on the next wait.
+                WINDOW_BUFFER_SIZE_EVENT => RESIZED.store(true, Ordering::SeqCst),
                 _ => {}
             }
         }
         if into.len() > before {
             return Ok(Ready::Input);
         }
-        if resized {
+        if RESIZED.swap(false, Ordering::SeqCst) {
             return Ok(Ready::Resize);
         }
     }
@@ -725,6 +744,12 @@ mod tests {
             0
         );
         assert_ne!(input & 0x40, 0, "a flag it does not know is kept");
+    }
+
+    #[test]
+    fn nothing_is_written_while_the_console_is_not_the_programs() {
+        assert!(!ACTIVE.load(Ordering::SeqCst));
+        assert!(write(b"\x1b[?25l").is_err());
     }
 
     #[test]

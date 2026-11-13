@@ -298,6 +298,9 @@ impl Decoder {
                     .unwrap_or(0);
                 paste.extend_from_slice(&rest[..rest.len() - keep]);
                 start = self.buffer.len() - keep;
+                if paste.len() >= PASTE_PIECE {
+                    events.push(Event::Paste(paste_piece(paste)));
+                }
                 break;
             }
             if start >= self.buffer.len() {
@@ -397,6 +400,27 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+/// How much of a paste is kept before it is handed on: a paste larger than
+/// this arrives as several [`Event::Paste`]s, in order, so that a paste
+/// whose end never comes cannot take all the memory there is.
+const PASTE_PIECE: usize = 1 << 22;
+
+/// The front of a long paste as text, leaving in `paste` what may be the
+/// first half of a character or of a line break.
+fn paste_piece(paste: &mut Vec<u8>) -> String {
+    let mut cut = match std::str::from_utf8(paste) {
+        Ok(_) => paste.len(),
+        Err(error) => error.valid_up_to().max(paste.len().saturating_sub(3)),
+    };
+    if cut > 0 && paste[cut - 1] == b'\r' {
+        cut -= 1;
+    }
+    let rest = paste.split_off(cut);
+    let piece = paste_text(paste);
+    *paste = rest;
+    piece
 }
 
 /// Pasted bytes as text, with each line break as `\n`.
@@ -630,15 +654,28 @@ fn ss3(bytes: &[u8]) -> Option<(usize, Option<Event>)> {
 /// A control sequence: ESC [, parameters, intermediates, a final byte.
 fn csi(bytes: &[u8]) -> Option<(usize, Option<Event>)> {
     let body = &bytes[2..];
-    let end = body.iter().position(|byte| (0x40..=0x7e).contains(byte))?;
+    let mut end = None;
+    for (index, &byte) in body.iter().enumerate() {
+        match byte {
+            0x40..=0x7e => {
+                end = Some(index);
+                break;
+            }
+            0x20..=0x3f => {}
+            // A byte no sequence holds: this was never one, but `Alt+[`
+            // followed by what was typed next, which is decoded on its own.
+            _ => {
+                return Some((
+                    2,
+                    Some(Event::Key(Key::with(KeyCode::Char('['), Mods::ALT))),
+                ));
+            }
+        }
+    }
+    let end = end?;
     let used = 2 + end + 1;
     let final_byte = body[end];
     let inner = &body[..end];
-    // Anything that is not a parameter or an intermediate byte means this
-    // was never a sequence: drop what was read.
-    if inner.iter().any(|byte| !(0x20..=0x3f).contains(byte)) {
-        return Some((used, None));
-    }
     let split = inner
         .iter()
         .position(|byte| (0x20..=0x2f).contains(byte))
@@ -1044,6 +1081,45 @@ mod tests {
         );
         // A second half alone is nothing.
         assert_eq!(decode(record(0, 0xdc00, true, 0).as_bytes()), vec![]);
+    }
+
+    #[test]
+    fn a_long_paste_comes_in_pieces_and_loses_nothing() {
+        let line = "a line of pasted text, é\r\n";
+        let count = PASTE_PIECE / line.len() * 2 + 7;
+        let mut decoder = Decoder::new();
+        let mut events = Vec::new();
+        decoder.feed(b"\x1b[200~", &mut events);
+        let text = line.repeat(count);
+        for piece in text.as_bytes().chunks(65_537) {
+            decoder.feed(piece, &mut events);
+        }
+        assert!(events.len() >= 2, "{}", events.len());
+        decoder.feed(b"\x1b[201~x", &mut events);
+        let mut pasted = String::new();
+        for event in &events[..events.len() - 1] {
+            match event {
+                Event::Paste(piece) => pasted.push_str(piece),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(pasted, text.replace("\r\n", "\n"));
+        assert_eq!(
+            events.last(),
+            Some(&Event::Key(Key::plain(KeyCode::Char('x'))))
+        );
+    }
+
+    #[test]
+    fn an_escape_bracket_before_a_byte_no_sequence_holds_is_alt_bracket() {
+        assert_eq!(
+            decode("\x1b[\ré".as_bytes()),
+            keys(&[
+                (KeyCode::Char('['), Mods::ALT),
+                (KeyCode::Enter, N),
+                (KeyCode::Char('é'), N)
+            ])
+        );
     }
 
     #[test]

@@ -40,15 +40,15 @@ const WIN32: u8 = 2;
 /// What puts the terminal's own state back after a panic, a signal or a
 /// console event, when the presenter could not finish: ends a frame that was
 /// cut short, resets the style, erases from the cursor's row down (the rest
-/// of the live region, so a message printed next is not mixed into it), and
-/// turns off what was turned on. The raw-mode or console-mode half is the
+/// of the live region, so a message printed next is not mixed into it),
+/// turns off what was turned on, and turns automatic wrap back on. The raw-mode or console-mode half is the
 /// system's. One for each set of keyboard reporting that may be on, indexed
 /// by [`PROTOCOLS`].
 const RESTORE: [&[u8]; 4] = [
-    b"\x1b[?2026l\x1b[0m\r\x1b[J\x1b[?1004l\x1b[?2004l\x1b[?25h",
-    b"\x1b[?2026l\x1b[0m\r\x1b[J\x1b[<u\x1b[?1004l\x1b[?2004l\x1b[?25h",
-    b"\x1b[?2026l\x1b[0m\r\x1b[J\x1b[?9001l\x1b[?1004l\x1b[?2004l\x1b[?25h",
-    b"\x1b[?2026l\x1b[0m\r\x1b[J\x1b[<u\x1b[?9001l\x1b[?1004l\x1b[?2004l\x1b[?25h",
+    b"\x1b[?2026l\x1b[0m\r\x1b[J\x1b[?1004l\x1b[?2004l\x1b[?7h\x1b[?25h",
+    b"\x1b[?2026l\x1b[0m\r\x1b[J\x1b[<u\x1b[?1004l\x1b[?2004l\x1b[?7h\x1b[?25h",
+    b"\x1b[?2026l\x1b[0m\r\x1b[J\x1b[?9001l\x1b[?1004l\x1b[?2004l\x1b[?7h\x1b[?25h",
+    b"\x1b[?2026l\x1b[0m\r\x1b[J\x1b[<u\x1b[?9001l\x1b[?1004l\x1b[?2004l\x1b[?7h\x1b[?25h",
 ];
 
 /// The restore sequence for the terminal's state now. Async-signal-safe:
@@ -93,6 +93,7 @@ mod tests {
                 b"\x1b[0m",
                 b"\x1b[?1004l",
                 b"\x1b[?2004l",
+                b"\x1b[?7h",
                 b"\x1b[?25h",
             ] {
                 assert!(has(sequence, needed), "{needed:?}");

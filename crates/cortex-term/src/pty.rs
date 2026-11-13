@@ -153,3 +153,14 @@ pub fn ignore_control_events() {
     #[cfg(windows)]
     sys::pty::ignore_control_events();
 }
+
+/// Lets process `pid` go on after it stopped itself (SIGCONT), as a shell's
+/// `fg` does. Unix only.
+///
+/// # Errors
+///
+/// When the system refuses.
+#[cfg(unix)]
+pub fn continue_process(pid: u32) -> io::Result<()> {
+    sys::pty::signal(pid, libc::SIGCONT)
+}
