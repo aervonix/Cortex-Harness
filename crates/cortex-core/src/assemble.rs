@@ -515,9 +515,11 @@ fn engine_parts(
 
 /// Whether a write root of `policy` holds the harness's configuration,
 /// state or data directory, or is one, or lies inside one; or holds the
-/// program started as the launcher, which a confined command could then
-/// replace with one that confines nothing (found by the second review of
-/// step 26).
+/// user's configuration file, as named or where a link leads (a dotfiles
+/// repository), which holds the level and rules the next session starts
+/// with; or holds the program started as the launcher, which a confined
+/// command could then replace with one that confines nothing (found by the
+/// second review of step 26).
 fn holds_harness_files(
     policy: &cortex_protocol::lease::SandboxPolicy,
     loaded: &Loaded,
@@ -536,10 +538,12 @@ fn holds_harness_files(
     .flatten()
     .filter_map(|dir| resolve_dir(&dir))
     .collect();
-    // The program as it is started, and as it really is: its directory
-    // resolved, and its own name.
-    let programs: Vec<AbsPath> = launcher
+    // The launcher's program and the user's configuration file, each as
+    // it is named and as it really is: its directory resolved, and its own
+    // name.
+    let files: Vec<AbsPath> = launcher
         .into_iter()
+        .chain(loaded.dirs.user_config.as_deref())
         .flat_map(|program| {
             [
                 Some(program.to_path_buf()),
@@ -561,7 +565,7 @@ fn holds_harness_files(
             .any(|root| {
                 own.iter()
                     .any(|dir| dir.starts_with(&root) || root.starts_with(dir))
-                    || programs.iter().any(|program| program.starts_with(&root))
+                    || files.iter().any(|file| file.starts_with(&root))
             })
 }
 

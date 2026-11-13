@@ -860,3 +860,30 @@ fn a_write_root_inside_the_harness_files_is_not_confined() {
         assert_eq!(front.state.sandbox, SandboxStatus::Off);
     });
 }
+
+/// The user's configuration file kept in a dotfiles directory, and linked
+/// from where the harness reads it: a write root that holds the directory
+/// could change the level and the rules the next session starts with.
+#[cfg(unix)]
+#[test]
+fn a_write_root_that_holds_the_user_configuration_a_link_leads_to_is_not_confined() {
+    let world = World::new("config_through_link", []);
+    let dotfiles = world.dir.join("dotfiles");
+    std::fs::create_dir_all(&dotfiles).unwrap();
+    world.user_config(&format!(
+        "[sandbox]\nwrite = [\"{}\"]\n",
+        dotfiles.display()
+    ));
+    let named = world.dirs().user_config.expect("a configuration file");
+    let target = dotfiles.join("config.toml");
+    std::fs::rename(&named, &target).unwrap();
+    std::os::unix::fs::symlink(&target, &named).unwrap();
+    let core = world.core_with(|options| {
+        options.launcher = Some(launcher());
+        options.sandbox = Some(Support::Landlock(8));
+    });
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        assert_eq!(front.state.sandbox, SandboxStatus::Off);
+    });
+}

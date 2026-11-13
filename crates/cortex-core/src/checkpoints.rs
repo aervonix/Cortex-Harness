@@ -45,8 +45,8 @@ use cortex_sandbox::protect::{Before as Was, Changed};
 use cortex_session::entry::FileVersion;
 use cortex_session::{Before, Body, DiskStore, Git, RoundCheckpoint, SessionError};
 use cortex_tools::{
-    BoxFuture, CheckpointError, Checkpoints, Effect, FileSnapshot, Json, Plan, PlanCx, RunCx,
-    ShellTool, Tool, ToolError, ToolOutput, ToolResult, ToolSpec,
+    BoxFuture, CheckpointError, Checkpoints, Effect, FileSnapshot, Json, Plan, PlanCx, Preview,
+    RunCx, ShellTool, Tool, ToolError, ToolOutput, ToolResult, ToolSpec,
 };
 
 use crate::policy::EnginePolicy;
@@ -334,6 +334,12 @@ impl Tool for StopsWithTurn {
         }
         self.tool.run(plan, cx, out)
     }
+
+    // A question about a change to a file shows the change: the wrapped
+    // tool's preview, which a wrapper must not lose.
+    fn preview(&self, plan: &Plan, cx: &RunCx) -> Option<Preview> {
+        self.tool.preview(plan, cx)
+    }
 }
 
 /// The shell tool, with what each command changed recorded in the round's
@@ -372,6 +378,10 @@ impl Tool for RecordingShell {
 
     fn plan(&self, args: &Json, cx: &PlanCx) -> Result<Plan, ToolError> {
         self.tool.plan(args, cx)
+    }
+
+    fn preview(&self, plan: &Plan, cx: &RunCx) -> Option<Preview> {
+        self.tool.preview(plan, cx)
     }
 
     fn run<'a>(

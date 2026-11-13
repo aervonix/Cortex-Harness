@@ -447,10 +447,11 @@ caught-by:
 rule: A write root that holds the program started as the launcher cannot be confined: a command could replace it.
 file: crates/cortex-core/src/assemble.rs
 in: holds_harness_files
-find: || programs.iter().any(|program| program.starts_with(&root))
-replace: || programs.iter().any(|_| false)
+find: || files.iter().any(|file| file.starts_with(&root))
+replace: || files.iter().any(|_| false)
 caught-by:
     cortex-core::it sandbox::a_write_root_that_holds_the_launcher_is_not_confined
+    cortex-core::it sandbox::a_write_root_that_holds_the_user_configuration_a_link_leads_to_is_not_confined
 
 [break] a-write-root-inside-the-harness-files
 rule: A write root inside one of the harness's own directories cannot be confined either.
@@ -523,3 +524,12 @@ find: self.fail_on_denial || self.sandboxed.load(std::sync::atomic::Ordering::Ac
 replace: self.fail_on_denial
 caught-by:
     cortex-core::it sandbox::while_commands_are_confined_a_later_call_waits_for_the_open_question
+
+[break] a-wrapped-tool-loses-its-preview
+rule: The guard around every tool keeps the tool's preview, so that a question about a change to a file still shows the change.
+file: crates/cortex-core/src/checkpoints.rs
+in: StopsWithTurn::preview
+find: self.tool.preview(plan, cx)
+replace: { let _ = (plan, cx); None }
+caught-by:
+    cortex-core::it approvals::an_approval_for_a_change_to_a_file_shows_the_change_within_a_bound

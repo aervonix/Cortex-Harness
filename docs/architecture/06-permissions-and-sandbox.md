@@ -521,7 +521,7 @@ Step 26 built the Linux sandbox in `cortex-sandbox` and wired it into the core a
 | Linux, Landlock 3 to 5 | true | yes | enforcing, with one line at the session's start: a command can still signal a process outside the sandbox | starts |
 | Linux, Landlock 1 or 2 | any | any | off: `NoSandbox::LandlockTooOld`, which names the version and what it lacks | refused |
 | Linux without Landlock, or with it turned off | any | any | off: `NoLandlock` | refused |
-| A write root (the workspace, the temporary directory or `sandbox.write`) holds the harness's own configuration, state or data directory, or lies inside one, or holds the program started as the launcher | true | yes | off: `HarnessFilesWritable`: a confined command could change what it is allowed, or replace the launcher | refused |
+| A write root (the workspace, the temporary directory or `sandbox.write`) holds the harness's own configuration, state or data directory, or lies inside one, or holds the user's configuration file (as named, or where a link leads), or the program started as the launcher | true | yes | off: `HarnessFilesWritable`: a confined command could change what it is allowed, or replace the launcher | refused |
 | A build without the `sandbox` feature, or a core given no launcher | any | | off: `NotBuilt` | refused |
 | Windows | any | any | off: `UnsupportedSystem` | refused |
 | any | false | any | off: `TurnedOff` | refused |
