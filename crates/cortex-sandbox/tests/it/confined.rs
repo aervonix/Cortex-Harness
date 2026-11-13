@@ -386,13 +386,14 @@ fn sys_the_calls_that_would_undo_or_get_round_the_sandbox_are_refused() {
     }
     // The calls no host refuses by itself are controls everywhere.
     assert!(controls >= 3, "too few controls held: {controls}");
-    // A new user namespace: refused inside; outside, where the kernel
-    // allows it, made.
+    // A new user namespace: refused inside; outside, not refused that way
+    // (`unshare` answers `EINVAL` there in a process with more than one
+    // thread, as the test binary's helper is, and `clone` makes the child).
     for name in ["unshare-user", "clone-user"] {
         assert_eq!(call(&place, landlock, name, true), "EPERM", "{name}");
         let outside = call(&place, landlock, name, false);
         assert!(
-            outside == "ok" || std::env::var_os("CI").is_none(),
+            outside != "EPERM" || std::env::var_os("CI").is_none(),
             "CI's runners allow user namespaces, so the refusal is the filter's: {name} {outside}"
         );
     }
