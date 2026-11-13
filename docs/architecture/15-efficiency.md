@@ -55,6 +55,15 @@ The `read` tool remembers what it returned ([05-tools.md](05-tools.md)). When th
 - The comparison version is the snapshot kept for the staleness guard, stored in the session's content store.
 - After compaction the model no longer has the earlier content, so the first read in a new epoch is always full.
 
+Built in step 6. What "already seen" means, exactly:
+
+- **The table of seen files keeps, per file, the lines the model has been shown** of the version it last saw, as ranges. A read of lines that are all among them, of an unchanged file, is the one-line result. A read that reaches past them returns the content and adds its lines.
+- **A diff answers a read only when the model has seen, of the old version, the lines it is asking for now.** A model that saw lines 100 to 150 and asks for 200 to 250 of the changed file gets those lines, not a diff.
+- **After a diff, the model has seen** the lines it had seen that are still there, at their new numbers, every added line, and the unchanged lines the diff shows around each change. Nothing else counts as seen: a later "unchanged" must never be said of a line the model was not shown.
+- "Smaller than the content" compares the diff, with its one-line preface, against the result the content would have been. A change of line endings or of the final line break alone is said in one line.
+- A file's version is kept for diffing only up to 1 MiB, and two versions are diffed only up to 50,000 lines between them. Beyond either, a changed file is sent as content.
+- Whether a file changed is decided by its content hash, never by its modification time.
+
 ## Compressed tool output
 
 Every tool result passes the output policy in [05-tools.md](05-tools.md). The vision asks for more than truncation.
@@ -65,6 +74,12 @@ Every tool result passes the output policy in [05-tools.md](05-tools.md). The vi
 - progress redraws (lines rewritten with carriage returns) collapse to their final state;
 - runs of identical or near-identical lines collapse to one line and a count;
 - for commands the profile knows as tests or builds, the lines that matter (failures, errors, warnings and their context) are kept ahead of the routine ones when the output must be cut.
+
+The mechanics were built in step 6, in the output policy of `cortex-tools`. Three details were settled there:
+
+- **It applies to output that was produced, not to content that was asked for.** The output of a command or of an extension or MCP tool is compressed. A file read is returned exactly, because the model edits against it.
+- **Identical lines always collapse; near-identical lines only when the output is over the limits.** A run of four or more identical lines becomes the line and a count, and nothing is lost. Lines that differ only in their numbers (`Downloading 12/100`) become the first and the last of the run with a count between, which loses their text: so it is done only to output that would be cut anyway, and the full output is then an artifact. A line with fewer than three letters is data, not progress, and is never folded.
+- **"The lines that matter" is a way of choosing what to keep,** which the caller asks for: lines that report a problem, each with the line before it and the two after, then the end and the beginning of the output. The shell tool and the verification stage ask for it when the profile says a command is a build or a test.
 
 **Stage 2, model-assisted, later.** For very long outputs, a summary written by the fast model with pointers into the full output. It costs tokens and time, so it waits for routing data that shows it pays.
 

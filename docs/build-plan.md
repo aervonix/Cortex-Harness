@@ -88,13 +88,23 @@ Step 4 built `cortex-base`. These are the choices it put to the owner, each acce
 | **An atomic write refuses a read-only target,** on both OSes. | **Approved.** The review of the step widened it, in the same spirit: a file the user may not write and anything that is not a regular file are refused too. | [architecture/05-tools.md](architecture/05-tools.md), "Atomic writes" |
 | **The fake clock and the seeded generator live in `cortex-base`,** beside their traits, and the test kit re-exports them. | **Approved.** | [architecture/01-workspace.md](architecture/01-workspace.md), rule 6 |
 
+### Answered in step 6, on 2026-11-12
+
+Step 6 built the tool contract and the read-only tools in `cortex-tools`. These are the choices it put to the owner.
+
+| Question | The owner's answer, 2026-11-12 | Recorded in |
+|---|---|---|
+| **A content hash, and where it lives.** A file snapshot records one, the version of a file the model last saw is kept under one, and step 8 needs the same for checkpoints and the project key. Nothing in the planned set provided it. | **`cortex_base::ContentHash`, an agreed addition to `cortex-base`, through the `sha2` crate** and not SHA-256 of our own: `read` hashes whole files, the processor's SHA instructions make that several times faster, and a widely reviewed implementation is better than one we maintain. The algorithm is named nowhere outside the module. The standard's examples are kept as a test. | [dependencies.md](dependencies.md), [architecture/05-tools.md](architecture/05-tools.md), "File snapshots" |
+| **How a cut result names its artifact.** The first draft said "the artifact path". A path would be an absolute path under the user's home directory, outside the workspace. A made-up form such as `artifact:<id>` was proposed. | **A separate argument.** `artifact:a_123` is a legal file name on Linux, and a path that could mean two things is refused, not guessed at. `read` and `search` take either `path` or `artifact`, never both, and a cut result names the artifact's id. | [architecture/05-tools.md](architecture/05-tools.md), "One output policy" |
+| **`tokio` in `cortex-tools`,** with the `rt` feature only, for the blocking pool. | **Fine**, as the workspace page planned. Each crate names the `tokio` features it uses. | [dependencies.md](dependencies.md) |
+
 ### Still outstanding
 
 | Item | Who | When |
 |---|---|---|
 | **The Windows Terminal checklist** ([measurements/windows-terminal-checklist.md](measurements/windows-terminal-checklist.md)). Decisions 0001 and 0002 stay provisional until it is run. | The owner | Before step 20 |
 | **Two details of speed tiers:** how long a cooldown lasts, and a `--speed` flag for headless mode. Each has a recommendation in [decision 0027](decisions/0027-speed-tiers.md). The third, whether utility roles follow the session's speed, was answered on 2026-11-12: they do not. | Step 5 (the cooldown), step 13 (the flag) | In those steps |
-| **The project key.** It is derived from the canonical workspace path, and stored approvals and project trust hang off it, so two projects must never share one. It therefore needs a collision-resistant hash, which `cortex-base` does not have. The input is ready: the resolved root of a workspace, and its comparison form (`AbsPath::key`), in which two spellings of one Windows path are the same text. | Step 8 | In that step |
+| **The project key.** It is derived from the canonical workspace path, and stored approvals and project trust hang off it, so two projects must never share one. It therefore needs a collision-resistant hash. `cortex-base` has one since step 6 (`ContentHash`), so what is left is to choose how much of it the key keeps. The input is ready: the resolved root of a workspace, and its comparison form (`AbsPath::key`), in which two spellings of one Windows path are the same text. | Step 8 | In that step |
 | **Owner-only files on Windows.** `cortex-base` writes a new file owner-only on Linux (mode `0600`). On Windows a file takes its directory's access rules, and setting a rule on the file itself needs a Windows API that only `cortex-sandbox` and `cortex-term` may call. Steps 8 and 9 both promise owner-only files on both OSes, and run at the same time. | Step 9 builds it; step 8 uses it or relies on the per-user state directory until then | In those steps |
 | **QuickJS with the Windows toolchain.** Step 2's dependency probe compiled and ran it with the MSVC toolchain on a hosted Windows runner ([testing-and-ci.md](testing-and-ci.md)). Step 28 still confirms it in the real crate, and switches to Lua if it gives trouble, as agreed. | Step 28, in its first hour | |
 
@@ -258,6 +268,14 @@ Steps that can run at the same time in separate sessions are marked in each step
 - **Goal and scope.** In `cortex-tools`: the `Tool` trait, `Plan`, effects, concurrency classes, results, the output policy with structural compression and artifacts (through a content-store trait), file snapshots. The tools `read` (with changed-only re-reads), `list`, `search`. The dynamic-tool registry with `tool_search` and `tool_call`.
 - **Depends on.** 4.
 - **Done when.** Contract tests for every row of each tool's section in [architecture/05-tools.md](architecture/05-tools.md). Re-read tests: unchanged, small change (a diff), large change, `fresh`. Property tests for the output policy: never cuts inside a line, always says what was cut, the artifact holds everything. Search over a large generated tree within a recorded time and cancellable. `tool_call` validates arguments and never changes the declared tool list (test). Windows path cases pass.
+- **What later steps inherit,** all described in [architecture/05-tools.md](architecture/05-tools.md):
+  - **Step 7** runs every call with `Tool::plan` and then `execute`, never `Tool::run`, and schedules with `Plan::conflicts_with` and `Plan::has_side_effects`. `plan` may ask the file system where a path leads, so the loop calls it through `run_blocking`. A `RunCx` is made per call, with a child of the turn's cancellation token and the turn's number. `MemoryStore` is the content store of a session with no disk.
+  - **Step 8** implements `ContentStore` (artifacts written in pieces, file versions under their `ContentHash`) for the session directory, or step 13 adapts its stores to the trait. It files checkpoints under `ContentHash::to_hex`.
+  - **Steps 10 and 11** add their tools to the `Toolbox`. The editing tools read `FileTable::staleness` and call `FileTable::record_write`; they declare `Effect::Write` and `Concurrency::Keyed`. The shell tool shapes its own output with `output::shape` (`Keep::HeadAndTail`, or `Keep::Important` for builds and tests) and streams its artifact through `ContentStore::begin_artifact`.
+  - **Step 12** decides each `Effect` of a plan, supplies the `ReadGate` that a directory walk asks about each entry, and matches `Effect::Ext` by `source/tool`.
+  - **Step 15** calls `FileTable::begin_epoch` when a context epoch starts, and carries `FileTable::seen` across compaction.
+  - **Step 18** implements `Outliner`, which `read` asks for the outline of a file too large to show whole.
+  - **Steps 28 and 30** register their tools with `ToolRegistry::set_source`.
 - **Must not change.** `cortex-base` and `cortex-protocol` beyond agreed additions.
 - **Size.** L. **Parallel.** With 5, 8, 9 and 20.
 
