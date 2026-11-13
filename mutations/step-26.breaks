@@ -234,7 +234,7 @@ rule: A shell call that leaves the sandbox declares it in its plan, so the engin
 file: crates/cortex-tools/src/shell/mod.rs
 in: ShellTool::plan
 find: plan = plan.with_effect(Effect::Unconfined);
-replace: plan = plan.with_effect(Effect::Write(workspace.clone()));
+replace: plan = plan.with_concurrency(Concurrency::Exclusive);
 packages: cortex-tools, cortex-core
 caught-by:
     cortex-core::it sandbox::sys_a_command_leaves_the_sandbox_only_once_the_user_allows_it

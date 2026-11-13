@@ -263,6 +263,7 @@ Runs a command in the platform shell and returns its output. Built in step 11: t
 | `command` | string | The command line. |
 | `cwd` | string, optional | Working directory. Defaults to the workspace root. It goes through the path resolver like every other path, and must be a directory that exists. |
 | `timeout_ms` | integer, optional | Default 120,000. At most the configured maximum (default 30 minutes), which the argument's schema states, so a larger value is refused when the call is planned. |
+| `sandbox` | boolean, optional | Since step 26. Left out, or `true`: the command runs in the sandbox where one enforces. `false`: it runs outside it, with the user's full rights, after the user approves that one call ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md), "Leaving the sandbox"). |
 
 **Which shell.** The model is told, in the tool description, which shell and version it is writing for.
 
@@ -343,9 +344,9 @@ Three things on Windows are left as they are, and stated:
 
 **The result's payload,** for front ends: the shell, the exit code or the signal, the duration, whether the command timed out or was interrupted and the last stage that stopping needed, whether background processes were stopped, the size of the output, and the changed files.
 
-**Sandbox.** The command is started through the sandbox launcher with the session's policy (see [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)). When the sandbox blocks something, the result says which rule blocked it, so the model does not retry blindly. Step 11 built the hook, `Launcher`: it is given the shell's command line and returns the one to start, with bytes for its standard input (the policy), and may add a line to the result. Until step 26 fills it, a command is started as it is.
+**Sandbox.** The command is started through the sandbox launcher with the session's policy (see [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)). When the sandbox blocks something, the result says which rule blocked it, so the model does not retry blindly. Step 11 built the hook, `Launcher`: it is given the shell's command line and returns the one to start, with bytes for its standard input (the policy), and may add a line to the result. **Since step 26** the core gives every shell tool its session's launcher, which starts `cortex __sandbox -- <shell> <arguments>` with the policy on its standard input below `unrestricted` where the sandbox enforces, and starts the command as it is otherwise. Its line names the path of a write the sandbox refused, or says the network is off, and tells the model of `sandbox: false`. A call with `sandbox: false` is started as it is, after the user's approval, and its plan declares the effect `unconfined`. The core also looks at the protected paths around each confined command ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md), "As built in step 26").
 
-**Effects.** An `exec` effect with the command as the model wrote it and its working directory, and a `write` effect on the workspace root, because a command may change anything there. A working directory outside the workspace is a second `write` effect.
+**Effects.** An `exec` effect with the command as the model wrote it and its working directory, and a `write` effect on the workspace root, because a command may change anything there. A working directory outside the workspace is a second `write` effect. A call with `sandbox: false` also declares `unconfined`.
 
 Concurrency: exclusive, unless the policy engine has classified the command as read-only. It does that when every part of the command is on its table of commands that only read and nothing the command names needs an answer ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md), "Command analysis as built"); the loop then sets the plan's concurrency to read-only.
 
