@@ -387,6 +387,17 @@ An approval never outlives its scope. Session approvals are not saved. Stored ap
 
 **In the RPC protocol** an approval is a request from the server to the client ([11-rpc-protocol.md](11-rpc-protocol.md)). If no client answers within the configured time, the answer is deny.
 
+**As built in step 13a** (`cortex-core`, `policy` and `clients`).
+
+- **Who is asked.** Every client that has the session open, has the `user` role and declared that it answers approvals. The request carries the choices, the reasons the call asks (`reasons`) and the rules that "for this session" or "in this project" would add (`adds`), so a front end can show exactly what an answer allows from then on.
+- **Whose answer counts.** A `user` client's that was asked. An answer from any other client is refused with `role_not_allowed` and changes nothing: the question stays open. A `supervisor` is asked nothing and may answer nothing until task leases give it a grant to answer within (step 37).
+- **The first answer wins.** The request is closed with it; a later answer is told the request is not open, and every client of the session gets `request.resolved`.
+- **The time limit** is the core's option, and is none by default: a person at a terminal is not hurried. The RPC server sets one (step 27). Past it the call is denied and the clients are told (`timed_out`).
+- **A question that is withdrawn** (the turn was interrupted, or the response the call came from was thrown away) is closed, and the clients are told (`cancelled`).
+- **Recording** an answer for the project writes a file, so it is done on the blocking pool. If it cannot be written, the call is still allowed, once, and the user is told.
+- **With nobody to ask** (no client that may answer: headless mode), the call is refused with the engine's own explanation, and the refusal is kept: it is the headless result's `permission_denials`. With the core's `fail_on_denial` option the same refusal ends the turn, through the loop's `Stop`, with the outcome `denied` ([10-headless.md](10-headless.md)). A rule's own `deny` is neither: it is an ordinary refusal, and is not listed.
+- **A changed level** (`session/set`) starts a new engine from the same rules and what was approved so far, and records the old standing lease as ended and the new one as granted. A level that cannot be held is refused and nothing changes. Raising the level needs a `user` client.
+
 **When a session is supervised** by another session, its approval requests go to the supervisor first. The supervisor may answer only what its own lease covers, and passes the rest up to the user. A user attached to the session can always answer directly. See [17-coordinator.md](17-coordinator.md).
 
 ## Project trust

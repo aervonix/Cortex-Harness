@@ -1,0 +1,3 @@
+| Item | Who | When |
+|---|---|---|
+| **Changing a file over 16 MiB.** The editing tools refuse, because the change could not be undone ([architecture/05-tools.md](../architecture/05-tools.md), "Checkpoints"). Step 10 left open asking the user in place of refusing, through the permission engine. Step 13a did not take it up: it needs a kind of question the engine does not have ("this cannot be undone", which no rule should be able to lift for good), and nothing in the core's wiring depends on it. | Step 23 (the interactive application, which shows the question), with a small addition to `cortex-policy` | In that step |

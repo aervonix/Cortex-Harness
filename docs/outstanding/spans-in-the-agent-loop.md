@@ -1,0 +1,3 @@
+| Item | Who | When |
+|---|---|---|
+| **The `turn`, `request` and `tool` spans.** The logging subscriber keeps the open, close and busy times of every span for the performance probes ([architecture/02-runtime.md](../architecture/02-runtime.md), "Logging and tracing"), and the core opens a `session` span. The three the latency budgets are read from are the agent loop's to open, and `cortex-agent` does not link `tracing` yet: adding it is a row in [dependencies.md](../dependencies.md) and a few lines in the loop. | Step 16 (statistics, which records the same moments), or step 33 (the performance pass) at the latest | Before the budgets are enforced in CI |

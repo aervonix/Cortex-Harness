@@ -156,7 +156,7 @@ The first-release set. Each maps to one `Op`.
 | `session/fork`, `session/rewind` | Branching, as in [07-sessions-and-context.md](07-sessions-and-context.md). |
 | `session/close` | Stop using a session on this connection. |
 | `turn/start` | Send a prompt. If a turn is running, `delivery` must be `"steer"` or `"queue"`. Returns at once with the turn id and a disposition: `started`, `steering` or `queued`. |
-| `turn/interrupt` | Cancel the running turn. Idempotent. The result hands back steering prompts that had not been delivered. |
+| `turn/interrupt` | Cancel the running turn. Idempotent. The result hands back steering prompts that had not been delivered. With `now: true` (an agreed addition in step 13a) it is the second interrupt: running commands are killed at once, without the polite interrupt and the grace that normally come first ([02-runtime.md](02-runtime.md), "Cancellation"). The field is optional and absent means the ordinary interrupt, so a client that sends one twice, or retries one, never kills. |
 | `session/compact` | Compact now, with optional focus instructions. |
 | `session/set` | Change settings for the session: the model and reasoning level of a role, the speed tier (for the session, and per role), the level (permission mode). Anything left out stays as it is. Raising the level needs the `user` role. |
 | `plan/get`, `plan/update` | Read the plan, and apply a user's edit to it (reorder, skip, reword, add, remove). |
@@ -193,6 +193,13 @@ These pause the turn until answered. A client that did not declare the matching 
 | `trust/request` | Ask whether to trust a project's executable resources, listing them. | Not trusted. |
 
 When several clients are attached to a session, a request goes to all that declared the capability. The first answer wins, and the others receive `request.resolved`.
+
+As built in step 13a:
+
+- **`approval/request` gained two optional fields,** as agreed additions: `reasons`, why the call needs an answer, and `adds`, the rules that `allow_session` or `allow_project` would add. A front end shows them, so that "always allow" is never a blank cheque.
+- **`request.resolved` is an event of the session,** with a `seq` like any other, so every client of the session receives it, the one that answered included. A client drops the prompt whose id it names and ignores an id it does not have.
+- **Only a `user` client that was sent the request may answer it.** Any other answer is refused with `role_not_allowed`. A `supervisor` is sent none until task leases exist (step 37).
+- **An `observer` cannot change a session:** `turn/start`, `turn/interrupt`, `session/set`, `plan/update` and `permissions/revoke` from one are refused with `role_not_allowed`.
 
 ## Events
 

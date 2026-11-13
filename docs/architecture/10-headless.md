@@ -17,10 +17,11 @@ cortex -p "fix it" --continue                    # continue the latest session h
 | `--output text\|json\|jsonl` | Output format. Default `text`. |
 | `--continue`, `--resume <id>`, `--fork <id>` | Session selection, as in the TUI. |
 | `--no-session` | Do not write a session log. |
-| `--model`, `--effort` | Override the model and reasoning level. |
+| `--model`, `--effort`, `--speed` | Override the model, the reasoning level and the speed tier. They are the user's own command line, so none of them waits for the project to be trusted. `--speed` was settled in step 13 ([decision 0027](../decisions/0027-speed-tiers.md)). |
 | `--permission-mode <mode>` | `read-only`, `supervised`, `autonomous` or `unrestricted`. `autonomous` needs an enforcing sandbox. These are the levels in [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md). |
 | `--allow <rule>`, `--deny <rule>` | Add permission rules for this run, for example `--allow 'exec:cargo test *'`. |
 | `--trust-project` | Treat the project as trusted for this run. |
+| `--fail-on-denial` | End the run at the first call that needs an answer nobody can give, with exit code 6 ("Approvals", below). |
 | `--max-requests N`, `--max-cost USD`, `--max-time DURATION` | Limits. Reaching one stops the run with exit code 7. |
 | `--system-append TEXT` | Add text to the system prompt. |
 | `--include-deltas` | With `jsonl`: include streaming deltas. Off by default. |
@@ -111,6 +112,26 @@ One table, shared by all output formats. Pi's print and JSON modes disagree on e
 ## Signals
 
 The first SIGINT or SIGTERM cancels the turn, waits for running tools to stop, writes the final record and exits. A second signal exits at once. See [02-runtime.md](02-runtime.md).
+
+## What the core provides, and what the command line adds
+
+Step 13 was built in two halves. Step 13a built the core, and everything on this page whose behaviour is the core's is there and tested in process:
+
+| On this page | In the core (`cortex-core`, step 13a) | The command line's part (step 13b) |
+|---|---|---|
+| A front end that answers nothing | `ClientInfo::headless()`: a `user` client with no capabilities. With no other client, a call that needs an answer is refused. | Connect one. |
+| `permission_denials` | `Core::permission_denials(session)`: each call refused because nobody could be asked, with its turn, tool, summary and reason. | Print them in the result. |
+| `--fail-on-denial` | `CoreOptions::fail_on_denial`: the same refusal ends the turn with the outcome `denied`. | Set it, and map `denied` to exit code 6. |
+| `--model`, `--effort`, `--speed`, `--permission-mode`, `-c` | `CoreOptions::overrides`: each as the configuration key it sets (`model.main`, `model.effort`, `model.speed`, `permissions.mode`). | Parse the flags. |
+| `--allow`, `--deny` | `cortex_core::parse_rule` and `CoreOptions::rules`. | Pass each flag's text. |
+| `--trust-project` | `CoreOptions::trust_project`. | Set it. |
+| `--no-session` | `session/new` with `ephemeral`. | Set it. |
+| `--continue`, `--resume`, `--fork` | `session/list`, `session/open`, `session/fork`. | Choose the session. |
+| The second signal | `turn/interrupt` with `now`: running commands are killed at once. | Count the signals, and exit. |
+| Commands that do not outlive a killed harness | `CoreOptions::guard`: the program and arguments of the guard process. | Give the binary's own path and add the hidden subcommand whose body is `cortex_sandbox::tree::run_guard`. |
+| Diagnostics on standard error | `cortex_base::log`: the stderr sink, off until given a level. `CoreOptions::key_found` tells the log's filter each key the core finds. | Start logging, with the sink at `warn`. |
+| A spending cap | The provider's error reaches `turn.completed` as it is: kind `provider`, code `enforced_spend_limit_reached`, the provider's message. | Print it. |
+| The exit code | `turn.completed`: the outcome and the error's kind. | The table above. |
 
 ## Sessions
 

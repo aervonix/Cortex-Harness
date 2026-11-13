@@ -148,9 +148,12 @@ What it was decided from:
 - **A price that depends on the time of day exists** ("Revisit when", below): DeepSeek's off-peak price is half its peak price. The catalog has one rate card for a speed, so the peak price is entered. It is not a speed tier, and nothing here was changed for it; it is left open as [an item of its own](../outstanding/a-price-that-depends-on-the-time-of-day.md).
 - **OpenAI's flex tier refuses with a 429** that its documentation calls "Resource Unavailable" and gives no code for. Without a code it cannot be told from the model's own rate limit, so it is retried with backoff as one, and is not answered by a fallback. The first real refusal should be looked at.
 
-**Open, for the step that needs it:**
+**Settled in step 13a, on 2026-11-13.**
 
-1. **A command-line flag.** `--model` and `--effort` have flags in headless mode. A `--speed` flag beside them is the obvious addition and is not in [architecture/10-headless.md](../architecture/10-headless.md) yet. Step 13 decides.
+- **`model.speed_cooldown_min`** is declared, default `"1m"`, a preference, and is the retry policy's shortest cooldown.
+- **A session takes a speed when it starts,** from `session/new`'s settings or from the command line. Headless mode gets a `--speed` flag (the owner's decision), built in step 13b, under the same trust rules as `--model`: it is the user's own command line, so it waits for nothing. In the core it is the override `model.speed`.
+- **`session/set` changes the session's speed and a role's own,** and the session's state reports for each role the speed that is set and the speed its next request will ask for.
+- **A change that costs the cache is said.** When the speed, the main role's model or its reasoning level is changed in a session that has already sent a request, the user gets a notice that the next request sends the whole conversation again without the provider's cached prefix. A change to a tier whose catalog entry says it shares the cache with `standard` is the exception.
 
 ## Revisit when
 

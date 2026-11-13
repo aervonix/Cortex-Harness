@@ -47,13 +47,13 @@ settings! {
         [nested]
         pub providers: BTreeMap<String, ProviderSettings>,
         /// Catalog overrides and additions: limits, prices, reasoning
-        /// control, capability flags. The section has the shape of the
-        /// built-in catalog file: `[[models.model]]` tables, each a whole
-        /// entry that replaces the built-in one for the same provider and
-        /// model, and an optional `version` text. It is read by the model
-        /// catalog itself when a session starts, which refuses an entry it
-        /// does not understand: the session then does not start, and the
-        /// error names this file, the entry and what is wrong.
+        /// control, capability flags. Each `[models.<name>]` table is one
+        /// whole catalog entry, with the keys of a `[[model]]` table of the
+        /// built-in catalog, and replaces the built-in entry for the same
+        /// provider and model. The entries are read by the model catalog
+        /// itself when the program starts, which refuses one it does not
+        /// understand: nothing is started then, and the error names the
+        /// file, the entry and what is wrong.
         [reserved UserOnly]
         pub models: Reserved,
         /// The HTTP client: the connect timeout, a proxy, and extra
