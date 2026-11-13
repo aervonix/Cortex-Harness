@@ -99,7 +99,7 @@ fn a_pattern_is_judged_by_what_the_directory_holds() {
         scratch.file(file, "x");
     }
     for number in 0..1001 {
-        scratch.file(&format!("ws/big/{number}.txt"), "");
+        scratch.file(format!("ws/big/{number}.txt"), "");
     }
     let ws = scratch.path().join("ws");
     let deny_lock = SourcedRule::new(
