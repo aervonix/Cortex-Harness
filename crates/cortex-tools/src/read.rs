@@ -1092,8 +1092,12 @@ mod tests {
             .unwrap()
             .write_all(b", and more")
             .unwrap();
-        std::fs::remove_file(&path).unwrap();
-        std::fs::write(&path, b"another file under the same name").unwrap();
+        // Where a name can be given away while the file is open, it is.
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&path).unwrap();
+            std::fs::write(&path, b"another file under the same name").unwrap();
+        }
 
         let content = whole(&mut file, metadata.len());
         let _ = std::fs::remove_file(&path);
