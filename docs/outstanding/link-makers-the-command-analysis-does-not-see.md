@@ -1,0 +1,3 @@
+| Item | Who | When |
+|---|---|---|
+| **Links the command analysis does not see being made.** A part after one that makes a link is asked about ([architecture/06-permissions-and-sandbox.md](../architecture/06-permissions-and-sandbox.md), rule 3), but only `ln`, `link`, `mklink` and `cp -s`/`-l`/`--symbolic-link`/`--link` count. Not seen: `ln` through another program (`env ln`, `sudo ln`, `busybox ln`), `cp`'s abbreviated long options (`--sym`, `--li`), and an existing link copied or moved as a link (`cp -a`, `cp -R`, `mv`). Each needs `autonomous` and a link to a protected path. Found by the final independent review of the fixes to step 12. | Step 32 (hardening pass); the sandbox of step 26 holds the rest | In step 32 |
