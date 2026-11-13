@@ -20,12 +20,12 @@ use std::collections::BTreeMap;
 
 use cortex_base::UtcTime;
 use cortex_llm::{CooldownChange, SpeedCooldowns, SpeedMove};
+use cortex_protocol::Speed;
 use cortex_protocol::model::{ModelInfo, ModelRole};
 use cortex_protocol::session::RoleState;
 use cortex_protocol::speed::{
     CooldownState, SpeedCooldown, SpeedFallback, SpeedFallbackBy, SpeedFallbackReason,
 };
-use cortex_protocol::Speed;
 
 use crate::config::RoleModel;
 
@@ -88,7 +88,11 @@ fn until(time: Option<UtcTime>) -> String {
 
 /// The `speed_fallback` notice for a request that runs, or ran, at another
 /// speed than its role is set to.
-pub(crate) fn fallback_notice(role: &ModelRole, model: &ModelInfo, moved: &SpeedMove) -> SpeedFallback {
+pub(crate) fn fallback_notice(
+    role: &ModelRole,
+    model: &ModelInfo,
+    moved: &SpeedMove,
+) -> SpeedFallback {
     let tier = label(model, &moved.requested);
     let served = &moved.served;
     let message = if moved.by == SpeedFallbackBy::Provider {
@@ -187,10 +191,7 @@ impl Moves {
             served: moved.served.clone(),
             by: moved.by.clone(),
             cooldown_until: moved.cooldown_until,
-            reason: moved
-                .cooldown_until
-                .is_none()
-                .then(|| moved.reason.clone()),
+            reason: moved.cooldown_until.is_none().then(|| moved.reason.clone()),
         };
         if self.shown.get(role) == Some(&key) {
             return false;
@@ -233,7 +234,11 @@ mod tests {
         settings.roles.insert(ModelRole::Fast, Speed::Fast);
         settings.roles.insert(ModelRole::Main, Speed::Standard);
         assert_eq!(settings.of(&ModelRole::Fast), Speed::Fast);
-        assert_eq!(settings.of(&ModelRole::Main), Speed::Standard, "its own wins");
+        assert_eq!(
+            settings.of(&ModelRole::Main),
+            Speed::Standard,
+            "its own wins"
+        );
     }
 
     #[test]
@@ -270,14 +275,22 @@ mod tests {
     fn a_run_of_downgrades_is_told_once_until_the_tier_is_served_again() {
         let mut moves = Moves::default();
         let main = ModelRole::Main;
-        let downgraded = moved(SpeedFallbackBy::Provider, SpeedFallbackReason::Unspecified, None);
+        let downgraded = moved(
+            SpeedFallbackBy::Provider,
+            SpeedFallbackReason::Unspecified,
+            None,
+        );
         assert!(moves.is_news(&main, &downgraded));
         assert!(!moves.is_news(&main, &downgraded));
         moves.forget(&main);
         assert!(moves.is_news(&main, &downgraded));
 
         // Another reason with no cooldown is other news.
-        let not_offered = moved(SpeedFallbackBy::Harness, SpeedFallbackReason::NotOffered, None);
+        let not_offered = moved(
+            SpeedFallbackBy::Harness,
+            SpeedFallbackReason::NotOffered,
+            None,
+        );
         assert!(moves.is_news(&main, &not_offered));
         assert!(!moves.is_news(&main, &not_offered));
     }

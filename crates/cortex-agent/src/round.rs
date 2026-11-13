@@ -118,7 +118,8 @@ struct Footprint {
 
 impl Footprint {
     fn of(plan: &Plan) -> Self {
-        let mut shadow = Plan::new(plan.summary.clone(), ()).with_concurrency(plan.concurrency.clone());
+        let mut shadow =
+            Plan::new(plan.summary.clone(), ()).with_concurrency(plan.concurrency.clone());
         shadow.effects.clone_from(&plan.effects);
         let mut footprint = Self {
             shadow,
@@ -252,7 +253,12 @@ pub(crate) struct Round {
 const NOT_RUN: &str = "The turn was interrupted before this call ran.";
 
 impl Round {
-    pub(crate) fn new(env: Arc<RoundEnv>, turn: TurnId, turn_number: u32, cancel: CancelToken) -> Self {
+    pub(crate) fn new(
+        env: Arc<RoundEnv>,
+        turn: TurnId,
+        turn_number: u32,
+        cancel: CancelToken,
+    ) -> Self {
         let (tx, rx) = unbounded_channel();
         Self {
             env,
@@ -481,10 +487,8 @@ impl Round {
             let plan_arguments = arguments.clone();
             // Planning may ask the file system where a path leads, which
             // blocks.
-            let planned = run_blocking(&cx.cancel, move |_| {
-                planner.plan(&plan_arguments, &plan_cx)
-            })
-            .await;
+            let planned =
+                run_blocking(&cx.cancel, move |_| planner.plan(&plan_arguments, &plan_cx)).await;
             let (result, stat) = match planned {
                 Ok(Ok(plan)) => {
                     let decision = policy.decide(&PlannedCall {
@@ -509,9 +513,10 @@ impl Round {
                     };
                     (error.into_result(), stat)
                 }
-                Err(BlockingError::Cancelled) => {
-                    (ToolResult::interrupted(NOT_RUN), ToolStatOutcome::Interrupted)
-                }
+                Err(BlockingError::Cancelled) => (
+                    ToolResult::interrupted(NOT_RUN),
+                    ToolStatOutcome::Interrupted,
+                ),
                 Err(BlockingError::Panicked(message)) => (
                     ToolResult::error(format!(
                         "internal error: planning the call panicked ({message})."
@@ -530,7 +535,14 @@ impl Round {
 
     /// The new response asks for a call that already ran for the response
     /// before it: the run, or its result, is used again.
-    fn adopt(&mut self, position: usize, index: u32, call_id: CallId, name: String, arguments: Json) {
+    fn adopt(
+        &mut self,
+        position: usize,
+        index: u32,
+        call_id: CallId,
+        name: String,
+        arguments: Json,
+    ) {
         let cached = self.cache.remove(position);
         let state = match cached.outcome {
             Some(mut outcome) => {
@@ -617,7 +629,11 @@ impl Round {
     }
 
     fn answered(&mut self, token: u64, plan: Plan, verdict: Verdict) {
-        if self.asking.as_ref().is_some_and(|(asked, _)| *asked == token) {
+        if self
+            .asking
+            .as_ref()
+            .is_some_and(|(asked, _)| *asked == token)
+        {
             self.asking = None;
         }
         let Some(position) = self.position(token) else {
@@ -644,7 +660,12 @@ impl Round {
         let call = &mut self.calls[position];
         call.state = CallState::Pending;
         let (token, name) = (call.token, call.name.clone());
-        self.settle_with(token, &name, ToolResult::denied(text), ToolStatOutcome::Denied);
+        self.settle_with(
+            token,
+            &name,
+            ToolResult::denied(text),
+            ToolStatOutcome::Denied,
+        );
     }
 
     fn not_run(&mut self, position: usize) {
@@ -659,7 +680,13 @@ impl Round {
         );
     }
 
-    fn finished(&mut self, token: u64, result: ToolResult, duration: Duration, stat: ToolStatOutcome) {
+    fn finished(
+        &mut self,
+        token: u64,
+        result: ToolResult,
+        duration: Duration,
+        stat: ToolStatOutcome,
+    ) {
         debug_assert!(result.is_bounded(), "every result passes the output policy");
         if let Some(position) = self.position(token) {
             let call = &self.calls[position];
@@ -684,7 +711,13 @@ impl Round {
             // response asks for the same call, whose id then replaces the
             // empty one here.
             let cached = &self.cache[position];
-            let item = self.item(&cached.item_id, &CallId::new(""), &cached.name, result, duration);
+            let item = self.item(
+                &cached.item_id,
+                &CallId::new(""),
+                &cached.name,
+                result,
+                duration,
+            );
             self.cache[position].outcome = Some(Outcome {
                 item,
                 stat,
@@ -913,8 +946,9 @@ impl Round {
     }
 
     fn discard_where(&mut self, discard: impl Fn(&Cached) -> bool) {
-        let (gone, kept): (Vec<Cached>, Vec<Cached>) =
-            std::mem::take(&mut self.cache).into_iter().partition(discard);
+        let (gone, kept): (Vec<Cached>, Vec<Cached>) = std::mem::take(&mut self.cache)
+            .into_iter()
+            .partition(discard);
         self.cache = kept;
         for cached in gone {
             if cached.outcome.is_some() {

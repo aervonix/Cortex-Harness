@@ -205,7 +205,10 @@ mod tests {
         assert_eq!(into_idle, [Finishing, Interrupted]);
         assert!(Idle.may_become(Preparing));
         assert!(!Idle.may_become(Requesting));
-        assert!(!Finishing.may_become(Interrupted), "a flush is not cut short");
+        assert!(
+            !Finishing.may_become(Interrupted),
+            "a flush is not cut short"
+        );
         assert_eq!(ToolRound.to_string(), "tool_round");
     }
 }

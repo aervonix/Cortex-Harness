@@ -11,7 +11,7 @@ use cortex_protocol::model::ModelRole;
 use cortex_protocol::session::SandboxStatus;
 use cortex_protocol::usage::Billing;
 use cortex_protocol::{LeaseId, SessionId, Timestamp};
-use cortex_tools::{ContentStore, FileTable, ImageSupport, MemoryStore, OutputLimits, Outliner};
+use cortex_tools::{ContentStore, FileTable, ImageSupport, MemoryStore, Outliner, OutputLimits};
 
 use crate::guard::RepetitionLimits;
 
@@ -101,8 +101,11 @@ impl Models {
 
     /// Every role that has a model, `main` first.
     pub fn roles(&self) -> impl Iterator<Item = (ModelRole, &RoleModel)> {
-        std::iter::once((ModelRole::Main, &self.main))
-            .chain(self.others.iter().map(|(role, model)| (role.clone(), model)))
+        std::iter::once((ModelRole::Main, &self.main)).chain(
+            self.others
+                .iter()
+                .map(|(role, model)| (role.clone(), model)),
+        )
     }
 
     /// The version of the catalog the prices come from.

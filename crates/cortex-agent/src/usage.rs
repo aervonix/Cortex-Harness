@@ -2,12 +2,12 @@
 //! (`docs/architecture/15-efficiency.md`, "Live usage view").
 
 use cortex_base::UtcTime;
+use cortex_protocol::ProviderId;
 use cortex_protocol::model::ModelRole;
 use cortex_protocol::usage::{
     Cost, LimitSource, LimitWindow, ModelUsage, ProviderLimits, RequestUsage, SessionUsage,
     TokenUsage, UsageTotals,
 };
-use cortex_protocol::ProviderId;
 
 /// Adds one request's tokens to a total, class by class.
 fn add_tokens(total: &mut TokenUsage, tokens: &TokenUsage) {
@@ -112,13 +112,13 @@ impl UsageBook {
             self.usage.cache_hit_rate =
                 (sent > 0).then(|| self.usage.totals.tokens.cache_read as f64 / sent as f64);
             // Output speed, from the first token to the end of the response.
-            self.usage.tokens_per_second = match (request.duration_ms, request.time_to_first_token_ms)
-            {
-                (Some(total), Some(first)) if total > first && request.tokens.output > 0 => {
-                    Some(request.tokens.output as f64 * 1000.0 / (total - first) as f64)
-                }
-                _ => None,
-            };
+            self.usage.tokens_per_second =
+                match (request.duration_ms, request.time_to_first_token_ms) {
+                    (Some(total), Some(first)) if total > first && request.tokens.output > 0 => {
+                        Some(request.tokens.output as f64 * 1000.0 / (total - first) as f64)
+                    }
+                    _ => None,
+                };
         }
         if request.role == ModelRole::Main {
             self.usage.context_tokens =
@@ -204,7 +204,10 @@ mod tests {
             .iter()
             .map(|cost| (cost.usd_nanos, &cost.basis))
             .collect();
-        assert_eq!(costs, [(3_000, &CostBasis::Metered), (400, &CostBasis::Estimate)]);
+        assert_eq!(
+            costs,
+            [(3_000, &CostBasis::Metered), (400, &CostBasis::Estimate)]
+        );
 
         let rows: Vec<(&Speed, u64)> = usage
             .by_model

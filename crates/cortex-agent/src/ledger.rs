@@ -370,7 +370,11 @@ mod tests {
             (reached.kind.clone(), reached.limit, reached.code()),
             (LimitKind::Requests, 2, "request_limit")
         );
-        assert!(reached.message().contains("this turn"), "{}", reached.message());
+        assert!(
+            reached.message().contains("this turn"),
+            "{}",
+            reached.message()
+        );
 
         ledger.begin_turn();
         assert_eq!(ledger.take_request(), Ok(()), "a new turn starts at zero");
@@ -486,8 +490,15 @@ mod tests {
         assert_eq!(ledger.take_request(), Ok(()));
         fake.advance(Duration::from_secs(1));
         let reached = ledger.take_request().unwrap_err();
-        assert_eq!((reached.kind.clone(), reached.code()), (LimitKind::Time, "time_limit"));
-        assert!(reached.message().contains("1 min 30 s"), "{}", reached.message());
+        assert_eq!(
+            (reached.kind.clone(), reached.code()),
+            (LimitKind::Time, "time_limit")
+        );
+        assert!(
+            reached.message().contains("1 min 30 s"),
+            "{}",
+            reached.message()
+        );
         assert_eq!(account.elapsed(), Duration::from_secs(90));
     }
 

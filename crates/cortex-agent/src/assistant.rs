@@ -111,10 +111,13 @@ impl Draft {
                 }
             }
             ModelEvent::ReasoningDelta { index, text } => {
-                let block = self.blocks.entry(index).or_insert_with(|| Block::Reasoning {
-                    text: String::new(),
-                    raw: None,
-                });
+                let block = self
+                    .blocks
+                    .entry(index)
+                    .or_insert_with(|| Block::Reasoning {
+                        text: String::new(),
+                        raw: None,
+                    });
                 if let Block::Reasoning { text: so_far, .. } = block {
                     so_far.push_str(&text);
                     Applied::Delta(Delta::Reasoning(TextDelta { text }))
@@ -158,7 +161,9 @@ impl Draft {
 
     fn end_block(&mut self, index: u32, block_raw: RawJson) -> Applied {
         match self.blocks.get_mut(&index) {
-            Some(Block::Text { raw, .. } | Block::Reasoning { raw, .. } | Block::Provider { raw }) => {
+            Some(
+                Block::Text { raw, .. } | Block::Reasoning { raw, .. } | Block::Provider { raw },
+            ) => {
                 *raw = Some(block_raw);
                 Applied::Nothing
             }
@@ -334,8 +339,11 @@ mod tests {
         });
 
         let parts = draft.parts(Calls::Keep);
-        let [Part::Reasoning(reasoning), Part::Text(said), Part::ProviderBlock(block)] =
-            parts.as_slice()
+        let [
+            Part::Reasoning(reasoning),
+            Part::Text(said),
+            Part::ProviderBlock(block),
+        ] = parts.as_slice()
         else {
             panic!("{parts:?}");
         };
@@ -353,7 +361,11 @@ mod tests {
             assert!(!matches!(draft.apply(event), Applied::Call(_)));
         }
         assert!(draft.ends_in_unfinished_call());
-        assert_eq!(draft.parts(Calls::Keep), [], "an unfinished call is no part");
+        assert_eq!(
+            draft.parts(Calls::Keep),
+            [],
+            "an unfinished call is no part"
+        );
 
         let ended = draft.apply(ModelEvent::BlockEnd {
             index: 1,
@@ -362,7 +374,10 @@ mod tests {
         let Applied::Call(call) = ended else {
             panic!("{ended:?}");
         };
-        assert_eq!((call.index, call.id.as_str(), call.name.as_str()), (1, "c1", "read"));
+        assert_eq!(
+            (call.index, call.id.as_str(), call.name.as_str()),
+            (1, "c1", "read")
+        );
         assert_eq!(call.arguments, Ok(json!({"path": "a.rs"})));
         assert!(!draft.ends_in_unfinished_call());
 
@@ -386,7 +401,11 @@ mod tests {
             panic!("{parts:?}");
         };
         assert_eq!(part.arguments, json!({"path": "a.rs"}));
-        assert_eq!(draft.parts(Calls::Strip), [], "a failed response keeps no call");
+        assert_eq!(
+            draft.parts(Calls::Strip),
+            [],
+            "a failed response keeps no call"
+        );
     }
 
     #[test]
@@ -442,7 +461,10 @@ mod tests {
             }),
             Applied::Nothing
         );
-        assert_eq!(draft.apply(ModelEvent::Usage(cortex_llm::Usage::default())), Applied::Nothing);
+        assert_eq!(
+            draft.apply(ModelEvent::Usage(cortex_llm::Usage::default())),
+            Applied::Nothing
+        );
         assert_eq!(draft.parts(Calls::Keep).len(), 1);
     }
 }
