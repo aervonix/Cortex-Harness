@@ -7,8 +7,10 @@
 //! | Data (sessions) | `$XDG_DATA_HOME/cortex-harness`, usually `~/.local/share/cortex-harness` | `%LOCALAPPDATA%\cortex-harness` |
 //! | Managed configuration | `/etc/cortex-harness/config.toml` | `%ProgramData%\cortex-harness\config.toml` |
 //!
-//! Two variables of our own move things: `CORTEX_CONFIG` names the user's
-//! configuration file, and `CORTEX_DATA_DIR` the data directory.
+//! One variable of our own moves a file here: `CORTEX_CONFIG` names the
+//! user's configuration file. `CORTEX_DATA_DIR` is not read here: it is
+//! the environment layer's `session.data_dir`, so that a managed lock on
+//! that key holds against it, and [`Dirs::data`] is the platform's place.
 //!
 //! Everything is worked out from an [`Env`], never from the process's real
 //! environment, and nothing here touches the file system.
@@ -26,7 +28,7 @@ pub const CONFIG_FILE: &str = "config.toml";
 pub const LOCAL_CONFIG_FILE: &str = "config.local.toml";
 /// The directory in a workspace that holds the project's configuration.
 pub const PROJECT_DIR: &str = ".cortex";
-/// The name of the credentials file, in the configuration directory.
+/// The name of the credentials file, in [`Dirs::credentials`].
 pub const CREDENTIALS_FILE: &str = "credentials.toml";
 
 /// The directories and files of one user on one machine. A location is
@@ -36,8 +38,15 @@ pub const CREDENTIALS_FILE: &str = "credentials.toml";
 pub struct Dirs {
     /// The user's home directory.
     pub home: Option<PathBuf>,
-    /// The configuration directory. The credentials file lives here.
+    /// The configuration directory.
     pub config: Option<PathBuf>,
+    /// Where the credentials file lives: the configuration directory on
+    /// Linux, and on Windows the local application data folder
+    /// (`%LOCALAPPDATA%\cortex-harness`), not the roaming one beside the
+    /// configuration. A stored key stays on its machine (decision 0018),
+    /// and Windows copies a roaming profile to every machine the user signs
+    /// in to.
+    pub credentials: Option<PathBuf>,
     /// The user's configuration file: `config.toml` in the configuration
     /// directory, unless `CORTEX_CONFIG` names another file.
     pub user_config: Option<PathBuf>,
@@ -46,8 +55,10 @@ pub struct Dirs {
     /// The state directory: trust, approvals, caches, logs. Nothing in it
     /// is needed to run.
     pub state: Option<PathBuf>,
-    /// The data directory, where sessions are stored, before configuration
-    /// has had its say (`session.data_dir`).
+    /// The platform's data directory, where sessions are stored unless
+    /// configuration says otherwise. `session.data_dir`, which the
+    /// `CORTEX_DATA_DIR` variable sets, is the other way to it:
+    /// [`Loaded::data_dir`](crate::Loaded::data_dir) gives the answer.
     pub data: Option<PathBuf>,
 }
 
@@ -65,19 +76,23 @@ impl Dirs {
         };
         let app = |base: Option<PathBuf>| base.map(|base| base.join(APP_DIR));
 
-        let (config, state, data, managed_config) = match env.platform() {
-            Platform::Unix => (
-                app(env
+        let (config, state, data, managed_config, credentials) = match env.platform() {
+            Platform::Unix => {
+                let config = app(env
                     .absolute_path("XDG_CONFIG_HOME")
-                    .or_else(|| under_home(&[".config"]))),
-                app(env
-                    .absolute_path("XDG_STATE_HOME")
-                    .or_else(|| under_home(&[".local", "state"]))),
-                app(env
-                    .absolute_path("XDG_DATA_HOME")
-                    .or_else(|| under_home(&[".local", "share"]))),
-                Some(PathBuf::from("/etc").join(APP_DIR).join(CONFIG_FILE)),
-            ),
+                    .or_else(|| under_home(&[".config"])));
+                (
+                    config.clone(),
+                    app(env
+                        .absolute_path("XDG_STATE_HOME")
+                        .or_else(|| under_home(&[".local", "state"]))),
+                    app(env
+                        .absolute_path("XDG_DATA_HOME")
+                        .or_else(|| under_home(&[".local", "share"]))),
+                    Some(PathBuf::from("/etc").join(APP_DIR).join(CONFIG_FILE)),
+                    config,
+                )
+            }
             Platform::Windows => {
                 let local = app(env
                     .absolute_path("LOCALAPPDATA")
@@ -87,8 +102,9 @@ impl Dirs {
                         .absolute_path("APPDATA")
                         .or_else(|| under_home(&["AppData", "Roaming"]))),
                     local.as_ref().map(|local| local.join("state")),
-                    local,
+                    local.clone(),
                     app(env.absolute_path("ProgramData")).map(|dir| dir.join(CONFIG_FILE)),
+                    local,
                 )
             }
         };
@@ -97,19 +113,25 @@ impl Dirs {
             user_config: env
                 .absolute_path("CORTEX_CONFIG")
                 .or_else(|| config.as_ref().map(|dir| dir.join(CONFIG_FILE))),
-            data: env.absolute_path("CORTEX_DATA_DIR").or(data),
+            // Not `CORTEX_DATA_DIR`: that variable is the environment layer's
+            // `session.data_dir`, which a managed lock holds. Read here as
+            // well, it would move a data directory the lock keeps in place.
+            data,
             home,
             config,
+            credentials,
             managed_config,
             state,
         }
     }
 
-    /// The credentials file: `credentials.toml` in the configuration
-    /// directory.
+    /// The credentials file: `credentials.toml` in
+    /// [`credentials`](Self::credentials).
     #[must_use]
     pub fn credentials_file(&self) -> Option<PathBuf> {
-        self.config.as_ref().map(|dir| dir.join(CREDENTIALS_FILE))
+        self.credentials
+            .as_ref()
+            .map(|dir| dir.join(CREDENTIALS_FILE))
     }
 }
 
@@ -216,6 +238,13 @@ mod tests {
         assert_eq!(dirs.config, Some(roaming.clone()));
         assert_eq!(dirs.user_config, Some(roaming.join("config.toml")));
         assert_eq!(dirs.state, Some(local.join("state")));
+        // A stored key stays on its machine: the credentials file is in the
+        // local folder, which Windows does not copy to the user's other
+        // machines, not in the roaming one beside the configuration.
+        assert_eq!(
+            dirs.credentials_file(),
+            Some(local.join("credentials.toml"))
+        );
         assert_eq!(dirs.data, Some(local));
         assert_eq!(
             dirs.managed_config,
@@ -234,18 +263,26 @@ mod tests {
         let mut expected = PathBuf::from(r"C:\People\someone");
         expected.extend(["AppData", "Roaming", "cortex-harness"]);
         assert_eq!(bare.config, Some(expected));
+        let mut expected = PathBuf::from(r"C:\People\someone");
+        expected.extend(["AppData", "Local", "cortex-harness"]);
+        assert_eq!(bare.credentials, Some(expected));
         assert_eq!(bare.managed_config, None);
     }
 
     #[test]
-    fn our_own_variables_move_the_user_file_and_the_data_directory() {
+    fn our_own_variable_moves_the_user_file_and_not_the_data_directory() {
         let env = Env::empty(Platform::Unix)
             .with("HOME", "/users/someone")
             .with("CORTEX_CONFIG", "/elsewhere/my.toml")
             .with("CORTEX_DATA_DIR", "/big-disk/cortex");
         let dirs = Dirs::from_env(&env);
         assert_eq!(dirs.user_config, Some(PathBuf::from("/elsewhere/my.toml")));
-        assert_eq!(dirs.data, Some(PathBuf::from("/big-disk/cortex")));
+        // The data directory variable is a setting, `session.data_dir`, in
+        // the environment layer, where a managed lock holds against it.
+        assert_eq!(
+            dirs.data,
+            Some(PathBuf::from("/users/someone/.local/share/cortex-harness"))
+        );
         // The credentials file stays in the configuration directory.
         assert_eq!(
             dirs.credentials_file(),

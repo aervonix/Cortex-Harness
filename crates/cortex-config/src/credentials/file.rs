@@ -152,7 +152,7 @@ impl FileStore {
             Some(parent) if !parent.as_os_str().is_empty() => parent,
             _ => Path::new("."),
         };
-        // A missing configuration directory is created for the user alone.
+        // A missing directory is created for the user alone.
         // One that exists is left as it is: the file is private by itself.
         private::create_dir_all(directory).map_err(self.io("create the directory of"))?;
         let _lock = self.lock()?;

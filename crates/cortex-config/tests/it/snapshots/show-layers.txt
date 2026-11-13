@@ -50,7 +50,7 @@ permissions.rules = [
 profile = "review"                          # user: ~/cortex/config.toml:2
 providers.local.base_url = "http://localhost:11434"  # user: ~/cortex/config.toml:13
 providers.local.first_event_timeout = "5m"  # user: ~/cortex/config.toml:14
-providers.local.headers = { Authorization = { env = "LOCAL_TOKEN" }, X-Team = "tools" }  # user: ~/cortex/config.toml:15
+providers.local.headers = { Authorization = { env = "LOCAL_TOKEN" }, X-Team = "[redacted]" }  # user: ~/cortex/config.toml:15
 retry.attempts = 3                          # user: ~/cortex/config.toml:18
 sandbox.enabled = false                     # user: ~/cortex/config.toml:21
 tui.theme = "dusk"                          # user: ~/cortex/config.toml:36

@@ -38,6 +38,32 @@ fn a_missing_state_directory_is_created_for_the_user_alone() {
     assert!(!scratch.join("outside").exists());
 }
 
+/// "Inside the state directory" is a matter of names, and `..` is not one:
+/// the operating system follows it out. Before, a path that started with
+/// the state directory's text and climbed out was created.
+#[test]
+fn ensure_dir_refuses_a_path_that_climbs_out() {
+    let scratch = Scratch::new("state_dot_dot");
+    let state = StateDir::new(scratch.join("state"));
+    state.ensure().unwrap();
+    for outside in [
+        "state/../escaped",
+        "state/projects/../../escaped",
+        "state/projects/x/../../../escaped",
+    ] {
+        let error = state.ensure_dir(&scratch.join(outside)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{outside}");
+        assert!(!scratch.join("escaped").exists(), "{outside}");
+    }
+    // A `..` that stays inside is refused too: there is no reason to write
+    // one, and checking where it leads would mean asking the file system.
+    assert!(state.ensure_dir(&scratch.join("state/a/../b")).is_err());
+    assert!(!scratch.join("state/b").exists());
+    // `.` is harmless.
+    state.ensure_dir(&scratch.join("state/./logs")).unwrap();
+    assert!(scratch.join("state/logs").is_dir());
+}
+
 #[test]
 fn a_state_directory_that_is_open_to_others_is_reported_and_not_changed() {
     let scratch = Scratch::new("state_existing");

@@ -26,6 +26,7 @@ mod generated;
 mod layers;
 mod loading;
 mod measure;
+mod printing;
 mod provenance;
 mod reloading;
 mod state;

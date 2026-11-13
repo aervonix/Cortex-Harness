@@ -31,7 +31,7 @@
 )]
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use cortex_base::{AtomicWriteError, AtomicWriteOptions, Clock, private, write_atomic};
 use cortex_protocol::ProjectKey;
@@ -160,9 +160,15 @@ impl StateDir {
     /// # Errors
     ///
     /// When `directory` is not inside the state directory, or cannot be
-    /// created.
+    /// created. "Inside" is a matter of names: a `..` after the state
+    /// directory is refused, because the operating system would follow it
+    /// out.
     pub fn ensure_dir(&self, directory: &Path) -> io::Result<()> {
-        if !directory.starts_with(&self.root) {
+        let inside = directory.strip_prefix(&self.root).is_ok_and(|rest| {
+            rest.components()
+                .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+        });
+        if !inside {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "the directory is not inside the state directory",

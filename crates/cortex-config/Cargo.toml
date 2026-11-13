@@ -29,5 +29,8 @@ toml = { workspace = true, features = ["display"] }
 keyring-core.workspace = true
 windows-native-keyring-store.workspace = true
 
+[dev-dependencies]
+cortex-testkit.workspace = true
+
 [lints]
 workspace = true

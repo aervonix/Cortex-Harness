@@ -2,7 +2,7 @@
 //! (`docs/architecture/08-configuration.md`, "Layers", "Merge rules" and
 //! "Profiles").
 
-use cortex_config::{LayerKind, Override};
+use cortex_config::{KeyPath, LayerKind, Override};
 
 use crate::{Machine, layer_of, value};
 
@@ -493,6 +493,108 @@ fn a_lock_is_reported_where_it_bites() {
         ]
     );
     assert_eq!(value(&loaded, "permissions.mode"), "\"read-only\"");
+}
+
+/// A lock on `profile` holds against `--profile` too: the managed file's
+/// choice stays, or no profile when it made none. Before, the flag won.
+#[test]
+fn the_profile_flag_cannot_pass_a_lock_on_the_profile() {
+    let mut machine = Machine::new("layers_lock_profile");
+    machine.layer(
+        LayerKind::Managed,
+        "profile = \"corp\"\n[managed]\nlocked = [\"profile\"]\n\
+         [profiles.corp]\nsandbox.network = \"off\"\n",
+    );
+    machine.layer(
+        LayerKind::User,
+        "profile = \"mine\"\n[profiles.mine]\nsandbox.network = \"full\"\n",
+    );
+    machine.options.profile = Some("mine".to_owned());
+    let loaded = machine.load();
+    assert_eq!(loaded.profile.as_deref(), Some("corp"));
+    assert_eq!(value(&loaded, "profile"), "\"corp\"");
+    assert_eq!(layer_of(&loaded, "profile"), "managed");
+    assert_eq!(value(&loaded, "sandbox.network"), "\"off\"");
+    assert!(loaded.is_locked(&KeyPath::parse("profile").unwrap()));
+    assert_eq!(
+        machine.said(&loaded),
+        [
+            "note: command-line: profile: locked by the managed configuration; `--profile mine` \
+             is not used",
+            "note: ~/cortex/config.toml:1: profile: locked by the managed configuration; this \
+             value is not used",
+        ]
+    );
+
+    // A lock with no profile chosen keeps every profile off.
+    machine.layer(
+        LayerKind::Managed,
+        "[managed]\nlocked = [\"profile\"]\n",
+    );
+    let loaded = machine.load();
+    assert_eq!(loaded.profile, None);
+    assert_eq!(value(&loaded, "sandbox.network"), "\"off\"");
+}
+
+/// A value replaces whatever is at its key whole. One set where a lock
+/// holds a key further in, by any layer above the managed file, would
+/// remove the locked entry, so it counts as locked. Before, `servers =
+/// "none"` and `audit = false` dropped what the managed file locked.
+#[test]
+fn a_value_cannot_replace_a_table_that_holds_a_locked_key() {
+    let mut machine = Machine::new("layers_lock_parent");
+    machine.layer(
+        LayerKind::Managed,
+        "[managed]\nlocked = [\"mcp.servers.corp\", \"hooks.audit.command\", \
+         \"providers.corp.headers.X-Audit\"]\n\
+         [mcp.servers.corp]\ncommand = \"corp-proxy\"\n\
+         [hooks.audit]\ncommand = \"audit-log\"\n\
+         [providers.corp]\nheaders = { X-Audit = \"on\" }\n",
+    );
+    for (layer, text) in [
+        (
+            LayerKind::User,
+            "[mcp]\nservers = \"none\"\n[hooks]\naudit = false\n\
+             [providers.corp]\nheaders = { X-Other = \"1\" }\n",
+        ),
+        (LayerKind::Project, "[mcp]\nservers = []\n[hooks]\naudit = 0\n"),
+    ] {
+        machine.layer(LayerKind::User, "").layer(LayerKind::Project, "");
+        machine.layer(layer, text);
+        machine.trusted();
+        let loaded = machine.load();
+        assert!(loaded.is_locked(&KeyPath::parse("mcp.servers.corp").unwrap()));
+        assert_eq!(
+            value(&loaded, "mcp.servers.corp.command"),
+            "\"corp-proxy\"",
+            "{layer}"
+        );
+        assert_eq!(value(&loaded, "hooks.audit.command"), "\"audit-log\"", "{layer}");
+        assert_eq!(
+            loaded.settings.providers["corp"].headers.0.keys().collect::<Vec<_>>(),
+            ["X-Audit"],
+            "{layer}"
+        );
+        let notes = machine
+            .said(&loaded)
+            .into_iter()
+            .filter(|line| line.contains("locked by the managed configuration"))
+            .count();
+        assert_eq!(notes, if layer == LayerKind::User { 3 } else { 2 }, "{layer}");
+    }
+
+    // A table merges key by key, so one that leaves the locked key alone
+    // is applied beside it.
+    machine.layer(LayerKind::Project, "");
+    machine.layer(
+        LayerKind::User,
+        "[mcp.servers.mine]\ncommand = \"mine\"\n[hooks.audit]\nwhen = \"start\"\n",
+    );
+    let loaded = machine.load();
+    assert_eq!(value(&loaded, "mcp.servers.mine.command"), "\"mine\"");
+    assert_eq!(value(&loaded, "mcp.servers.corp.command"), "\"corp-proxy\"");
+    assert_eq!(value(&loaded, "hooks.audit.when"), "\"start\"");
+    assert!(loaded.diagnostics.is_empty(), "{:?}", machine.said(&loaded));
 }
 
 #[test]

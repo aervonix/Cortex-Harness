@@ -5,6 +5,7 @@
 //! |---|---|
 //! | re-exports | [`FakeClock`] and [`SeededRng`], which live in `cortex-base` beside the traits they implement. |
 //! | [`cases`] | Property tests without a property-testing crate. |
+//! | [`canary`] | [`assert_never_printed`]: no `Debug` or `Display` form of a value holds a made-up key. |
 //! | [`timer`] | [`FakeTimer`]: waits that move the fake clock instead of waiting. |
 //! | [`gate`] | [`Gate`]: how two sides of a test take turns without sleeping. |
 //! | [`children`] | Child processes for process tests: the test binary run again as a child, a grandchild or a child that will not stop, and a [`Roll`](children::Roll) that shows each one start and die. |
@@ -32,6 +33,7 @@
     reason = "test support fails by panicking, with a message that says what was expected"
 )]
 
+pub mod canary;
 pub mod cases;
 pub mod children;
 pub mod exec;
@@ -44,6 +46,7 @@ pub mod server;
 pub mod timer;
 pub mod transport;
 
+pub use canary::{Printed, assert_never_printed};
 pub use cortex_base::{Clock, FakeClock, Rng, SeededRng};
 pub use exec::{block_on, join};
 pub use gate::Gate;

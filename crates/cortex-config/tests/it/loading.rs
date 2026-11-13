@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use cortex_config::schema::StoreChoice;
-use cortex_config::{LayerKind, Override};
+use cortex_config::{Dirs, LayerKind, Override};
 use cortex_protocol::{ModelRole, Speed};
 
 use crate::{Machine, layer_of, value, write};
@@ -150,6 +150,42 @@ fn a_file_that_cannot_be_text_is_an_error_not_a_layer_to_skip() {
     );
 }
 
+/// A project can put a link where its configuration file goes, to any
+/// file of the user's. What a parse error says about such a file must not
+/// repeat any of it. Before, a number too large for TOML was repeated
+/// whole.
+#[test]
+fn a_parse_error_never_repeats_the_file() {
+    const KEY: &str = "sk-test-leak-0001";
+    for (name, text) in [
+        ("environ", format!("ANTHROPIC_API_KEY={KEY}\0PATH=/usr/bin\0")),
+        (
+            "aws",
+            format!("[default]\naws_access_key_id = AKIATESTLEAK0001\naws_secret_access_key = {KEY}\n"),
+        ),
+        (
+            "pem",
+            format!("-----BEGIN OPENSSH PRIVATE KEY-----\n{KEY}\n-----END OPENSSH PRIVATE KEY-----\n"),
+        ),
+        ("netrc", format!("machine example.com login me password {KEY}\n")),
+        ("number", format!("key = 1{KEY}\n")),
+        ("string", format!("key = \"{KEY}\nnext = 1\n")),
+        ("dotted", format!("{KEY} = = 1\n")),
+        ("duplicate", format!("a = \"{KEY}\"\na = \"{KEY}\"\n")),
+        ("large", format!("a = 99999999999999999999999 # {KEY}\n")),
+        ("larger", "a = 1234567890123456789012345678901234567890\n".to_owned()),
+    ] {
+        let machine = Machine::new(&format!("load_parse_{name}"));
+        machine.layer(LayerKind::Project, &text);
+        let failure = machine.try_load().expect_err("not TOML");
+        let shown = format!("{} / {failure} / {failure:?}", failure.render(machine.env()));
+        for secret in [KEY, "AKIATESTLEAK", "1234567890123", "99999999"] {
+            assert!(!shown.contains(secret), "{name}: the error repeats the file: {shown}");
+        }
+        assert!(shown.contains("is not valid TOML"), "{name}: {shown}");
+    }
+}
+
 #[test]
 fn a_command_line_setting_is_read_as_its_key_wants_it() {
     let mut machine = Machine::new("load_cli");
@@ -282,6 +318,40 @@ fn the_environment_layer_is_a_short_fixed_list() {
         ]
     );
     assert_eq!(layer_of(&loaded, "session.data_dir"), "default");
+}
+
+/// `CORTEX_DATA_DIR` sets `session.data_dir` in the environment layer and
+/// nowhere else, so a managed lock on the key holds against it. Before,
+/// the platform's directory was read from the variable as well, and a
+/// locked data directory left at its default moved with it.
+#[test]
+fn the_data_directory_variable_cannot_move_a_locked_data_directory() {
+    let mut machine = Machine::new("load_data_dir_lock");
+    machine.layer(
+        LayerKind::Managed,
+        "[managed]\nlocked = [\"session.data_dir\"]\n",
+    );
+    let before = machine.load().data_dir();
+    let elsewhere = machine.home().join("elsewhere");
+    machine
+        .options
+        .env
+        .set("CORTEX_DATA_DIR", elsewhere.to_str().unwrap());
+    // As the binary does: the directories from the environment as it is.
+    let managed = machine.options.dirs.managed_config.clone();
+    machine.options.dirs = Dirs::from_env(&machine.options.env);
+    machine.options.dirs.managed_config = managed;
+    let loaded = machine.load();
+    assert_eq!(loaded.data_dir(), before);
+    assert_eq!(
+        machine.said(&loaded),
+        ["note: environment: session.data_dir: locked by the managed configuration; this value \
+          is not used"]
+    );
+
+    // Without the lock the variable moves it.
+    machine.layer(LayerKind::Managed, "");
+    assert_eq!(machine.load().data_dir(), Some(elsewhere));
 }
 
 #[test]
