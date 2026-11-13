@@ -117,6 +117,11 @@ Response headers say what is left only after a request has been made, and some f
 
 The endpoints themselves are provider facts that go stale. The step that builds each provider's refresh starts by reading that provider's current documentation and records what it read, as the provider steps do.
 
+**The first three endpoints** were built with the `openai-chat` protocol in step 31, as far as a provider's side goes: which request to make, and how to read the answer ([04-providers.md](04-providers.md), "The `openai-chat` protocol"). OpenRouter, DeepSeek and Venice.ai each document one that an ordinary key can call. OpenAI's takes an admin key, so it has none. Two things came out of it for this view:
+
+- **They report balances, in a currency.** A limit window counts requests or tokens, and none of the three reports those through its endpoint as something left. What they report is money: US dollars, yuan, one provider's own unit. How a balance is shown here, and what carries it, is open ([outstanding/a-balance-in-the-usage-view.md](../outstanding/a-balance-in-the-usage-view.md)).
+- **An answer is read and dropped.** One provider's answer holds a shortened form of the key. Nothing of an answer but its figures may be kept, shown or logged.
+
 ## Usage recorded by other tools
 
 Many people run more than one coding agent. The view can include what the others recorded on this machine.
