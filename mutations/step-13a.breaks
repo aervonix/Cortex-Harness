@@ -1,0 +1,1020 @@
+# Step 13a: the core, in cortex-core, and what it added to cortex-base,
+# cortex-tools, cortex-session and cortex-policy.
+#
+# Each seam between the core and the crate whose trait or hook it fills is
+# broken here: an adapter that drops a case, trust not passed to one of the
+# places that need it, a secret that reaches the disk, a variable left in a
+# command's environment, an answer taken from a client that may not give it,
+# a denial that does not stop. And each finding of the step's independent
+# review, with the fix taken out.
+
+[break] read-only-allow-told-as-allow
+rule: A command the engine knows changes nothing is told to the loop as read-only, so it is scheduled beside other calls and not looked at for changes.
+file: crates/cortex-core/src/policy.rs
+find: Outcome::Allow { read_only: true } => Decision::AllowReadOnly
+replace: Outcome::Allow { read_only: true } => Decision::Allow
+caught-by:
+    cortex-core::it gates::sys_a_command_that_only_reads_is_told_to_the_loop_as_changing_nothing
+
+[break] denial-told-as-allow
+rule: A call the engine denies is told to the loop as a denial, with the engine's reason.
+file: crates/cortex-core/src/policy.rs
+find:
+    Outcome::Deny { reason } => Decision::Deny {
+        reason: Some(reason),
+    }
+replace: Outcome::Deny { .. } => Decision::Allow
+caught-by:
+    cortex-core::it gates::a_rule_that_denies_is_a_refusal_with_its_reason_and_the_run_goes_on
+    cortex-core::it settings::the_level_can_be_lowered_by_whoever_drives_and_raised_only_by_a_user
+
+[break] write-not-shown-to-engine
+rule: Every effect a call declares is shown to the engine: a write is judged as a write of its path.
+file: crates/cortex-core/src/policy.rs
+find:
+    Effect::Write(path) => Access::Write {
+        path: path.abs().clone(),
+    }
+replace: Effect::Write(_) => return None
+caught-by:
+    cortex-core::it approvals::a_call_that_needs_an_answer_is_put_to_the_user_and_runs_when_allowed
+    cortex-core::it approvals::a_denial_with_a_note_reaches_the_model_and_the_run_goes_on
+
+[break] walk-not-shown-to-engine
+rule: A walk of a directory is shown to the engine as a read of that tree, so one that starts outside the workspace is asked about.
+file: crates/cortex-core/src/policy.rs
+find:
+    Effect::ReadTree(path) => Access::ReadTree {
+        path: path.abs().clone(),
+    }
+replace: Effect::ReadTree(_) => return None
+caught-by:
+    cortex-core::it gates::a_walk_does_not_return_what_the_read_rules_keep_from_the_agent
+    cortex-core::it gates::a_walk_outside_the_workspace_is_asked_about
+
+[break] trust-not-given-to-configuration
+rule: Configuration is loaded with the answer about the project's trust: a trusted project's settings that need trust apply.
+file: crates/cortex-core/src/assemble.rs
+find:
+    options.trust = if trusted {
+        cortex_config::ProjectTrust::Trusted
+    } else {
+replace:
+    options.trust = if trusted && false {
+        cortex_config::ProjectTrust::Trusted
+    } else {
+caught-by:
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+    cortex-core::it trust::sys_trust_for_the_run_reaches_all_four
+
+[break] engine-told-no-project-is-trusted
+rule: The engine is given the answer about trust it was handed: a trusted project's allow rules count.
+file: crates/cortex-core/src/assemble.rs
+find:
+    home,
+    trusted,
+    protected
+replace:
+    home,
+    trusted: false,
+    protected
+caught-by:
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+    cortex-core::it trust::sys_trust_for_the_run_reaches_all_four
+
+[break] engine-told-every-project-is-trusted
+rule: The engine is given the answer about trust it was handed: in an untrusted project git is not a command that only reads.
+file: crates/cortex-core/src/assemble.rs
+find:
+    home,
+    trusted,
+    protected
+replace:
+    home,
+    trusted: true,
+    protected
+caught-by:
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+    cortex-core::it trust::sys_a_trust_store_that_cannot_be_read_trusts_nothing_and_says_so
+
+[break] raw-block-with-secret-written
+rule: A provider's own block that holds a secret is never written: the message is stored as its neutral projection.
+file: crates/cortex-core/src/redact.rs
+find:
+    Item::AssistantMessage(message) if has_secret_in_raw(filter, message) => {
+        Some(Item::AssistantMessage(neutral(message)))
+    }
+replace:
+    Item::AssistantMessage(message) if false && has_secret_in_raw(filter, message) => {
+        Some(Item::AssistantMessage(neutral(message)))
+    }
+caught-by:
+    cortex-core redact::tests::a_message_with_a_secret_in_a_raw_block_is_stored_as_its_neutral_projection
+    cortex-core redact::tests::a_secret_behind_the_escapes_of_a_raw_block_is_found
+
+[break] neutral-projection-keeps-raw
+rule: The neutral projection of a message has no raw blocks.
+file: crates/cortex-core/src/redact.rs
+find:
+    let mut text = text.clone();
+    text.raw = None;
+replace: let text = text.clone();
+caught-by:
+    cortex-core redact::tests::a_message_with_a_secret_in_a_raw_block_is_stored_as_its_neutral_projection
+    cortex-core::it secrets::a_provider_block_that_holds_a_secret_is_never_written_and_the_live_session_keeps_it
+
+[break] resume-ignores-the-redacted-mark
+rule: After a resume, every assistant message from the first altered entry to the end of its epoch is sent as its neutral projection.
+file: crates/cortex-core/src/redact.rs
+find: altered |= entry.redacted;
+replace: altered |= false && entry.redacted;
+caught-by:
+    cortex-core::it secrets::a_provider_block_that_holds_a_secret_is_never_written_and_the_live_session_keeps_it
+    cortex-core::it secrets::a_resumed_session_does_not_replay_reasoning_against_a_history_redaction_changed
+
+[break] session-store-has-no-redactor
+rule: The session store writes through the core's secret filter.
+file: crates/cortex-core/src/assemble.rs
+find: redactor: Arc::new(LogRedactor(Arc::clone(&filter)))
+replace: redactor: Arc::new(cortex_session::NoRedaction)
+caught-by:
+    cortex-core::it provider::the_built_in_provider_is_asked_with_the_users_key_where_its_protocol_wants_it
+    cortex-core::it secrets::a_key_found_while_a_session_runs_is_masked_in_that_session
+
+[break] analysis-variables-left-in
+rule: `CDPATH`, `OLDPWD` and `RIPGREP_CONFIG_PATH` are removed from what every shell command is given.
+file: crates/cortex-tools/src/shell/env.rs
+find: && !ANALYSIS_REMOVED.iter().any(|pattern| same(name, pattern))
+replace:
+packages: cortex-core, cortex-tools
+caught-by:
+    cortex-core::it shell::sys_a_command_is_given_the_environment_the_command_analysis_relies_on
+    cortex-tools shell::env::tests::what_the_command_analysis_relies_on_is_removed
+
+[break] fsmonitor-not-turned-off
+rule: Git's file-system monitor is turned off in every shell command's environment.
+file: crates/cortex-tools/src/shell/env.rs
+find: no_fsmonitor(&mut env, &same);
+replace:
+packages: cortex-core, cortex-tools
+caught-by:
+    cortex-core::it shell::sys_a_command_is_given_the_environment_the_command_analysis_relies_on
+    cortex-tools shell::env::tests::a_count_git_would_refuse_counts_nothing
+
+[break] fsmonitor-at-the-users-first-number
+rule: The monitor setting is added after the settings the user's environment already counts for git.
+file: crates/cortex-tools/src/shell/env.rs
+find:
+        .unwrap_or(0);
+    let key = format!("{GIT_CONFIG_KEY}{count}");
+replace:
+        .unwrap_or(0)
+        .min(0);
+    let key = format!("{GIT_CONFIG_KEY}{count}");
+packages: cortex-core, cortex-tools
+caught-by:
+    cortex-core::it shell::sys_a_command_is_given_the_environment_the_command_analysis_relies_on
+    cortex-tools shell::env::tests::a_count_git_would_refuse_counts_nothing
+
+[break] path-keeps-relative-entries
+rule: `PATH` keeps only its absolute directories.
+file: crates/cortex-tools/src/shell/env.rs
+find: *value = absolute_entries(value, windows);
+replace: let _ = absolute_entries(value, windows);
+packages: cortex-core, cortex-tools
+caught-by:
+    cortex-core::it shell::sys_a_command_is_given_the_environment_the_command_analysis_relies_on
+    cortex-tools shell::env::tests::on_windows_path_is_found_under_any_spelling_and_read_as_windows_reads_it
+
+[break] provider-key-variables-left-in
+rule: The key variable of every configured provider is removed from what a shell command is given.
+file: crates/cortex-core/src/assemble.rs
+find: let mut env_remove = provider::key_variables(settings);
+replace: let mut env_remove: Vec<String> = Vec::new();
+caught-by:
+    cortex-core::it shell::sys_a_command_is_given_the_environment_the_command_analysis_relies_on
+
+[break] env-remove-not-passed-on
+rule: `shell.env_remove` is added to what is removed from a shell command's environment.
+file: crates/cortex-core/src/assemble.rs
+find: env_remove.extend(settings.shell.env_remove.iter().cloned());
+replace:
+caught-by:
+    cortex-core::it shell::sys_a_command_is_given_the_environment_the_command_analysis_relies_on
+
+[break] every-approver-is-asked
+rule: Only `user` clients that answer approvals are asked whether a call may run.
+file: crates/cortex-core/src/clients.rs
+find: entry.info.role == ClientRole::User && entry.info.capabilities.approvals
+replace: entry.info.capabilities.approvals
+caught-by:
+    cortex-core clients::tests::an_answer_counts_only_from_a_user_client_that_was_asked
+    cortex-core::it approvals::only_a_user_client_is_asked_and_only_its_answer_counts
+
+[break] answer-taken-from-any-role
+rule: Only a `user` client's answer to an approval counts.
+file: crates/cortex-core/src/clients.rs
+find: if role != Some(ClientRole::User) {
+replace: if role.is_none() {
+caught-by:
+    cortex-core clients::tests::an_answer_counts_only_from_a_user_client_that_was_asked
+
+[break] answer-taken-from-a-client-not-asked
+rule: An answer counts only from a client the request was put to.
+file: crates/cortex-core/src/clients.rs
+find: if !request.asked.contains(&client.0) {
+replace: if false && !request.asked.contains(&client.0) {
+caught-by:
+    cortex-core clients::tests::a_user_client_that_joins_is_put_what_is_waiting
+    cortex-core clients::tests::an_answer_counts_only_from_a_user_client_that_was_asked
+
+[break] observer-drives-a-session
+rule: An observer cannot change a session: it may not start a turn, interrupt one, change settings or the plan.
+file: crates/cortex-core/src/core.rs
+find: Some(ClientRole::User | ClientRole::Supervisor) => Ok(())
+replace: Some(_) => Ok(())
+caught-by:
+    cortex-core::it approvals::an_observer_starts_nothing_changes_no_history_and_ends_nothing
+    cortex-core::it approvals::only_a_user_client_is_asked_and_only_its_answer_counts
+
+[break] anybody-raises-the-level
+rule: Only a `user` client may raise a session's level.
+file: crates/cortex-core/src/core.rs
+find: if raises && role != Some(ClientRole::User) {
+replace: if false && raises && role != Some(ClientRole::User) {
+caught-by:
+    cortex-core::it settings::the_level_can_be_lowered_by_whoever_drives_and_raised_only_by_a_user
+
+[break] fail-on-denial-does-not-stop
+rule: With `fail_on_denial`, a call that needs an answer nobody can give ends the turn through the loop's `Stop`.
+file: crates/cortex-core/src/policy.rs
+find:
+    if self.fail_on_denial {
+        Verdict::Stop { reason }
+replace:
+    if false && self.fail_on_denial {
+        Verdict::Stop { reason }
+caught-by:
+    cortex-core::it approvals::with_fail_on_denial_a_call_nobody_can_answer_ends_the_turn_as_denied
+
+[break] denial-not-recorded
+rule: A call refused because nobody could be asked is kept for the result's `permission_denials`.
+file: crates/cortex-core/src/policy.rs
+find:
+    .push(PermissionDenial {
+        turn_id: call.turn.clone(),
+        call_id: call.call_id.clone(),
+        tool: call.spec.name.clone(),
+        summary: call.plan.summary.clone(),
+        reason: question.reasons.join("; "),
+    });
+replace: .clear();
+caught-by:
+    cortex-core::it approvals::with_fail_on_denial_a_call_nobody_can_answer_ends_the_turn_as_denied
+    cortex-core::it approvals::with_nobody_to_ask_the_call_is_refused_recorded_and_the_run_goes_on
+
+[break] nobody-to-ask-allows
+rule: A call that needs an answer runs only when somebody allows it: with nobody to ask it is refused.
+file: crates/cortex-core/src/policy.rs
+find:
+    if asked.is_empty() {
+        return self.nobody(&call, &question);
+    }
+replace:
+    if asked.is_empty() {
+        return Verdict::Allow;
+    }
+caught-by:
+    cortex-core::it approvals::with_fail_on_denial_a_call_nobody_can_answer_ends_the_turn_as_denied
+    cortex-core::it approvals::with_nobody_to_ask_the_call_is_refused_recorded_and_the_run_goes_on
+
+[break] approval-time-limit-not-applied
+rule: An approval nobody answers within the time limit is a denial.
+file: crates/cortex-core/src/policy.rs
+find: let mut limit = self.timeout.map(|limit| self.timer.sleep(limit));
+replace: let mut limit: Option<cortex_base::Sleep> = None;
+caught-by:
+    cortex-core::it approvals::an_approval_nobody_answers_in_time_is_a_denial
+
+[break] denial-recorded-as-allow
+rule: A person's denial is a denial.
+file: crates/cortex-core/src/policy.rs
+find: Ok(Ok(recorded)) => recorded.allowed
+replace: Ok(Ok(_)) => true
+caught-by:
+    cortex-core::it approvals::a_denial_with_a_note_reaches_the_model_and_the_run_goes_on
+    cortex-core::it approvals::the_first_answer_wins_and_the_other_client_is_told
+
+[break] stored-approvals-not-loaded
+rule: Approvals stored for the project are in force when a session starts.
+file: crates/cortex-core/src/assemble.rs
+find: Some(Ok(approved)) => approved
+replace: Some(Ok(_)) => Vec::new()
+caught-by:
+    cortex-core::it approvals::allowed_for_the_project_is_stored_outlives_the_run_and_can_be_revoked
+
+[break] second-interrupt-is-the-first
+rule: `turn/interrupt` with `now` is the second interrupt: running commands are killed at once.
+file: crates/cortex-core/src/core.rs
+find: let result = if params.now {
+replace: let result = if false && params.now {
+caught-by:
+    cortex-core::it shell::sys_a_second_interrupt_kills_a_command_that_ignores_the_first
+
+[break] kill-now-keeps-the-graces
+rule: The second token makes the runner skip what is left of the graces.
+file: crates/cortex-tools/src/process/mod.rs
+find:
+    if kill_now {
+        // What is left of the graces is skipped.
+        self.kill(waits);
+    } else if deadline {
+replace:
+    if false && kill_now {
+        // What is left of the graces is skipped.
+        self.kill(waits);
+    } else if deadline {
+packages: cortex-core, cortex-tools
+caught-by:
+    cortex-core::it shell::sys_a_second_interrupt_kills_a_command_that_ignores_the_first
+    cortex-tools::it process::sys_kill_now_stops_the_whole_tree_without_the_graces
+
+[break] shell-changes-not-recorded
+rule: What a shell command changed is recorded in the round's checkpoint.
+file: crates/cortex-core/src/checkpoints.rs
+find: if let Some(changes) = changes {
+replace: if let (Some(changes), false) = (changes, true) {
+caught-by:
+    cortex-core::it shell::sys_undo_puts_back_what_a_command_changed_where_git_still_has_it
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+
+[break] restorable-file-recorded-unknown
+rule: A file git still has is recorded with its earlier content, so a rewind can put it back.
+file: crates/cortex-core/src/checkpoints.rs
+find: Some(commit) if restorable.contains(&path) => self
+replace: Some(commit) if false && restorable.contains(&path) => self
+caught-by:
+    cortex-core::it shell::sys_undo_puts_back_what_a_command_changed_where_git_still_has_it
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+
+[break] created-file-recorded-unknown
+rule: A file a command created is recorded as absent before, so a rewind removes it.
+file: crates/cortex-core/src/checkpoints.rs
+find: seen.push((file, Before::Absent));
+replace: seen.push((file, Before::Unknown));
+caught-by:
+    cortex-core::it shell::sys_undo_puts_back_what_a_command_changed_where_git_still_has_it
+
+[break] round-checkpoint-not-written
+rule: The round's checkpoint is written to the log before the round's results.
+file: crates/cortex-core/src/store.rs
+find:
+    Ok(Some(checkpoint)) => {
+        disk.session
+            .append(Some(turn), checkpoint)
+            .map_err(|error| error.to_string())?;
+    }
+replace: Ok(Some(_)) => {}
+caught-by:
+    cortex-core::it shell::sys_undo_puts_back_what_a_command_changed_where_git_still_has_it
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+
+[break] base-state-keeps-everything
+rule: The base state keeps only what the read rules would let the agent read unasked.
+file: crates/cortex-core/src/policy.rs
+find: Arc::new(move |path: &AbsPath| engine.may_store(path))
+replace: Arc::new(move |path: &AbsPath| engine.may_store(path) || true)
+caught-by:
+    cortex-core::it gates::sys_the_base_state_keeps_only_what_the_agent_could_read_unasked
+
+[break] walk-reads-everything
+rule: A directory walk returns only what the read rules let the agent read.
+file: crates/cortex-core/src/policy.rs
+find: self.0.may_read(path)
+replace: self.0.may_read(path) || true
+caught-by:
+    cortex-core::it gates::a_walk_does_not_return_what_the_read_rules_keep_from_the_agent
+
+[break] plan-notice-not-acknowledged
+rule: The plan board is told when the notice of a user's edit has been recorded, so the model's next plan call is taken.
+file: crates/cortex-core/src/store.rs
+find: self.hooks.board.delivered(revision);
+replace: let _ = revision;
+caught-by:
+    cortex-core::it plan::the_models_plan_and_the_users_edits_reach_each_other_and_every_front_end
+
+[break] users-plan-edit-not-logged
+rule: A user's edit of the plan is written to the session's log.
+file: crates/cortex-core/src/core.rs
+find:
+    lock(&log)
+        .record_plan(None, &plan)
+replace:
+    if true {
+        return Ok(());
+    }
+    lock(&log)
+        .record_plan(None, &plan)
+caught-by:
+    cortex-core::it plan::a_resumed_session_has_its_plan_back_with_the_users_last_edit
+    cortex-core::it plan::the_models_plan_and_the_users_edits_reach_each_other_and_every_front_end
+
+[break] models-plan-not-logged
+rule: The model's plan is written to the session's log when it changes.
+file: crates/cortex-core/src/store.rs
+find: .blocking(move |kept| kept.record_plan(Some(&turn_id), &recorded))
+replace: .blocking(move |_kept| { let _ = (&turn_id, &recorded); Ok(()) })
+caught-by:
+    cortex-core::it plan::a_rewind_goes_back_to_the_plan_of_that_point
+    cortex-core::it plan::the_models_plan_and_the_users_edits_reach_each_other_and_every_front_end
+
+[break] resumed-session-has-no-plan
+rule: A resumed session has the last plan of its branch.
+file: crates/cortex-core/src/assemble.rs
+find: Some(plan) => PlanBoard::with_plan(plan)
+replace: Some(_) => PlanBoard::new()
+caught-by:
+    cortex-core::it plan::a_resumed_session_has_its_plan_back_with_the_users_last_edit
+
+[break] protected-directory-unresolved
+rule: Protected trees are given to the engine as resolved paths: a configuration directory behind a link is protected where it really is.
+file: crates/cortex-core/src/assemble.rs
+find: if let Some(config) = dirs.config.as_deref().and_then(resolve_dir) {
+replace: if let Some(config) = dirs.config.as_deref().and_then(|dir| AbsPath::from_os(dir).ok()) {
+caught-by:
+    cortex-core::it start::a_configuration_directory_behind_a_link_is_protected_where_it_really_is
+
+[break] configuration-directory-not-closed
+rule: The harness's configuration directory is closed to every tool.
+file: crates/cortex-core/src/assemble.rs
+find: protected = protected.closed(config);
+replace: let _ = config;
+caught-by:
+    cortex-core::it start::a_configuration_directory_behind_a_link_is_protected_where_it_really_is
+
+[break] invalid-catalog-entry-skipped
+rule: An entry of the user's catalog that cannot be read stops the core from starting, and is not skipped.
+file: crates/cortex-core/src/provider.rs
+find:
+    })?;
+    catalog.overlay(&one);
+replace:
+    });
+    let Ok(one) = one else { continue };
+    catalog.overlay(&one);
+caught-by:
+    cortex-core::it start::an_invalid_entry_of_the_users_catalog_stops_the_core_and_says_where_and_what
+
+[break] level-refusal-loses-its-kind
+rule: A level that cannot be held is refused with the engine's own error.
+file: crates/cortex-core/src/assemble.rs
+find: StartError::Level(level) => Box::new(level.to_error_data())
+replace: StartError::Level(level) => Box::new(ErrorData::new(ErrorKind::Internal, "x", level.to_string()))
+caught-by:
+    cortex-core::it settings::the_level_can_be_lowered_by_whoever_drives_and_raised_only_by_a_user
+    cortex-core::it start::a_session_is_refused_at_a_level_that_cannot_be_held_and_told_when_there_is_no_sandbox
+
+[break] shortest-cooldown-not-the-setting
+rule: `model.speed_cooldown_min` is the retry policy's shortest cooldown.
+file: crates/cortex-core/src/provider.rs
+find: min_cooldown: settings.model.speed_cooldown_min
+replace: min_cooldown: SpeedPolicy::default().min_cooldown
+caught-by:
+    cortex-core provider::tests::the_retry_and_speed_settings_become_the_provider_layers_policy
+
+[break] session-speed-not-from-settings
+rule: A session takes its speed from the settings it is started with.
+file: crates/cortex-core/src/assemble.rs
+find:
+    if let Some(speed) = &settings.speed {
+        set("model.speed".to_owned(), text(speed.as_str()));
+    }
+replace:
+caught-by:
+    cortex-core::it settings::a_session_can_be_started_at_a_speed_from_its_settings_or_from_the_command_line
+
+[break] set-does-not-change-the-speed
+rule: `session/set` changes the session's speed.
+file: crates/cortex-core/src/core.rs
+find: live.handle.set_speed(speed);
+replace: let _ = speed;
+caught-by:
+    cortex-core::it settings::the_speed_can_be_changed_and_the_state_says_what_is_set_and_what_is_in_effect
+
+[break] set-does-not-change-the-model
+rule: `session/set` changes a role's model.
+file: crates/cortex-core/src/core.rs
+find: live.handle.set_role_model(role, model);
+replace: let _ = (role, model);
+caught-by:
+    cortex-core::it settings::a_level_the_new_model_does_not_have_is_left_behind_and_said
+    cortex-core::it settings::a_roles_model_and_reasoning_level_can_be_changed_in_a_running_session
+
+[break] no-uncached-warning
+rule: A change that costs the provider's cache is said to the user.
+file: crates/cortex-core/src/core.rs
+find: if uncached && has_history {
+replace: if false && uncached && has_history {
+caught-by:
+    cortex-core::it settings::a_roles_model_and_reasoning_level_can_be_changed_in_a_running_session
+    cortex-core::it settings::the_speed_can_be_changed_and_the_state_says_what_is_set_and_what_is_in_effect
+
+[break] lookalike-provider-replayed-everything
+rule: A user's provider that speaks Anthropic's protocol is replayed reasoning by the stricter rule unless its entry says otherwise.
+file: crates/cortex-core/src/provider.rs
+find:
+        ProviderInfo::new(name, protocol, base_url)
+    };
+replace:
+        let mut info = ProviderInfo::new(name, protocol, base_url);
+        info.flags = anthropic::provider().flags;
+        info
+    };
+caught-by:
+    cortex-core provider::tests::only_a_provider_that_says_so_is_replayed_every_reasoning_block
+
+[break] stored-images-not-given-to-the-client
+rule: The provider client is given the session's stored images.
+file: crates/cortex-core/src/assemble.rs
+find: let _ = late.0.set(StoredImages(Arc::clone(&content)));
+replace: let _ = &content;
+caught-by:
+    cortex-core::it provider::an_image_a_tool_stored_reaches_the_request_as_its_bytes
+
+[break] deltas-never-merged
+rule: A delta that follows a delta of the same kind for the same item, with nothing between, is merged into it.
+file: crates/cortex-core/src/events.rs
+find:
+    if let Some(Outgoing::Event(last)) = state.items.back_mut()
+        && merge(last, &event)
+replace:
+    if let Some(Outgoing::Event(last)) = state.items.back_mut()
+        && false
+        && merge(last, &event)
+caught-by:
+    cortex-core events::tests::deltas_of_one_item_and_kind_are_merged_while_the_reader_is_behind
+    cortex-core events::tests::only_neighbours_of_the_same_item_and_kind_merge
+
+[break] full-queue-takes-deltas
+rule: A delta that finds the queue full is dropped.
+file: crates/cortex-core/src/events.rs
+find:
+    if state.items.len() >= self.capacity {
+        // The reader is far behind
+replace:
+    if false && state.items.len() >= self.capacity {
+        // The reader is far behind
+caught-by:
+    cortex-core events::tests::a_full_queue_drops_an_items_deltas_and_tells_it_once
+    cortex-core events::tests::an_item_that_completes_while_the_reader_is_behind_is_told_and_then_whole
+
+[break] resume-without-the-projection
+rule: A resumed session's items are the log's, with the rule for altered entries applied.
+file: crates/cortex-core/src/store.rs
+find: items: resumed.items
+replace: items: disk.session.items().map_err(|error| error.to_string())?
+caught-by:
+    cortex-core::it secrets::a_provider_block_that_holds_a_secret_is_never_written_and_the_live_session_keeps_it
+    cortex-core::it secrets::a_resumed_session_does_not_replay_reasoning_against_a_history_redaction_changed
+
+[break] observer-rewinds
+rule: An observer may not rewind a session.
+file: crates/cortex-core/src/core.rs
+find:
+    self.may_drive(client)?;
+    let _changing = Changing::begin(&live.changing)?;
+replace: let _changing = Changing::begin(&live.changing)?;
+caught-by:
+    cortex-core::it approvals::an_observer_starts_nothing_changes_no_history_and_ends_nothing
+
+[break] observer-forks
+rule: An observer may not fork a session.
+file: crates/cortex-core/src/core.rs
+find:
+    Op::SessionFork(params) => {
+        let live = self.open_for(client, &params.session_id)?;
+        self.may_drive(client)?;
+replace:
+    Op::SessionFork(params) => {
+        let live = self.open_for(client, &params.session_id)?;
+caught-by:
+    cortex-core::it approvals::an_observer_starts_nothing_changes_no_history_and_ends_nothing
+
+[break] observer-shuts-down
+rule: An observer may not shut the core down.
+file: crates/cortex-core/src/core.rs
+find:
+    Op::Shutdown(_) => {
+        self.may_drive(client)?;
+replace: Op::Shutdown(_) => {
+caught-by:
+    cortex-core::it approvals::an_observer_starts_nothing_changes_no_history_and_ends_nothing
+
+[break] observer-starts-a-session
+rule: An observer may not start a session.
+file: crates/cortex-core/src/core.rs
+find:
+    Op::SessionNew(params) => {
+        self.may_drive(client)?;
+replace: Op::SessionNew(params) => {
+caught-by:
+    cortex-core::it approvals::an_observer_starts_nothing_changes_no_history_and_ends_nothing
+
+[break] observer-starts-a-stored-session
+rule: An observer may not start a stored session, which writes to it.
+file: crates/cortex-core/src/core.rs
+find:
+    self.may_drive(client)?;
+    let workspace = self.stored_workspace(&params.session_id).await?;
+replace: let workspace = self.stored_workspace(&params.session_id).await?;
+caught-by:
+    cortex-core::it approvals::an_observer_starts_nothing_changes_no_history_and_ends_nothing
+
+[break] raw-block-read-with-its-escapes
+rule: A provider's block is looked at string by string with its escapes undone.
+file: crates/cortex-core/src/redact.rs
+find: serde_json::from_str::<Value>(raw).is_ok_and(|value| any(filter, &value))
+replace: serde_json::from_str::<Value>(raw).is_ok_and(|value| false && any(filter, &value))
+caught-by:
+    cortex-core redact::tests::a_secret_behind_the_escapes_of_a_raw_block_is_found
+
+[break] key-after-an-escape-is-a-word
+rule: A key that follows a written-out line break or tab is a word of its own.
+file: crates/cortex-base/src/redact.rs
+find: if at > 0 && is(bytes[at - 1], TOKEN) && !after_escape(bytes, at) {
+replace: if at > 0 && is(bytes[at - 1], TOKEN) && (true || !after_escape(bytes, at)) {
+packages: cortex-base, cortex-core
+caught-by:
+    cortex-base redact::tests::a_key_after_a_written_out_line_break_is_masked
+
+[break] late-key-not-in-the-filter
+rule: A key the core finds while a session runs is masked in that session from then on.
+file: crates/cortex-core/src/provider.rs
+find:
+        .add_value(secret);
+    if let Some(tell) = &self.key_found {
+replace:
+        .knows(secret);
+    if let Some(tell) = &self.key_found {
+caught-by:
+    cortex-core::it secrets::a_key_found_while_a_session_runs_is_masked_in_that_session
+    cortex-core::it secrets::a_provider_block_that_holds_a_secret_is_never_written_and_the_live_session_keeps_it
+
+[break] header-secret-not-learned
+rule: What a provider's header reads from the environment is masked by value.
+file: crates/cortex-core/src/provider.rs
+find:
+        self.learn(&secret);
+    }
+    let visibility
+replace:
+        let _ = secret;
+    }
+    let visibility
+caught-by:
+    cortex-core::it secrets::a_key_found_while_a_session_runs_is_masked_in_that_session
+
+[break] literal-header-masked
+rule: A header written out in the configuration file is not masked by value.
+file: crates/cortex-core/src/provider.rs
+find: .filter(|value| matches!(value, cortex_config::schema::EnvText::Env(_)))
+replace:
+caught-by:
+    cortex-core::it secrets::a_key_found_while_a_session_runs_is_masked_in_that_session
+
+[break] no-store-no-key
+rule: A key on the command line or in the environment is found before any credential store is asked.
+file: crates/cortex-core/src/provider.rs
+find: let found = cortex_config::resolve(Lookup {
+replace:
+    if self.store.describe(env) == "no credential store" {
+        return Err(auth_error("no_credential_store", String::new()));
+    }
+    let found = cortex_config::resolve(Lookup {
+caught-by:
+    cortex-core::it provider::a_key_from_the_environment_needs_no_credential_store
+
+[break] late-approver-not-asked
+rule: A `user` client that opens a session is put the approval requests that are waiting.
+file: crates/cortex-core/src/core.rs
+find: self.inner.clients.join(&params.session_id, client);
+replace:
+caught-by:
+    cortex-core::it approvals::a_user_who_joins_while_a_question_waits_is_put_it_and_may_answer
+
+[break] any-late-client-asked
+rule: Only a client that may answer is put a waiting request when it joins.
+file: crates/cortex-core/src/clients.rs
+find:
+    if self.approvers(&[client.0]).is_empty() {
+        return;
+    }
+replace:
+caught-by:
+    cortex-core clients::tests::a_user_client_that_joins_is_put_what_is_waiting
+    cortex-core::it approvals::a_user_who_joins_while_a_question_waits_is_put_it_and_may_answer
+
+[break] turn-starts-under-a-rewind
+rule: No turn starts while a rewind is under way.
+file: crates/cortex-core/src/core.rs
+find:
+    if live.changing.load(Ordering::Acquire) {
+        return Err(history_changing());
+    }
+replace:
+caught-by:
+    cortex-core::it turns::no_turn_starts_while_a_rewind_is_under_way
+
+[break] level-set-before-the-rest-is-checked
+rule: `session/set` is applied whole or not at all: the level is not changed before the rest is checked.
+file: crates/cortex-core/src/core.rs
+find: new_level = Some(level);
+replace:
+    self.set_level(live, level.clone()).await?;
+    new_level = Some(level).filter(|_| false);
+caught-by:
+    cortex-core::it settings::a_request_refused_in_one_part_changes_nothing
+
+[break] role-speed-set-before-the-rest-is-checked
+rule: `session/set` is applied whole or not at all: a role's speed is not changed before the roles after it are checked.
+file: crates/cortex-core/src/core.rs
+find:
+    let speed = change.speed.clone();
+    if change.model.is_none()
+replace:
+    let speed = change.speed.clone();
+    if let Some(speed) = speed.clone() {
+        live.handle.set_role_speed(role.clone(), speed);
+    }
+    if change.model.is_none()
+caught-by:
+    cortex-core::it settings::a_request_refused_in_one_part_changes_nothing
+
+[break] carried-level-refused
+rule: A reasoning level only carried over from the role's earlier model is left behind where the new model has none such.
+file: crates/cortex-core/src/core.rs
+find: Err(refused) if refused.code == "unknown_effort" => {
+replace: Err(refused) if refused.code == "never" => {
+caught-by:
+    cortex-core::it settings::a_level_the_new_model_does_not_have_is_left_behind_and_said
+
+[break] resync-out-of-order
+rule: A resync is queued in the session's order: a client never reads `seq` going backwards.
+file: crates/cortex-core/src/events.rs
+find: state.items.push_back(Outgoing::Event(resync));
+replace: state.items.push_front(Outgoing::Event(resync));
+caught-by:
+    cortex-core events::tests::a_full_queue_drops_an_items_deltas_and_tells_it_once
+    cortex-core events::tests::an_item_that_completes_while_the_reader_is_behind_is_told_and_then_whole
+
+[break] deltas-dropped-without-a-resync
+rule: An item whose deltas are dropped is told so once, with `item.resync`.
+file: crates/cortex-core/src/events.rs
+find: state.items.push_back(Outgoing::Event(resync));
+replace: let _ = resync;
+caught-by:
+    cortex-core events::tests::a_full_queue_drops_an_items_deltas_and_tells_it_once
+    cortex-core events::tests::an_item_that_completes_while_the_reader_is_behind_is_told_and_then_whole
+
+[break] raw-key-skipped-everywhere
+rule: A key named `raw` inside a tool call's arguments or a tool's payload is redacted like any other.
+file: crates/cortex-session/src/redact.rs
+find: if free_form || key != "raw" {
+replace: if key != "raw" {
+caught-by:
+    cortex-session redact::tests::a_key_named_raw_in_somebody_elses_json_is_redacted
+
+[break] session-approvals-lost-with-the-level
+rule: What was allowed for the session stays allowed when the level changes.
+file: crates/cortex-core/src/core.rs
+find: engine.keep_session_approvals_of(&old);
+replace:
+caught-by:
+    cortex-core::it approvals::what_was_allowed_for_the_session_stays_the_sessions_when_the_level_changes
+
+[break] session-approvals-become-stored
+rule: What was allowed for the session stays the session's own when the level changes, under ids no later approval gets.
+file: crates/cortex-core/src/core.rs
+find:
+        .filter(|approval| approval.scope == ApprovalScope::Project)
+        .collect();
+    let engine = assemble::start_engine(parts.clone())?;
+    engine.keep_session_approvals_of(&old);
+replace:
+        .collect();
+    let engine = assemble::start_engine(parts.clone())?;
+caught-by:
+    cortex-core::it approvals::what_was_allowed_for_the_session_stays_the_sessions_when_the_level_changes
+
+[break] fsmonitor-in-gits-older-parameters
+rule: The monitor is turned off at the end of `GIT_CONFIG_PARAMETERS` too, which git reads after the counted settings.
+file: crates/cortex-tools/src/shell/env.rs
+find: parameters.push(format!(" '{setting}={off}'"));
+replace: parameters.push("");
+caught-by:
+    cortex-tools shell::env::tests::the_monitor_is_turned_off_in_gits_older_parameters_too
+
+[break] shell-keeps-its-parents-pwd
+rule: Every shell command is given `PWD` as the resolved directory it starts in.
+file: crates/cortex-tools/src/shell/env.rs
+find:
+        windows: bool,
+    ) -> Vec<(OsString, OsString)> {
+        env.retain(|(name, _)| {
+            !name.to_str().is_some_and(|name| {
+                if windows {
+replace:
+        windows: bool,
+    ) -> Vec<(OsString, OsString)> {
+        if windows || !windows {
+            return env;
+        }
+        env.retain(|(name, _)| {
+            !name.to_str().is_some_and(|name| {
+                if windows {
+packages: cortex-tools, cortex-core
+caught-by:
+    cortex-core::it shell::sys_a_command_in_a_workspace_behind_a_link_starts_where_it_really_is
+    cortex-tools shell::env::tests::the_shell_is_told_the_directory_it_starts_in
+
+[break] budget-overflows
+rule: An alias is placed along a token budget of any range without overflow.
+file: crates/cortex-core/src/provider.rs
+find: min.saturating_add(u64::try_from(along).unwrap_or(u64::MAX))
+replace: min + (max - min).wrapping_mul(alias as u64) / (steps as u64) + (along as u64) * 0
+caught-by:
+    cortex-core provider::tests::a_budget_is_placed_along_any_range
+
+[break] rules-trust-not-given-to-the-engine
+rule: The engine is given the answer about the project's rules.
+file: crates/cortex-core/src/assemble.rs
+find:
+    lease_id.clone(),
+    rules_trusted,
+    syntax
+replace:
+    lease_id.clone(),
+    false,
+    syntax
+caught-by:
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+    cortex-core::it trust::sys_trust_for_the_run_reaches_all_four
+
+[break] engine-given-repository-trust
+rule: The engine is given the answer about the rules, not the user's trust alone: changed rules set a project's allow rules aside.
+file: crates/cortex-core/src/assemble.rs
+find:
+    lease_id.clone(),
+    rules_trusted,
+    syntax
+replace:
+    lease_id.clone(),
+    repository_trusted,
+    syntax
+caught-by:
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+
+[break] engine-told-untrusted-is-trusted
+rule: In an untrusted project the engine is told so.
+file: crates/cortex-core/src/assemble.rs
+find:
+    lease_id.clone(),
+    rules_trusted,
+    syntax
+replace:
+    lease_id.clone(),
+    true,
+    syntax
+caught-by:
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+    cortex-core::it trust::sys_a_trust_store_that_cannot_be_read_trusts_nothing_and_says_so
+
+[break] repository-trust-not-given-to-the-shell
+rule: The shell tool is given the answer about the repository's trust: in a trusted project git is asked what a command changed.
+file: crates/cortex-core/src/assemble.rs
+find:
+        repository_trusted,
+    };
+replace:
+        repository_trusted: false,
+    };
+caught-by:
+    cortex-core::it shell::sys_undo_puts_back_what_a_command_changed_where_git_still_has_it
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+
+[break] shell-given-rules-trust
+rule: The shell tool follows the user's trust alone: a change to the project's rules does not stop git being asked what a command changed.
+file: crates/cortex-core/src/assemble.rs
+find:
+        repository_trusted,
+    };
+replace:
+        repository_trusted: rules_trusted,
+    };
+caught-by:
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+
+[break] repository-trust-not-given-to-the-capture
+rule: The capture of the base state is given the answer about the repository's trust.
+file: crates/cortex-core/src/assemble.rs
+find:
+    root.clone(),
+    repository_trusted
+replace:
+    root.clone(),
+    false
+caught-by:
+    cortex-core::it gates::sys_the_base_state_keeps_only_what_the_agent_could_read_unasked
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+
+[break] capture-given-rules-trust
+rule: The capture of the base state follows the user's trust alone: a change to the project's rules does not cost the base state.
+file: crates/cortex-core/src/assemble.rs
+find:
+    root.clone(),
+    repository_trusted
+replace:
+    root.clone(),
+    rules_trusted
+caught-by:
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+
+[break] changed-rules-still-trusted
+rule: A project is trusted for its rules only while they are the ones the user saw.
+file: crates/cortex-core/src/assemble.rs
+find: if project_rules_approved(&stored, &project_rules) {
+replace: if true || project_rules_approved(&stored, &project_rules) {
+caught-by:
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+
+[break] changed-rules-keep-the-settings
+rule: A project whose rules changed has its settings that need trust held back.
+file: crates/cortex-core/src/assemble.rs
+find:
+    rules: false,
+    repository: true,
+    loaded: load(false)?
+replace:
+    rules: false,
+    repository: true,
+    loaded: load(true)?
+caught-by:
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+
+[break] openai-chat-not-spoken
+rule: The core speaks the `openai-chat` protocol.
+file: crates/cortex-core/src/provider.rs
+find: protocols.insert(openai_chat::NAME.to_owned(), Arc::new(OpenAiChat));
+replace:
+caught-by:
+    cortex-core::it provider::a_built_in_openai_chat_provider_is_asked_as_its_entry_says
+    cortex-core::it provider::a_local_server_is_asked_without_a_key
+
+[break] only-anthropic-built-in
+rule: The providers that speak `openai-chat` are built in.
+file: crates/cortex-core/src/provider.rs
+find: openai_chat::providers::builtin(name).map(|builtin| (builtin.info, builtin.key_variable))
+replace: openai_chat::providers::builtin(name).map(|builtin| (builtin.info, builtin.key_variable)).filter(|_| false)
+caught-by:
+    cortex-core::it provider::a_built_in_openai_chat_provider_is_asked_as_its_entry_says
+    cortex-core::it provider::a_local_server_is_asked_without_a_key
+
+[break] built-in-key-variable-forgotten
+rule: A built-in provider's key is looked for in its own variable, and one with no key anywhere is refused.
+file: crates/cortex-core/src/provider.rs
+find: openai_chat::providers::builtin(name).map(|builtin| (builtin.info, builtin.key_variable))
+replace: openai_chat::providers::builtin(name).map(|builtin| (builtin.info, None))
+caught-by:
+    cortex-core::it provider::a_provider_with_a_key_variable_and_no_key_is_refused_before_anything_is_sent
+    cortex-core::it shell::sys_a_command_is_given_the_environment_the_command_analysis_relies_on
+
+[break] keyless-provider-refused
+rule: A provider with no key variable is asked without a key.
+file: crates/cortex-core/src/provider.rs
+find:
+    if keyless {
+        return Ok(Arc::new(NoAuth));
+    }
+replace:
+caught-by:
+    cortex-core::it provider::a_local_server_is_asked_without_a_key
+
+[break] every-provider-asked-without-a-key
+rule: A provider that has a key variable and no key anywhere is refused before anything is sent.
+file: crates/cortex-core/src/provider.rs
+find: let keyless = variable.is_none();
+replace: let keyless = variable.is_none() || true;
+caught-by:
+    cortex-core::it provider::a_key_from_the_environment_needs_no_credential_store
+    cortex-core::it provider::a_provider_with_a_key_variable_and_no_key_is_refused_before_anything_is_sent
+
+[break] only-anthropics-variable-removed
+rule: Every built-in provider's key variable is removed from what a shell command is given.
+file: crates/cortex-core/src/provider.rs
+find:
+    let mut variables: Vec<String> = builtin_names()
+        .filter_map(|name| key_variable(settings, name))
+        .collect();
+replace: let mut variables: Vec<String> = vec![ANTHROPIC_KEY_ENV.to_owned()];
+caught-by:
+    cortex-core::it shell::sys_a_command_is_given_the_environment_the_command_analysis_relies_on

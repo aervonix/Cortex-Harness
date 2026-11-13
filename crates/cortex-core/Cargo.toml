@@ -40,6 +40,9 @@ tokio = { workspace = true, features = ["rt", "sync"] }
 
 [dev-dependencies]
 cortex-testkit.workspace = true
+# The seam that puts the loop's blocking work on the test's own thread, in
+# a seeded order (`docs/testing-and-ci.md`, "A seeded order of events").
+cortex-tools = { workspace = true, features = ["test-hooks"] }
 
 [lints]
 workspace = true
