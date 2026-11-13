@@ -71,6 +71,8 @@ fn sys_a_command_is_given_the_environment_the_command_analysis_relies_on() {
             ("GIT_CONFIG_KEY_0", "user.name"),
             ("GIT_CONFIG_VALUE_0", "Dev"),
             ("ANTHROPIC_API_KEY", KEY),
+            ("OPENAI_API_KEY", KEY),
+            ("OPENROUTER_API_KEY", KEY),
             ("MY_PROVIDER_KEY", KEY),
             ("EXTRA_REMOVED", "gone"),
             ("PREFIXED_ONE", "gone"),
@@ -117,6 +119,9 @@ fn sys_a_command_is_given_the_environment_the_command_analysis_relies_on() {
         // No provider's key: the built-in one's, a configured one's, and
         // what configuration lists.
         assert_eq!(env.get("ANTHROPIC_API_KEY"), None);
+        // Every built-in provider's, whichever protocol it speaks.
+        assert_eq!(env.get("OPENAI_API_KEY"), None);
+        assert_eq!(env.get("OPENROUTER_API_KEY"), None);
         assert_eq!(env.get("MY_PROVIDER_KEY"), None);
         assert_eq!(env.get("EXTRA_REMOVED"), None);
         assert_eq!(env.get("PREFIXED_ONE"), None);
