@@ -117,7 +117,11 @@ impl CargoRunner {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_millis());
         self.kept += 1;
-        let job = self.log.file_stem().and_then(|stem| stem.to_str()).unwrap_or("last");
+        let job = self
+            .log
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("last");
         let kept = self.logs.join(format!("{stamp}-{job}-{}.log", self.kept));
         let copied = fs::create_dir_all(&self.logs).and_then(|()| fs::copy(&self.log, &kept));
         match copied {
@@ -820,7 +824,15 @@ pub(crate) fn drive(
     out_of_time: &mut dyn FnMut() -> bool,
     say: &mut dyn FnMut(&str),
 ) -> Result<Finished> {
-    drive_jobs(root, scratch, breaks, options, &mut [runner], out_of_time, say)
+    drive_jobs(
+        root,
+        scratch,
+        breaks,
+        options,
+        &mut [runner],
+        out_of_time,
+        say,
+    )
 }
 
 /// [`drive`], with the work shared out among `runners`, one job each, in a
