@@ -102,7 +102,12 @@ const CONFINED: &[(&[&str], &[&str], &str)] = &[
     ),
     (&["ignore"], &[TOOLS, INDEX], "the file walker"),
     (&["rquickjs", "mlua"], &[EXT], "the script engine"),
+    (&["landlock", "seccompiler"], &[SANDBOX], "the sandbox's backends"),
 ];
+
+/// The feature of `cortex-sandbox` that holds its backends, and the one
+/// crate that may turn it on (rule 8 of `docs/architecture/01-workspace.md`).
+const BACKENDS: &str = "backends";
 
 const PAGE: &str = "docs/architecture/01-workspace.md";
 const HOW_TO_CHANGE: &str = "If the design has changed, change docs/architecture/01-workspace.md \
@@ -118,6 +123,7 @@ pub(crate) fn check(packages: &[Package], manifests: &[(String, String)]) -> Vec
         check_confined(package, &mut violations);
         check_protocol_dependencies(package, &mut violations);
         check_test_hooks(package, &mut violations);
+        check_sandbox_backends(package, &mut violations);
         let manifest = manifests
             .iter()
             .find(|(path, _)| *path == package.manifest)
@@ -189,6 +195,53 @@ fn check_test_hooks(package: &Package, violations: &mut Vec<Violation>) {
                         ),
                     ));
                 }
+            }
+        }
+    }
+}
+
+/// `cortex-sandbox`'s backends are turned on by `cortex-core`'s `sandbox`
+/// feature and by nothing else: by a normal dependency that asks for
+/// `backends`, or a feature that passes `cortex-sandbox/backends` on, in any
+/// other crate. A test of a crate may ask for it in its dev-dependencies.
+fn check_sandbox_backends(package: &Package, violations: &mut Vec<Violation>) {
+    const WHY: &str = "Why: Landlock and seccomp are linked by the core alone. `cortex-tools` \
+                       depends on `cortex-sandbox` for process trees and must not link them \
+                       (docs/architecture/01-workspace.md, rule 8).";
+    if package.name == CORE {
+        return;
+    }
+    for dependency in &package.dependencies {
+        if dependency.name == SANDBOX
+            && dependency.kind != DepKind::Dev
+            && dependency.features.iter().any(|feature| feature == BACKENDS)
+        {
+            violations.push(Violation::new(
+                &package.manifest,
+                None,
+                format!(
+                    "`{}` turns on the `{BACKENDS}` feature of `{SANDBOX}`.\n    {WHY}",
+                    package.name
+                ),
+            ));
+        }
+    }
+    for (feature, turns_on) in &package.features {
+        for turned_on in turns_on {
+            let passed_on = turned_on
+                .split_once('/')
+                .is_some_and(|(krate, feature)| {
+                    krate.trim_end_matches('?') == SANDBOX && feature == BACKENDS
+                });
+            if passed_on {
+                violations.push(Violation::new(
+                    &package.manifest,
+                    None,
+                    format!(
+                        "the feature `{feature}` of `{}` turns on `{turned_on}`.\n    {WHY}",
+                        package.name
+                    ),
+                ));
             }
         }
     }
@@ -732,6 +785,43 @@ mod tests {
             &messages(&in_the_product),
             &["`cortex-tui` turns on the `pty` feature of `cortex-term`"],
         );
+    }
+
+    #[test]
+    fn only_the_core_turns_the_sandbox_backends_on() {
+        let backends = |dependency: Dependency| Dependency {
+            features: vec!["backends".to_owned()],
+            ..dependency
+        };
+        // The core turns them on through a feature of its own.
+        let core = Package {
+            features: vec![(
+                "sandbox".to_owned(),
+                vec!["cortex-sandbox/backends".to_owned()],
+            )],
+            ..krate("cortex-core", vec![dep("cortex-sandbox")])
+        };
+        assert!(messages(&core).is_empty(), "{:#?}", messages(&core));
+        // The tools may not, by their dependency or by a feature.
+        let tools = krate("cortex-tools", vec![backends(dep("cortex-sandbox"))]);
+        assert_one(
+            &messages(&tools),
+            &["`cortex-tools` turns on the `backends` feature of `cortex-sandbox`"],
+        );
+        let forwards = Package {
+            features: vec![(
+                "confine".to_owned(),
+                vec!["cortex-sandbox?/backends".to_owned()],
+            )],
+            ..krate("cortex-tools", vec![dep("cortex-sandbox")])
+        };
+        assert_one(
+            &messages(&forwards),
+            &["the feature `confine` of `cortex-tools` turns on `cortex-sandbox?/backends`"],
+        );
+        // Only `cortex-sandbox` names the backends themselves.
+        let direct = krate("cortex-tools", vec![dep("cortex-sandbox"), dep("landlock")]);
+        assert_one(&messages(&direct), &["`landlock`"]);
     }
 
     #[test]
