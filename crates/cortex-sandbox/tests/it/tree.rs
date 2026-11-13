@@ -415,6 +415,49 @@ fn sys_the_guard_kills_what_it_was_told_and_nothing_else() {
     told.end();
 }
 
+/// The harness's side of the pipe: the guard is told of a tree when it
+/// starts and told to forget it when it ends, in that order, so that the
+/// guard never holds the id of a group that is gone.
+#[cfg(unix)]
+#[test]
+fn sys_the_guard_is_told_of_each_tree_and_of_its_end() {
+    use cortex_sandbox::tree::Guard;
+    use cortex_testkit::children::until;
+
+    let directory =
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("cortex-sandbox-it-guard-told");
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("create a directory");
+    let record = directory.join("told.txt");
+    // In place of the guard, a program that writes down what it is told.
+    let guard = Guard::new("sh", ["-c", "cat > \"$0\"", record.to_str().expect("text")]);
+    let told = || std::fs::read_to_string(&record).unwrap_or_default();
+
+    let roll = Roll::new();
+    let first = Tree::spawn(ChildSpec::new(&roll, "first").command(ENTRY), Some(&guard))
+        .expect("start the first tree");
+    let second = Tree::spawn(ChildSpec::new(&roll, "second").command(ENTRY), Some(&guard))
+        .expect("start the second tree");
+    let both = roll.all(&["first", "second"], LIMIT);
+    let (a, b) = (first.id(), second.id());
+    until(LIMIT, "the guard to be told of both trees", || {
+        told() == format!("+{a}\n+{b}\n")
+    });
+
+    first.end();
+    until(LIMIT, "the guard to be told that a tree ended", || {
+        told() == format!("+{a}\n+{b}\n-{a}\n")
+    });
+    // Ending it again says nothing more.
+    first.end();
+    drop(second);
+    assert!(both[0].gone_within(LIMIT) && both[1].gone_within(LIMIT));
+    // The guard's pipe closes with its last handle, and it ends.
+    drop(guard);
+    assert_eq!(told(), format!("+{a}\n+{b}\n-{a}\n-{b}\n"));
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
 /// The guard is not in the harness's process group, so what kills that
 /// group does not kill the guard: a terminal that closes signals a whole
 /// group, and so does a kill by a job-control shell.
