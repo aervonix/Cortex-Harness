@@ -7,12 +7,19 @@
 //! plan names are also checked by hand below.
 //!
 //! **The work is bounded.** Cutting a stream of `n` bytes in two at every
-//! byte decodes `n` bytes `n` times. The longest recorded stream is 10 KB,
-//! and that would take longer than a test may on a slow runner. So a stream
-//! is cut in two at every byte of its first [`EVERY_BYTE`] bytes and at
-//! every eighth byte after that. The pass that delivers one byte at a time
-//! still puts a boundary at every byte of every stream, whatever its
-//! length.
+//! byte decodes `n` bytes `n` times, in a build that does not optimise the
+//! JSON reader. For the 26 streams here that is 200 MB of decoding, which
+//! took 22 s on a hosted Linux runner and twice that on Windows: more than
+//! the whole tier may take. So the passes are divided between the two
+//! places tests run.
+//!
+//! - **On every pull request,** each stream is delivered one byte at a
+//!   time, which puts a boundary at every byte of it, and in pieces of
+//!   seven other sizes. It is also cut in two at every one of its first
+//!   [`EVERY_BYTE`] bytes and at about a hundred places spread over the
+//!   rest.
+//! - **In the nightly run,** which sets `CORTEX_PROPERTY_SCALE` and has
+//!   time limits of its own, each stream is cut in two at every byte.
 
 use cortex_base::ErrorKind;
 use cortex_llm::error::Throttle;
@@ -104,8 +111,31 @@ pub(crate) fn render(events: &[ModelEvent]) -> String {
     out
 }
 
-/// How far into a stream it is cut in two at every single byte.
-const EVERY_BYTE: usize = 4096;
+/// How far into a stream it is cut in two at every single byte, on a pull
+/// request.
+const EVERY_BYTE: usize = 64;
+
+/// Whether this is the nightly run, which multiplies the property cases
+/// and has the time for every cut of every stream.
+fn every_cut_of_every_stream() -> bool {
+    std::env::var("CORTEX_PROPERTY_SCALE")
+        .ok()
+        .and_then(|scale| scale.trim().parse::<u64>().ok())
+        .is_some_and(|scale| scale > 1)
+}
+
+/// Where a stream of `len` bytes is cut in two.
+fn cuts_in_two(len: usize) -> Vec<usize> {
+    if every_cut_of_every_stream() {
+        return (1..len).collect();
+    }
+    // Every byte of the beginning, then about a hundred places. The step is
+    // made odd so that the places are not all at even offsets.
+    let step = (len / 100).max(1) | 1;
+    (1..len)
+        .filter(|cut| *cut <= EVERY_BYTE || cut % step == len % step)
+        .collect()
+}
 
 /// Decodes a fixture whole, cut in two at every byte, a byte at a time and
 /// in pieces of fixed sizes, checks they all agree, and compares the events
@@ -118,8 +148,7 @@ fn every_cut(name: &str) {
     let whole = decode_whole(&request, stream);
     assert!(!whole.is_empty(), "{name}: nothing was decoded");
 
-    let cuts = (1..stream.len()).filter(|cut| *cut <= EVERY_BYTE || cut % 8 == 0);
-    for cut in cuts {
+    for cut in cuts_in_two(stream.len()) {
         let cut_in_two = decode(&request, stream, &[cut]);
         assert!(
             cut_in_two.as_ref() == Ok(&whole),
@@ -783,10 +812,12 @@ fn a_small_stream_decodes_the_same_at_every_pair_of_nearby_cuts() {
     assert!(stream.len() < 800, "{}: keep this one short", stream.len());
     let whole = decode_whole(&request, &stream);
     assert_well_formed(&whole);
-    // Two cuts within 48 bytes of each other: every way a line ending, a
-    // character or a token can be split in three.
+    // Two cuts close to each other: every way a line ending, a character or
+    // a short token can be split in three. Six bytes on a pull request,
+    // forty-eight in the nightly run.
+    let reach = if every_cut_of_every_stream() { 48 } else { 6 };
     for first in 1..stream.len() {
-        for second in first + 1..(first + 48).min(stream.len()) {
+        for second in first + 1..(first + reach).min(stream.len()) {
             let events = decode(&request, &stream, &[first, second]);
             assert!(
                 events.as_ref() == Ok(&whole),
