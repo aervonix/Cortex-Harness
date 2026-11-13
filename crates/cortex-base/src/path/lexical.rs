@@ -233,8 +233,17 @@ pub(crate) fn from_extended_length(text: &str) -> Result<std::borrow::Cow<'_, st
 ///
 /// It is an approximation. The standard library's tables are newer than the
 /// table a volume was formatted with, so a few letters may fold here and
-/// not there. Nothing that decides what is inside the workspace relies on
-/// it: see `AbsPath::strip_prefix_exactly`.
+/// not there. And a directory can be marked case-sensitive on NTFS, where
+/// `App` and `app` are two folders that fold to one text. So nothing that
+/// must tell two places apart relies on it:
+///
+/// - what is inside the workspace is decided on the file system's own
+///   spelling (`AbsPath::strip_prefix_exactly`);
+/// - the project key hashes each name in its stored case
+///   (`AbsPath::project_key`);
+/// - a permission rule that allows is matched in the stored case, and only
+///   one that denies or asks is matched folded, where matching too much is
+///   the safe side (`cortex-policy`).
 pub(crate) fn fold_char(character: char) -> char {
     if character.is_ascii() {
         return character.to_ascii_uppercase();

@@ -1228,10 +1228,38 @@ fn a_project_key_is_128_bits_of_the_paths_hash() {
 }
 
 #[test]
-fn two_spellings_of_one_windows_root_have_one_project_key() {
-    let first = abs(r"C:\Work\Project", Windows);
-    let second = abs("c:/work/PROJECT/", Windows);
-    assert_eq!(first.project_key(), second.project_key());
+fn a_project_key_keeps_the_case_of_each_name_and_folds_the_root() {
+    // The names are hashed as they are spelled: in a case-sensitive NTFS
+    // directory `Project` and `PROJECT` are two folders, and must be two
+    // projects. One folder reached under two casings still gets one key,
+    // because the resolver spells it one way (`tests/it/paths_windows.rs`).
+    let stored = abs(r"C:\Work\Project", Windows);
+    assert_ne!(
+        stored.project_key(),
+        abs("C:/work/PROJECT", Windows).project_key()
+    );
+    assert_ne!(
+        stored.project_key(),
+        abs("C:/Work/project", Windows).project_key()
+    );
+    // A drive letter and a share's root have no spelling on disk.
+    assert_eq!(
+        stored.project_key(),
+        abs("c:/Work/Project/", Windows).project_key()
+    );
+    assert_eq!(
+        abs(r"\\Server\Share\Work", Windows).project_key(),
+        abs("//SERVER/share/Work", Windows).project_key()
+    );
+    assert_ne!(
+        abs(r"\\Server\Share\Work", Windows).project_key(),
+        abs("//server/share/work", Windows).project_key()
+    );
+    // Pinned, like the POSIX key: data is filed under it. This is the start
+    // of the SHA-256 of `C:/Work/Project`.
+    let mut expected = crate::ContentHash::of(b"C:/Work/Project").to_hex();
+    expected.truncate(32);
+    assert_eq!(stored.project_key().as_str(), expected);
     // A POSIX path that differs only in case is another project.
     assert_ne!(
         abs("/work/project", Posix).project_key(),
