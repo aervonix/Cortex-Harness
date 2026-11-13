@@ -81,7 +81,7 @@ Every key a Cortex-Harness configuration file may hold. The design is in [archit
 | `sandbox.enabled` | `true` or `false` | `true` | user only | at once | Whether commands are confined by the OS sandbox where there is one. Enforced. |
 | `sandbox.write` | list of text, joined | `[]` | widens access | at once | Paths a command may write besides the workspace. Every layer adds to the list. Enforced. |
 | `sandbox.protect` | list of text, joined | `[]` | preference | at once | Paths a command may not change, besides the built-in ones. Every layer adds to the list. Enforced. |
-| `sandbox.network` | `"off"`, `"full"` | `"off"` | by value: `off` is a preference, `full` widens access | at once | Whether a command may use the network. Enforced. |
+| `sandbox.network` | `"off"`, `"full"` | `"off"` | by value: `off` is a preference, `full` widens access | at once | Whether a command may use the network. `off`: no TCP or UDP, to this machine's own addresses included, and no Unix socket, so a test suite that starts a server on loopback or on a Unix socket fails in the sandbox; such a run needs `full`, or one approved run outside the sandbox. `full`: the network, and still no Unix socket (the session bus, an agent, the Docker socket). Enforced. |
 
 ## `[limits]`
 

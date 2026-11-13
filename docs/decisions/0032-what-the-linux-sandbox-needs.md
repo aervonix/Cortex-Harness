@@ -1,6 +1,6 @@
 # 0032: What the Linux sandbox needs of the kernel, and what it lets a command reach
 
-- **Status:** Accepted. Decided in step 26, on 2026-11-13, and checked with the coordinator, who speaks for the owner in the build steps.
+- **Status:** Accepted by the owner on 2026-11-13: the partial Landlock and the network with it off, as proposed in step 26. Amended the same day in that step, after its independent review: Unix sockets stay refused with the network on, netlink is open for its route protocol only, every process stays in the command's group, and a write root that holds the harness's own files is not confined.
 - **Date:** 2026-11-13
 
 ## Context
@@ -61,12 +61,14 @@ The kernels the project runs on, measured on 2026-11-13: the hosted `ubuntu-24.0
 | Listening on a port, loopback included | No. |
 | A Unix socket by its path (D-Bus, the SSH agent, Docker), or an abstract one | No. The socket cannot be made. |
 | A raw or packet socket | No. |
-| A connected pair of Unix sockets (`socketpair`), pipes | Yes: they reach only the command's own processes. |
-| Netlink (the kernel's interface list) | Yes: it reaches no other machine and no other process. |
+| A connected pair of Unix sockets (`socketpair`), pipes | Yes: they reach the command's own processes. A pair of datagram sockets can also send to a datagram socket of the machine's by its path (journald's): left open ([outstanding/datagrams-from-a-socket-pair.md](../outstanding/datagrams-from-a-socket-pair.md)). |
+| Netlink's route protocol (the kernel's interface list) | Yes: it reaches no other machine and no other process. Netlink's other protocols, one of which reaches other processes, are refused. |
 
-With `sandbox.network = "full"` nothing about sockets is filtered.
+With `sandbox.network = "full"` the network is reached, loopback included, and **a Unix socket still is not**: the user's session bus starts processes outside every sandbox on request (`systemd-run --user`), and the Docker socket is root, so reaching them would void the confinement of files while the session still reported it enforcing (found by the independent review of step 26). Network on means the network, not the machine's local services. Only `socketpair` makes Unix sockets then too.
 
-**What else the filter refuses,** with `EPERM`: `io_uring`, which can make a socket without the `socket` call; a new user namespace (`unshare` and `clone` with `CLONE_NEWUSER`, and `clone3`, answered `ENOSYS` so the C library falls back to `clone`); the kernel's keyrings; `bpf`; `perf_event_open`; `userfaultfd`; and pushing characters into a terminal (`TIOCSTI`, `TIOCLINUX`). A 32-bit system call kills the process: the filter is for the build's own architecture. On x86-64 the x32 form of each refused call is refused too.
+**What else the filter refuses,** with `EPERM`: `io_uring`, which can make a socket without the `socket` call; a new user namespace (`unshare` and `clone` with `CLONE_NEWUSER`, and `clone3`, answered `ENOSYS` so the C library falls back to `clone`); the kernel's keyrings; `bpf`; `perf_event_open`; `userfaultfd`; and pushing characters into a terminal (`TIOCSTI`, `TIOCLINUX`). A 32-bit system call kills the process: the filter is for the build's own architecture. On x86-64 the x32 form of each refused call is refused too (`ioctl` by its own x32 number). **`setsid` and `setpgid` are answered as done, and not done:** every process a command starts stays in its process group, so the whole tree dies when the command ends, and nothing it started can write the workspace after the look at protected paths that follows the command, or outlive the harness. A program that then signals the group it believes it made finds none.
+
+**A write root that holds the harness's own files is not confined.** Landlock cannot keep a directory inside a write root from being written, so where the workspace, the temporary directory or a `sandbox.write` entry holds the harness's configuration, state or data directory (a workspace that is the home directory), the session reports the sandbox off (`NoSandbox::HarnessFilesWritable`) and `autonomous` is refused: a confined command could otherwise change what it is allowed.
 
 **Every failure to apply the sandbox fails the call,** and says why: a policy the launcher does not understand, a Landlock right the kernel refuses, a filter that does not load, a build without the backends. The launcher writes one line that begins `cortex-sandbox:` and exits with 125; the command does not run.
 
@@ -80,7 +82,8 @@ With `sandbox.network = "full"` nothing about sockets is filtered.
 ## What is given up
 
 - **Test suites that start a server on loopback,** or a Unix-socket server, fail inside the sandbox with the network off. Their way out is `sandbox.network = "full"` for the project, or running the command outside the sandbox with approval.
-- **Tools that talk to a local daemon** fail in the sandbox: `docker`, `git commit -S` through gpg-agent, `ssh` through its agent, `systemd-run`. The same way out.
+- **Tools that talk to a local daemon** fail in the sandbox, with the network on or off: `docker`, `git commit -S` through gpg-agent, `ssh` through its agent, `systemd-run`. Their way out is running the command outside the sandbox with approval.
+- **A program that makes a session or a process group of its own** stays in the command's, and one that then signals the group it believes it made finds none.
 - **On Landlock 3 to 5** a command can signal the user's other processes. The status says so.
 - **A 32-bit program** is killed in the sandbox.
 - **Reads are not restricted** ([0009](0009-sandboxing.md)). The launcher can keep reads to a list of roots, and no setting asks for that yet ([outstanding/a-setting-that-restricts-reads.md](../outstanding/a-setting-that-restricts-reads.md)).

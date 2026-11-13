@@ -216,11 +216,10 @@ fn a_link_is_compared_and_never_followed() {
 #[test]
 fn a_look_that_stops_at_its_bound_reports_nothing_beyond_it() {
     let scratch = workspace("bound_both_ways");
-    // Directories that come before the protected names in the walk.
-    for index in 0..30 {
-        scratch.dir(format!("ws/a{index:02}"));
-    }
-    scratch.file("ws/z/web/.npmrc", "registry=x");
+    // A protected name deeper than a look of ten directories can reach,
+    // whatever order the listings come in.
+    let deep: String = (0..14).map(|level| format!("d{level}/")).collect();
+    scratch.file(format!("ws/{deep}.npmrc"), "registry=x");
     let ws = scratch.join("ws");
     let full = Watch::new(&ws, fixed(&ws));
     let capped = Watch::new(&ws, fixed(&ws)).with_limits(Limits {

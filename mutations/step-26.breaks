@@ -110,9 +110,9 @@ caught-by:
 [break] autonomous-without-an-enforcing-sandbox
 rule: `autonomous` starts only where the sandbox enforces.
 file: crates/cortex-core/src/assemble.rs
-in: engine_parts
-find: sandbox: inner.sandbox.state(settings.sandbox.enabled).0,
-replace: sandbox: cortex_policy::SandboxState::Enforcing,
+in: assemble
+find: parts.sandbox = sandbox_state;
+replace: parts.sandbox = SandboxState::Enforcing;
 caught-by:
     cortex-core::it sandbox::a_kernel_without_landlock_is_reported_and_refuses_autonomous
     cortex-core::it sandbox::an_old_landlock_does_not_count_and_says_what_it_lacks

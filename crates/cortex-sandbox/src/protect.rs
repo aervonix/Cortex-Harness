@@ -19,15 +19,21 @@
 //!   repository the walk meets, nested ones and submodules' included
 //!   (`.git/modules/*`), its `config`, `config.worktree`, `hooks` and
 //!   `info`; a bare repository (a directory with `HEAD`, `objects` and
-//!   `refs`) the same; a `.git` file; `.cargo/config.toml` and
-//!   `.cargo/config`; `.npmrc`, `.yarnrc`, `.yarnrc.yml` and `.envrc`.
+//!   `refs`) the same; each worktree's `config.worktree`, `commondir` and
+//!   `gitdir`; a `.git` file; `.cargo/config.toml` and `.cargo/config`;
+//!   `.npmrc`, `.yarnrc`, `.yarnrc.yml` and `.envrc`.
 //!
 //! **Bounded.** The walk lists at most [`Limits::directories`] directories
 //! and gives up after [`Limits::time`]; past either, the snapshot says it
-//! is incomplete, and what lay further was not looked at. Content is kept
-//! for files up to [`Limits::file_bytes`], and up to [`Limits::total_bytes`]
-//! in all; a file past either is still compared by its size, times and
-//! inode, and is not restorable. Links are never followed.
+//! is incomplete, and what lay further was not looked at. Two looks are
+//! compared only where both reached: a path one did not reach is not
+//! reported as made or gone. Content is kept for files up to
+//! [`Limits::file_bytes`], and up to [`Limits::total_bytes`] in all; a file
+//! past either is still compared by its size, times and inode, and is not
+//! restorable. A change of mode is found and is not restorable by its
+//! content. Links are never followed: a protected path reached through a
+//! linked directory in the workspace is not looked through, and the link
+//! is what is reported.
 
 #![allow(
     clippy::disallowed_methods,
