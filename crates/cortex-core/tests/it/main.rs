@@ -25,7 +25,11 @@
 )]
 
 mod approvals;
+mod plan;
 mod secrets;
+mod settings;
+mod shell;
+mod start;
 mod trust;
 mod turns;
 
