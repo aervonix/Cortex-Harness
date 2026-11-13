@@ -407,11 +407,13 @@ fn allowed_for_the_project_is_stored_outlives_the_run_and_can_be_revoked() {
     });
     // In the user's state directory, never in the repository.
     let state = world.dirs().state.unwrap();
+    // One file for the project, beside the lock a change to it holds.
     let stored: Vec<_> = std::fs::read_dir(state.join("approvals"))
         .unwrap()
         .flatten()
+        .filter(|entry| entry.path().extension().is_none_or(|ext| ext != "lock"))
         .collect();
-    assert_eq!(stored.len(), 1);
+    assert_eq!(stored.len(), 1, "{stored:?}");
     assert!(!world.workspace.join(".cortex").exists());
 
     // Another run of the program: the approval still stands.
@@ -668,4 +670,72 @@ fn what_was_allowed_for_the_session_stays_the_sessions_when_the_level_changes() 
         assert_eq!(left[0].id, both[1].id);
         front.close().await;
     });
+}
+
+/// Two calls in one response: a write that is asked about, and after it a
+/// write that is allowed. Runs the turn as far as the open question, gives
+/// the second write every chance to run, and says whether it did. Then
+/// allows the first, and checks that both were written.
+fn later_write_ran_while_the_question_was_open(test: &str, fail_on_denial: bool) -> bool {
+    let world = World::new(
+        test,
+        [
+            calls(&[
+                (
+                    "c1",
+                    "write",
+                    json!({"path": PROTECTED, "content": "on: push\n"}),
+                ),
+                (
+                    "c2",
+                    "write",
+                    json!({"path": "later.txt", "content": "x\n"}),
+                ),
+            ]),
+            says("Done."),
+        ],
+    );
+    let core = world.core_with(|options| options.fail_on_denial = fail_on_denial);
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        front.prompt("set up CI").await;
+        let (id, request) = front.approval().await;
+        assert_eq!(request.call_id.as_str(), "c1");
+        // Long enough for anything that may start to have finished.
+        for _ in 0..2_000 {
+            if world.read("later.txt").is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let ran = world.read("later.txt").is_some();
+        front.answer(&id, ApprovalChoice::AllowOnce).unwrap();
+        front.turns(1).await;
+        assert_eq!(world.read(PROTECTED).as_deref(), Some("on: push\n"));
+        assert_eq!(world.read("later.txt").as_deref(), Some("x\n"));
+        front.close().await;
+        ran
+    })
+}
+
+/// A person's answer is never "stop the turn", so a later call that was
+/// allowed does not wait for it.
+#[test]
+fn a_later_call_runs_beside_a_question_a_person_is_answering() {
+    assert!(later_write_ran_while_the_question_was_open(
+        "beside_question",
+        false
+    ));
+}
+
+/// With `fail_on_denial` an answer may be to stop the turn, and a stop
+/// holds for everything the model wrote after the refused call: nothing
+/// after an open question that changes anything starts until it is
+/// answered.
+#[test]
+fn with_fail_on_denial_a_later_call_waits_for_the_open_question() {
+    assert!(!later_write_ran_while_the_question_was_open(
+        "behind_question",
+        true
+    ));
 }

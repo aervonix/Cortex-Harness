@@ -397,6 +397,7 @@ An approval never outlives its scope. Session approvals are not saved. Stored ap
 - **A question that is withdrawn** (the turn was interrupted, or the response the call came from was thrown away) is closed, and the clients are told (`cancelled`).
 - **Recording** an answer for the project writes a file, so it is done on the blocking pool. If it cannot be written, the call is still allowed, once, and the user is told.
 - **With nobody to ask** (no client that may answer: headless mode), the call is refused with the engine's own explanation, and the refusal is kept: it is the headless result's `permission_denials`. With the core's `fail_on_denial` option the same refusal ends the turn, through the loop's `Stop`, with the outcome `denied` ([10-headless.md](10-headless.md)). A rule's own `deny` is neither: it is an ordinary refusal, and is not listed.
+- **Whether an answer may stop the turn** (`Policy::answers_may_stop`) is the core's `fail_on_denial` option and nothing else. A person's choices have no "stop", so without the option a later call that was allowed runs beside an open question. With it, a question nobody can be asked ends the turn, and whether somebody can be asked is not known until it is put; so the loop holds every later call with side effects behind an open question, whoever is there to answer.
 - **A changed level** (`session/set`) starts a new engine from the same rules and what was approved so far, and records the old standing lease as ended and the new one as granted. What was allowed for the session stays the session's own, under the ids it had (`Engine::keep_session_approvals_of`, added to `cortex-policy` for this).
 - **A tool that declares an effect this version does not know is refused.** The engine cannot be shown the whole of what the call does, so it is not asked to allow it. A level that cannot be held is refused and nothing changes. Raising the level needs a `user` client.
 
@@ -436,17 +437,18 @@ Opening a project for the first time asks one question before anything from the 
 - **The file is `trust.toml` in the state directory:** one `[[project]]` table per trusted project with its key, its root as it should be shown, the time, and a `[[project.pinned]]` table per definition. It is written owner-only and atomically, under a lock held from the read to the write (`trust.toml.lock`), so that a `trust` and a `revoke` at the same moment cannot undo each other, and read strictly: a key this build does not know or a newer `version` refuses the whole file, and then **nothing is trusted**.
 - **Nothing a tool does can write it.** The state directory is closed to every tool by the built-in protection, at every level.
 
-**As wired in step 13a** (`cortex-core`, `assemble::trust`). The core works trust out once for a session, and gives it to four places. It is two answers, because trust lets a project do two different kinds of thing.
+**As wired in step 13a** (`cortex-core`, `assemble::trust`). The core works trust out once for a session, and gives it to four places, the engine twice. It is two answers, because trust lets a project do two different kinds of thing.
 
 | The answer | Who is given it | What it decides there |
 |---|---|---|
 | **The project is trusted, and its rules are the ones the user saw.** | Configuration (`cortex-config`'s `ProjectTrust`) | Whether the project's file may set what is marked as needing trust: a dearer model, a looser setting. |
-| | The permission engine (`Parts::trusted`) | Whether the project's `allow` rules count, and whether git is a command that only reads. |
-| **The project is trusted.** | The shell tool (`repository_trusted`) | Whether git is asked what a command changed. |
+| | The permission engine (`Parts::trusted`) | Whether the project's `allow` rules count. |
+| **The project is trusted.** | The permission engine (`Parts::repository_trusted`) | Whether git's commands that read the repository's own configuration are commands that only read. |
+| | The shell tool (`repository_trusted`) | Whether git is asked what a command changed. |
 | | The capture of the base state | Whether git is asked for the repository's state. |
 
 - **The first is about what loosens or costs,** so any change to the project's rules sets it aside until the user approves the change: the project's settings that need trust are held back, its `allow` rules are not used, and the user is told in a notice.
-- **The second is about letting git read the repository's own configuration,** which can name programs for git to run. A change to the project's permission rules does not change what git would run, so it does not take this away: a project that adds a rule does not lose its base state, or the exact record of what its commands changed.
+- **The second is about letting git read the repository's own configuration,** which can name programs for git to run. A change to the project's permission rules does not change what git would run, so it does not take this away: a project that adds a rule does not lose its base state, the exact record of what its commands changed, or `git status` as a command that needs no question.
 - **`--trust-project` gives both, for the run.** A trust store that cannot be read gives neither, and the user is told.
 
 ## The sandbox

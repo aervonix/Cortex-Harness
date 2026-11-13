@@ -68,34 +68,31 @@ caught-by:
     cortex-core::it trust::sys_trust_for_the_run_reaches_all_four
 
 [break] engine-told-no-project-is-trusted
-rule: The engine is given the answer about trust it was handed: a trusted project's allow rules count.
+rule: The engine is given the answer about the project's rules it was handed: a trusted project's allow rules count.
 file: crates/cortex-core/src/assemble.rs
-find:
-    home,
-    trusted,
-    protected
-replace:
-    home,
-    trusted: false,
-    protected
+in: engine_parts
+find: trusted, repository_trusted, protected
+replace: trusted: false, repository_trusted, protected
 caught-by:
     cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
     cortex-core::it trust::sys_trust_for_the_run_reaches_all_four
 
-[break] engine-told-every-project-is-trusted
-rule: The engine is given the answer about trust it was handed: in an untrusted project git is not a command that only reads.
+[break] engine-told-every-projects-rules-are-approved
+rule: The engine sets a project's allow rules aside until its rules are the ones the user saw. Seen through the core, nothing changes when the engine is told otherwise: configuration has already held the project's rules back, so the engine is never given them. The engine's own tests hold its half (`cortex-policy`, an allow rule that needs trust is withheld).
 file: crates/cortex-core/src/assemble.rs
-find:
-    home,
-    trusted,
-    protected
-replace:
-    home,
-    trusted: true,
-    protected
+in: engine_parts
+find: trusted, repository_trusted, protected
+replace: trusted: true, repository_trusted, protected
+expect: survives
+
+[break] engine-told-every-repository-is-trusted
+rule: In a project the user does not trust, git is not a command that only reads.
+file: crates/cortex-core/src/assemble.rs
+in: engine_parts
+find: trusted, repository_trusted, protected
+replace: trusted, repository_trusted: true, protected
 caught-by:
-    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
-    cortex-core::it trust::sys_a_trust_store_that_cannot_be_read_trusts_nothing_and_says_so
+    cortex-core::it trust::sys_an_untrusted_project_gets_nothing_that_needs_trust
 
 [break] raw-block-with-secret-written
 rule: A provider's own block that holds a secret is never written: the message is stored as its neutral projection.
@@ -848,46 +845,28 @@ caught-by:
 [break] rules-trust-not-given-to-the-engine
 rule: The engine is given the answer about the project's rules.
 file: crates/cortex-core/src/assemble.rs
-find:
-    lease_id.clone(),
-    rules_trusted,
-    syntax
-replace:
-    lease_id.clone(),
-    false,
-    syntax
+find: lease_id.clone(), rules_trusted, repository_trusted, syntax
+replace: lease_id.clone(), false, repository_trusted, syntax
 caught-by:
     cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
     cortex-core::it trust::sys_trust_for_the_run_reaches_all_four
 
-[break] engine-given-repository-trust
-rule: The engine is given the answer about the rules, not the user's trust alone: changed rules set a project's allow rules aside.
+[break] repository-trust-not-given-to-the-engine
+rule: The engine is given the answer about the repository's trust: in a trusted project `git status` needs no question.
 file: crates/cortex-core/src/assemble.rs
-find:
-    lease_id.clone(),
-    rules_trusted,
-    syntax
-replace:
-    lease_id.clone(),
-    repository_trusted,
-    syntax
+find: lease_id.clone(), rules_trusted, repository_trusted, syntax
+replace: lease_id.clone(), rules_trusted, false, syntax
 caught-by:
     cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
+    cortex-core::it trust::sys_trust_for_the_run_reaches_all_four
 
-[break] engine-told-untrusted-is-trusted
-rule: In an untrusted project the engine is told so.
+[break] engine-given-rules-trust-for-git
+rule: Whether git only reads follows the user's trust alone: a change to the project's rules does not make `git status` a question.
 file: crates/cortex-core/src/assemble.rs
-find:
-    lease_id.clone(),
-    rules_trusted,
-    syntax
-replace:
-    lease_id.clone(),
-    true,
-    syntax
+find: lease_id.clone(), rules_trusted, repository_trusted, syntax
+replace: lease_id.clone(), rules_trusted, rules_trusted, syntax
 caught-by:
     cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
-    cortex-core::it trust::sys_a_trust_store_that_cannot_be_read_trusts_nothing_and_says_so
 
 [break] repository-trust-not-given-to-the-shell
 rule: The shell tool is given the answer about the repository's trust: in a trusted project git is asked what a command changed.
@@ -1018,3 +997,29 @@ find:
 replace: let mut variables: Vec<String> = vec![ANTHROPIC_KEY_ENV.to_owned()];
 caught-by:
     cortex-core::it shell::sys_a_command_is_given_the_environment_the_command_analysis_relies_on
+
+[break] an-answer-never-stops
+rule: With `fail_on_denial` an answer may be to stop the turn, so the loop holds a later call with side effects behind an open question.
+file: crates/cortex-core/src/policy.rs
+in: answers_may_stop
+find: self.fail_on_denial
+replace: false
+caught-by:
+    cortex-core::it approvals::with_fail_on_denial_a_later_call_waits_for_the_open_question
+
+[break] an-answer-may-always-stop
+rule: Without `fail_on_denial` no answer stops the turn, so a later call that was allowed runs beside an open question.
+file: crates/cortex-core/src/policy.rs
+in: answers_may_stop
+find: self.fail_on_denial
+replace: true
+caught-by:
+    cortex-core::it approvals::a_later_call_runs_beside_a_question_a_person_is_answering
+
+[break] added-deny-is-no-change
+rule: The project's rules are approved as a whole: every rule its files hold is shown to the trust store, whatever it does.
+file: crates/cortex-core/src/assemble.rs
+find: .filter(|rule| rule.source == RuleSource::Project)
+replace: .filter(|rule| rule.source == RuleSource::Project && rule.rule.action == cortex_protocol::lease::RuleAction::Allow)
+caught-by:
+    cortex-core::it trust::sys_a_project_trusted_in_the_store_is_trusted_while_its_rules_are_the_ones_the_user_saw
