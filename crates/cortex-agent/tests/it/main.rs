@@ -6,6 +6,18 @@
 //! in the tools' log, a gate. Where two things must happen in an order, one
 //! side opens a [`Gate`] and the other waits for it.
 //!
+//! **The order of events is seeded.** The loop plans each call, and bounds
+//! each result, on the blocking pool, and those threads would finish when
+//! the machine let them: a plan before or after the response's next event,
+//! one call's plan before or after another's. A [`World`] puts that work on
+//! the test's own thread instead, at moments a seeded generator decides
+//! (`cortex_tools::InlineBlocking`), so a test sees one order for one seed.
+//! An ordinary run uses seed 0. `cargo xtask stress -p cortex-agent` runs
+//! every test under many seeds, and a test that fails prints its seed:
+//! `CORTEX_TEST_SEED=<seed>` runs it again in the same order. A test must
+//! pass under every seed, so it asserts only on what the loop promises, and
+//! fixes an order it needs with a gate.
+//!
 //! The pieces every test uses are in this file: [`Rig`], which puts a
 //! session together and remembers everything it does; the fake tools
 //! ([`Probe`]); and [`assert_valid_history`], which checks a request's
@@ -27,6 +39,7 @@ mod denials;
 mod early;
 mod interrupt;
 mod limits;
+mod order;
 mod plan;
 mod retries;
 mod rounds;
@@ -37,7 +50,7 @@ mod streaming;
 mod transitions;
 
 use std::collections::{BTreeMap, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use cortex_agent::{
@@ -788,35 +801,42 @@ impl StatLog {
 
 // --------------------------------------------------------------------- rig
 
-/// A directory of the test's own, made empty.
-pub fn test_dir(test: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("cortex-agent-it")
-        .join(test);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).expect("clear the test's directory");
-    }
-    std::fs::create_dir_all(&dir).expect("create the test's directory");
-    dir
-}
-
 /// What every session of a test may share: the clock, the provider's
 /// script, the tools' log and gates.
 pub struct World {
+    /// The seed of this test's order of events.
+    pub seed: u64,
+    /// Keeps the blocking pool's work on this thread, in the seeded order,
+    /// for as long as the world lasts.
+    _order: cortex_tools::InlineBlocking,
     pub runtime: tokio::runtime::Runtime,
     pub clock: FakeClock,
     pub provider: ScriptedProvider,
     pub log: Arc<Log>,
     pub gates: Gates,
     pub cooldowns: SpeedCooldowns,
+    /// Where the sessions' workspaces are.
     pub dir: PathBuf,
+    /// The directory itself, removed when the world is dropped.
+    _scratch: cortex_testkit::Scratch,
 }
 
 impl World {
+    /// A world whose order of events has the seed of this test run: 0, or
+    /// what `cargo xtask stress` or `CORTEX_TEST_SEED` set. It prints the
+    /// seed, which the test runner shows if the test fails.
     pub fn new(test: &str, responses: impl IntoIterator<Item = Response>) -> Self {
+        Self::seeded(test, cortex_testkit::seed::for_this_test(), responses)
+    }
+
+    /// A world whose order of events has this seed.
+    pub fn seeded(test: &str, seed: u64, responses: impl IntoIterator<Item = Response>) -> Self {
         let clock = FakeClock::starting_at("2026-11-13T10:00:00Z").unwrap();
         let shared: SharedClock = Arc::new(clock.clone());
+        let scratch = cortex_testkit::scratch!(test);
         Self {
+            seed,
+            _order: cortex_tools::InlineBlocking::seeded(seed),
             runtime: tokio::runtime::Builder::new_current_thread()
                 .build()
                 .expect("a runtime"),
@@ -825,7 +845,8 @@ impl World {
             provider: ScriptedProvider::new(responses),
             log: Arc::default(),
             gates: Gates::default(),
-            dir: test_dir(test),
+            dir: scratch.path().to_path_buf(),
+            _scratch: scratch,
         }
     }
 

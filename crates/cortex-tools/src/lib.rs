@@ -61,6 +61,8 @@ mod walk;
 #[cfg(test)]
 use cortex_testkit::cases;
 
+#[cfg(feature = "test-hooks")]
+pub use blocking::InlineBlocking;
 pub use blocking::{BlockingError, run_blocking};
 pub use checkpoint::{
     Change, CheckpointError, Checkpoints, EDIT_LIMIT, Editing, MemoryCheckpoints,

@@ -9,6 +9,14 @@ publish.workspace = true
 [lib]
 doctest = false
 
+[features]
+# For tests only: a switch that makes `run_blocking` run its work on the
+# calling thread at a moment a seed decides, so that a single-threaded test
+# sees the same order of events every time (`src/blocking.rs`). Only a
+# dev-dependency may turn it on, which `cargo xtask rules` checks, and with
+# it on nothing changes until a test makes an `InlineBlocking`.
+test-hooks = []
+
 [dependencies]
 cortex-protocol.workspace = true
 cortex-base.workspace = true
