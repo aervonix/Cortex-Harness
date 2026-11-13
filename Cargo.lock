@@ -277,6 +277,10 @@ version = "0.0.0"
 dependencies = [
  "cortex-base",
  "cortex-protocol",
+ "cortex-testkit",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
