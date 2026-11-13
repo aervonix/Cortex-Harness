@@ -20,9 +20,14 @@ Everything goes through the `xtask` crate: `cargo xtask <command>`, or `./x <com
 | `cargo xtask check` | The static checks (tier 0): `fmt`, `rules`, `breaks`, `generated`, `clippy`, `deny`. `cargo xtask check clippy` runs one of them. Every step runs even if an earlier one fails, and the timings are printed at the end. |
 | `cargo xtask test` | All tests. Arguments go to `cargo nextest run`: `cargo xtask test --profile fast` runs tiers 1 and 2 only, `cargo xtask test -p cortex-cli` one crate, and builds only that crate's tests. |
 | `cargo xtask ci` | Exactly what the blocking CI jobs run: the static checks, then tiers 1 to 3. Run it before opening a pull request. It builds with cargo's `ci` profile, as CI does, so its first run builds the dependencies once more, unoptimised, into `target/ci`. |
-| `cargo xtask ci --tiers` | Builds and runs the tests as CI does, and prints each tier's time against its budget and its slowest tests. `-p <crate>` for some crates, `--top N` for more tests, `--from junit.xml --os windows` to read the report a CI run kept. |
-| `cargo xtask stress -p <crate>` | Runs the crate's tests many times over (`--count N`, 100 when not given), each time under the next seed, and reports each test that failed on some, with the seed that brings the failure back. |
-| `cargo xtask mutate` | Breaks the code on purpose, one break of `mutations/*.breaks` at a time, on a copy of the tree, and reports which tests failed. It stops after five minutes and carries on from there the next time. `--check` only checks that every break still applies, which `check` also does. |
+| `cargo xtask ci --tiers` | Builds and runs the tests as CI does, and prints each tier's time against its budget, split by crate, and its slowest tests. `-p <crate>` for some crates, `--top N` for more tests, `--from junit.xml --os windows` to read the report a CI run kept. |
+| `cargo xtask ci --tiers --compare NEW [--against OLD]` | Two runs' tiers side by side, each above its own process-start cost: by tier, by crate, and the tests that moved most. `NEW` and `OLD` are JUnit reports, run ids of the `ci` workflow, or `main`, its latest successful run there (`OLD` when not given). Reads runs through `gh`. |
+| `cargo xtask ci-times RUN [--against RUN\|main]` | A run's job times and tier times, as the tables a step's `ci.md` has, ready to paste. |
+| `cargo xtask try --command '…'` | What the `try` workflow runs on the hosted runners: `test`, `stress`, `startup`, `perf` or `ci`, in the `ci`, `release` or `dist` profile ([docs/testing-and-ci.md](docs/testing-and-ci.md), "A run on the runners without a pull request"). |
+| `cargo xtask stress -p <crate>` | Runs the crate's tests many times over (`--count N`, 100 when not given), each time under the next seed, and reports each test that failed on some, with the seed that brings the failure back. `--cores K --load N` squeezes the run onto K cores beside N busy loops, which makes a race show far more often. |
+| `cargo xtask mutate` | Breaks the code on purpose, one break of `mutations/*.breaks` at a time, on a copy of the tree, and reports which tests failed. It stops after five minutes and carries on from there the next time. `--jobs N` runs N breaks at a time, each in a copy of its own. `--check` only checks that every break still applies, which `check` also does. |
+| `cargo xtask replace FILE --from CODE --to CODE` | An edit of Rust code that finds its place by tokens, so it holds however `rustfmt` laid the code out; it must be there once (`--in ITEM`, `--occurrence N`). "Editing from a script", below. |
+| `cargo xtask decide [--level L] [--rule RULE]… COMMAND…` | What the permission engine decides of a shell command, with its reasons and the analysis it stands on, without writing a test. |
 | `cargo xtask rules` | The repo-rule checks alone (see below). |
 | `cargo xtask links` | The part of `rules` that is about the docs, by itself: every link inside the repository leads to a file and a heading that are there, and `docs/steps/` and `docs/outstanding/` hold what they should. It asks cargo nothing, so it answers at once. |
 | `cargo xtask fmt` | Formats the workspace. |
@@ -30,7 +35,7 @@ Everything goes through the `xtask` crate: `cargo xtask <command>`, or `./x <com
 | `cargo xtask gen` | Regenerates every generated file: what `schema` writes, and the configuration schema and reference in `docs/configuration/`, from the settings in `cortex-config`. Run it after adding or changing a configuration key. |
 | `cargo xtask size`, `unused`, `advisories` | What the non-blocking workflows run: the `dist` build with its binary size and crate count, the unused-dependency check (needs [cargo-machete](https://github.com/bnjbvr/cargo-machete)), and the advisory check. |
 | `cargo xtask fuzz` | Coverage-guided fuzzing of the stream decoders, each target for a fixed time (`--seconds N`, 60 when not given). What the nightly workflow's `fuzz` job runs. Needs a nightly toolchain and [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz). The targets are in `fuzz/`. |
-| `cargo xtask live [PROVIDER]`, `cargo xtask record [--provider PROVIDER] [SCENARIO…]` | By hand only, against a real provider, and never in CI: the live smoke test, and the recorder of provider fixtures. The provider is `anthropic` when none is named, or `openrouter`, `deepseek` or `venice`. Both need `CORTEX_LIVE_<PROVIDER>_KEY_FILE` set to the path of a file that holds that provider's API key. The key is never given on a command line or in the environment, and a recording that still holds it is refused ([docs/testing-and-ci.md](docs/testing-and-ci.md), "Fixtures"). They cost money: a few hundredths of a cent for the smoke test, about a cent and a half to record everything. |
+| `cargo xtask live [PROVIDER]`, `cargo xtask record [--provider PROVIDER] [--dry-run] [SCENARIO…]`, `cargo xtask record --toolbox`, `cargo xtask live --spent` | By hand only, against a real provider, and never in CI: the live smoke test, and the recorder of provider fixtures. The provider is `anthropic` when none is named, or `openrouter`, `deepseek` or `venice`. Both need `CORTEX_LIVE_<PROVIDER>_KEY_FILE` set to the path of a file that holds that provider's API key. The key is never given on a command line or in the environment, and a recording that still holds it is refused ([docs/testing-and-ci.md](docs/testing-and-ci.md), "Fixtures"). They cost money: a few hundredths of a cent for the smoke test, about a cent and a half to record everything. Each call's spend is added to a ledger outside the repository, which `live --spent` totals; `record --dry-run` prints a scenario's first request and sends nothing. |
 | `cargo xtask alias` | Builds `cortex` and puts its alias `cx` beside it in the target directory. |
 
 ## Layout
@@ -51,7 +56,8 @@ AGENTS.md          the rules for agents; CLAUDE.md is one line that includes it
 .github/workflows/ci.yml             the blocking checks
 .github/workflows/main.yml           after each merge: release build, size, crate count
 .github/workflows/nightly.yml        nightly: advisories, unused dependencies, every release target
-.github/workflows/windows-try.yml    by hand: one crate's tests on Windows, for a branch with no pull request
+.github/workflows/try.yml            by hand: one xtask command on Linux, Windows or both, for a branch with no pull request
+.github/workflows/windows-try.yml    by hand: one crate's tests on Windows (the older form of `try`)
 ```
 
 A crate may depend only on the workspace crates that [docs/architecture/01-workspace.md](docs/architecture/01-workspace.md) lists for it. `cargo xtask rules` checks this from `cargo metadata`. If the design has to change, change that page and the table in `xtask/src/rules/crate_graph.rs` in the same pull request.
@@ -79,6 +85,13 @@ The tiers are defined in [docs/testing-and-ci.md](docs/testing-and-ci.md). Where
 - **A process test's children are the test binary itself,** run again (`cortex_testkit::children`): a child that stays until it is killed, a grandchild, a child that ignores the polite interrupt. Each reports to the test over a loopback socket and keeps the connection until it dies, so the test sees it start and sees it go. No helper program is built, and no test uses `sleep`.
 - **Every test has a time limit.** In tiers 1 and 2 a test is reported as slow at 2 s and stopped, as a failure, at 10 s. In tier 3 the marks are 10 s and 60 s. A test that is slow needs a reason or belongs in a non-blocking tier.
 - **Every tier has a budget** for the time its tests take together, counted above the start of each test's process, which the run measures: 20 s for tier 1, 40 s for tier 2, and 60 s on Linux or 90 s on Windows for tier 3. `cargo xtask ci` prints the totals after the run, raw and above the start. A tier over its budget is a warning on the pull request, and a tier more than one and a half times over fails the job.
+
+## Editing from a script
+
+A session in a Claude Code worktree is held to a shell guard that refuses some commands that name git ([docs/shell-guard.md](docs/shell-guard.md)), so edits across many files are scripts. An edit script that matches exact text breaks the day `rustfmt` wraps a line, and one that fails half way leaves the tree half edited.
+
+- For Rust, `cargo xtask replace FILE --from CODE --to CODE` finds the code by its tokens (white space and comments do not count), refuses a match that is not there exactly once, and prints the lines it changed. `--from-file` and `--to-file` take the code from files, for code of several lines. Run `cargo xtask fmt` after it.
+- In a Python script, check that each text is there once before replacing any (`assert source.count(old) == 1`), and write the file only when all of them are. Never replace an empty string: it matches between every two characters.
 
 ## Lints
 

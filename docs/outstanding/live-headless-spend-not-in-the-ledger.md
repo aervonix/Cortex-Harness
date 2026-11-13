@@ -1,0 +1,3 @@
+| Item | Who | When |
+|---|---|---|
+| **The live headless runs are not in the spend ledger.** `cargo xtask live anthropic` and `live deepseek` end with one headless run of the real binary (`cortex-cli`'s `tests/system/live.rs`). Its tokens and cost are in the binary's `--output json` record, not in the live tests of `cortex-llm`, which are what add a line to the ledger ([testing-and-ci.md](../testing-and-ci.md), "Fixtures"). To settle: the system test reads the record's usage and adds the same line. A few hundredths of a cent a run go uncounted until then. | A later tooling step, or the step that next changes the live tests | When it is next asked for |
