@@ -579,8 +579,8 @@ rule: An observer may not rewind a session.
 file: crates/cortex-core/src/core.rs
 find:
     self.may_drive(client)?;
-    let mut change = live.handle.change_history()?;
-replace: let mut change = live.handle.change_history()?;
+    let change = live.handle.change_history()?;
+replace: let change = live.handle.change_history()?;
 caught-by:
     cortex-core::it approvals::an_observer_starts_nothing_changes_no_history_and_ends_nothing
 

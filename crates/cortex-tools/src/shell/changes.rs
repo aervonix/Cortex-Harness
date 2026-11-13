@@ -324,8 +324,14 @@ impl ChangeDetector {
         let mut hardened = GIT_HARDENING.to_vec();
         hardened.extend_from_slice(arguments);
         let arguments = &hardened[..];
+        // By the path found in an absolute directory of `PATH`: by its bare
+        // name, a relative entry would be searched from the workspace.
+        let Some(git) = cortex_base::program::git() else {
+            self.no_git.store(true, Ordering::Relaxed);
+            return None;
+        };
         let answer = brief::run(
-            "git",
+            git,
             arguments,
             Some(&self.root),
             // Asking must not change anything: no refreshed index written

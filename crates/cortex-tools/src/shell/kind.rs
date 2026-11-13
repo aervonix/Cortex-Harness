@@ -34,7 +34,6 @@
 //! one with a NUL character anywhere, one with a line break for `cmd.exe`
 //! (which reads one line), and one too long for the system to pass.
 
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::process::CommandLine;
@@ -515,10 +514,13 @@ impl ShellSearch {
     /// arguments before the command.
     ///
     /// **What is found is an absolute path, as found.** Only absolute
-    /// directories are looked in, so nothing of the workspace is found. A
-    /// link is not resolved here: a program that is several programs
-    /// (`busybox`) knows which one to be from the name it is started by. The
-    /// harness keys what it keeps about the shell by the resolved path.
+    /// directories are looked in (`cortex_base::program::find`), so nothing
+    /// is found through a relative entry of `PATH`. An absolute entry is
+    /// the user's own, even one inside the workspace (an activated virtual
+    /// environment). A link is not resolved here: a program that is several
+    /// programs (`busybox`) knows which one to be from the name it is
+    /// started by. The harness keys what it keeps about the shell by the
+    /// resolved path.
     ///
     /// **On Windows this search is the harness's own, not the system's.**
     /// It tries a name with `.exe` and as given, and never the other
@@ -535,7 +537,14 @@ impl ShellSearch {
     ) -> Result<Shell, ShellError> {
         let shell = match program {
             Some(program) => {
-                let found = if program.contains(['/', '\\']) {
+                // Anything but one plain file name is a path: a separator, or
+                // on Windows a drive with no root (`C:bash.exe`), which names
+                // a file in that drive's current directory.
+                let plain = matches!(
+                    Path::new(program).components().collect::<Vec<_>>()[..],
+                    [std::path::Component::Normal(_)]
+                );
+                let found = if program.contains(['/', '\\']) || !plain {
                     if !Path::new(program).is_absolute() {
                         return Err(ShellError::NotAbsolute(program.to_owned()));
                     }
@@ -597,37 +606,13 @@ impl ShellSearch {
     /// `PATH`. Whether a directory is absolute is this system's question,
     /// as the directories are this system's.
     fn on_path(&self, name: &str) -> Option<PathBuf> {
-        let mut names = vec![OsString::from(name)];
-        if self.windows && Path::new(name).extension().is_none() {
-            names.insert(0, OsString::from(format!("{name}.exe")));
-        }
-        self.path
-            .iter()
-            .filter(|directory| directory.is_absolute())
-            .flat_map(|directory| names.iter().map(move |name| directory.join(name)))
-            .find(|candidate| is_program(candidate, self.windows))
+        cortex_base::program::find(&self.path, name, self.windows)
     }
 }
 
 /// Whether `path` is a file that can be run.
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the search for a shell runs once, off the core thread, and blocks by design"
-)]
 fn is_program(path: &Path, windows: bool) -> bool {
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return false;
-    };
-    if !metadata.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    if !windows {
-        use std::os::unix::fs::PermissionsExt;
-        return metadata.permissions().mode() & 0o111 != 0;
-    }
-    let _ = windows;
-    true
+    cortex_base::program::is_program(path, windows)
 }
 
 #[cfg(test)]

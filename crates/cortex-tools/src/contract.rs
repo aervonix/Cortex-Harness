@@ -70,8 +70,10 @@ pub trait Tool: Send + Sync {
     ///
     /// The work reads the file, so a caller on an async thread runs it
     /// through [`run_blocking`](crate::run_blocking). Calling this method
-    /// does no work itself.
-    fn preview(&self, plan: &Plan, cx: &PlanCx) -> Option<Preview> {
+    /// does no work itself. A file the read gate in `cx` keeps from the
+    /// agent is not shown: the question is put to a person, and is no way
+    /// round the read rules.
+    fn preview(&self, plan: &Plan, cx: &RunCx) -> Option<Preview> {
         let _ = (plan, cx);
         None
     }

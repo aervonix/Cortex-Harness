@@ -43,23 +43,25 @@ fn history_changing() -> Box<ErrorData> {
 }
 
 /// A change to a session's history that is under way
-/// ([`SessionHandle::change_history`]). No turn starts while it lives.
-/// Dropping it ends the change, and the loop reads the history again before
-/// its next turn.
+/// ([`SessionHandle::change_history`]). No turn starts while it lives, so
+/// its owner keeps it for as long as the change's work goes on, wherever
+/// that work runs. Dropping it ends the change, and the loop reads the
+/// history again before its next turn.
 #[must_use = "the change ends when this is dropped"]
 pub struct HistoryChange {
     shared: Arc<Shared>,
-    restored: Vec<String>,
+    made: bool,
 }
 
 impl HistoryChange {
-    /// Says that the change put these files back on disk, each as the
-    /// session store names it: relative to the workspace, or absolute
-    /// outside it. The table of seen files forgets them when the history
-    /// is read again, so a file is read in full before it is changed: what
-    /// the table recorded of it is a version the change took away.
-    pub fn restored(&mut self, files: impl IntoIterator<Item = String>) {
-        self.restored.extend(files);
+    /// Says that the history did change. The session's table of seen files
+    /// then forgets every file when the loop reads the history again: what
+    /// it recorded may be of turns the history no longer has, and the model
+    /// is to read a file before it changes it. A change that is given up
+    /// before it changes anything leaves the table as it was, but for a
+    /// new epoch.
+    pub fn made(&mut self) {
+        self.made = true;
     }
 }
 
@@ -67,7 +69,7 @@ impl std::fmt::Debug for HistoryChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HistoryChange")
             .field("session", &self.shared.info.id)
-            .field("restored", &self.restored)
+            .field("made", &self.made)
             .finish()
     }
 }
@@ -77,7 +79,7 @@ impl Drop for HistoryChange {
         let mut inbox = self.shared.lock();
         inbox.changing = false;
         inbox.reload = true;
-        inbox.restored.append(&mut self.restored);
+        inbox.history_changed |= self.made;
     }
 }
 
@@ -147,10 +149,10 @@ pub(crate) struct Inbox {
     /// The session's history is being changed ([`HistoryChange`]): no turn
     /// starts, and no second change begins.
     pub(crate) changing: bool,
-    /// Files a change of history put back on disk, as the store names them
-    /// (relative to the workspace, or absolute outside it): the table of
-    /// seen files forgets them when the loop reads the history again.
-    pub(crate) restored: Vec<String>,
+    /// A change of history was made ([`HistoryChange::made`]): when the
+    /// loop reads the history again, the table of seen files forgets every
+    /// file.
+    pub(crate) history_changed: bool,
     /// Whether the conversation has anything in it, from this process or
     /// from the log it was opened from ([`SessionHandle::has_history`]).
     pub(crate) history: bool,
@@ -560,7 +562,7 @@ impl SessionHandle {
         inbox.changing = true;
         Ok(HistoryChange {
             shared: Arc::clone(&self.shared),
-            restored: Vec::new(),
+            made: false,
         })
     }
 

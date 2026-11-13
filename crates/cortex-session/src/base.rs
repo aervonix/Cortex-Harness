@@ -318,13 +318,21 @@ pub trait Git: Send + Sync + fmt::Debug {
     fn run(&self, dir: &Path, args: &[&str], limit: usize) -> io::Result<GitOutput>;
 }
 
-/// The `git` program on the `PATH`.
+/// The `git` program on the `PATH`: in its absolute directories only, and
+/// started by the path found (`cortex_base::program::git`), never by its
+/// bare name, which a relative entry of `PATH` would find in the workspace.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemGit;
 
 impl Git for SystemGit {
     fn run(&self, dir: &Path, args: &[&str], limit: usize) -> io::Result<GitOutput> {
-        let mut child = Command::new("git")
+        let program = cortex_base::program::git().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "git is not in an absolute directory of PATH",
+            )
+        })?;
+        let mut child = Command::new(program)
             .args(GIT_HARDENING)
             .args(args)
             .current_dir(dir)

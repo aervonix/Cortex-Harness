@@ -8,14 +8,9 @@
 
 # ------------------------------------------------------- R4: the shell
 
-[break] shell-search-looks-in-relative-entries
-rule: The shell is looked for in the absolute directories of PATH only: a relative entry names a directory of wherever the harness was started.
-file: crates/cortex-tools/src/shell/kind.rs
-in: ShellSearch::on_path
-find: .filter(|directory| directory.is_absolute())
-replace: .filter(|directory| !directory.as_os_str().is_empty())
-caught-by:
-    cortex-tools::it shell_search::a_relative_path_entry_does_not_make_a_file_there_the_shell
+# The search's own break, that it looks in relative entries, is
+# `program-search-looks-in-relative-entries` below: the shell and git share
+# the search since the review of these fixes.
 
 [break] configured-relative-shell-taken
 rule: A configured shell given as a relative path is refused.
@@ -86,6 +81,7 @@ rule: The credentials file is closed to reading wherever it is kept.
 file: crates/cortex-core/src/assemble.rs
 in: engine_parts
 find: protected = protected.closed(file);
+occurrence: 1
 replace:
 caught-by:
     cortex-core::it start::the_stored_keys_are_closed_to_the_tools_in_each_systems_layout
@@ -101,33 +97,41 @@ caught-by:
 
 # --------------------------------------- R1: the table of seen files
 
-[break] reload-keeps-the-seen-files-epoch
-rule: The loop starts a new epoch of the table of seen files whenever it reads the history again.
+[break] reload-leaves-the-seen-files-table-alone
+rule: When the loop reads its history again it starts a new epoch of the table of seen files, and after a change of history forgets every file.
 file: crates/cortex-agent/src/turn.rs
 in: Session::reload
-find: self.env.workspace.files.begin_epoch();
-replace:
+find:
+    self.env.workspace.files.begin_epoch();
+    if changed {
+        self.env.workspace.files.forget_all();
+    }
+replace: let _ = changed;
 packages: cortex-agent, cortex-core
 caught-by:
     cortex-core::it turns::a_read_after_a_rewind_gives_the_content_the_rewind_took_away
+    cortex-core::it turns::a_file_a_rewind_put_back_is_read_again_before_it_is_changed
+    cortex-core::it turns::a_file_read_only_in_a_rewound_turn_is_read_again_before_it_is_overwritten
 
-[break] restored-files-not-forgotten
-rule: The table of seen files forgets the files a rewind put back.
+[break] history-change-keeps-the-snapshots
+rule: After a change of history the table of seen files forgets every file, snapshots too, so a file is read on the new branch before it is changed.
 file: crates/cortex-agent/src/turn.rs
 in: Session::reload
-find: self.env.workspace.files.forget(path);
+find: self.env.workspace.files.forget_all();
 replace:
 packages: cortex-agent, cortex-core
 caught-by:
     cortex-core::it turns::a_file_a_rewind_put_back_is_read_again_before_it_is_changed
+    cortex-core::it turns::a_file_read_only_in_a_rewound_turn_is_read_again_before_it_is_overwritten
 
-[break] rewind-does-not-say-what-it-restored
-rule: A rewind tells the loop which files it put back.
+[break] rewind-not-marked-made
+rule: A rewind that changed the history says so, so that the table of seen files forgets every file.
 file: crates/cortex-core/src/core.rs
-find: change.restored(restored);
-replace: let _ = restored;
+find: change.made();
+replace:
 caught-by:
     cortex-core::it turns::a_file_a_rewind_put_back_is_read_again_before_it_is_changed
+    cortex-core::it turns::a_file_read_only_in_a_rewound_turn_is_read_again_before_it_is_overwritten
 
 # ---------------------- turn/start and a rewind, under one lock
 #
@@ -184,7 +188,7 @@ caught-by:
 [break] non-user-config-touches-what-is-enforced
 rule: A non-user client's configuration overrides may not touch permissions, the sandbox or limits.
 file: crates/cortex-core/src/core.rs
-find: not_enforced(&overrides)?;
+find: only_preferences(&overrides)?;
 replace:
 caught-by:
     cortex-core::it settings::a_supervisor_cannot_start_a_session_above_the_level_it_could_set
@@ -293,3 +297,68 @@ replace: Ok(old.to_owned())
 packages: cortex-tools, cortex-core
 caught-by:
     cortex-core::it approvals::an_approval_for_a_change_to_a_file_shows_the_change_within_a_bound
+
+[break] preview-shows-what-the-agent-may-not-read
+rule: An approval's diff never shows a file the read gate keeps from the agent.
+file: crates/cortex-tools/src/change.rs
+in: preview
+find: if !gate.may_read(path.abs()) {
+replace: if false && !gate.may_read(path.abs()) {
+packages: cortex-tools, cortex-core
+caught-by:
+    cortex-core::it approvals::an_approval_for_a_change_to_a_file_shows_the_change_within_a_bound
+
+# ------------------------- from the independent review of these fixes
+
+[break] program-search-looks-in-relative-entries
+rule: A program the harness starts by name (its shell, git) is looked for in the absolute directories of PATH only. The search checks twice, the directory and then the path a name makes with it (a name with a drive and no root replaces the directory), so the break takes both checks out.
+file: crates/cortex-base/src/program.rs
+in: find
+find:
+    .filter(|directory| directory.is_absolute())
+    .flat_map(|directory| names.iter().map(move |name| directory.join(name)))
+    .find(|candidate| candidate.is_absolute() && is_program(candidate, windows))
+replace:
+    .flat_map(|directory| names.iter().map(move |name| directory.join(name)))
+    .find(|candidate| is_program(candidate, windows))
+packages: cortex-base, cortex-tools
+caught-by:
+    cortex-base program::tests::a_relative_path_entry_does_not_make_a_file_there_the_program
+    cortex-tools::it shell_search::a_relative_path_entry_does_not_make_a_file_there_the_shell
+
+[break] session-store-starts-git-by-name
+rule: The session store starts git by the path found in an absolute directory of PATH, never by its bare name. A test cannot change the process's own PATH, which is what the bare name is searched in, so nothing a test sees changes: the search itself is `program-search-looks-in-relative-entries`.
+file: crates/cortex-session/src/base.rs
+in: SystemGit::run
+find: let mut child = Command::new(program)
+replace: let _ = program; let mut child = Command::new("git")
+expect: survives
+
+[break] drive-relative-shell-looked-up-as-a-name
+rule: On Windows a configured shell with a drive and no root (`C:bash.exe`) is a relative path, refused. Its test is Windows-only (`shell_search::on_windows_a_shell_named_with_a_drive_and_no_root_is_refused`, run in CI and windows-try), and on Linux such a name is one plain file name, so a run of the breaks at a Linux desk sees nothing.
+file: crates/cortex-tools/src/shell/kind.rs
+in: ShellSearch::find
+find: program.contains(['/', '\\']) || !plain
+replace: program.contains(['/', '\\']) || (!plain && false)
+expect: survives
+
+[break] non-user-sets-what-is-the-users-alone
+rule: A non-user client's overrides may set only preferences and choices that raise cost: what is the user's alone (a provider's address, the shell, the data directory) is refused.
+file: crates/cortex-core/src/core.rs
+in: only_preferences
+find: Trust::Preference | Trust::RaisesCost | Trust::BySpeed
+replace: Trust::Preference | Trust::RaisesCost | Trust::BySpeed | Trust::UserOnly | Trust::RunsCode | Trust::WidensAccess
+caught-by:
+    cortex-core::it settings::a_supervisor_cannot_start_a_session_above_the_level_it_could_set
+
+[break] user-configuration-file-left-open
+rule: The user's configuration file is closed to reading and writing wherever `CORTEX_CONFIG` puts it.
+file: crates/cortex-core/src/assemble.rs
+in: engine_parts
+find:
+    if let Some(file) = dirs.user_config.as_deref().and_then(resolve_dir) {
+        protected = protected.closed(file);
+    }
+replace:
+caught-by:
+    cortex-core::it start::the_users_configuration_file_is_closed_wherever_it_is_kept

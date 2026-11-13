@@ -459,6 +459,12 @@ fn engine_parts(
             protected = protected.closed(file);
         }
     }
+    // The user's configuration file, which `CORTEX_CONFIG` can put outside
+    // the configuration directory: it holds the level and the rules the
+    // next session starts with, and can hold a provider's header.
+    if let Some(file) = dirs.user_config.as_deref().and_then(resolve_dir) {
+        protected = protected.closed(file);
+    }
     if let Some(state) = state.and_then(|state| resolve_dir(state.root())) {
         protected = protected.closed(state);
     }

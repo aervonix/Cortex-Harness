@@ -480,6 +480,10 @@ fn a_session_can_be_told_to_read_its_history_again_but_not_under_a_turn() {
     });
     assert_eq!(*lock(&store.opens), 2, "read again before the turn");
     assert_valid_history(&last_request(&world.provider).messages);
+    // A closed session's history is not changed.
+    rig.handle.close();
+    let closed = rig.handle.change_history().unwrap_err();
+    assert_eq!(closed.code, code::SESSION_NOT_OPEN);
 }
 
 // ------------------------------------------------------------- statistics

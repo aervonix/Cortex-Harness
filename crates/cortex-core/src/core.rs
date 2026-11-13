@@ -692,7 +692,7 @@ impl Core {
                 let user =
                     self.inner.clients.info(client).map(|info| info.role) == Some(ClientRole::User);
                 if !user {
-                    not_enforced(&overrides)?;
+                    only_preferences(&overrides)?;
                 }
                 let live = self
                     .open(
@@ -880,9 +880,16 @@ impl Core {
                 // while it is being changed: the rewind itself runs off
                 // this thread, and a prompt could arrive meanwhile. Both
                 // are decided under the session's own lock.
-                let mut change = live.handle.change_history()?;
+                let change = live.handle.change_history()?;
                 let log = Arc::clone(&live.log);
-                let (plan, restored, not_restored) = Self::blocking(move || {
+                let hooks = Arc::clone(&live.hooks);
+                let board = Arc::clone(&live.board);
+                let not_restored = Self::blocking(move || {
+                    // The change is held by the work, not by this
+                    // operation: the work is never cancelled, so if the
+                    // operation is given up (its client went away) no turn
+                    // starts until the log is no longer being rewritten.
+                    let mut change = change;
                     let mut kept = lock(&log);
                     let Some(disk) = kept.disk() else {
                         return Err(error(
@@ -915,25 +922,22 @@ impl Core {
                         .session
                         .rewind(&plan, &restore)
                         .map_err(|failure| session_error(&failure))?;
+                    // The table of seen files forgets every file, and the
+                    // loop reads the history again before its next turn.
+                    change.made();
                     let entries = disk
                         .session
                         .read_branch()
                         .map_err(|failure| session_error(&failure))?;
-                    Ok((
-                        crate::store::plan_of(&entries),
-                        done.restored,
-                        done.not_restored,
-                    ))
+                    // The plan goes back with the conversation, before a
+                    // turn can start on it.
+                    hooks.forget_plan_notices();
+                    board.restore(crate::store::plan_of(&entries).unwrap_or_default());
+                    drop(kept);
+                    drop(change);
+                    Ok(done.not_restored)
                 })
                 .await?;
-                // The table of seen files forgets the files put back, and
-                // the loop reads the history again before its next turn.
-                change.restored(restored);
-                // The plan goes back with the conversation, before a turn
-                // can start on it.
-                live.hooks.forget_plan_notices();
-                live.board.restore(plan.unwrap_or_default());
-                drop(change);
                 live.handle.emit(Event::PlanUpdated(PlanUpdated {
                     plan: live.board.get(),
                     by: Actor::Harness,
@@ -1410,31 +1414,52 @@ fn session_error(failure: &cortex_session::SessionError) -> OpError {
 }
 
 /// Refuses a session's configuration overrides from a client that is not a
-/// `user` when they touch what the harness enforces: anything under
-/// `[permissions]`, `[sandbox]` or `[limits]`, in a profile too. (Choosing
-/// a profile is not an override anyone may give: the loader refuses it.)
-/// Such overrides rank as the user's own command line, so they are the
-/// user's to give.
-fn not_enforced(overrides: &[Override]) -> Result<(), OpError> {
-    use cortex_config::schema::{Lookup, lookup};
+/// `user` when they set anything but a preference, or a choice that raises
+/// what is spent (a model, a speed: what `session/set` lets such a client
+/// choose). Such overrides rank as the user's own command line, so the
+/// rest is the user's to give:
+///
+/// - anything under `[permissions]`, `[sandbox]` or `[limits]`, in a
+///   profile too, whatever its value;
+/// - what is the user's alone: a provider's address and headers, the
+///   shell, the data directory, the credential store;
+/// - what runs code or widens access.
+///
+/// Each key is judged by the rule the schema gives it for a project's file.
+/// (Choosing a profile is not an override anyone may give: the loader
+/// refuses it.)
+fn only_preferences(overrides: &[Override]) -> Result<(), OpError> {
+    use cortex_config::Trust;
+    use cortex_config::schema::{Lookup, Meta, lookup};
+    let preference = |trust: &Trust| {
+        matches!(
+            trust,
+            Trust::Preference | Trust::RaisesCost | Trust::BySpeed
+        )
+    };
     for one in overrides {
-        let enforced = match cortex_config::KeyPath::parse(&one.key) {
+        let allowed = match cortex_config::KeyPath::parse(&one.key) {
             Ok(path) => match lookup(&path) {
-                Lookup::Setting { enforced, .. }
-                | Lookup::Table { enforced }
-                | Lookup::Unknown { enforced, .. } => enforced,
-                Lookup::InsideSetting { .. } | Lookup::Reserved { .. } => false,
+                Lookup::Setting { child, enforced } => {
+                    !enforced
+                        && matches!(&child.meta, Meta::Leaf { trust, .. } if preference(trust))
+                }
+                Lookup::InsideSetting { child } => {
+                    matches!(&child.meta, Meta::Leaf { trust, .. } if preference(trust))
+                }
+                Lookup::Reserved { trust } => preference(&trust),
+                Lookup::Table { .. } | Lookup::Unknown { .. } => false,
             },
             // A key that cannot be read cannot be shown to be harmless.
-            Err(_) => true,
+            Err(_) => false,
         };
-        if enforced {
+        if !allowed {
             return Err(error(
                 ErrorKind::Permission,
                 code::ROLE_NOT_ALLOWED,
                 format!(
-                    "Only a `user` client may set `{}` for a session: permissions, the sandbox \
-                     and limits are the user's.",
+                    "Only a `user` client may set `{}` for a session: permissions, the sandbox, \
+                     limits and what is the user's alone are the user's.",
                     one.key
                 ),
             ));

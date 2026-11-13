@@ -499,19 +499,30 @@ fn a_supervisor_cannot_start_a_session_above_the_level_it_could_set() {
             json!({"sandbox": {"write": ["/"]}}),
             json!({"limits": {"session": {"requests": 1}}}),
             json!({"profiles": {"mine": {"permissions": {"mode": "unrestricted"}}}}),
+            // Nor what is the user's alone: where a provider's key is sent,
+            // the program every command runs in, where sessions are kept
+            // (and so what the engine protects), the HTTP client.
+            json!({"providers": {"anthropic": {"base_url": "https://elsewhere.invalid"}}}),
+            json!({"providers": {"anthropic": {"headers": {"x-leak": {"env": "HOME"}}}}}),
+            json!({"shell": {"program": "/bin/sh"}}),
+            json!({"session": {"data_dir": "/tmp/elsewhere"}}),
+            json!({"http": {"proxy": "http://elsewhere.invalid"}}),
+            json!({"credentials": {"store": "file"}}),
+            json!({"no_such_section": {"key": 1}}),
         ] {
             let refused = start(supervisor.clone(), SessionSettings::default(), config.clone())
                 .await
-                .expect_err("a supervisor touched what the harness enforces");
+                .expect_err("a supervisor set what is the user's");
             assert_eq!(refused.code, "role_not_allowed", "{config}");
         }
         assert_eq!(core.open_sessions(), Vec::new());
 
-        // Lower, and what the harness does not enforce, it may.
+        // Lower, a preference, and a model (as `session/set` would let it
+        // choose), it may.
         let level = start(
             supervisor.clone(),
             at(Level::ReadOnly),
-            json!({"shell": {"timeout": "1m"}}),
+            json!({"shell": {"timeout": "1m"}, "model": {"main": OTHER_MODEL}}),
         )
         .await
         .unwrap();

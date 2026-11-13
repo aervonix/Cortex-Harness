@@ -193,13 +193,14 @@ impl Tool for EditTool {
         })
     }
 
-    fn preview(&self, plan: &Plan, cx: &PlanCx) -> Option<Preview> {
+    fn preview(&self, plan: &Plan, cx: &RunCx) -> Option<Preview> {
         let call = plan.args::<Call>()?.clone();
         let paths = std::sync::Arc::clone(&cx.paths);
+        let gate = std::sync::Arc::clone(&cx.gate);
         let limit = self.editing.limit;
         Some(Box::new(move || {
             let shown = call.path.display();
-            change::preview(&call.path, &paths, limit, |old| {
+            change::preview(&call.path, &paths, gate.as_ref(), limit, |old| {
                 let Some(old) = old else {
                     return Err(format!(
                         "`{shown}` does not exist, so there is nothing to edit."
