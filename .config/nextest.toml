@@ -8,6 +8,9 @@
 #   cargo xtask test                  everything (the default profile)
 #   cargo xtask test --profile fast   tiers 1 and 2
 #   cargo xtask test --profile ci     what the blocking CI jobs run
+#   cargo xtask test --profile properties
+#                                     tiers 1 and 2 for the nightly run with
+#                                     scaled property counts
 
 nextest-version = "0.9.100"
 
@@ -44,6 +47,16 @@ retries = 1
 # Local use: tiers 1 and 2 only.
 [profile.fast]
 default-filter = 'not test(/(^|::)sys_/)'
+
+# The nightly `properties` job: tiers 1 and 2 with CORTEX_PROPERTY_SCALE=50,
+# so every property runs fifty times its cases. A test's limits are scaled
+# for that run: reported as slow at 60 s, stopped at 300 s. A property that
+# does real file work per case needs it: the rewind property of
+# `cortex-session` takes 0.75 s at a scale of 1 and 32 s at 50 on the
+# desktop. The limits above, which pull requests run with, are not changed.
+[profile.properties]
+default-filter = 'not test(/(^|::)sys_/)'
+slow-timeout = { period = "60s", terminate-after = 5 }
 
 # The blocking CI jobs: tiers 1 to 3, every failure reported, quiet on success.
 [profile.ci]

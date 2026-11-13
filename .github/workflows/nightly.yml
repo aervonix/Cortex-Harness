@@ -115,7 +115,9 @@ jobs:
   # request checks (docs/testing-and-ci.md, "Property tests"). A failure
   # prints the seed of the failing case, which runs it alone at a desk. On
   # Linux only: the properties are of pure logic, the Windows path rules are
-  # among them on every OS, and the workflow keeps to one Windows job.
+  # among them on every OS, and the workflow keeps to one Windows job. It
+  # runs in nextest's `properties` profile, whose limits on one test are
+  # scaled for fifty times the cases (.config/nextest.toml).
   properties:
     if: ${{ !inputs.force_failure }}
     runs-on: ubuntu-latest
@@ -131,7 +133,7 @@ jobs:
         with:
           tool: cargo-nextest@0.9.151
       - name: Tiers 1 and 2, with more property cases
-        run: cargo run --locked --quiet --package xtask -- test --locked --profile fast
+        run: cargo run --locked --quiet --package xtask -- test --locked --profile properties
 
   # The only job with a token that can write, and all it can write is issues.
   report:
