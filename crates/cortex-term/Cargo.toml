@@ -9,8 +9,41 @@ publish.workspace = true
 [lib]
 doctest = false
 
+[features]
+# Pseudo-terminals, for tests: the operating system's half of the test kit's
+# driver. Only a dev-dependency turns it on (`cargo xtask rules`).
+pty = []
+# The demo binary (`cargo run --release -p cortex-term --example demo
+# --features demo`). A feature of its own so that test builds do not link it.
+demo = []
+
+[[example]]
+name = "demo"
+required-features = ["demo"]
+
 [dependencies]
 cortex-base.workspace = true
+
+# Raw mode, the window size, waiting for input and signal handlers, in
+# `sys::unix`.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+# The console's modes and code pages, its input records and control events,
+# and pseudo-consoles for the tests, in `sys::windows`.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+cortex-testkit.workspace = true
 
 [lints]
 workspace = true
