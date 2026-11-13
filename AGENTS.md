@@ -25,10 +25,20 @@ These are the rules of the build plan. They hold in every change.
 10. **Stay inside the step.** A step's "Must not change" list is binding. A needed change outside the step is reported, not made.
 11. **Conflicts are raised.** Where a feature cannot meet a budget, say so in the step report with a recommendation. Do not cut the feature or loosen the budget quietly.
 12. **No real waiting in tests.** Timeouts, retries, backoff and cooldowns are tested with paused or simulated time (the async runtime's test clock, or the fake clock), never with real sleeps.
-13. **Budgets are enforced.** Each test has a time limit for its tier: slow at 2 s and stopped at 10 s in tiers 1 and 2, slow at 10 s and stopped at 60 s in tier 3. CI warns when a tier's total test time goes over its budget (20 s, 40 s, and 60 s on Linux or 90 s on Windows) and fails at one and a half times the budget.
+13. **Budgets are enforced.** Each test has a time limit for its tier: slow at 2 s and stopped at 10 s in tiers 1 and 2, slow at 10 s and stopped at 60 s in tier 3. CI warns when a tier's total test time, counted above the start of the tests' processes, goes over its budget (20 s, 40 s, and 60 s on Linux or 90 s on Windows) and fails at one and a half times the budget.
 14. **A step's records go in its own files.** The owner's answers go in `docs/steps/<NN>/answered.md` and the CI times in `docs/steps/<NN>/ci.md`, where `<NN>` is the step number in two digits with its letter if it has one (`07`, `12`, `13a`). An item left open is a file of its own in `docs/outstanding/`, named for the item in lowercase words joined by hyphens; settling it deletes the file. An item several steps share is left alone by each step that does its part, which records that in its own `answered.md`; only the step that finishes the item deletes its file. A step adds no section to a shared page for these. The details are in [docs/steps/README.md](docs/steps/README.md).
 
 **Done means:** the step's done criteria are met; formatting, lints and all blocking tests pass on both OSes; the blocking checks are still within budget; public items are documented; `docs/` matches the code; and the step's report lists what was built, what was measured and anything left open.
+
+## Windows facts every session needs
+
+Each cost a session hours to find. The details are in [docs/steps/11/](docs/steps/11/).
+
+- **The system temporary directory is on the hosted runner's slow disk** (`C:`). The Windows test job points `TEMP` and `TMP` at the workspace's disk, which halved `cortex-core`'s tests. A test that needs something only `C:` has (short "8.3" names) must look there itself.
+- **Connecting to a loopback port that nothing listens on takes about 2 s** on Windows, which tries three times before it gives up, where Linux refuses at once. A test that connects to a port it may have closed spends that.
+- **A Job Object goes on listing a process for a moment after the process has exited.** Ask for its members by process id and look at each one; never trust its count of active processes for "what is still running".
+- **Printing can hide a race.** A line written to the terminal takes longer than the window some races have. When a timing bug will not show, keep the trace in memory and print it only when something has gone wrong. Repeat the whole workspace, not one crate: a race that needs other tests' load beside it never shows in a crate run alone.
+- **Hosted Windows runners differ in speed by a factor of two** (a test's process starts in 6 to 12 ms). Compare two runs only on runners of the same speed, told by the start cost the tier report prints.
 
 ## Working here
 

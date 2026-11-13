@@ -111,7 +111,7 @@ The size budget is where the vision's features meet the footprint goal most dire
 | `cargo check` after an edit in a leaf crate, desktop | ≤ 2 s | |
 | Rebuild and relink the binary after an edit, desktop | ≤ 5 s | Relinking the full dependency set with a trivial change: 0.4 s on the desktop, 0.54 s on a Linux runner, 1.5 s on a Windows runner. |
 | No-op build | ≤ 0.5 s | 0.13 s with the full dependency set. 0.03 s for the skeleton. |
-| Tiers 1 and 2 test time | ≤ 60 s on a runner, ≤ 30 s on a desktop | |
+| Tiers 1 and 2 test time | ≤ 60 s on a runner, ≤ 30 s on a desktop | Counted above the start of the tests' processes since 2026-11-13 ([testing-and-ci.md](testing-and-ci.md), "Budgets are enforced"). |
 | Tier 3 test time | ≤ 60 s Linux runner, ≤ 90 s Windows runner | |
 
 **How.** CI job timings, and `cargo build --timings` for the breakdown.

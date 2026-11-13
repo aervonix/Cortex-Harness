@@ -1,0 +1,50 @@
+# The tier budgets held above the start of the tests' processes (Zac's
+# decision of 2026-11-13, docs/steps/11/answered.md): what the tier report
+# of `xtask` computes, broken one rule at a time.
+
+[break] budget-held-to-the-raw-total
+rule: A tier is held to its budget by its total above the start of its tests' processes, not by its raw total.
+file: xtask/src/tiers.rs
+in: summarise
+find: let verdict = verdict(above_start, budget);
+replace: let verdict = verdict(seconds, budget);
+caught-by:
+    tiers::tests::a_slow_runner_alone_does_not_put_a_tier_over_its_budget
+
+[break] start-cost-is-the-quickest-test
+rule: The start cost is the time one in a hundred of the run's unit and integration tests beat, not the single quickest, which one lucky test moves.
+file: xtask/src/tiers.rs
+in: start_cost
+find: times[times.len() * START_PERCENTILE / 100]
+replace: times[0]
+caught-by:
+    tiers::tests::the_start_cost_is_what_one_in_a_hundred_unit_and_integration_tests_beat
+
+[break] system-tests-measure-the-start
+rule: System tests are not looked at for the start cost: they start other processes of their own.
+file: xtask/src/tiers.rs
+in: start_cost
+find: .filter(|case| Tier::of(&case.binary, &case.name) != Tier::System)
+replace: .filter(|_| true)
+caught-by:
+    tiers::tests::the_start_cost_is_what_one_in_a_hundred_unit_and_integration_tests_beat
+
+[break] a-quick-test-counts-below-nothing
+rule: A test quicker than the start cost counts as nothing, not as less than nothing.
+file: xtask/src/tiers.rs
+in: total
+find: (case.seconds - start).max(0.0)
+replace: (case.seconds - start)
+caught-by:
+    tiers::tests::a_test_quicker_than_the_start_cost_counts_as_nothing
+
+[break] the-start-is-not-taken-off
+rule: Each test's time is taken above the start cost before it is added to its tier.
+file: xtask/src/tiers.rs
+in: total
+find: (case.seconds - start).max(0.0)
+replace: case.seconds
+caught-by:
+    tiers::tests::a_test_quicker_than_the_start_cost_counts_as_nothing
+    tiers::tests::a_slow_runner_alone_does_not_put_a_tier_over_its_budget
+    tiers::tests::the_report_of_a_fixed_run_is_exactly_this
