@@ -12,7 +12,7 @@ use cortex_config::discover::{Found, FoundKind, Scope, discover};
 use cortex_config::schema::CompatSettings;
 use cortex_config::{Env, Platform};
 
-use crate::{Scratch, write};
+use crate::write;
 
 /// What a fixture file holds. Nothing may ever read it.
 const MARKER: &str =
@@ -47,7 +47,7 @@ fn all() -> CompatSettings {
 
 #[test]
 fn nothing_is_found_where_nothing_is() {
-    let scratch = Scratch::new("discover_nothing");
+    let scratch = cortex_testkit::scratch!("discover_nothing");
     let home = scratch.join("home");
     let workspace = scratch.join("home/work/app");
     fs::create_dir_all(&workspace).unwrap();
@@ -58,7 +58,7 @@ fn nothing_is_found_where_nothing_is() {
 
 #[test]
 fn what_other_tools_left_is_reported_with_whose_it_is() {
-    let scratch = Scratch::new("discover_found");
+    let scratch = cortex_testkit::scratch!("discover_found");
     let home = scratch.join("home");
     let workspace = home.join("work").join("app");
     for file in [
@@ -110,7 +110,7 @@ fn what_other_tools_left_is_reported_with_whose_it_is() {
 
 #[test]
 fn each_kind_can_be_turned_off() {
-    let scratch = Scratch::new("discover_compat");
+    let scratch = cortex_testkit::scratch!("discover_compat");
     let home = scratch.join("home");
     let workspace = home.join("work");
     write(&workspace.join("AGENTS.md"), "");
@@ -160,7 +160,7 @@ fn each_kind_can_be_turned_off() {
 
 #[test]
 fn a_file_must_be_a_file_and_a_folder_a_folder() {
-    let scratch = Scratch::new("discover_shapes");
+    let scratch = cortex_testkit::scratch!("discover_shapes");
     let home = scratch.join("home");
     let workspace = home.join("work");
     // A folder named like the file, and a file named like the folder.
@@ -172,7 +172,7 @@ fn a_file_must_be_a_file_and_a_folder_a_folder() {
 
 #[test]
 fn the_desktop_clients_file_is_looked_for_in_the_configuration_folder() {
-    let scratch = Scratch::new("discover_desktop");
+    let scratch = cortex_testkit::scratch!("discover_desktop");
     let home = scratch.join("home");
     let (variable, base) = match Platform::CURRENT {
         Platform::Unix => ("XDG_CONFIG_HOME", scratch.join("xdg")),
@@ -206,7 +206,7 @@ fn the_desktop_clients_file_is_looked_for_in_the_configuration_folder() {
 fn nothing_that_is_found_is_opened() {
     use std::os::unix::fs::PermissionsExt;
 
-    let scratch = Scratch::new("discover_unreadable");
+    let scratch = cortex_testkit::scratch!("discover_unreadable");
     let home = scratch.join("home");
     let workspace = home.join("work");
     let files = [
@@ -248,7 +248,7 @@ fn nothing_that_is_found_is_opened() {
 fn in_the_workspace_a_link_is_looked_at_before_it_is_followed() {
     use std::path::PathBuf;
 
-    let scratch = Scratch::new("discover_links");
+    let scratch = cortex_testkit::scratch!("discover_links");
     let home = scratch.join("home");
     let workspace = home.join("work");
     fs::create_dir_all(&workspace).unwrap();
@@ -303,7 +303,7 @@ fn in_the_workspace_a_link_is_looked_at_before_it_is_followed_on_unix() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 
-    let scratch = Scratch::new("discover_links_unix");
+    let scratch = cortex_testkit::scratch!("discover_links_unix");
     let home = scratch.join("home");
     let workspace = home.join("work");
     fs::create_dir_all(&workspace).unwrap();

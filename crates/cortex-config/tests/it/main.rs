@@ -37,35 +37,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cortex_config::{Env, LayerKind, LoadFailure, LoadOptions, Loaded, Platform, ProjectTrust};
-
-/// A directory that belongs to one test and is removed with it.
-struct Scratch {
-    dir: PathBuf,
-}
-
-impl Scratch {
-    /// A fresh, empty directory named after the test.
-    fn new(test: &str) -> Self {
-        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join("cortex-config-it")
-            .join(test);
-        if dir.exists() {
-            let _ = fs::remove_dir_all(&dir);
-        }
-        fs::create_dir_all(&dir).expect("create the test's directory");
-        Self { dir }
-    }
-
-    fn join(&self, relative: &str) -> PathBuf {
-        self.dir.join(relative)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
-    }
-}
+use cortex_testkit::Scratch;
 
 /// Writes a file, creating its directory.
 fn write(path: &Path, contents: &str) {
@@ -118,7 +90,7 @@ struct Machine {
 
 impl Machine {
     fn new(test: &str) -> Self {
-        let scratch = Scratch::new(test);
+        let scratch = cortex_testkit::scratch!(test);
         let home = scratch.join("home");
         fs::create_dir_all(&home).unwrap();
         let home_variable = match Platform::CURRENT {

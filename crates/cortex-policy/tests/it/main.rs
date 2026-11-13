@@ -26,7 +26,6 @@ mod measure;
 mod real_paths;
 mod trust;
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cortex_base::{AbsPath, FakeClock, PathStyle, SharedClock};
@@ -37,6 +36,7 @@ use cortex_policy::{
 };
 use cortex_protocol::ids::{LeaseId, ProjectKey};
 use cortex_protocol::lease::{Budget, Effect, HardLimits, Level, Rule, RuleAction};
+pub(crate) use cortex_testkit::Scratch;
 
 /// The workspace of the tests that read paths as text.
 pub(crate) const WORKSPACE: &str = "/work/app";
@@ -204,45 +204,6 @@ pub(crate) fn reason(outcome: &Outcome) -> String {
         Outcome::Ask(question) => question.reasons.join(" "),
         Outcome::Deny { reason } => reason.clone(),
         Outcome::Allow { .. } => String::new(),
-    }
-}
-
-/// A directory that belongs to one test and is removed with it.
-pub(crate) struct Scratch {
-    pub(crate) dir: PathBuf,
-}
-
-impl Scratch {
-    pub(crate) fn new(test: &str) -> Self {
-        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join("cortex-policy-it")
-            .join(test);
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir).expect("clear the test's directory");
-        }
-        std::fs::create_dir_all(&dir).expect("create the test's directory");
-        Self { dir }
-    }
-
-    pub(crate) fn file(&self, relative: &str, contents: &str) -> PathBuf {
-        let file = self.dir.join(relative);
-        if let Some(parent) = file.parent() {
-            std::fs::create_dir_all(parent).expect("create the file's directory");
-        }
-        std::fs::write(&file, contents).expect("write a file");
-        file
-    }
-
-    pub(crate) fn dir(&self, relative: &str) -> PathBuf {
-        let dir = self.dir.join(relative);
-        std::fs::create_dir_all(&dir).expect("create a directory");
-        dir
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 

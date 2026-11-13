@@ -8,11 +8,9 @@ use cortex_config::state::{StateDir, write_private};
 use cortex_config::{Env, Platform, Severity};
 use cortex_protocol::ProjectKey;
 
-use crate::Scratch;
-
 #[test]
 fn a_missing_state_directory_is_created_for_the_user_alone() {
-    let scratch = Scratch::new("state_created");
+    let scratch = cortex_testkit::scratch!("state_created");
     let state = StateDir::new(scratch.join("local/state/cortex-harness"));
     assert!(
         state.privacy_warning().is_none(),
@@ -43,7 +41,7 @@ fn a_missing_state_directory_is_created_for_the_user_alone() {
 /// the state directory's text and climbed out was created.
 #[test]
 fn ensure_dir_refuses_a_path_that_climbs_out() {
-    let scratch = Scratch::new("state_dot_dot");
+    let scratch = cortex_testkit::scratch!("state_dot_dot");
     let state = StateDir::new(scratch.join("state"));
     state.ensure().unwrap();
     for outside in [
@@ -66,7 +64,7 @@ fn ensure_dir_refuses_a_path_that_climbs_out() {
 
 #[test]
 fn a_state_directory_that_is_open_to_others_is_reported_and_not_changed() {
-    let scratch = Scratch::new("state_existing");
+    let scratch = cortex_testkit::scratch!("state_existing");
     let root = scratch.join("state");
     // Made the ordinary way: on Linux with the usual mode, on Windows with
     // the access list of the folder above.
@@ -108,7 +106,7 @@ fn a_state_directory_that_is_open_to_others_is_reported_and_not_changed() {
 
 #[test]
 fn a_state_file_is_written_private_and_its_directory_is_made() {
-    let scratch = Scratch::new("state_write");
+    let scratch = cortex_testkit::scratch!("state_write");
     let state = StateDir::new(scratch.join("state"));
     let project = ProjectKey::new("abc123");
     let file = state.approvals_file(&project).unwrap();
