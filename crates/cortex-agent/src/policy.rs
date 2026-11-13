@@ -7,7 +7,21 @@
 //! Asking is the policy's too, so that the loop never knows who answers, how
 //! long they may take, or what an answer adds to the rules.
 //!
-//! [`AllowAll`] is the stand-in until the engine exists.
+//! # Three things a policy can say beyond allow, ask and deny
+//!
+//! - **"It changes nothing"** ([`Decision::AllowReadOnly`]). A shell command
+//!   is planned as a call that may change anything, and so runs alone. When
+//!   the engine has analysed the command and knows that it only reads, the
+//!   loop schedules the call as read-only: it runs beside other calls, and
+//!   the tool does not look for what it changed.
+//! - **"Stop the turn here"** ([`Decision::Stop`], [`Verdict::Stop`]). A
+//!   denial is normally a result for the model, and the round goes on: the
+//!   model may find another way. Where that is wrong (a front end that
+//!   cannot ask and was told to fail on the first denial; later, the edge of
+//!   a task lease), the policy says stop, and the turn ends with the
+//!   outcome `denied`.
+//!
+//! [`AllowAll`] is the stand-in for a session with no engine.
 
 use std::sync::Arc;
 
@@ -37,13 +51,25 @@ pub struct PlannedCall<'a> {
 pub enum Decision {
     /// The call may run.
     Allow,
+    /// The call may run, and the policy knows that it changes nothing: the
+    /// loop schedules it as read-only, whatever its plan said. The engine
+    /// says this of a shell command it has analysed and found on its table
+    /// of commands that only read.
+    AllowReadOnly,
     /// Whoever supervises the session decides: the loop calls
     /// [`Policy::ask`].
     Ask,
-    /// The call may not run.
+    /// The call may not run. It gets an error result, and the round goes
+    /// on: the model may find another way.
     Deny {
         /// Why, for the model.
         reason: Option<String>,
+    },
+    /// The call may not run, and the turn ends here, with the outcome
+    /// `denied`. Nothing that has not started yet starts.
+    Stop {
+        /// Why, for the model and for whoever reads how the turn ended.
+        reason: String,
     },
 }
 
@@ -53,10 +79,18 @@ pub enum Decision {
 pub enum Verdict {
     /// The call may run.
     Allow,
-    /// The call may not run.
+    /// The call may not run. It gets an error result, and the round goes
+    /// on.
     Deny {
         /// What the person who refused wrote, for the model.
         note: Option<String>,
+    },
+    /// The call may not run, and the turn ends here, with the outcome
+    /// `denied`: nobody could be asked, and the session was told to stop
+    /// then.
+    Stop {
+        /// Why, for the model and for whoever reads how the turn ended.
+        reason: String,
     },
 }
 

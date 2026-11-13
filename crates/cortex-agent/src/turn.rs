@@ -1162,12 +1162,34 @@ impl Session {
         // Recorded in the model's call order, whatever order they finished
         // in, and never cut short: every provider rejects a call without a
         // result.
+        let stopped = round.stopped().map(str::to_owned);
         let mut signature = String::new();
         if let Err(error) = self.record_results(turn, &mut round, &mut signature).await {
             return Phase::Finishing(End::store(&error));
         }
         if interrupted {
             return Phase::Interrupted(None);
+        }
+        if let Some(reason) = stopped {
+            // The policy refused a call and said to stop: the results are
+            // recorded, so the history is whole, and the turn ends here.
+            let message = format!(
+                "A tool call was not allowed, and the turn was stopped: {reason}"
+            );
+            self.notify(
+                turn,
+                Notice::Info(InfoNotice {
+                    message: message.clone(),
+                }),
+            );
+            return Phase::Finishing(End {
+                outcome: TurnOutcome::Denied,
+                error: Some(ErrorData::new(
+                    ErrorKind::Permission,
+                    "permission_denied",
+                    message,
+                )),
+            });
         }
         self.guarded(turn, signature).await
     }

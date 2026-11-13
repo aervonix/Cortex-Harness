@@ -385,14 +385,21 @@ fn related(first: &AbsPath, second: &AbsPath) -> bool {
     first.starts_with(second) || second.starts_with(first)
 }
 
-/// Whether a plan reads any of `keys`, a directory one of them is in, or
-/// something inside one of them. A read of a directory is its listing, which
-/// a write below it can change, so it is treated like a walk.
+/// Whether a plan that is scheduled as read-only reads any of `keys`, a
+/// directory one of them is in, or something inside one of them. A read of
+/// a directory is its listing, which a write below it can change, so it is
+/// treated like a walk.
+///
+/// A command reads whatever it likes, and its plan cannot say what. So a
+/// plan with an `exec` effect that the permission engine has marked
+/// read-only is taken to read every key: `edit a.rs` followed by a
+/// read-only `cat a.rs` sees the edit.
 fn reads_any(plan: &Plan, keys: &[AbsPath]) -> bool {
     plan.effects.iter().any(|effect| match effect {
         Effect::Read(path) | Effect::ReadTree(path) => {
             keys.iter().any(|key| related(key, path.abs()))
         }
+        Effect::Exec { .. } => true,
         _ => false,
     })
 }
@@ -533,6 +540,33 @@ mod tests {
         assert!(keyed(&a).conflicts_with(&keyed(&dir)));
         assert!(keyed(&dir).conflicts_with(&reads(&a)));
         assert!(!keyed(&dir).conflicts_with(&keyed(&elsewhere)));
+    }
+
+    /// A shell command that the permission engine has marked read-only runs
+    /// beside reads and beside other such commands, and waits for every
+    /// write: its plan cannot say which files it reads.
+    #[test]
+    fn a_command_marked_read_only_waits_for_every_write() {
+        let a = resolved("no-such-dir-for-tests/a.txt");
+        let elsewhere = resolved("another-missing-dir/b.txt");
+        let root = resolved(".");
+        let command = || {
+            Plan::new("shell", ())
+                .with_effect(Effect::Exec {
+                    command: "cat no-such-dir-for-tests/a.txt".to_owned(),
+                    cwd: root.clone(),
+                })
+                .with_effect(Effect::Write(root.clone()))
+                .with_concurrency(Concurrency::ReadOnly)
+        };
+        assert!(keyed(&a).conflicts_with(&command()));
+        assert!(command().conflicts_with(&keyed(&a)));
+        assert!(keyed(&elsewhere).conflicts_with(&command()));
+        assert!(!command().conflicts_with(&reads(&a)));
+        assert!(!command().conflicts_with(&command()));
+        // As planned, before the engine marks it, it runs alone.
+        let exclusive = command().with_concurrency(Concurrency::Exclusive);
+        assert!(exclusive.conflicts_with(&reads(&a)));
     }
 
     #[test]
