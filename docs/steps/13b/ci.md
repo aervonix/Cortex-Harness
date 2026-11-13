@@ -103,3 +103,18 @@ One review, on Opus, of the whole diff against the spec, before the first push. 
 | The runtime page's "within two seconds" and "cancel the session token"; `--quiet` printed a bad log level; no record on a core-thread panic | low | The pages say what is built; `--quiet` silences it; a panic writes an `internal` record. A command line that cannot be read writes none, and the page says so |
 | Subcommands panicked on a closed pipe; `auth login` took any provider name and cut a long key silently | low | Output that ends quietly; an unknown provider and an over-long key are refused; a test and a break |
 | Early notices lost on a failure before the turn; an interrupted record's `error` differs by timing; `files_changed` trusts any tool's payload; `--continue` takes the newest created | low | [Outstanding](../../outstanding/headless-details-left-open.md), and [one for `--continue`](../../outstanding/continue-chooses-the-newest-session.md) |
+
+## After the merge: the signal test that failed on main, 2026-11-13
+
+`main` at `d104f4a`, `ci` run 43453239341, `test-linux`: `signals::sys_ctrl_c_interrupts_the_turn_and_exits_130` stopped at 30 s on its `hang_until_closed` gate. The job's re-run passed. The cause and the fix are in [answered.md](answered.md).
+
+**At a desk** (the desktop, through `rx`). "Loaded" is the signal tests pinned with `taskset` to two cores that busy loops also use, four loops or eight.
+
+| Run | Before the fix | After it |
+|---|---|---|
+| `cargo xtask stress -p cortex-cli --count 200`, `signals::` only | 200 of 200 passed | 300 of 300, with `cortex-testkit`'s `server::` tests beside them |
+| Loaded, four loops | 1 failed of 200: the SIGTERM test, at `signals.rs:90` | |
+| Loaded, eight loops | 800 of 800 passed | 1000 of 1000 passed |
+| A 300 ms pause before the response's head, the Linux signal tests | both failed every time, the server's write a `BrokenPipe` | both passed, in 0.37 s, with the signal tests as they were on `main` |
+
+The failure is rare by itself, so the pause is the evidence that tells the cases apart, not the counts. `cargo xtask mutate step-13b/server-misses-an-early-hang-up`: caught by `server::tests::a_client_that_hangs_up_before_the_hold_still_opens_its_gate`.
