@@ -46,6 +46,11 @@ impl Remote {
     }
 
     fn replying(mut self, reply: Reply) -> Self {
+        // A tool that only reads says so in its spec. The others keep the
+        // class a tool from outside has unless it declares another.
+        if matches!(reply, Reply::Reads) {
+            self.spec = self.spec.concurrency(ConcurrencyClass::ReadOnly);
+        }
         self.reply = reply;
         self
     }
@@ -70,7 +75,9 @@ impl Tool for Remote {
                         "docs.example".to_owned(),
                     )))
             }
-            Reply::Echo | Reply::Lines(_) => plan.with_concurrency(Concurrency::Exclusive),
+            // The scheduling is left at a plan's default, as an author who
+            // did not think about it would leave it.
+            Reply::Echo | Reply::Lines(_) => plan,
         })
     }
 
@@ -225,6 +232,16 @@ fn names_that_could_not_be_part_of_a_full_name_are_refused() {
             source_name: "ok".to_owned(),
             tool: "same".to_owned()
         })
+    );
+    // Letters that look like ASCII ones and are not: a rule is written
+    // against a name, so a name has one spelling.
+    assert_eq!(
+        registry.set_source("trаcker", "", Vec::new()),
+        Err(RegistryError::InvalidName("trаcker".to_owned()))
+    );
+    assert_eq!(
+        registry.set_source("ok", "", tool("créer")),
+        Err(RegistryError::InvalidName("créer".to_owned()))
     );
     assert!(registry.is_empty(), "a refused source registers nothing");
     assert!(
@@ -559,6 +576,8 @@ fn the_call_is_planned_with_the_tools_own_effects_and_scheduling() {
             json!({"tool": "tracker/find_issue", "arguments": {"text": "x"}}),
         )
         .unwrap();
+    // A tool whose spec says it runs alone runs alone, whatever its plan
+    // left unsaid.
     assert_eq!(plan.concurrency, Concurrency::Exclusive);
     assert!(
         matches!(plan.effects.as_slice(), [Effect::Ext { tool }] if tool == "tracker/find_issue")
@@ -621,6 +640,97 @@ fn a_dynamic_tools_output_is_bounded_like_a_built_in_tools() {
         json!({"artifact": artifact.id.as_str(), "offset": 10_000, "limit": 1}),
     ));
     assert!(rest.ends_with("\nsecond result 10000"), "{rest}");
+}
+
+#[test]
+fn a_dynamic_tools_output_is_compressed_even_when_it_fits() {
+    /// A tool that answers as a command-line program would: in colour, with
+    /// a progress line redrawn, and repeating itself.
+    struct Noisy(ToolSpec);
+    impl Tool for Noisy {
+        fn spec(&self) -> &ToolSpec {
+            &self.0
+        }
+        fn plan(&self, _args: &Json, _cx: &PlanCx) -> Result<Plan, ToolError> {
+            Ok(Plan::new("Make noise", ()))
+        }
+        fn run<'a>(
+            &'a self,
+            _plan: Plan,
+            _cx: &'a RunCx,
+            _out: &'a mut dyn ToolOutput,
+        ) -> BoxFuture<'a, ToolResult> {
+            Box::pin(async {
+                ToolResult::success(format!(
+                    "\u{1b}[1;32mdone\u{1b}[0m\nfetching 1%\rfetching 50%\rfetching 100%\n{}end",
+                    "retrying\n".repeat(6)
+                ))
+            })
+        }
+    }
+    let ws = Workspace::new("tool_call_compressed");
+    let registry = Arc::new(ToolRegistry::new());
+    let noisy: Arc<dyn Tool> = Arc::new(Noisy(ToolSpec::new(
+        "run",
+        "Noisy.",
+        json!({"type": "object"}),
+    )));
+    registry
+        .set_source("cli", "", vec![Arc::clone(&noisy)])
+        .unwrap();
+
+    let result = ws.call(&ToolCall::new(registry), json!({"tool": "cli/run"}));
+    assert_eq!(
+        ok(&result),
+        "done\nfetching 100%\nretrying\n[the line above repeats 5 more times]\nend"
+    );
+    assert!(result.artifacts().is_empty(), "nothing was lost");
+
+    // The same tool run as one of the harness's own is taken at its word:
+    // what a built-in tool returns is not rewritten when it fits.
+    let direct = ws.call(noisy.as_ref(), json!({}));
+    assert!(direct.text().contains('\u{1b}'));
+}
+
+#[test]
+fn an_error_that_quotes_a_large_schema_is_bounded_too() {
+    let ws = Workspace::new("tool_call_big_schema");
+    let mut properties = serde_json::Map::new();
+    for n in 0..3000 {
+        properties.insert(
+            format!("option_{n:04}"),
+            json!({"type": "string", "description": "one of a great many options"}),
+        );
+    }
+    let registry = Arc::new(ToolRegistry::new());
+    registry
+        .set_source(
+            "big",
+            "",
+            vec![Arc::new(Remote::new(
+                "configure",
+                "Takes thousands of options.",
+                json!({"type": "object", "properties": properties, "required": ["mode"]}),
+            ))],
+        )
+        .unwrap();
+    // The harness's `call` puts the error through `bound`, as the loop
+    // does, and checks that what comes back is within the limits.
+    let result = ws.call(&ToolCall::new(registry), json!({"tool": "big/configure"}));
+    let text = failed(&result);
+    assert!(
+        text.starts_with(
+            "The arguments for `big/configure` do not fit its schema:\n`mode` is required\n"
+        ),
+        "{}",
+        &text[..120]
+    );
+    assert!(text.len() <= 32 * 1024);
+    assert_eq!(
+        result.artifacts().len(),
+        1,
+        "the whole schema is an artifact away"
+    );
 }
 
 // --- The declared tool list ---------------------------------------------------

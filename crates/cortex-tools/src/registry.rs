@@ -19,7 +19,7 @@ use serde_json::json;
 use crate::args;
 use crate::context::{PlanCx, RunCx};
 use crate::contract::{
-    BoxFuture, ConcurrencyClass, Effect, Json, Plan, Tool, ToolOutput, ToolSpec,
+    BoxFuture, Concurrency, ConcurrencyClass, Effect, Json, Plan, Tool, ToolOutput, ToolSpec,
 };
 use crate::output::count;
 use crate::result::{ToolError, ToolResult};
@@ -38,9 +38,11 @@ const MAX_LIMIT: u64 = 25;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RegistryError {
     /// A source or tool name that could not be part of a full name: empty,
-    /// or with a `/`, a space or a control character in it.
+    /// or with anything in it but ASCII letters and digits, `_`, `-` and
+    /// `.`. Letters of other alphabets are refused because some look like
+    /// these, and a name is what a permission rule is written against.
     #[error(
-        "`{0}` cannot be the name of a tool or of a source of tools: use letters, digits, `_`, `-` and `.`"
+        "`{0}` cannot be the name of a tool or of a source of tools: use ASCII letters, digits, `_`, `-` and `.`"
     )]
     InvalidName(String),
     /// Two tools of one source have the same name.
@@ -271,9 +273,9 @@ impl std::fmt::Debug for ToolRegistry {
 
 fn check_name(name: &str) -> Result<(), RegistryError> {
     let fine = !name.is_empty()
-        && name
-            .chars()
-            .all(|character| character.is_alphanumeric() || matches!(character, '_' | '-' | '.'));
+        && name.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
+        });
     if fine {
         Ok(())
     } else {
@@ -528,11 +530,18 @@ impl Tool for ToolCall {
         })?;
         let inner = tool.plan(&arguments, cx)?;
         // The call is what the tool it names says it is: the same effects,
-        // scheduled the same way, and besides them the call of the tool
-        // itself, which the permission engine decides by name.
+        // and besides them the call of the tool itself, which the permission
+        // engine decides by name.
         let summary = format!("{name}: {}", inner.summary);
         let effects = inner.effects.clone();
-        let concurrency = inner.concurrency.clone();
+        // A tool from outside runs alone unless it declares otherwise, and
+        // the declaration is its spec: a plan that left the scheduling at
+        // its default does not make an exclusive tool run beside others.
+        let concurrency = if tool.spec().concurrency == ConcurrencyClass::Exclusive {
+            Concurrency::Exclusive
+        } else {
+            inner.concurrency.clone()
+        };
         let mut plan = Plan::new(summary, Dynamic { tool, plan: inner })
             .with_effect(Effect::Ext {
                 tool: name.to_owned(),
@@ -553,9 +562,10 @@ impl Tool for ToolCall {
                 Ok(dynamic) => dynamic,
                 Err(error) => return error.into_result(),
             };
-            // Through `execute`, so that the result is bounded by the output
-            // policy exactly like a built-in tool's.
-            crate::execute(dynamic.tool.as_ref(), dynamic.plan, cx, out).await
+            // Through the output policy, exactly like a built-in tool's
+            // result, and as output that was produced: compressed whether
+            // or not it fits.
+            crate::execute_produced(dynamic.tool.as_ref(), dynamic.plan, cx, out).await
         })
     }
 }

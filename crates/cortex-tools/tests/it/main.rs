@@ -35,7 +35,8 @@ use std::sync::Arc;
 
 use cortex_base::{PathOptions, PathResolver};
 use cortex_tools::{
-    FileTable, Json, MemoryStore, NoOutput, Plan, RunCx, Tool, ToolError, ToolResult, execute,
+    FileTable, Json, MemoryStore, NoOutput, Plan, RunCx, Tool, ToolError, ToolResult, bound,
+    execute,
 };
 
 /// A workspace that belongs to one test and is removed with it.
@@ -122,11 +123,12 @@ impl Workspace {
 
     /// Plans and runs a call with a context the test prepared.
     fn call_with(&self, cx: &RunCx, tool: &dyn Tool, args: Json) -> ToolResult {
-        let plan = match tool.plan(&args, &cx.plan_cx()) {
-            Ok(plan) => plan,
-            Err(error) => return error.into_result(),
+        let result = match tool.plan(&args, &cx.plan_cx()) {
+            Ok(plan) => block_on(execute(tool, plan, cx, &mut NoOutput)),
+            // The error of a call that could not be planned is a result
+            // like any other, and passes the same policy.
+            Err(error) => block_on(bound(error.into_result(), &tool.spec().name, cx)),
         };
-        let result = block_on(execute(tool, plan, cx, &mut NoOutput));
         assert!(
             result.is_bounded(),
             "a result that skipped the output policy"
@@ -172,6 +174,21 @@ fn failed(result: &ToolResult) -> String {
         result.text()
     );
     result.text()
+}
+
+/// Says that a test has nothing to check on this machine, and why.
+///
+/// In CI that is a failure: the hosted runners can do everything these
+/// tests need (names that are not Unicode, names made through an
+/// extended-length path, files a user may not read), so a pass there always
+/// means the case ran.
+#[track_caller]
+fn skipped(reason: &str) {
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "a test was skipped in CI: {reason}"
+    );
+    println!("skipped: {reason}");
 }
 
 /// Removes a directory tree, read-only files included. Failure is ignored:

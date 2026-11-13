@@ -430,6 +430,57 @@ fn a_small_change_comes_back_as_a_diff_against_what_was_seen() {
 }
 
 #[test]
+fn a_diff_is_not_sent_in_place_of_lines_that_moved_into_the_range_unseen() {
+    // The model saw lines 1 to 10. The first five are then deleted, so the
+    // range it asks for again now holds five lines it has never seen. A
+    // diff would show the deletion and say nothing of them.
+    let ws = Workspace::new("reread_moved");
+    let original = numbered(100);
+    ws.file("a.txt", &original);
+    let tool = ReadTool::new();
+    ok(&ws.call(&tool, json!({"path": "a.txt", "limit": 10})));
+    let shorter: String = (6..=100).map(|n| format!("line {n}\n")).collect();
+    ws.file("a.txt", &shorter);
+
+    let text = ok(&ws.call(&tool, json!({"path": "a.txt", "limit": 10})));
+    assert!(
+        text.starts_with("a.txt (lines 1-10 of 95)\nline 6\nline 7\n"),
+        "{text}"
+    );
+    assert!(text.ends_with("\nline 15"), "{text}");
+
+    // The other way round, the diff does answer: lines are added above a
+    // range the model has, and the range it asks for is where they now are.
+    ws.file("b.txt", &original);
+    ok(&ws.call(&tool, json!({"path": "b.txt", "offset": 40, "limit": 60})));
+    ws.file(
+        "b.txt",
+        &original.replace("line 50\n", "line 50\nline 50 and a half\n"),
+    );
+    let text = ok(&ws.call(&tool, json!({"path": "b.txt", "offset": 41, "limit": 60})));
+    assert!(
+        text.starts_with("b.txt: changed since you read it"),
+        "{text}"
+    );
+    assert!(text.contains("+line 50 and a half"), "{text}");
+}
+
+#[test]
+fn an_empty_file_read_again_is_said_to_be_still_empty() {
+    let ws = Workspace::new("reread_empty");
+    ws.file("empty.txt", "");
+    let tool = ReadTool::new();
+    assert_eq!(
+        ok(&ws.call(&tool, json!({"path": "empty.txt"}))),
+        "empty.txt (empty: 0 lines)"
+    );
+    assert_eq!(
+        ok(&ws.call_with(&ws.cx().with_turn(4), &tool, json!({"path": "empty.txt"}))),
+        "empty.txt: unchanged since you read it: it is still empty."
+    );
+}
+
+#[test]
 fn a_large_change_comes_back_as_content() {
     let ws = Workspace::new("reread_rewritten");
     ws.file("a.txt", &numbered(40));
@@ -468,8 +519,14 @@ fn a_change_of_line_endings_alone_is_said_in_one_line() {
     ws.file("a.txt", &numbered(30).replace('\n', "\r\n"));
     assert_eq!(
         ok(&ws.call(&tool, json!({"path": "a.txt"}))),
-        "a.txt: only its line endings or its final line break changed since you read it. Its 30 \
-         lines are the same."
+        "a.txt: only its line endings, its byte-order mark or its final line break changed \
+         since you read it. Its 30 lines are the same."
+    );
+    // A byte-order mark is not part of the first line either.
+    ws.file("a.txt", &format!("\u{feff}{}", numbered(30)));
+    assert!(
+        ok(&ws.call(&tool, json!({"path": "a.txt"})))
+            .starts_with("a.txt: only its line endings, its byte-order mark or"),
     );
     // For a file shorter than that sentence, the content is the shorter
     // answer, and is what is sent.

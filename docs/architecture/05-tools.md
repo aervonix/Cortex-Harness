@@ -29,6 +29,9 @@ pub struct Plan {
 /// The only way a tool is run: `run`, then the output policy.
 pub async fn execute(tool: &dyn Tool, plan: Plan, cx: &RunCx, out: &mut dyn ToolOutput)
     -> ToolResult;
+
+/// The output policy for a result that no tool run produced: a plan error, a denial.
+pub async fn bound(result: ToolResult, tool: &str, cx: &RunCx) -> ToolResult;
 ```
 
 The two phases exist so the permission engine, the sandbox and the scheduler can act on declared effects before anything runs (see [03-agent-loop.md](03-agent-loop.md)). Built-in tools, extension tools and MCP tools all implement this trait, so one pipeline applies to all three. It was built in step 6, in `cortex-tools`.
@@ -50,11 +53,19 @@ The two phases exist so the permission engine, the sandbox and the scheduler can
 - A plan with no effect but reads has no side effects, and is what the loop may start early ([15-efficiency.md](15-efficiency.md)). A call of an extension or MCP tool is never one.
 - **A walk is checked twice.** `ReadTree` is decided once, before the walk. But a rule can protect one file inside an allowed tree, and the tree cannot be listed in advance. So a walk asks a gate (`ReadGate`, which the permission engine supplies) about each entry it meets, steps past what it may not read, and says in its result how many entries that was. Walks do not follow links, so they stay under the path they declared.
 
-**Concurrency.** A tool's spec has a class, and each plan says how that call is scheduled, with the paths of a keyed call. `Plan::conflicts_with` is the rule the scheduler applies: an exclusive call conflicts with every call; two keyed calls conflict when they share a path; a keyed call conflicts with a read-only call that reads one of its paths or walks a tree that holds one, so that `edit a.rs` followed by `read a.rs` sees the edit; two read-only calls never conflict. Calls that conflict run in the model's order.
+**Concurrency.** A tool's spec has a class, and each plan says how that call is scheduled, with the paths of a keyed call. `Plan::conflicts_with` is the rule the scheduler applies:
+
+- an exclusive call conflicts with every call;
+- two keyed calls conflict when they share a path, or when a path of one is inside a path of the other;
+- a keyed call conflicts with a read-only call that reads one of its paths, a directory that holds one, or something inside one, so that `edit a.rs` followed by `read a.rs` sees the edit, and `write src/new.rs` followed by `list src` sees the file;
+- two read-only calls never conflict.
+
+Calls that conflict run in the model's order.
 
 **Running.** `RunCx` is what one call runs with: its cancellation token, the resolver, the session's content store and table of seen files, the output limits, the walk gate, and what a session may or may not have (an outline source, the images the model accepts, the turn number). Everything in it is shared by handle, so a tool moves what it needs onto the blocking pool: file reads, walks, searches and diffs all run there, through one helper that takes the token and returns as soon as the token fires.
 
 - A tool is run with `execute`, never by calling `run`: `execute` is where the output policy applies, so every result that reaches the loop is bounded.
+- A result that no run produced passes the same policy through `bound`: the error of a call that could not be planned, or a denial. Such an error can be long, because one for arguments that do not fit quotes a third-party schema.
 - A cancelled call still ends with a result, whose outcome is `interrupted`. A failure is a result too. A plan handed to a tool that did not make it is an error result, not a panic.
 
 ## What every tool shares
@@ -71,8 +82,9 @@ The two phases exist so the permission engine, the sandbox and the scheduler can
 | Lines of model-visible content | 800 | Whichever limit is hit first applies. Never under 8. |
 | Line length | 2,000 characters | Longer lines are cut with a marker that says how many characters are missing. Never under 256, and never so long that one line could take more than a quarter of the size limit. |
 
-- **Compression comes first, for output that was produced.** Before the limits apply to the output of a command or of an extension or MCP tool, control sequences are removed, progress redraws collapse to their final state, and runs of identical lines collapse to one line and a count. Runs of lines that differ only in their numbers collapse to their first and last line and a count, but only in output that is over the limits, because that loses text. For commands the project profile knows as builds or tests, failure and error lines are kept ahead of routine ones. Details in [15-efficiency.md](15-efficiency.md).
-- **Content that was asked for is never compressed.** A file read returns the lines exactly as they are in the file.
+- **Compression comes first, for output that was produced.** The output of a command or of an extension or MCP tool is compressed whether or not it is over the limits: control sequences are removed, progress redraws collapse to their final state, and runs of identical lines collapse to one line and a count. Runs of lines that differ only in their numbers collapse to their first and last line and a count, but only in output that is over the limits, because that loses text. For commands the project profile knows as builds or tests, failure and error lines are kept ahead of routine ones. Details in [15-efficiency.md](15-efficiency.md).
+- **Content that was asked for is never compressed.** A file read returns the lines exactly as they are in the file. What one of the harness's own tools returns is left as it is when it fits; only a result over the limits is treated as produced output.
+- **A result holds text and images.** Any other kind of part is left out with a line that says so, and a provider's raw block on a text part is dropped. Neither is counted by the limits, so neither may ride along.
 - Truncation always happens at line boundaries. A line is kept whole or left out, and where lines are left out a marker stands in their place with their number. The one cut inside a line is the line-length limit, which is announced on the line itself, and falls between characters, never inside one.
 - What is kept depends on the tool: the head for file reads, the head and the tail (a quarter and three quarters) for command output and for whatever a tool returns unshaped, the first matches for search.
 - When content is cut, the full output is stored as an artifact in the session directory, and the result ends with a notice that states what was cut and how to get the rest: the artifact's id, which `read` and `search` accept in their `artifact` argument. In the TUI the full output is one key press away.
@@ -114,7 +126,7 @@ The Windows rows apply on Windows only. On Linux `notes:2026` and `name.` are or
 - **That one file has one path.** A file with a second hard link has two, and both are real. And Linux is taken to compare names exactly: on a mount that ignores case there (a FAT or NTFS volume, a directory with case folding on), two spellings of one file resolve to two paths. A rule that protects a file by name does not protect its other names.
 - **That its case folding is exactly Windows's.** Windows compares names by a table of its own. The harness folds case by the same rule with the Rust standard library's tables, which differ for a few letters outside ASCII. Inside or outside the workspace does not depend on it: that is decided on the file system's own spelling, compared exactly. Rule matching does depend on it ([06-permissions-and-sandbox.md](06-permissions-and-sandbox.md)), so there a deny may match a little too much and an allow must not.
 
-- **A directory walk names every entry through the same resolver.** An entry whose name the rules refuse (one that is not valid Unicode, and on Windows a device name or a name that ends with a dot, which exist on disk when something made them through an extended-length path) is stepped past, with everything under it if it is a directory, and the result says how many entries were skipped and why the first was. The walk never stops for one name.
+- **A directory walk names every entry through the same resolver.** An entry whose name the rules refuse (one that is not valid Unicode, and on Windows a device name or a name that ends with a dot, which exist on disk when something made them through an extended-length path) is stepped past, with everything under it if it is a directory, and the result says how many entries were skipped and gives the reason for one of them (the one that sorts first, so that the result does not depend on the order the walk's threads ran in). The walk never stops for one name.
 - **A walk does not follow links.** It reports a link and goes on. `search` counts the links it left, and `list` shows a link as what it leads to, found by the resolver's rules, without going in. A link named as the `path` of a call is followed by the resolver like any other.
 
 **Text files.** Tools read and write UTF-8. A file that is not valid UTF-8 is refused by the editing tools with a message that says so. `read` shows such a file with the bytes that are not UTF-8 replaced, and a note that the editing tools will refuse it. Line endings and a byte-order mark are detected on read and preserved on write, and are not part of a line as `read` shows it.
@@ -258,7 +270,8 @@ Searches file contents with a regular expression.
 - Honours `.gitignore`, `.ignore`, `.git/info/exclude` and hidden-file rules, at every level, including ignore files above the directory searched. A `.gitignore` counts whether or not the tree is a git repository. The user's global git ignore file is not read: it is the machine's, not the project's. Skips binary files (a file with a NUL byte). A file named as `path` is searched even where a walk would leave it out.
 - **A glob with no `/` matches a name at any depth** (`*.rs`). One with a `/` matches the path below the directory searched (`src/**/*.rs`). `*` stops at a separator and `**` does not. On Windows a glob may be written with either separator and ignores case.
 - Output is grouped by file, with line numbers, in path order so results are deterministic whatever order the walk's threads find files in. A match is a matching line. A line of context is marked with `-` after its number where a match has `:`. When the cap is hit, the result says how many more matches exist: the search goes on counting past what it shows. The header gives the totals.
-- **Memory does not grow with the number of matches.** Only as many matches as the result can show are kept, in path order, while the search runs; the rest are counted.
+- **Memory does not grow with the number of matches.** Only as many matches as the result can show are kept, in path order, while the search runs, and of one file no more than the output limit; the rest are counted. Of a very long line only the beginning is kept, with the number of characters that are missing.
+- In `files` mode a file is done at its first match. A file whose first NUL byte comes after that is therefore named there, and left out as binary by the other two modes, which read on.
 - Runs on the blocking pool with a parallel directory walk, and stops when cancelled: each thread checks before each file, and the call returns at once.
 - A walk steps past what it may not use and says so (above, "Paths"): refused names, entries the permission rules protect, files that cannot be opened, and links.
 - Effects: a walk of the tree for a directory, a read for a file, none for an artifact.
@@ -281,6 +294,7 @@ Lists a directory, or finds files by glob.
 - A glob matches directories as well as files.
 - One tool covers both listing and finding, so the model has one less choice to make.
 - A link is listed as what it leads to (a directory gets its `/`), and is not gone into.
+- Only the entries a result can show are kept while the walk runs; the rest are counted.
 - Effects: a read of the directory for one level, and a walk of its tree for more.
 - Concurrency: read-only.
 
@@ -332,11 +346,12 @@ Tools that are not built in (MCP tools and extension tools) are not declared to 
 | `tool_search` | `query` (words, or a `source/` prefix), `limit` | Matching tools: full name, description and argument schema. |
 | `tool_call` | `tool` (full name), `arguments` (object) | The tool's result. |
 
-- **The registry.** MCP servers and extensions register their tools with the dynamic-tool registry, each under the name of its source. A tool's full name is `source/tool`. A source is replaced whole, so a server whose tool list changes is never seen half-updated.
+- **The registry.** MCP servers and extensions register their tools with the dynamic-tool registry, each under the name of its source. A tool's full name is `source/tool`. A source is replaced whole, so a server whose tool list changes is never seen half-updated. The names of sources and tools are ASCII letters, digits, `_`, `-` and `.`: a permission rule is written against a name, so a name must not have a look-alike.
 - **`tool_search` is a ranked match done in the harness,** with no model call. A tool matches when every word of the query is in its name, its source's name or its description, and a word in the name counts for more. `limit` is 8 unless given, at most 25. A search that finds nothing lists the sources.
 - Descriptions and schemas in a search result are third-party text. The result says so, and a description is cut at 2 KiB.
 - Arguments are validated against the tool's schema before the call. A mismatch is an error result that includes the schema, and the tool is not run.
-- The call is planned, checked by the permission engine and bounded by the output policy exactly like a built-in tool. The plan of a `tool_call` carries the tool's own effects and its own scheduling, and besides them an `ext` effect that names the tool, which is what a rule on `source/tool` matches. `tool_call` asks by default; `tool_search` touches nothing.
+- The call is planned, checked by the permission engine and bounded by the output policy exactly like a built-in tool. The plan of a `tool_call` carries the tool's own effects, and besides them an `ext` effect that names the tool, which is what a rule on `source/tool` matches. `tool_call` asks by default; `tool_search` touches nothing.
+- **A tool from outside runs alone unless its spec declares otherwise.** A tool whose spec says exclusive is scheduled as exclusive whatever its plan says, so an author who never thought about scheduling gets the safe answer. One whose spec declares another class is scheduled as each of its plans says.
 - A tool that is not there is an error with the closest names.
 - A new tool, including one the user just asked the harness to write, is usable immediately, with no change to the request prefix. The definitions of the pair are fixed text: nothing in them depends on what is registered.
 - A source can be set to expose chosen tools directly instead. See [13-mcp.md](13-mcp.md) and [12-extensions.md](12-extensions.md).

@@ -19,7 +19,9 @@
 //!
 //! [`Tool::plan`] first, then [`execute`], never [`Tool::run`] directly:
 //! `execute` is where the output policy is applied, so that the result of
-//! every tool, built in or not, is bounded in the same way.
+//! every tool, built in or not, is bounded in the same way. A result made
+//! without running a tool (the error of a call that could not be planned, a
+//! denial) passes the same policy through [`bound`].
 
 pub mod blocking;
 pub mod context;
@@ -50,7 +52,7 @@ pub use contract::{
 };
 pub use files::{FileSnapshot, FileTable, LineRanges, Shown, Staleness};
 pub use list::ListTool;
-pub use output::{Budget, Compression, Keep, OutputLimits, Shaped};
+pub use output::{Budget, Compression, Keep, OutputLimits, Shaped, Treatment};
 pub use read::ReadTool;
 pub use registry::{FoundTool, RegistryError, SourceSummary, ToolCall, ToolRegistry, ToolSearch};
 pub use result::{ToolError, ToolResult};
@@ -73,29 +75,66 @@ pub async fn execute(
     out: &mut dyn ToolOutput,
 ) -> ToolResult {
     let result = tool.run(plan, cx, out).await;
+    bound_as(result, &tool.spec().name, cx, output::Treatment::AsReturned).await
+}
+
+/// Applies the output policy to a result that did not come from
+/// [`execute`]: the error of a call that could not be planned
+/// ([`ToolError::into_result`]), a denial, a result made for a call that
+/// never ran. `tool` names the call, for the label of an artifact.
+///
+/// Every result that enters the context passes this or `execute`. An error
+/// can be long too: one for arguments that do not fit quotes the schema of
+/// a third-party tool.
+pub async fn bound(result: ToolResult, tool: &str, cx: &RunCx) -> ToolResult {
+    bound_as(result, tool, cx, output::Treatment::AsReturned).await
+}
+
+/// [`execute`] for a tool from outside the harness, whose output is
+/// compressed whether or not it fits the limits.
+pub(crate) async fn execute_produced(
+    tool: &dyn Tool,
+    plan: Plan,
+    cx: &RunCx,
+    out: &mut dyn ToolOutput,
+) -> ToolResult {
+    let result = tool.run(plan, cx, out).await;
+    bound_as(result, &tool.spec().name, cx, output::Treatment::Produced).await
+}
+
+async fn bound_as(
+    result: ToolResult,
+    tool: &str,
+    cx: &RunCx,
+    treatment: output::Treatment,
+) -> ToolResult {
     if result.is_bounded() {
         return result;
     }
-    if cx.limits.fits(&result.text()) && !has_images(&result) {
+    if treatment == output::Treatment::AsReturned
+        && cx.limits.fits(&result.text())
+        && !has_images(&result)
+    {
         // Nothing to cut and nothing to store: no need to leave the thread.
-        return output::enforce(
-            result,
-            &tool.spec().name,
-            &cx.limits,
-            None,
-            cx.store.as_ref(),
-        );
+        return output::enforce(result, tool, &cx.limits, None, cx.store.as_ref(), treatment);
     }
     // Shaping a large output and storing its artifact both block. The work
     // is not tied to the call's token: the result of a cancelled call is
     // still recorded, and must be bounded first.
-    let name = tool.spec().name.clone();
+    let name = tool.to_owned();
     let limits = cx.limits;
     let images = cx.images.clone();
     let store = std::sync::Arc::clone(&cx.store);
     let fallback = result.clone();
     let bounded = run_blocking(&cortex_base::CancelToken::new(), move |_| {
-        output::enforce(result, &name, &limits, images.as_ref(), store.as_ref())
+        output::enforce(
+            result,
+            &name,
+            &limits,
+            images.as_ref(),
+            store.as_ref(),
+            treatment,
+        )
     })
     .await;
     match bounded {
@@ -104,10 +143,11 @@ pub async fn execute(
         // artifact, by a store that keeps nothing.
         Err(error) => output::enforce(
             fallback,
-            &tool.spec().name,
+            tool,
             &cx.limits,
             cx.images.as_ref(),
             &store::Unavailable(error.to_string()),
+            treatment,
         ),
     }
 }

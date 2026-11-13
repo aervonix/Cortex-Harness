@@ -9,7 +9,7 @@ use std::os::unix::fs::symlink;
 use cortex_tools::{Effect, ListTool, ReadTool, SearchTool};
 use serde_json::json;
 
-use crate::{Workspace, failed, ok};
+use crate::{Workspace, failed, ok, skipped};
 
 /// A file whose name is not valid UTF-8, if this file system takes one.
 /// Some do not (APFS, and file systems mounted with a UTF-8 rule); the test
@@ -26,14 +26,14 @@ fn a_listing_steps_past_a_name_that_is_not_unicode_and_says_so() {
     ws.file("docs/a.txt", "");
     ws.file("docs/z.txt", "");
     if !non_unicode_file(&ws, "docs", "") {
-        println!("skipped: this file system refuses names that are not UTF-8");
+        skipped("this file system refuses names that are not UTF-8");
         return;
     }
     assert_eq!(
         ok(&ws.call(&ListTool::new(), json!({"path": "docs"}))),
         format!(
             "2 entries in `docs`:\ndocs/a.txt\ndocs/z.txt\n\
-             [Skipped 1 entry whose path cannot be used. The first: the path `{}/caf\u{fffd}.txt` \
+             [Skipped 1 entry whose path cannot be used. For example: the path `{}/caf\u{fffd}.txt` \
              is not valid Unicode, so it cannot be checked against any rule]",
             ws.paths.resolve("docs").unwrap().abs()
         )
@@ -46,7 +46,7 @@ fn a_search_steps_past_a_name_that_is_not_unicode_and_still_finds_the_rest() {
     ws.file("docs/a.txt", "needle\n");
     ws.file("docs/sub/z.txt", "needle\n");
     if !non_unicode_file(&ws, "docs", "needle\n") {
-        println!("skipped: this file system refuses names that are not UTF-8");
+        skipped("this file system refuses names that are not UTF-8");
         return;
     }
     // A directory with such a name is stepped past with everything in it.
@@ -69,7 +69,8 @@ fn a_search_steps_past_a_name_that_is_not_unicode_and_still_finds_the_rest() {
     );
     assert_eq!(lines.len(), 4, "{text}");
     assert!(
-        lines[3].starts_with("[Skipped 2 entries whose path cannot be used. The first: the path `"),
+        lines[3]
+            .starts_with("[Skipped 2 entries whose path cannot be used. For example: the path `"),
         "{text}"
     );
     assert!(lines[3].ends_with("is not valid Unicode, so it cannot be checked against any rule]"));
@@ -173,7 +174,7 @@ fn a_walk_does_not_follow_links_and_says_what_it_left() {
     );
     assert_eq!(lines.len(), 6, "{text}");
     assert!(
-        lines[5].starts_with("[Skipped 1 entry whose path cannot be used. The first: `"),
+        lines[5].starts_with("[Skipped 1 entry whose path cannot be used. For example: `"),
         "{text}"
     );
     assert!(
@@ -208,7 +209,7 @@ fn a_file_that_cannot_be_opened_is_skipped_by_a_search_and_refused_by_a_read() {
     let locked = ws.file("locked.txt", "needle\n");
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
     if fs::read(&locked).is_ok() {
-        println!("skipped: running as a user that file permissions do not stop");
+        skipped("running as a user that file permissions do not stop");
         return;
     }
     let text = ok(&ws.call(
@@ -221,7 +222,7 @@ fn a_file_that_cannot_be_opened_is_skipped_by_a_search_and_refused_by_a_read() {
         ["1 file with a match for `needle` in `.`:", "open.txt"]
     );
     assert!(
-        lines[2].starts_with("[Skipped 1 entry that could not be read. The first: locked.txt: "),
+        lines[2].starts_with("[Skipped 1 entry that could not be read. For example: locked.txt: "),
         "{text}"
     );
     let text = failed(&ws.call(&ReadTool::new(), json!({"path": "locked.txt"})));

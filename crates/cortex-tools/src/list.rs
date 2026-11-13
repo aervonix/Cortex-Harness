@@ -6,6 +6,7 @@
     reason = "listing a directory blocks; the tool runs this on the blocking pool"
 )]
 
+use std::collections::BTreeSet;
 use std::io;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -19,7 +20,7 @@ use crate::context::{PlanCx, ReadGate, RunCx};
 use crate::contract::{BoxFuture, Effect, Json, Plan, Tool, ToolOutput, ToolSpec};
 use crate::output::{OutputLimits, count};
 use crate::result::{ToolError, ToolResult};
-use crate::walk::{self, EntryKind, GlobFilter, WalkSpec};
+use crate::walk::{self, EntryKind, GlobFilter, Skipped, WalkSpec};
 
 /// How many entries are returned unless the call says otherwise.
 const DEFAULT_RESULTS: u64 = 200;
@@ -201,9 +202,14 @@ fn list(
         }
     }
 
-    let found = Mutex::new(Vec::<String>::new());
-    let refused_links = Mutex::new((0usize, None::<String>));
-    let skipped = walk::walk(
+    // The first `max_results` entries in path order are all a result can
+    // show. They are kept as the walk goes, and the rest are only counted,
+    // so a listing of a very large tree costs no more memory than a small
+    // one.
+    let found = Mutex::new((BTreeSet::<String>::new(), 0usize));
+    let refused_links = Mutex::new(Skipped::default());
+    let inside = call.directory.is_inside_workspace();
+    let mut skipped = walk::walk(
         &WalkSpec {
             root: &call.directory,
             max_depth: call.depth,
@@ -223,50 +229,54 @@ fn list(
                     // A link is listed as what it leads to, which the resolver
                     // finds by its own rules, without following anything it
                     // refuses. The walk does not go into it.
-                    EntryKind::Link => match paths.resolve(&line) {
-                        Ok(target) => std::fs::symlink_metadata(target.to_fs_path())
-                            .is_ok_and(|metadata| metadata.is_dir()),
-                        Err(error) => {
-                            let mut refused =
-                                refused_links.lock().unwrap_or_else(PoisonError::into_inner);
-                            refused.0 += 1;
-                            refused.1.get_or_insert_with(|| error.to_string());
-                            return;
+                    EntryKind::Link => {
+                        // A path inside the workspace is relative, and is
+                        // marked as such: a link named `~` is not the home
+                        // directory.
+                        let written = if inside {
+                            format!("./{line}")
+                        } else {
+                            line.clone()
+                        };
+                        match paths.resolve(&written) {
+                            Ok(target) => std::fs::symlink_metadata(target.to_fs_path())
+                                .is_ok_and(|metadata| metadata.is_dir()),
+                            Err(error) => {
+                                refused_links
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .refuse(error.to_string());
+                                return;
+                            }
                         }
-                    },
+                    }
                 };
                 if is_dir {
                     line.push('/');
                 }
-                found
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(line);
+                let mut found = found.lock().unwrap_or_else(PoisonError::into_inner);
+                found.1 += 1;
+                found.0.insert(line);
+                if found.0.len() > call.max_results {
+                    found.0.pop_last();
+                }
             })
         },
     );
     if cancel.is_cancelled() {
         return ToolResult::interrupted(format!("Listing `{shown}` was interrupted."));
     }
-    let mut skipped = skipped;
-    let (refused, reason) = refused_links
-        .into_inner()
-        .unwrap_or_else(PoisonError::into_inner);
-    if refused > 0 {
-        skipped.refused += refused;
-        if skipped.first_refusal.is_none() {
-            skipped.first_refusal = reason;
-        }
-    }
+    skipped.absorb(
+        refused_links
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner),
+    );
 
-    let mut entries = found.into_inner().unwrap_or_else(PoisonError::into_inner);
-    entries.sort_unstable();
-    let total = entries.len();
-
+    let (entries, total) = found.into_inner().unwrap_or_else(PoisonError::into_inner);
     let mut budget = limits.budget(RESERVED_LINES, RESERVED_BYTES);
     let mut lines: Vec<String> = Vec::new();
     let mut out_of_room = false;
-    for entry in entries.iter().take(call.max_results) {
+    for entry in &entries {
         let line = limits.clip(entry);
         if !budget.take(&line) {
             out_of_room = true;
