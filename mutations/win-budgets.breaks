@@ -1,4 +1,4 @@
-# The tier budgets held above the start of the tests' processes (Zac's
+# The tier budgets held above the start of the tests' processes (the owner's
 # decision of 2026-11-13, docs/steps/11/answered.md): what the tier report
 # of `xtask` computes, broken one rule at a time.
 
@@ -14,7 +14,7 @@ caught-by:
 [break] start-cost-is-the-quickest-test
 rule: The start cost is the time one in a hundred of the run's unit and integration tests beat, not the single quickest, which one lucky test moves.
 file: xtask/src/tiers.rs
-in: start_cost
+in: start_of
 find: times[times.len() * START_PERCENTILE / 100]
 replace: times[0]
 caught-by:
@@ -23,7 +23,7 @@ caught-by:
 [break] system-tests-measure-the-start
 rule: System tests are not looked at for the start cost: they start other processes of their own.
 file: xtask/src/tiers.rs
-in: start_cost
+in: start_of
 find: .filter(|case| Tier::of(&case.binary, &case.name) != Tier::System)
 replace: .filter(|_| true)
 caught-by:
