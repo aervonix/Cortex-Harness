@@ -23,6 +23,7 @@
               helpers are shared between the modules of this one binary"
 )]
 
+mod denials;
 mod early;
 mod interrupt;
 mod limits;

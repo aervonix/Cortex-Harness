@@ -21,7 +21,9 @@
 //!   effects** start, and a call that is not scheduled as read-only is taken
 //!   to have some;
 //! - no more than the limit run at once;
-//! - questions are asked one at a time, in call order.
+//! - questions are asked one at a time, in call order;
+//! - once the policy has said to stop the turn, nothing more starts and
+//!   nothing more is asked.
 //!
 //! # Exactly one result
 //!
@@ -269,12 +271,20 @@ pub(crate) struct Round {
     draining: Vec<Draining>,
     /// The open question: the call's token, and the task that asks.
     asking: Option<(u64, AbortHandle)>,
+    /// Why the policy stopped the turn, once it has: from then on nothing
+    /// that has not started starts.
+    stopped: Option<String>,
     next_token: u64,
 }
 
 /// The text of the result of a call that never ran because the turn was
 /// interrupted.
 const NOT_RUN: &str = "The turn was interrupted before this call ran.";
+
+/// The text of the result of a call that never ran because the policy
+/// stopped the turn over another call.
+const NOT_RUN_STOPPED: &str = "This call did not run: the turn was stopped because another call \
+                               was not allowed.";
 
 impl Round {
     pub(crate) fn new(
@@ -297,8 +307,15 @@ impl Round {
             cache: Vec::new(),
             draining: Vec::new(),
             asking: None,
+            stopped: None,
             next_token: 0,
         }
+    }
+
+    /// Why the policy stopped the turn, if it did: the turn then ends with
+    /// the outcome `denied` once the round is settled and recorded.
+    pub(crate) fn stopped(&self) -> Option<&str> {
+        self.stopped.as_deref()
     }
 
     /// Whether the response that counts has any call.
@@ -626,11 +643,18 @@ impl Round {
         self.calls.iter().position(|call| call.token == token)
     }
 
-    fn planned(&mut self, token: u64, plan: Plan, decision: Decision) {
+    fn planned(&mut self, token: u64, mut plan: Plan, decision: Decision) {
         // A call of a response that was thrown away meanwhile: nothing to do.
         let Some(position) = self.position(token) else {
             return;
         };
+        if matches!(decision, Decision::AllowReadOnly) {
+            // The policy has analysed the call and knows it changes
+            // nothing: it runs beside others. Its effects stay as declared,
+            // so a call with an `exec` effect still waits for the response
+            // to end.
+            plan.concurrency = Concurrency::ReadOnly;
+        }
         let call = &self.calls[position];
         if !matches!(call.state, CallState::Pending) || call.footprint.is_some() {
             // It already has its plan, or its result.
@@ -647,11 +671,17 @@ impl Round {
         });
         self.calls[position].footprint = Some(footprint);
         if self.cancel.is_cancelled() {
-            self.not_run(position);
+            self.not_run(position, NOT_RUN);
+            return;
+        }
+        if self.stopped.is_some() {
+            self.not_run(position, NOT_RUN_STOPPED);
             return;
         }
         match decision {
-            Decision::Allow => self.calls[position].state = CallState::Ready(plan),
+            Decision::Allow | Decision::AllowReadOnly => {
+                self.calls[position].state = CallState::Ready(plan);
+            }
             Decision::Ask => self.calls[position].state = CallState::NeedsAnswer(plan),
             Decision::Deny { reason } => {
                 let mut text = "This call was not allowed to run.".to_owned();
@@ -660,6 +690,37 @@ impl Round {
                     text.push_str(&reason);
                 }
                 self.deny(position, text);
+            }
+            Decision::Stop { reason } => self.stop(position, reason),
+        }
+    }
+
+    /// The policy refused the call at `position` and said to stop the turn.
+    /// The call gets its denial. Every call that has not started gets a
+    /// result that says it did not run, an open question is withdrawn, and
+    /// from here on nothing starts. Calls that are running finish: they
+    /// were allowed.
+    fn stop(&mut self, position: usize, reason: String) {
+        self.deny(
+            position,
+            format!("This call was not allowed to run, and the turn was stopped. Reason: {reason}"),
+        );
+        if self.stopped.is_some() {
+            return;
+        }
+        self.stopped = Some(reason);
+        if let Some((token, question)) = self.asking.take() {
+            question.abort();
+            if let Some(asked) = self.position(token) {
+                self.not_run(asked, NOT_RUN_STOPPED);
+            }
+        }
+        for other in 0..self.calls.len() {
+            if matches!(
+                self.calls[other].state,
+                CallState::NeedsAnswer(_) | CallState::Ready(_)
+            ) {
+                self.not_run(other, NOT_RUN_STOPPED);
             }
         }
     }
@@ -681,7 +742,7 @@ impl Round {
             return;
         }
         if self.cancel.is_cancelled() {
-            self.not_run(position);
+            self.not_run(position, NOT_RUN);
             return;
         }
         match verdict {
@@ -694,6 +755,7 @@ impl Round {
                 }
                 self.deny(position, text);
             }
+            Verdict::Stop { reason } => self.stop(position, reason),
         }
     }
 
@@ -709,14 +771,14 @@ impl Round {
         );
     }
 
-    fn not_run(&mut self, position: usize) {
+    fn not_run(&mut self, position: usize, why: &str) {
         let call = &mut self.calls[position];
         call.state = CallState::Pending;
         let (token, name) = (call.token, call.name.clone());
         self.settle_with(
             token,
             &name,
-            ToolResult::interrupted(NOT_RUN),
+            ToolResult::interrupted(why),
             ToolStatOutcome::Interrupted,
         );
     }
@@ -805,6 +867,14 @@ impl Round {
     /// Starts whatever may start now.
     pub(crate) fn pump(&mut self, stage: Stage) {
         if self.cancel.is_cancelled() {
+            return;
+        }
+        if self.stopped.is_some() {
+            // Nothing more starts. Once no more calls are coming, a run
+            // kept from an earlier attempt is not going to be claimed.
+            if stage == Stage::Ended {
+                self.discard_kept();
+            }
             return;
         }
         let (streaming, open_call) = match stage {
@@ -975,6 +1045,9 @@ impl Round {
             // The question is withdrawn.
             question.abort();
         }
+        // The call the policy stopped the turn over is void with the rest.
+        // If the next response makes it again, the policy is shown it again.
+        self.stopped = None;
         for call in std::mem::take(&mut self.calls) {
             if call.shown {
                 self.env.emitter.emit(
@@ -1079,7 +1152,7 @@ impl Round {
                 self.calls[position].state,
                 CallState::NeedsAnswer(_) | CallState::Ready(_)
             ) {
-                self.not_run(position);
+                self.not_run(position, NOT_RUN);
             }
         }
     }
