@@ -1676,3 +1676,75 @@ fn what_an_unmodelled_line_names_is_still_checked() {
         Allow
     );
 }
+
+/// What the final independent review of the fixes to step 12 found, each
+/// asked about at `autonomous`, or refused where the harness's own files
+/// are named.
+#[test]
+fn the_final_review_of_the_fixes_holds() {
+    let autonomous = at(Level::Autonomous);
+    for command in [
+        // A part after a link that names something only by a redirection.
+        "ln -s . d && cat < payload > d/.bashrc",
+        "ln -s .github gh && cat < evil.yml > gh/workflows/x.yml",
+        // A lone `]` is no pattern: the name is checked as written.
+        "echo 'on: push' > .github/workflows/x].yml",
+        "cd ./.github && echo 'on: push' > workflows/x].yml",
+        // A command line in a word with no space in it.
+        "bash -c 'cat</tmp/evil>.git/hooks/pre-commit'",
+        "sh -c 'cp /tmp/evil.yml .github/workflows/ci.yml;true'",
+        // A `cd` inside a line the analysis does not model.
+        "cd .github && cp /tmp/evil.yml workflows/ci.yml #",
+        "cd ./x; cd ../.github; cp /tmp/evil.yml workflows/ci.yml #",
+        // A word with a space in it, after a `cd` that was not followed.
+        "cd .github/workflows; sh -c 'cp /tmp/evil.yml ci.yml'",
+        // zsh reads `**` as any depth.
+        "cat **/*.pem",
+        // The first `cd -` of a line goes where `OLDPWD` says.
+        "cd - && cat .config/cortex-harness/credentials.toml",
+        // A command that would do more work than one decision does.
+        format!("ls -{}*.o", "a/".repeat(6_000)).as_str(),
+        format!("cp x -{}", "b/".repeat(6_000)).as_str(),
+    ] {
+        let outcome = shell(&autonomous, command);
+        assert_eq!(said(&outcome), Ask, "{command:.80?}: {}", reason(&outcome));
+    }
+    for command in [
+        "echo x > ~/.config/cortex-harness/a]",
+        "sh -c 'cat</users/dev/.config/cortex-harness/credentials.toml'",
+    ] {
+        assert_eq!(said(&shell(&autonomous, command)), Deny, "{command:?}");
+    }
+    // A rule that holds back a path below where `**` starts.
+    let ruled = engine_with(|parts| {
+        parts.level = Level::Unrestricted;
+        parts.rules = vec![
+            user(Effect::Write, "**/*.lock", RuleAction::Deny),
+            user(Effect::Write, "secrets/**", RuleAction::Deny),
+            user(Effect::Write, "**/.github/**", RuleAction::Deny),
+            user(Effect::Read, "private/**", RuleAction::Deny),
+        ];
+    });
+    for command in [
+        "rm **/*.lock",
+        "echo x > secrets/a]",
+        // A quoted `~` is a name, in a redirection and in what a command
+        // that only reads names.
+        "echo x > \"~/../.github/workflows/ci.yml\"",
+        "cat \"~/../private/key\"",
+    ] {
+        let outcome = shell(&ruled, command);
+        assert_ne!(said(&outcome), Allow, "{command:?}");
+        assert_ne!(said(&outcome), ReadOnly, "{command:?}");
+    }
+    // What runs as before.
+    for command in [
+        "rm *.o",
+        "echo x > out].txt",
+        "sh -c 'make all'",
+        "cd ./src && make",
+    ] {
+        let outcome = shell(&autonomous, command);
+        assert_eq!(said(&outcome), Allow, "{command:?}: {}", reason(&outcome));
+    }
+}

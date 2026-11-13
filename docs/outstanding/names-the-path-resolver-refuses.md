@@ -1,0 +1,3 @@
+| Item | Who | When |
+|---|---|---|
+| **Words the path resolver refuses, for commands off the table.** A command on the table of commands that only read asks about a word that cannot be read as a path. Any other command is silent about it, even under a broad allow rule. So, on Windows, `cp evil C:.git\hooks\pre-commit`, a name with a trailing dot (`.envrc.`), a stream (`x::$DATA`) and a PowerShell provider path (`FileSystem::C:\…`) are not checked. These are plausible from reading the code, and not yet run on Windows. Found by the final independent review of the fixes to step 12. | Step 32 (hardening pass); the sandbox of step 26 holds the rest | In step 32 |

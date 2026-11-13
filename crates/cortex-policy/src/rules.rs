@@ -477,6 +477,31 @@ impl RuleSet {
         })
     }
 
+    /// A rule that holds back reading or writing some path below the
+    /// directory `tree`, or a protected tree of the harness's own inside
+    /// it: what a pattern that reaches any depth below `tree` could name.
+    ///
+    /// Errs towards an answer, as [`Self::read_held_back_under`] does.
+    #[must_use]
+    pub fn held_back_under(&self, tree: &AbsPath) -> Option<Hit<'_>> {
+        if let Some(what) = self.protected.guards_under(tree) {
+            return Some(Hit {
+                action: RuleAction::Deny,
+                by: By::Builtin(what),
+            });
+        }
+        self.strongest(|compiled| {
+            matches!(compiled.rule.rule.effect, Effect::Read | Effect::Write)
+                && compiled.rule.rule.action != RuleAction::Allow
+                && match &compiled.matcher {
+                    Matcher::Path { exact, folded } => {
+                        folded.reaches_under(tree) || exact.reaches_under(tree)
+                    }
+                    _ => false,
+                }
+        })
+    }
+
     /// The protection of the harness's own files somewhere below the
     /// directory `tree`, if any: what a pattern that starts there could
     /// reach without naming it.

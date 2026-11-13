@@ -1,0 +1,3 @@
+| Item | Who | When |
+|---|---|---|
+| **Questions and refusals the pattern and word checks give where nothing is wrong.** A pattern that matches a link to nothing asks at every level, `unrestricted` included, where the same link named outright does not; a commit message that names one of the harness's own files is refused by the check of words with a space in them; an `allow write .github/workflows/**` rule does not lift a question the text of a pattern asks; and `git diff HEAD -- src` is taken off the table of commands that only read. Found by the final independent review of the fixes to step 12. | Step 32 (hardening pass); the sandbox of step 26 holds the rest | In step 32 |

@@ -215,13 +215,18 @@ fn unquoted(line: &str) -> String {
 /// holds back is matched cut it ([`ExecPattern::restricts`]): what a line
 /// the analysis does not model could name.
 pub(crate) fn raw_words(line: &str) -> Vec<String> {
-    let mut words = loose_words(line);
-    for word in loose_words(&unquoted(line)) {
+    let [mut words, unquoted] = raw_cuts(line);
+    for word in unquoted {
         if !words.contains(&word) {
             words.push(word);
         }
     }
     words
+}
+
+/// The words of a raw line in order, as each of the two cuts gives them.
+pub(crate) fn raw_cuts(line: &str) -> [Vec<String>; 2] {
+    [loose_words(line), loose_words(&unquoted(line))]
 }
 
 /// The words of a simple command as text, for showing in a rule made from

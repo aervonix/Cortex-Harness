@@ -152,6 +152,20 @@ fn a_pattern_is_judged_by_what_the_directory_holds() {
     assert_eq!(decide(&plain, "touch new && rm *").0, Ask);
     assert_eq!(decide(&plain, "touch new | rm *").0, Ask);
     assert_eq!(decide(&plain, "touch new && rm *.o").0, Allow);
+    // What the directory holds is judged after such a part too: its text
+    // alone would let a rule be dodged (found by the final review of the
+    // fixes to step 12).
+    assert_eq!(decide(&ruled, "mkdir -p t && rm *.lock").0, Ask);
+    assert_eq!(decide(&ruled, "mkdir -p t && rm *.o").0, Allow);
+    // dash, and bash before 5.2, match `..` with `.?` and `.*`.
+    for command in [
+        "cd ./src && cp x .?/.git/hooks/pre-commit",
+        "cd ./src && cp evil.yml .*/.github/workflows/ci.yml",
+        "rm -rf .*",
+    ] {
+        let (outcome, why) = decide(&plain, command);
+        assert_eq!(outcome, Ask, "{command:?}: {why}");
+    }
 }
 
 #[cfg(unix)]
@@ -355,6 +369,37 @@ mod unix {
             assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
         }
         assert_eq!(said(&run(&engine, &resolver, "rm *.txt")), Allow);
+    }
+
+    /// What the final review of the fixes to step 12 found on a real file
+    /// system: `~\x` is a name outside Windows; bash takes a `cd` through
+    /// links where the logical directory is not there; and a pattern after
+    /// a part that writes still meets a link the directory holds.
+    #[test]
+    fn names_and_directories_resolve_as_the_shell_and_the_kernel_find_them() {
+        let scratch = cortex_testkit::scratch!("real_final_review");
+        scratch.file("ws/.github/workflows/ci.yml", "on: push");
+        scratch.file("ws/.github/~\\x/k", "");
+        scratch.file("ws/.github/x/k", "");
+        let ws = scratch.path().join("ws");
+        symlink(".github/x", ws.join("l")).unwrap();
+        symlink(".github", ws.join("ci")).unwrap();
+        let (supervised, resolver) = real_engine(&ws, ShellSyntax::Posix, Vec::new());
+        for command in [
+            "cd ./.github && echo evil > '~\\x/../workflows/evil.yml'",
+            "cd ./l/../workflows && echo evil > ci.yml",
+        ] {
+            let outcome = run(&supervised, &resolver, command);
+            assert_eq!(said(&outcome), Ask, "{command:?}: {}", reason(&outcome));
+        }
+        let (autonomous, _) =
+            super::real_engine_at(&ws, ShellSyntax::Posix, Vec::new(), Level::Autonomous);
+        let outcome = run(
+            &autonomous,
+            &resolver,
+            "mkdir -p t && cp evil.yml c?/workflows/ci.yml",
+        );
+        assert_eq!(said(&outcome), Ask, "{}", reason(&outcome));
     }
 
     /// The workspace itself opened through a link is known by its real

