@@ -120,19 +120,29 @@ pub fn arm() {
     ARMED.get_or_init(|| {
         let Some((limit, why)) = limit() else { return };
         let age = process_age().unwrap_or_default();
-        let wait = limit.mul_f64(SHARE).saturating_sub(age);
+        let wait = report_at(limit).saturating_sub(age);
         let started = Instant::now();
         // If the thread cannot be started, the test runs without a watch.
         let _ = std::thread::Builder::new()
             .name("cortex-testkit-watch".to_owned())
             .spawn(move || {
                 pause(wait);
-                let report = report(started.elapsed() + age, limit, &why);
+                // The waits first, which cost nothing to gather, and only
+                // then the tree, which on Windows asks PowerShell and can
+                // take longer than the test has left.
+                let (head, tail) = report(started.elapsed() + age, limit, &why);
                 let mut error = std::io::stderr().lock();
-                let _ = error.write_all(report.as_bytes());
+                let _ = error.write_all(head.as_bytes());
+                let _ = error.flush();
+                let _ = error.write_all(tail().as_bytes());
                 let _ = error.flush();
             });
     });
+}
+
+/// How far into a test's limit the report is written.
+fn report_at(limit: Duration) -> Duration {
+    limit.mul_f64(SHARE)
 }
 
 /// The test's limit and where it came from, or none when the watch should
@@ -224,8 +234,9 @@ pub(crate) fn race_pause() {
     }
 }
 
-/// The report: what the test's threads wait for, and its process tree.
-fn report(ran: Duration, limit: Duration, why: &str) -> String {
+/// The report: what the test's threads wait for, and then, gathered only
+/// when it is asked for, its process tree.
+fn report(ran: Duration, limit: Duration, why: &str) -> (String, impl FnOnce() -> String) {
     let mut text = format!(
         "\n== cortex-testkit: this test has run {:.1} s of the {:.0} s it is given ({why}). \
          What it is doing:\n",
@@ -233,9 +244,19 @@ fn report(ran: Duration, limit: Duration, why: &str) -> String {
         limit.as_secs_f64()
     );
     text.push_str(&waits());
-    text.push_str(&tree(std::process::id()));
-    text.push_str("== end of cortex-testkit's report\n");
-    text
+    let tree = || {
+        let mut tail = tree(std::process::id());
+        tail.push_str("== end of cortex-testkit's report\n");
+        tail
+    };
+    (text, tree)
+}
+
+/// The whole report at once, for a test.
+#[cfg(test)]
+fn report_text(ran: Duration, limit: Duration, why: &str) -> String {
+    let (head, tail) = report(ran, limit, why);
+    head + &tail()
 }
 
 /// What each thread said it is doing, longest first.
@@ -411,7 +432,26 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use super::{doing, limit_of, report};
+    use super::{doing, limit_of, process_age, report_at, report_text as report};
+
+    #[test]
+    fn the_report_comes_before_the_limit() {
+        assert_eq!(report_at(Duration::from_secs(10)), Duration::from_secs(8));
+        assert_eq!(report_at(Duration::from_secs(60)), Duration::from_secs(48));
+    }
+
+    #[test]
+    fn the_age_of_this_process_is_read_on_linux() {
+        let age = process_age();
+        if cfg!(target_os = "linux") {
+            // This test's process started a moment ago, not when the
+            // machine did.
+            let age = age.expect("Linux says when a process started");
+            assert!(age < Duration::from_secs(120), "{age:?}");
+        } else {
+            assert_eq!(age, None);
+        }
+    }
     use crate::{Gate, ServerReply, SseServer};
 
     #[test]
@@ -624,6 +664,18 @@ mod tests {
         assert!(
             text.contains("of the 1 s it is given (CORTEX_WATCH_LIMIT_MS)"),
             "{text}"
+        );
+        // Before the limit, at four fifths of it: counted from the
+        // process's start on Linux, from the first wait elsewhere.
+        let ran: f64 = text
+            .split("this test has run ")
+            .nth(1)
+            .and_then(|rest| rest.split(' ').next())
+            .and_then(|number| number.parse().ok())
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(
+            (0.75..1.0).contains(&ran),
+            "the report came at {ran} s: {text}"
         );
         // The test's own wait, by where the gate was made.
         assert!(

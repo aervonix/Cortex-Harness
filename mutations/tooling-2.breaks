@@ -90,8 +90,8 @@ caught-by:
 rule: No workflow input is pasted into the text of a run script.
 file: xtask/src/rules/workflows.rs
 in: pastes_a_typed_value
-find: ["${{inputs.", "${{github.event.", "${{github.head_ref"]
-replace: ["${{github.head_ref"]
+find: ["inputs", "github.event", "github.head_ref", "github.ref_name"]
+replace: ["github.head_ref"]
 caught-by:
     rules::workflows::tests::a_typed_value_is_never_pasted_into_a_script
 
@@ -193,3 +193,30 @@ find: format!("the gate made at {}", self.inner.made_at)
 replace: "the gate made at somewhere".to_owned()
 caught-by:
     gate::tests::a_gate_is_named_by_where_it_was_made
+
+[break] watch-reports-at-the-kill
+rule: The report comes before nextest stops the test, at four fifths of its limit.
+file: crates/cortex-testkit/src/watch.rs
+find: const SHARE: f64 = 0.8;
+replace: const SHARE: f64 = 1.0;
+caught-by:
+    watch::tests::the_report_comes_before_the_limit
+
+[break] watch-misreads-the-process-start
+rule: On Linux the time is counted from the process's start.
+file: crates/cortex-testkit/src/watch.rs
+in: process_age
+find: after.split_whitespace().nth(19)
+replace: after.split_whitespace().nth(18)
+caught-by:
+    watch::tests::the_age_of_this_process_is_read_on_linux
+
+[break] toolbox-dry-run-records
+rule: A dry run of the toolbox sends nothing.
+file: xtask/src/outside.rs
+in: record
+find: if dry_run {
+occurrence: 1
+replace: if false {
+caught-by:
+    outside::tests::a_toolbox_dry_run_is_refused_before_anything_runs

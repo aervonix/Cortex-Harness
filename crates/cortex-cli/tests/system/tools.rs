@@ -310,15 +310,22 @@ fn comparable(tools: &[Value]) -> Vec<Value> {
 /// those the toolbox fixtures of `cortex-llm` were recorded with
 /// (`docs/testing-and-ci.md`, "The toolbox fixtures"). A difference is a
 /// warning, not a failure: the provider may well accept the new tools, and
-/// only a recording shows it. With `CORTEX_UPDATE_TOOLBOX` set, the tools
-/// are written there instead, which `cargo xtask record --toolbox` does
-/// before it records.
+/// only a recording shows it. With `CORTEX_UPDATE_TOOLBOX` set to a list of
+/// providers separated by commas, those providers' tools are written there
+/// instead, which `cargo xtask record --toolbox` does for the providers it
+/// is about to record.
 ///
 /// Not compared on Windows, where the shell tool is PowerShell's: the kept
 /// tools are a Linux machine's.
 #[test]
 fn sys_the_toolbox_the_binary_sends_is_the_one_its_fixtures_were_recorded_with() {
-    let update = std::env::var_os("CORTEX_UPDATE_TOOLBOX").is_some();
+    let update = std::env::var("CORTEX_UPDATE_TOOLBOX").ok();
+    let updates = |provider: &str| {
+        update
+            .as_deref()
+            .is_some_and(|list| list.split(',').any(|named| named.trim() == provider))
+    };
+    let update = update.is_some();
     if cfg!(windows) && !update {
         return;
     }
@@ -343,6 +350,9 @@ fn sys_the_toolbox_the_binary_sends_is_the_one_its_fixtures_were_recorded_with()
         assert!(tools.len() >= 5, "{provider}: {}", shown(&run));
         let file = kept_tools(provider);
         if update {
+            if !updates(provider) {
+                continue;
+            }
             let kept = serde_json::json!({ "provider": provider, "model": model, "tools": tools });
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(

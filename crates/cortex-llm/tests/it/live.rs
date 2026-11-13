@@ -376,7 +376,8 @@ impl Live {
             .open(&path);
         let written = opened.and_then(|mut file| {
             use std::io::Write as _;
-            writeln!(file, "{line}")
+            // One write, so that two runs adding at once do not mix lines.
+            file.write_all(format!("{line}\n").as_bytes())
         });
         if let Err(error) = written {
             self.say(&format!(

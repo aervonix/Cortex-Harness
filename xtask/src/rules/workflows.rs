@@ -167,10 +167,31 @@ fn run_key(line: &str) -> Option<(usize, &str)> {
 /// request's title). A value such as `"; curl … | sh"` would then be a
 /// command. Through `env:`, the same value is a variable's content.
 fn pastes_a_typed_value(script: &str) -> bool {
-    let compact: String = script.chars().filter(|c| !c.is_whitespace()).collect();
-    ["${{inputs.", "${{github.event.", "${{github.head_ref"]
+    // Every expression in the text, however it is written: `inputs.x`,
+    // `(inputs.x)`, `inputs['x']`, `format('{0}', inputs.x)`,
+    // `toJSON(inputs)`, and the parts of the event someone names.
+    let mut rest = script;
+    while let Some(start) = rest.find("${{") {
+        let after = &rest[start + 3..];
+        let end = after.find("}}").unwrap_or(after.len());
+        let expression: String = after[..end]
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let typed = [
+            "inputs",
+            "github.event",
+            "github.head_ref",
+            "github.ref_name",
+        ]
         .iter()
-        .any(|form| compact.contains(form))
+        .any(|name| expression.contains(name));
+        if typed {
+            return true;
+        }
+        rest = &after[end..];
+    }
+    false
 }
 
 fn secret_on_pull_requests(file: &str, line: Option<usize>) -> Violation {
@@ -405,6 +426,14 @@ mod tests {
                 "      - run: |\n\n          echo \"${{ github.event.pull_request.title }}\"\n",
                 14,
             ),
+            ("      - run: echo ${{ (inputs.command) }}\n", 12),
+            (
+                "      - run: echo ${{ format('{0}', inputs.command) }}\n",
+                12,
+            ),
+            ("      - run: echo '${{ toJSON(inputs) }}'\n", 12),
+            ("      - run: echo ${{ inputs['command'] }}\n", 12),
+            ("      - run: echo ${{ github.ref_name }}\n", 12),
         ] {
             let found = messages(".github/workflows/try.yml", &dispatched(script));
             assert_eq!(found.len(), 1, "{script}: {found:?}");
@@ -428,6 +457,14 @@ mod tests {
         );
         assert_eq!(
             messages(".github/workflows/try.yml", &after),
+            Vec::<String>::new()
+        );
+        // Expressions that read nothing typed are fine in a script.
+        let fine = dispatched(
+            "      - run: cargo build ${{ runner.os == 'Windows' && '--release' || '' }} ${{ matrix.target }}\n",
+        );
+        assert_eq!(
+            messages(".github/workflows/try.yml", &fine),
             Vec::<String>::new()
         );
     }

@@ -273,6 +273,44 @@ pub(crate) fn run_ignored(selection: &[&str], name: &str, variables: &[(&str, &s
     run_ignored_with(selection, name, variables, false)
 }
 
+/// Runs one test that is not ignored, and shows its output. Fails unless
+/// exactly one test ran and passed: a renamed test is a test that does not
+/// run, and cargo calls that a success.
+fn run_test(
+    selection: &[&str],
+    name: &str,
+    variables: &[(&str, &str)],
+    ignored: bool,
+) -> Result<()> {
+    let mut arguments = vec!["test", "--locked"];
+    arguments.extend_from_slice(selection);
+    arguments.push("--");
+    if ignored {
+        arguments.push("--ignored");
+    }
+    arguments.extend_from_slice(&["--exact", name, "--nocapture"]);
+    println!("$ cargo {}", arguments.join(" "));
+    let output = Command::new(workspace::cargo())
+        .args(arguments)
+        .envs(variables.iter().copied())
+        .current_dir(workspace::root())
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(|error| format!("could not run cargo test: {error}"))?;
+    let shown = String::from_utf8_lossy(&output.stdout);
+    print!("{shown}");
+    if !output.status.success() {
+        return Err(format!("the test `{name}` failed"));
+    }
+    if ran_one_test(&shown) {
+        Ok(())
+    } else {
+        Err(format!(
+            "the test `{name}` did not run: cargo found no test of that name"
+        ))
+    }
+}
+
 /// [`run_ignored`]; for a dry run, which ends the test's process when it
 /// has printed its request, the dry run's last line is what says it ran.
 fn run_ignored_with(
@@ -373,6 +411,16 @@ pub(crate) fn record(arguments: &[String]) -> Result<()> {
         .cloned()
         .collect();
     if toolbox {
+        if dry_run {
+            // The toolbox scenario is one request each: `--provider P
+            // --dry-run toolbox` prints it. A dry run that kept the tools
+            // and then recorded would send what it promised not to.
+            return Err(
+                "`--toolbox` records, and `--dry-run` sends nothing: to see the toolbox request, \
+                 run `cargo xtask record --provider PROVIDER --dry-run toolbox`. Nothing was sent."
+                    .to_owned(),
+            );
+        }
         return record_toolbox(&arguments);
     }
     let (provider, scenarios) = record_arguments(&arguments)?;
@@ -431,20 +479,20 @@ fn record_toolbox(arguments: &[String]) -> Result<()> {
                 .to_owned(),
         );
     }
-    println!("Keeping the tools the binary sends each provider ...");
-    crate::steps::cargo_with(
-        &[
-            "test",
-            "--locked",
-            "-p",
-            "cortex-cli",
-            "--test",
-            "system",
-            "--",
-            "--exact",
-            TOOLBOX_CAPTURE,
-        ],
-        &[("CORTEX_UPDATE_TOOLBOX", "1")],
+    // Only the chosen providers' kept tools are written: a provider whose
+    // tools changed and that is not recorded keeps the tools of its
+    // recording, so its fixture still matches and the change stays a
+    // warning, and is not a failure of the blocking tests.
+    let names: Vec<&str> = chosen.iter().map(|provider| provider.name).collect();
+    println!(
+        "Keeping the tools the binary sends {} ...",
+        names.join(", ")
+    );
+    run_test(
+        &["--package", "cortex-cli", "--test", "system"],
+        TOOLBOX_CAPTURE,
+        &[("CORTEX_UPDATE_TOOLBOX", &names.join(","))],
+        false,
     )?;
     let (name, path) = ledger_variable()?;
     for provider in &chosen {
@@ -652,6 +700,26 @@ mod tests {
         let failed = "running 1 test\ntest result: FAILED. 0 passed; 1 failed; 0 ignored;\n";
         assert!(!ran_one_test(failed));
         assert!(!ran_one_test(""));
+    }
+
+    #[test]
+    fn a_toolbox_dry_run_is_refused_before_anything_runs() {
+        let strings = |words: &[&str]| {
+            words
+                .iter()
+                .map(|word| (*word).to_owned())
+                .collect::<Vec<_>>()
+        };
+        for words in [
+            &["--toolbox", "--dry-run"][..],
+            &["--dry-run", "--toolbox", "--provider", "deepseek"],
+        ] {
+            let error = record(&strings(words)).unwrap_err();
+            assert!(
+                error.contains("`--dry-run` sends nothing"),
+                "{words:?}: {error}"
+            );
+        }
     }
 
     #[test]
