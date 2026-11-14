@@ -676,35 +676,48 @@ impl Core {
         let log = Arc::clone(&live.log);
         let sandbox = Arc::clone(&live.sandbox);
         let closed = Self::blocking(move || {
-            // A process a command left running (one that outran its kill)
-            // may have changed a protected path after its turn ended. There
-            // is no turn to stop at close, so the change is recorded as a
-            // notice the next session reads, and the user is pointed at it
-            // (found by the third review of step 26). The undo of the change
-            // waits on the resume (`docs/outstanding/the-last-writes-of-a-killed-command.md`).
-            let escaped = sandbox.recheck_escape();
+            // The protected paths are looked at once more against the look
+            // after the last confined command: a change in between that the
+            // harness's own tools did not make was made from outside — a
+            // process a command left running, or the user's own hand. There
+            // is no turn to stop at close, so it is recorded as a notice the
+            // next session reads (found by the third review of step 26). The
+            // undo waits on the resume
+            // (`docs/outstanding/the-last-writes-of-a-killed-command.md`).
+            let outside = sandbox.continuity_at_close();
             // Nothing of the session runs any more: what its commands left
             // in their temporary directory goes.
             sandbox.remove_temp();
             let mut kept = lock(&log);
             if let Some(disk) = kept.disk() {
-                if let Some(changed) = &escaped
-                    && disk.session.is_born()
-                {
-                    let names: Vec<String> = changed
+                // What the harness's own tools changed since the last
+                // after-look is not a change from outside.
+                let touched = disk.rounds.touched();
+                let outside: Vec<_> = outside
+                    .into_iter()
+                    .flatten()
+                    .filter(|one| {
+                        cortex_base::AbsPath::from_os(&one.path)
+                            .ok()
+                            .is_none_or(|path| !touched.contains(path.key()))
+                    })
+                    .collect();
+                if !outside.is_empty() && disk.session.is_born() {
+                    let names: Vec<String> = outside
                         .iter()
                         .map(|one| one.path.display().to_string())
                         .collect();
                     let _ = disk.session.append(
                         None,
                         Body::Notice(cortex_protocol::item::NoticeItem {
-                            id: ItemId::new("escaped-change"),
+                            id: ItemId::new("outside-change"),
                             source: NoticeSource::Harness,
                             text: format!(
-                                "A process an earlier command left running changed protected \
-                                 paths after its turn ended: {}. They decide what runs later \
-                                 outside the sandbox; look at them before trusting the workspace, \
-                                 and undo the turn to put them back.",
+                                "A protected path changed since the last command, and none of \
+                                 the harness's own tools changed it: a process an earlier command \
+                                 left running, or a change made by hand. They decide what runs \
+                                 later outside the sandbox: {}. Look at them before trusting the \
+                                 workspace, and undo the turn to put them back.",
                                 names.join(", ")
                             ),
                             created_at: None,

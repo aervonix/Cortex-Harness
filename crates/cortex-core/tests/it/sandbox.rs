@@ -910,3 +910,151 @@ fn a_write_root_that_holds_the_user_configuration_a_link_leads_to_is_not_confine
         assert_eq!(front.state.sandbox, SandboxStatus::Off);
     });
 }
+
+/// A protected path that changes between two confined commands — from a
+/// process an earlier command left running that the kill could not clear,
+/// or from the user's own hand — is found by the next command's look,
+/// compared with the look after the last command, and stops the turn, even
+/// though the kill reported no escape (found by the third review of step
+/// 26). The change from outside is simulated by writing the hook between
+/// the two turns, which is what an escaped process would do; this holds
+/// whichever way the kill race went.
+#[cfg(target_os = "linux")]
+#[test]
+fn sys_a_change_between_two_commands_is_found_and_stops_the_turn() {
+    if !enforcing_here() {
+        return;
+    }
+    let world = World::new("between_commands", []);
+    world.put(".git/config", "[core]\n");
+    world.put(".git/hooks/pre-commit.sample", "#!/bin/sh\n");
+    world.provider.push(says("Ready."));
+    world.provider.push(calls(&[(
+        "c1",
+        "shell",
+        json!({"command": "echo one > one.txt"}),
+    )]));
+    world.provider.push(says("First done."));
+    world.provider.push(calls(&[(
+        "c2",
+        "shell",
+        json!({"command": "echo after > after.txt"}),
+    )]));
+    world.provider.push(calls(&[(
+        "c3",
+        "shell",
+        json!({"command": "echo more > more.txt"}),
+    )]));
+    world.provider.push(says("Done."));
+    let core = world.core_with(|options| options.launcher = Some(launcher()));
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            cortex_core::ClientInfo::user(),
+            at(Level::Autonomous),
+        )
+        .await
+        .expect("the session starts");
+        front.turn("get ready").await;
+        // The first command runs and is looked at; nothing is wrong yet.
+        front.turn("first").await;
+        assert_eq!(world.read("one.txt").as_deref(), Some("one\n"));
+
+        // Between the turns, a process an earlier command left running — or
+        // the user — writes a hook.
+        world.put(".git/hooks/pre-commit", "evil\n");
+
+        // The next command's look is compared with the look after the
+        // first: the hook is found, and the turn stops before the command
+        // runs.
+        let ended = front.turn("second").await;
+        let results = front.results();
+        let shown = results.last().map(|one| one.2.clone()).unwrap_or_default();
+        assert!(
+            shown.contains("changed since the last command")
+                && shown.contains("`.git/hooks/pre-commit` (created)")
+                && shown.contains("none of the harness's own tools changed it"),
+            "{results:?}"
+        );
+        assert_eq!(
+            ended.outcome,
+            cortex_protocol::event::TurnOutcome::Denied,
+            "{ended:?}"
+        );
+        // Neither command of the stopped turn ran.
+        assert!(world.read("after.txt").is_none(), "the first command ran");
+        assert!(world.read("more.txt").is_none(), "a later command ran");
+        front.close().await;
+    });
+}
+
+/// A protected path the harness's own tools changed between two confined
+/// commands — an `edit` or `write` in one turn, a confined command in the
+/// next — is not reported by the continuity check: it is the harness's, and
+/// already handled where the tool changed it (found by the third review of
+/// step 26).
+#[cfg(target_os = "linux")]
+#[test]
+fn sys_a_harness_edit_between_commands_is_not_reported() {
+    if !enforcing_here() {
+        return;
+    }
+    let world = World::new("harness_edit", []);
+    world.put(".git/config", "[core]\n");
+    // The workflow directory already exists, so the harness's `write` adds
+    // only the file to it, not the directory.
+    world.put(".github/workflows/keep.yml", "on: push\n");
+    world.provider.push(says("Ready."));
+    world.provider.push(calls(&[(
+        "c1",
+        "shell",
+        json!({"command": "echo one > one.txt"}),
+    )]));
+    world.provider.push(says("First done."));
+    // The harness's own `write` changes a protected path.
+    world.provider.push(calls(&[(
+        "w1",
+        "write",
+        json!({"path": ".github/workflows/ci.yml", "content": "on: push\njobs: {}\n"}),
+    )]));
+    world.provider.push(says("Wrote."));
+    world.provider.push(calls(&[(
+        "c2",
+        "shell",
+        json!({"command": "echo after > after.txt"}),
+    )]));
+    world.provider.push(says("Done."));
+    let core = world.core_with(|options| options.launcher = Some(launcher()));
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            cortex_core::ClientInfo::user(),
+            at(Level::Autonomous),
+        )
+        .await
+        .expect("the session starts");
+        front.turn("get ready").await;
+        front.turn("first command").await;
+        // The edit is approved, and changes the protected file.
+        front.turn_allowing("edit the workflow").await;
+        assert_eq!(
+            world.read(".github/workflows/ci.yml").as_deref(),
+            Some("on: push\njobs: {}\n"),
+            "the edit did not land"
+        );
+        // The next confined command: the continuity check finds the config
+        // changed, but the harness's own tool changed it, so it is not
+        // reported and the command runs.
+        front.turn("next command").await;
+        let results = front.results();
+        let shown = results.last().map(|one| one.2.clone()).unwrap_or_default();
+        assert!(
+            !shown.contains("changed since the last command"),
+            "the harness's own edit was reported from outside: {results:?}"
+        );
+        assert_eq!(world.read("after.txt").as_deref(), Some("after\n"));
+        front.close().await;
+    });
+}

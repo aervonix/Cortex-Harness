@@ -135,11 +135,13 @@ pub(crate) struct SessionSandbox {
     /// The protected paths, looked at before and after each confined
     /// command, when the sandbox enforces.
     watch: Option<Watch>,
-    /// The look taken before a command that outran its kill (escaped), kept
-    /// so that a protected path it changes after its turn ended is found
-    /// before the next confined command and at the session's close (found
-    /// by the third review of step 26).
-    escaped: std::sync::Mutex<Option<Snapshot>>,
+    /// The look taken after the last confined command, kept so that the
+    /// next confined command, and the session's close, can tell whether a
+    /// protected path changed in between — by a process a command left
+    /// running that the kill could not clear, or by the user's own hand —
+    /// without depending on the kill reporting an escape (found by the
+    /// third review of step 26).
+    last_after: std::sync::Mutex<Option<Snapshot>>,
 }
 
 impl SessionSandbox {
@@ -198,29 +200,39 @@ impl SessionSandbox {
             confine: AtomicBool::new(false),
             temp,
             watch,
-            escaped: std::sync::Mutex::new(None),
+            last_after: std::sync::Mutex::new(None),
         };
         sandbox.set_level(level);
         sandbox
     }
 
-    /// Remembers the look taken before a command that outran its kill, so
-    /// that a protected path it changes after its turn is found later.
-    pub(crate) fn remember_escape(&self, before: Snapshot) {
-        *self.escaped.lock().unwrap_or_else(PoisonError::into_inner) = Some(before);
+    /// Remembers the look taken after a confined command, so that the next
+    /// confined command, and the close, can tell what changed in between.
+    pub(crate) fn remember_after(&self, after: Snapshot) {
+        *self
+            .last_after
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(after);
     }
 
-    /// If a command escaped its kill, looks again at the protected paths
-    /// and says what changed since the look before that command, then
-    /// forgets it. Blocks. `None` when none escaped, or nothing changed.
-    pub(crate) fn recheck_escape(&self) -> Option<Vec<Changed>> {
-        let before = self
-            .escaped
+    /// What changed among the protected paths between the look after the
+    /// last confined command and `now` — whatever made it, which the caller
+    /// tells apart. `None` when there is no earlier look to compare with.
+    pub(crate) fn continuity(&self, now: &Snapshot) -> Option<Vec<Changed>> {
+        let last = self
+            .last_after
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()?;
+            .unwrap_or_else(PoisonError::into_inner);
+        last.as_ref().map(|last| last.compare(now))
+    }
+
+    /// Looks at the protected paths once more and says what changed since
+    /// the last confined command: for the session's close. Blocks. `None`
+    /// when there is no earlier look, or nothing changed.
+    pub(crate) fn continuity_at_close(&self) -> Option<Vec<Changed>> {
         let watch = self.watch.as_ref()?;
-        let (changed, _) = watch.changes_since(&before);
+        let now = watch.take();
+        let changed = self.continuity(&now)?;
         (!changed.is_empty()).then_some(changed)
     }
 
@@ -654,24 +666,24 @@ mod tests {
             root.to_fs_path().as_path(),
             Limits::default(),
         );
-        // Nothing escaped yet: no re-check finds anything.
-        assert!(sandbox.recheck_escape().is_none());
-        // A command runs; the look before it is remembered as if it
-        // escaped its kill.
-        let before = sandbox.watch().expect("a watch").take();
-        sandbox.remember_escape(before);
-        // The escaped process writes a hook after the turn.
+        // Nothing to compare with yet: the close re-check finds nothing.
+        assert!(sandbox.continuity_at_close().is_none());
+        // A command runs; the look after it is remembered.
+        let after = sandbox.watch().expect("a watch").take();
+        sandbox.remember_after(after);
+        // A process the command left running writes a hook after the turn.
         std::fs::write(hooks.join("pre-commit"), "#!/bin/sh\ncurl evil\n").unwrap();
-        // The re-check finds it, and forgets the escape (a second finds
-        // nothing).
-        let changed = sandbox.recheck_escape().expect("the hook is found");
+        // The next command's look finds the change against the after-look.
+        let now = sandbox.watch().expect("a watch").take();
+        let changed = sandbox.continuity(&now).expect("a comparison");
         assert!(
             changed
                 .iter()
                 .any(|one| one.path.ends_with(".git/hooks/pre-commit")),
             "{changed:?}"
         );
-        assert!(sandbox.recheck_escape().is_none());
+        // The close re-check finds it too.
+        assert!(sandbox.continuity_at_close().is_some());
         let _ = std::fs::remove_dir_all(&workspace);
     }
 }
