@@ -53,6 +53,8 @@ use windows_sys::Win32::System::Threading::{
     OpenThread, PROCESS_SYNCHRONIZE, ResumeThread, THREAD_SUSPEND_RESUME, WaitForSingleObject,
 };
 
+use cortex_base::CancelToken;
+
 use super::guard::Guard;
 use super::{Exit, Limits, ReadOutcome, ended, others_among, unopened_is_gone};
 
@@ -323,7 +325,9 @@ impl Inner {
         false
     }
 
-    pub(super) fn end(&self) {
+    pub(super) fn end(&self, _cancel: &CancelToken) {
+        // The whole Job Object is killed at once, so there is no sweep for an
+        // interrupt to cut short; the token is taken for a common signature.
         {
             let ended_now = lock(&self.state);
             if *ended_now {
@@ -345,7 +349,7 @@ impl Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        self.end();
+        self.end(&CancelToken::new());
         // The job's handle closes after this, which would kill the tree if
         // anything of it were left.
     }

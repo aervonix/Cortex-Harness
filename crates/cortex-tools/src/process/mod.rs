@@ -486,9 +486,16 @@ impl Runner {
         }
 
         // Nothing of the tree outlives the call: whatever is left dies
-        // here, and a reader that is still blocked is let go.
+        // here, and a reader that is still blocked is let go. When the user
+        // has already raised a "kill now", the end does not sweep out the
+        // full bound for a process that forks in a loop: it stops, reports
+        // the tree as escaped, and leaves the rest to the continuity check,
+        // so a demand to stop is not made to wait (found by the independent
+        // review of the step 26 fixes). Taking the sweep off the core thread
+        // so a *fresh* interrupt lands mid-sweep is left to step 32, with the
+        // control-group kill that replaces the sweep.
         running.stop.stop();
-        running.tree.end();
+        running.tree.end_until(kill_now);
         // Whether the end cleared the session, or a forker outran it.
         let escaped = running.tree.escaped();
         if !run.reader_done {
