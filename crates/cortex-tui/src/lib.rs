@@ -34,6 +34,7 @@
 // Step 22: the look and the transcript.
 pub mod glyphs;
 pub mod layout;
+pub mod markdown;
 pub mod rounded;
 pub mod theme;
 pub mod view;
