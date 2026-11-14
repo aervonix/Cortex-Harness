@@ -101,3 +101,5 @@ A third independent review found six defects. The owner, through the coordinator
 - **The git-lfs regression** is held as a limit, with the harness's git strictly read-only (the owner chose option (c)): the two alternatives and their costs are in [outstanding/confined-git-and-lfs-filters.md](../../outstanding/confined-git-and-lfs-filters.md).
 - **A child subreaper** belongs with step 32, not here, because letting `setsid` work needs the subreaper and the control-group kill together ([outstanding/a-session-of-its-own-in-the-sandbox.md](../../outstanding/a-session-of-its-own-in-the-sandbox.md)).
 - **The core's changes are kept small** (step 15 overlaps): the `Core::end` touchpoint is one `continuity_at_close` call and a notice; the per-command continuity is in the recording shell.
+
+**Gaps.** The brief asked for the Windows checks to go through `try` before the first push; they did not, and CI found a Windows path bug instead — `find_outside` compared a verbatim (`\\?\`) real path with a plain avoid root, so a planted program was not passed over.
