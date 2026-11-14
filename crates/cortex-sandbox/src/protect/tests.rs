@@ -389,3 +389,85 @@ fn a_linked_module_or_worktree_is_not_looked_through() {
     fs::write(scratch.join("elsewhere/gitdir"), "/srv/two\n").unwrap();
     assert_eq!(watch.changes_since(&before).0, Vec::new());
 }
+
+/// A `commondir` in the main repository points git's configuration and
+/// hooks at another directory. The pointer, and what it names, are watched
+/// now, where before only a worktree's `commondir` was (finding 3 of the
+/// third review of step 26).
+#[test]
+fn a_commondir_in_the_main_repository_is_found() {
+    let scratch = workspace("commondir");
+    let found = changes(&scratch, |ws| {
+        fs::create_dir_all(ws.join("build/common/objects")).unwrap();
+        fs::create_dir_all(ws.join("build/common/hooks")).unwrap();
+        fs::write(
+            ws.join("build/common/config"),
+            "[core]\n\tfsmonitor = ./build/run.sh\n",
+        )
+        .unwrap();
+        fs::write(ws.join("build/common/hooks/pre-commit"), "#!/bin/sh\n").unwrap();
+        fs::write(ws.join(".git/commondir"), "../build/common\n").unwrap();
+    });
+    assert!(
+        found
+            .iter()
+            .any(|(path, change)| path == ".git/commondir" && *change == Change::Created),
+        "{found:?}"
+    );
+    assert!(
+        found.iter().any(|(path, _)| path == "build/common/config"),
+        "{found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|(path, _)| path == "build/common/hooks/pre-commit"),
+        "{found:?}"
+    );
+}
+
+/// A `.cargo` made as a link to a directory that holds a `config.toml` was
+/// passed over: the walk recorded `.cargo` only as a real directory. It is
+/// recorded now, at any depth, with its configuration by name through the
+/// link (finding 4 of the third review of step 26).
+#[cfg(unix)]
+#[test]
+fn a_cargo_made_as_a_link_is_found() {
+    let scratch = workspace("cargo_link");
+    let ws = scratch.join("ws");
+    fs::create_dir_all(ws.join("vendor/x")).unwrap();
+    fs::write(
+        ws.join("vendor/x/config.toml"),
+        "[build]\nrustc-wrapper = \"./vendor/run.sh\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(ws.join("pkg")).unwrap();
+    let watch = Watch::new(&ws, fixed(&ws));
+    let before = watch.take();
+    assert!(before.is_complete());
+    std::os::unix::fs::symlink(ws.join("vendor/x"), ws.join(".cargo")).unwrap();
+    std::os::unix::fs::symlink(ws.join("vendor/x"), ws.join("pkg/.cargo")).unwrap();
+    let (changed, after) = watch.changes_since(&before);
+    assert!(after.is_complete());
+    let shown: Vec<String> = changed
+        .iter()
+        .map(|one| {
+            one.path
+                .strip_prefix(&ws)
+                .unwrap()
+                .display()
+                .to_string()
+                .replace('\\', "/")
+        })
+        .collect();
+    assert!(
+        shown.iter().any(|path| path == ".cargo") && shown.iter().any(|path| path == "pkg/.cargo"),
+        "a .cargo link was not found: {shown:?}"
+    );
+    // The link is recorded as a link, never looked through as a tree: its
+    // real target's name is not among the entries.
+    assert!(
+        !shown.iter().any(|path| path.starts_with("vendor/")),
+        "the link was looked through: {shown:?}"
+    );
+}

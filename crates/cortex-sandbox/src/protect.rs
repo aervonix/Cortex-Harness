@@ -510,9 +510,21 @@ impl Look {
             match name {
                 ".git" if is_dir => self.record_git(child),
                 ".git" => {
+                    // A `.git` file (a worktree or a submodule names its
+                    // repository there), or a link to a git directory:
+                    // recorded as the entry it is, so that the redirect is
+                    // seen. A linked `.git` is not looked through (the
+                    // second review of step 26).
                     self.record(child);
                 }
-                ".cargo" if is_dir => {
+                ".cargo" => {
+                    // A `.cargo` directory, or a link to one: the entry
+                    // itself, and its configuration by name through it, so a
+                    // change to the real file is seen under the name
+                    // `.cargo` leads to. The `.cargo` that is a link was
+                    // passed over before (found by the third review of
+                    // step 26).
+                    self.record(child);
                     for file in CARGO_FILES {
                         self.record(&child.join(file));
                     }
@@ -536,6 +548,11 @@ impl Look {
         for part in GIT_PARTS {
             self.record_tree(&git.join(part));
         }
+        // Where this git directory takes its configuration and hooks from,
+        // if it points them elsewhere (found by the third review of step
+        // 26). A worktree's `commondir` is recorded by name below; this is
+        // the one in the main repository, which was not watched.
+        self.follow_commondir(git);
         let modules = git.join("modules");
         if fs::symlink_metadata(&modules).is_ok_and(|metadata| metadata.is_dir()) {
             // A module that is a link is not looked through.
@@ -561,6 +578,53 @@ impl Look {
             }
         }
     }
+
+    /// Records `git`'s `commondir`, and follows it to the common directory's
+    /// configuration and hooks: git reads them from where it points. The
+    /// pointer is recorded whether or not it is there, so that one a
+    /// command writes is found; the common directory is followed only when
+    /// no link lies on the way to it inside the workspace, so a link is
+    /// recorded, never looked through.
+    fn follow_commondir(&mut self, git: &Path) {
+        let pointer = git.join("commondir");
+        // The file itself is protected: a change to where it points is a
+        // change to what runs later.
+        self.record(&pointer);
+        let Ok(content) = fs::read_to_string(&pointer) else {
+            return;
+        };
+        let target = content.trim();
+        if target.is_empty() {
+            return;
+        }
+        let common = lexically_resolved(&git.join(target));
+        // Follow it without following a link.
+        if self.through_a_link(&common) {
+            return;
+        }
+        for part in GIT_PARTS {
+            self.record_tree(&common.join(part));
+        }
+    }
+}
+
+/// `path` with `.` and `..` resolved by name, following no link: a
+/// `commondir` names the common directory relative to the git directory
+/// (`../build/common`), and the result must be a path under the workspace
+/// that the walk can judge against its links, not one the file system
+/// resolved.
+fn lexically_resolved(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 #[cfg(unix)]

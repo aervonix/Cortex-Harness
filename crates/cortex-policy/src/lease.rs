@@ -544,10 +544,11 @@ pub fn standing_lease(
 /// does. It leaves the rest of `.git` writable there, because `git commit`
 /// must write it; the engine asks about every write a tool or a command
 /// line names anywhere in a `.git` directory.
-pub const PROTECTED_IN_WORKSPACE: [&str; 25] = [
+pub const PROTECTED_IN_WORKSPACE: [&str; 26] = [
     ".git/hooks",
     ".git/config",
     ".git/config.worktree",
+    ".git/commondir",
     ".git/info",
     ".cortex",
     ".bashrc",

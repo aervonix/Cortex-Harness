@@ -278,7 +278,33 @@ fn seccomp(network: Network) -> Result<(), String> {
         libc::SYS_bpf,
         libc::SYS_perf_event_open,
         libc::SYS_userfaultfd,
+        // Metadata outside the write roots that Landlock does not govern:
+        // seccomp cannot check their path argument, so they are refused
+        // outright (found by the third review of step 26, after measuring
+        // what common builds need: cargo, git, npm, pip and make do not
+        // change an owner, and set no extended attributes on what they
+        // write). Changing a mode or a time stays allowed: builds need it,
+        // and it is a stated limit (decision 0032).
+        //
+        // The owner of a file: `chown`/`lchown` are the legacy calls, on
+        // x86-64 only; everywhere, `fchown` and `fchownat` (`chown` and
+        // `lchown` route through `fchownat` where there is no legacy call).
+        libc::SYS_fchown,
+        libc::SYS_fchownat,
+        // Extended attributes, which carry a file's access-control list: a
+        // confined command could otherwise open a file outside the write
+        // roots to another local user.
+        libc::SYS_setxattr,
+        libc::SYS_lsetxattr,
+        libc::SYS_fsetxattr,
+        libc::SYS_removexattr,
+        libc::SYS_lremovexattr,
+        libc::SYS_fremovexattr,
     ] {
+        always(&mut refused, call);
+    }
+    #[cfg(target_arch = "x86_64")]
+    for call in [libc::SYS_chown, libc::SYS_lchown] {
         always(&mut refused, call);
     }
     let when = |conditions: Vec<SeccompCondition>| SeccompRule::new(conditions);
