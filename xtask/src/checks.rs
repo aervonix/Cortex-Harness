@@ -15,7 +15,15 @@ use crate::workspace;
 use crate::{compare, tiers};
 
 /// The tier 0 steps, in the order they run: cheapest first.
-const CHECK_STEPS: [&str; 6] = ["fmt", "rules", "breaks", "generated", "clippy", "deny"];
+const CHECK_STEPS: [&str; 7] = [
+    "fmt",
+    "rules",
+    "breaks",
+    "generated",
+    "actionlint",
+    "clippy",
+    "deny",
+];
 
 fn check_step(name: &str) -> Option<Step> {
     Some(match name {
@@ -43,6 +51,7 @@ fn check_step(name: &str) -> Option<Step> {
         // Advisories are not here: a new advisory against an unchanged
         // lockfile must not block unrelated pull requests. They run nightly.
         "deny" => Step::cargo("deny", &["deny", "check", "licenses", "bans", "sources"]),
+        "actionlint" => Step::function("actionlint", actionlint),
         _ => return None,
     })
 }
@@ -205,6 +214,53 @@ pub(crate) fn ci_run(packages: &[String]) -> Vec<String> {
     run.extend(workspace::implied_features(packages));
     run.extend(["--locked", "--cargo-profile", "ci", "--profile", "ci"].map(str::to_owned));
     run
+}
+
+/// The version of actionlint CI installs (`.github/workflows/ci.yml`,
+/// `try.yml`; `docs/dependencies.md`, "Tools").
+const ACTIONLINT: &str = "actionlint";
+
+/// The workflows, read by actionlint: their expressions, the inputs and
+/// outputs they name, the runners and the types of their keys, which the
+/// repo rules do not read. Its checks of the scripts by shellcheck and
+/// pyflakes are off: those depend on what the machine has installed.
+///
+/// CI installs it. Without it at a desk the step says so and passes, as
+/// the owner guard does without its terms; in CI a missing tool fails.
+fn actionlint() -> Result<()> {
+    let root = workspace::root();
+    let mut workflows: Vec<String> = std::fs::read_dir(root.join(".github").join("workflows"))
+        .map_err(|error| format!("could not list the workflows: {error}"))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".yml") || name.ends_with(".yaml"))
+        .map(|name| format!(".github/workflows/{name}"))
+        .collect();
+    workflows.sort();
+    let found = Command::new(ACTIONLINT)
+        .args(["-shellcheck=", "-pyflakes=", "-no-color"])
+        .args(&workflows)
+        .current_dir(&root)
+        .status();
+    match found {
+        Ok(status) if status.success() => Ok(()),
+        Ok(_) => Err("actionlint found a problem in a workflow (above)".to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if std::env::var_os("GITHUB_ACTIONS").is_some() {
+                Err(
+                    "actionlint is not installed: the workflow installs it before this step"
+                        .to_owned(),
+                )
+            } else {
+                println!(
+                    "actionlint is not installed here, so the workflows were not linted. CI \
+                     lints them; the version is in docs/dependencies.md, \"Tools\"."
+                );
+                Ok(())
+            }
+        }
+        Err(error) => Err(format!("could not run actionlint: {error}")),
+    }
 }
 
 /// `cargo xtask ci [lint|test]`, and `cargo xtask ci --tiers ...`

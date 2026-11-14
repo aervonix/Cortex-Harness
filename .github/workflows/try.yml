@@ -129,17 +129,17 @@ jobs:
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-nextest@0.9.151
-      # `ci` runs `check`, whose last step is cargo-deny, and the nightly's
+      # `ci` runs `check`, whose steps include actionlint and cargo-deny, and the nightly's
       # `advisories` is cargo-deny too; its `unused` is cargo-machete. Both
       # are prebuilt binaries the action checks against its checksums, at
       # the versions the other workflows pin. The condition reads the
       # command's first word with spaces around it, so `test -p x-ci` does
       # not match; `cargo xtask try` decides what runs.
-      - name: Install cargo-deny
+      - name: Install cargo-deny and actionlint
         if: contains(format(' {0} ', inputs.command), ' ci ') || contains(format(' {0} ', inputs.command), ' advisories ')
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
-          tool: cargo-deny@0.20.2
+          tool: cargo-deny@0.20.2,actionlint@1.7.7
       - name: Install cargo-machete
         if: contains(format(' {0} ', inputs.command), ' unused ')
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3

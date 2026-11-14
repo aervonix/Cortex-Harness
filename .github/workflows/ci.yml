@@ -78,11 +78,13 @@ jobs:
           # that is always consistent, and never push each other's out.
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-bin: "false"
-      - name: Install cargo-deny
+      # actionlint lints the workflows in `cargo xtask check` (one download
+      # beside cargo-deny's, in the same step).
+      - name: Install cargo-deny and actionlint
         if: steps.changes.outputs.code == 'true' && matrix.name == 'linux'
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
-          tool: cargo-deny@0.20.2
+          tool: cargo-deny@0.20.2,actionlint@1.7.7
       - name: Static checks
         if: steps.changes.outputs.code == 'true'
         run: cargo run --locked --quiet --package xtask -- check ${{ matrix.check }}
