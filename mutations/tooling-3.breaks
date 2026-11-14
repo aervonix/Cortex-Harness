@@ -466,3 +466,12 @@ find: let (head, base) = (normalised(head), normalised(base));
 replace: let (head, base) = (head.to_path_buf(), base.to_path_buf());
 caught-by:
     ab::tests::a_base_beside_the_head_is_taken_and_one_inside_it_refused
+
+[break] ab-each-side-its-own-start
+rule: Two trees run on one machine are held to one start cost.
+file: xtask/src/compare.rs
+in: compare_with
+find: shared, shared
+replace: new_start, old_start
+caught-by:
+    compare::shared_start_tests::two_trees_on_one_machine_share_one_start_cost
