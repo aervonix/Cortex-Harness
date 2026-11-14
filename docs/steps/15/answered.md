@@ -39,4 +39,4 @@ By hand, on 2026-11-14 (`cortex-cli`'s `live::live_headless_compaction`), one he
 | 4 (`compaction`) | 1 | 4,824 | 7,449 |
 | The four summaries, prepared in the background | 4 | 27,069 | 34,268 |
 
-The session compacted three times, each from a summary prepared in the background, and carried on to the answer the task asked for. Each summary request read the epoch's own cache. The run cost $0.0110 by the catalog's prices, and the request that measured the prompt $0.0006: about 1.2 US cents in all, of the £3 allowed. Both are lines in the spend ledger.
+The session compacted three times, each from a summary prepared in the background, and carried on to the answer the task asked for. A fourth summary was prepared and not needed before the task ended: its tokens, counted in the run's record, are the cost 07 names for preparing in the background. Each summary request read the epoch's own cache. The run cost $0.0110 by the catalog's prices, and the request that measured the prompt $0.0006: about 1.2 US cents in all, of the £3 allowed. Both are lines in the spend ledger.

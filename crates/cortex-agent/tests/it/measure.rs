@@ -8,12 +8,12 @@
 
 use std::time::{Duration, Instant};
 
-use cortex_protocol::item::{
-    AssistantMessageItem, ToolOutcome, ToolResultItem, UserMessageItem,
-};
-use cortex_protocol::message::{Origin, ReasoningPart, TextPart, ToolCallPart};
-use cortex_protocol::{CallId, Item, ItemId, ModelId, Part, ProviderId, RawJson, StopReason, TurnId};
 use cortex_agent::MemorySessionStore;
+use cortex_protocol::item::{AssistantMessageItem, ToolOutcome, ToolResultItem, UserMessageItem};
+use cortex_protocol::message::{Origin, ReasoningPart, TextPart, ToolCallPart};
+use cortex_protocol::{
+    CallId, Item, ItemId, ModelId, Part, ProviderId, RawJson, StopReason, TurnId,
+};
 use serde_json::json;
 
 use crate::{Setup, World, says};
@@ -37,7 +37,9 @@ fn long_history() -> Vec<Item> {
     for round in 0..1_000 {
         items.push(Item::UserMessage(UserMessageItem {
             id: next(),
-            parts: vec![Part::text(format!("Look at module {round} and say what it does."))],
+            parts: vec![Part::text(format!(
+                "Look at module {round} and say what it does."
+            ))],
             delivery: None,
             created_at: Some("2026-11-14T09:00:00Z".into()),
         }));
@@ -55,7 +57,9 @@ fn long_history() -> Vec<Item> {
                 }),
                 Part::Text(TextPart {
                     text: text.clone(),
-                    raw: Some(RawJson::new(format!(r#"{{"type":"text","text":"{text}"}}"#))),
+                    raw: Some(RawJson::new(format!(
+                        r#"{{"type":"text","text":"{text}"}}"#
+                    ))),
                 }),
                 Part::ToolCall(ToolCallPart {
                     id: call.clone(),

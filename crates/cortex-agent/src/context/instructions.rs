@@ -509,6 +509,52 @@ mod tests {
         );
     }
 
+    fn windows(text: &str) -> AbsPath {
+        AbsPath::parse(text, PathStyle::Windows).unwrap()
+    }
+
+    #[test]
+    fn on_windows_a_workspace_at_a_drives_root_has_its_files_and_nested_directories() {
+        let root = windows("C:\\");
+        let found = places(
+            &root,
+            Some(&windows("C:\\Users\\me\\AppData\\Roaming\\cx")),
+            &names(),
+        );
+        let shown: Vec<&str> = found.iter().map(|place| place.shown.as_str()).collect();
+        assert_eq!(
+            shown,
+            [
+                "C:\\Users\\me\\AppData\\Roaming\\cx\\AGENTS.md",
+                "C:\\Users\\me\\AppData\\Roaming\\cx\\CLAUDE.md",
+                "AGENTS.md",
+                "CLAUDE.md"
+            ]
+        );
+        let dirs = nested_dirs(&root, &windows("C:\\src\\api\\handler.rs"));
+        let dirs: Vec<String> = dirs.iter().map(|dir| shown(&root, dir)).collect();
+        assert_eq!(dirs, ["src", "src/api"]);
+    }
+
+    #[test]
+    fn on_windows_names_are_shown_with_slashes_and_found_whatever_their_case() {
+        let root = windows("C:\\Work\\App");
+        // A file the tool reached under another case is under the root,
+        // and is shown relative to it with `/`.
+        let file = windows("c:\\work\\app\\Src\\Lib\\x.rs");
+        let dirs: Vec<String> = nested_dirs(&root, &file)
+            .iter()
+            .map(|dir| shown(&root, dir))
+            .collect();
+        assert_eq!(dirs, ["Src", "Src/Lib"]);
+        assert_eq!(
+            shown(&root, &root.join("Src\\AGENTS.md").unwrap()),
+            "Src/AGENTS.md"
+        );
+        assert!(nested_dirs(&root, &windows("D:\\Work\\App\\x.rs")).is_empty());
+        assert!(!is_instruction_name("sub\\AGENTS.md"));
+    }
+
     #[test]
     fn the_date_is_read_back() {
         assert_eq!(told_date(&date_text("2026-11-14")), Some("2026-11-14"));

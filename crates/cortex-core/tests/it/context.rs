@@ -202,7 +202,8 @@ fn a_link_out_of_the_workspace_is_not_followed_where_a_rule_allows_reading_there
     let outside = world.dir.join("elsewhere");
     std::fs::create_dir_all(&outside).unwrap();
     std::fs::write(outside.join("notes.md"), "OUTSIDE-NOTES").unwrap();
-    std::os::unix::fs::symlink(outside.join("notes.md"), world.workspace.join("AGENTS.md")).unwrap();
+    std::os::unix::fs::symlink(outside.join("notes.md"), world.workspace.join("AGENTS.md"))
+        .unwrap();
     world.user_config(&format!(
         "[[permissions.rules]]\neffect = \"read\"\nmatch = \"{}/**\"\naction = \"allow\"\n",
         outside.display()
@@ -235,4 +236,3 @@ fn an_instruction_file_a_rule_denies_is_not_read() {
     assert!(!system.contains("DENIED-TEXT"), "{system}");
     assert!(system.contains("Allowed text."));
 }
-
