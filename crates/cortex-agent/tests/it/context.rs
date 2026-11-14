@@ -27,7 +27,7 @@ use cortex_testkit::{Gate, Response, ScriptedProvider, fixtures};
 use serde_json::json;
 
 use crate::{
-    DATE, Rig, Setup, World, assert_valid_history, calls, last_request, says, settle, text_of,
+    DATE, Fill, Rig, Setup, World, assert_valid_history, calls, last_request, says, settle, text_of,
 };
 
 /// A response that reports this many input tokens.
@@ -650,7 +650,7 @@ fn a_summary_over_history_a_rewind_took_away_is_not_used() {
     let rig = with_fast(&world, &fast);
     // Past the threshold for a summary in the background, not the trigger.
     rig.window(4_000);
-    rig.bulk(4_600);
+    rig.fill(Fill::Preparing, "one");
     world.run(async {
         rig.prompt("one");
         rig.events.turns(1).await;
@@ -842,7 +842,7 @@ fn a_summary_too_large_for_the_new_epoch_fails_the_compaction_and_records_nothin
     );
     let rig = Setup::new(&world).start(&world);
     rig.window(4_000);
-    rig.bulk(6_000);
+    rig.fill(Fill::Compacting, "go");
     world.run(async {
         rig.prompt("go");
         rig.events.turns(1).await;
@@ -870,7 +870,7 @@ fn with_automatic_compaction_off_the_turn_stops_and_asks() {
     };
     let rig = setup.start(&world);
     rig.window(4_000);
-    rig.bulk(6_000);
+    rig.fill(Fill::Compacting, "go");
     world.run(async {
         rig.prompt("go");
         rig.events.turns(1).await;
@@ -1447,7 +1447,7 @@ fn a_background_summary_is_not_started_when_the_ledger_has_no_request_for_it() {
     let rig = setup.start(&world);
     // Past the threshold for a summary in the background, not the trigger.
     rig.window(4_000);
-    rig.bulk(4_600);
+    rig.fill(Fill::Preparing, "go");
     world.run(async {
         rig.prompt("go");
         rig.events.turns(1).await;
@@ -1473,7 +1473,7 @@ fn a_summary_given_up_after_it_finished_is_still_counted() {
     ]);
     let rig = with_fast(&world, &fast);
     rig.window(4_000);
-    rig.bulk(4_600);
+    rig.fill(Fill::Preparing, "one");
     world.run(async {
         rig.prompt("one");
         rig.events.turns(1).await;
@@ -1557,7 +1557,7 @@ fn a_summary_at_the_trigger_is_a_request_the_ledger_counts() {
     let rig = setup.start(&world);
     // Past the trigger from the first request.
     rig.window(4_000);
-    rig.bulk(9_000);
+    rig.fill(Fill::Compacting, "go");
     world.run(async {
         rig.prompt("go");
         rig.events.turns(1).await;
@@ -1726,7 +1726,7 @@ fn a_summary_the_ledger_refuses_closes_the_compaction_it_began() {
     );
     let rig = setup.start(&world);
     rig.window(4_000);
-    rig.bulk(9_000);
+    rig.fill(Fill::Compacting, "go");
     world.run(async {
         rig.prompt("go");
         rig.events.turns(1).await;

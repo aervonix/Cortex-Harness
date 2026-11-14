@@ -43,6 +43,7 @@ mod limits;
 mod measure;
 mod order;
 mod plan;
+mod pressure;
 mod retries;
 mod rounds;
 pub mod sessions;
@@ -920,10 +921,19 @@ pub struct Setup {
     pub plan: Option<Arc<cortex_tools::PlanBoard>>,
     /// A verifier in place of the scripted one.
     pub verifier: Option<Arc<dyn Verifier>>,
+    /// The workspace's path, in place of one under the world's directory:
+    /// a twin's ([`Rig::fill`]), which must be where its instruction files
+    /// are.
+    pub root: Option<PathBuf>,
 }
 
 /// One session, with everything it does remembered.
 pub struct Rig {
+    /// What a twin of this session is made from, to measure it
+    /// ([`Rig::fill`]).
+    twin: Twin,
+    /// The window [`Rig::window`] set, if it did.
+    window: std::sync::Mutex<Option<u64>>,
     pub handle: SessionHandle,
     pub events: Arc<Events>,
     pub seen: Arc<Seen>,
@@ -952,12 +962,26 @@ impl Setup {
             user_dir: None,
             plan: None,
             verifier: None,
+            root: None,
         }
     }
 
     /// Opens the session and starts its loop on the world's runtime.
     pub fn start(self, world: &World) -> Rig {
-        let root = world.dir.join(&self.id);
+        let root = self
+            .root
+            .clone()
+            .unwrap_or_else(|| world.dir.join(&self.id));
+        let twin = Twin {
+            id: self.id.clone(),
+            root: root.clone(),
+            config: self.config.clone(),
+            model: self.model.clone(),
+            toolbox: self.toolbox.clone(),
+            context: self.context.clone(),
+            instructions: Arc::clone(&self.instructions),
+            user_dir: self.user_dir.clone(),
+        };
         std::fs::create_dir_all(&root).expect("create the workspace");
         let paths = Arc::new(PathResolver::new(&root, PathOptions::new()).expect("a workspace"));
         let workspace = Workspace::in_memory(paths);
@@ -1008,6 +1032,8 @@ impl Setup {
             .runtime
             .spawn(AbortIfItPanics(Box::pin(session.run())));
         Rig {
+            twin,
+            window: std::sync::Mutex::new(None),
             handle,
             events,
             seen,
@@ -1057,6 +1083,7 @@ impl Rig {
     /// Holds the model's requests to a context window of `tokens`, as a
     /// local server's report would.
     pub fn window(&self, tokens: u64) {
+        *self.window.lock().unwrap() = Some(tokens);
         self.handle.set_context_window(
             cortex_protocol::ProviderId::new(fixtures::PROVIDER),
             cortex_protocol::ModelId::new(fixtures::MODEL),
@@ -1078,6 +1105,180 @@ impl Rig {
             .prompt(vec![Part::text(text)], Some(Delivery::Queue))
             .map_err(|error| *error)
             .expect("a turn is running")
+    }
+}
+
+// ---------------------------------------------------------------- pressure
+
+/// How full a session's next request is, against its context thresholds
+/// (`docs/architecture/07-sessions-and-context.md`, "Budgeting").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fill {
+    /// Below the threshold for a summary in the background.
+    Below,
+    /// Past that threshold, below the compaction trigger: a summary is
+    /// prepared while the turn goes on.
+    Preparing,
+    /// Past the trigger, within the limit: the epoch is compacted before
+    /// the request.
+    Compacting,
+    /// Past the model's window itself.
+    PastWindow,
+}
+
+/// What [`Rig::fill`] measured and chose, in tokens unless it says bytes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Filled {
+    /// The request without the bulk, in bytes, as the twin measured it.
+    pub base_bytes: u64,
+    /// The bulk given, in bytes.
+    pub bulk: usize,
+    /// The estimate the request will have.
+    pub estimate: u64,
+    /// The limit, and the two thresholds of it.
+    pub limit: u64,
+    pub prepare: f64,
+    pub compact: f64,
+    pub window: u64,
+}
+
+/// What a twin of a rig's session is made from: everything that goes into
+/// its first request's size.
+struct Twin {
+    id: String,
+    root: PathBuf,
+    config: LoopConfig,
+    model: RoleModel,
+    toolbox: Option<Toolbox>,
+    context: ContextSettings,
+    instructions: Arc<MemoryInstructionFiles>,
+    user_dir: Option<cortex_base::AbsPath>,
+}
+
+/// The notice the twin is given: large enough that the estimate's rounding
+/// to a whole token is small beside it.
+const MEASURE_BULK: usize = 3_000;
+
+impl Rig {
+    /// Gives the next turn the bulk that puts its first request at `fill`,
+    /// in the window [`Rig::window`] set (the model's own when it set
+    /// none), and returns what it measured. `prompt` is the text the test
+    /// will send.
+    ///
+    /// The size of the request without the bulk is not counted by hand: a
+    /// twin of this session (the same prompt, tools, instruction files,
+    /// thresholds and model, at the same workspace path) is run once in a
+    /// world of its own with a window it cannot fill, and its request's
+    /// estimate is read from its context record. The bulk is then chosen
+    /// to put the estimate in the middle of the band asked for, at the
+    /// ratio of bytes to tokens the loop uses before the provider has
+    /// counted a request.
+    ///
+    /// Call it before the session's first turn, and outside `world.run`:
+    /// the twin has a runtime of its own.
+    pub fn fill(&self, fill: Fill, prompt: &str) -> Filled {
+        assert!(
+            !self.handle.has_history(),
+            "Rig::fill sizes a session's first request: this one has history"
+        );
+        let entry = &self.twin.model.entry.info;
+        let window = self.window.lock().unwrap().unwrap_or(entry.context_window);
+        let max_output = self.twin.model.max_output.unwrap_or(entry.max_output);
+        let limit = cortex_agent::context::limit_of(window, max_output);
+        #[expect(clippy::cast_precision_loss, reason = "token counts far below 2^52")]
+        let (prepare, compact) = (
+            self.twin.context.prepare_at * limit as f64,
+            self.twin.context.compact_at * limit as f64,
+        );
+        let base_bytes = self.measure(prompt);
+        let ratio = cortex_agent::context::DEFAULT_RATIO;
+        #[expect(clippy::cast_precision_loss, reason = "byte counts far below 2^52")]
+        let base = base_bytes as f64 / ratio;
+        #[expect(clippy::cast_precision_loss, reason = "token counts far below 2^52")]
+        let (low, high) = match fill {
+            Fill::Below => (base, prepare),
+            Fill::Preparing => (prepare, compact),
+            Fill::Compacting => (compact, limit as f64),
+            Fill::PastWindow => (window as f64 * 1.05, window as f64 * 1.15),
+        };
+        assert!(
+            base + 2.0 < high,
+            "{fill:?} cannot be reached: the request is {base:.0} tokens before any bulk, and \
+             the band ends at {high:.0} of a limit of {limit} (window {window}). Give the \
+             model a larger window."
+        );
+        let target = (low.max(base) + high) / 2.0;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a positive byte count far below 2^52"
+        )]
+        let bulk = (target * ratio) as usize - usize::try_from(base_bytes).unwrap();
+        self.bulk(bulk);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a positive token count far below 2^52"
+        )]
+        let estimate = ((base_bytes as f64 + bulk as f64) / ratio).ceil() as u64;
+        Filled {
+            base_bytes,
+            bulk,
+            estimate,
+            limit,
+            prepare,
+            compact,
+            window,
+        }
+    }
+
+    /// The bytes of this session's first request without its bulk, from a
+    /// twin's context record.
+    fn measure(&self, prompt: &str) -> u64 {
+        static TWINS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let number = TWINS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let world = World::seeded(
+            &format!("twin-{}-{number}", std::process::id()),
+            0,
+            [says("Measured.")],
+        );
+        let mut setup = Setup::new(&world);
+        setup.id.clone_from(&self.twin.id);
+        setup.root = Some(self.twin.root.clone());
+        setup.config = self.twin.config.clone();
+        setup.model = RoleModel {
+            client: Arc::new(world.provider.clone()),
+            ..self.twin.model.clone()
+        };
+        setup.toolbox.clone_from(&self.twin.toolbox);
+        setup.context = self.twin.context.clone();
+        setup.instructions = Arc::clone(&self.twin.instructions);
+        setup.user_dir.clone_from(&self.twin.user_dir);
+        let twin = setup.start(&world);
+        // A window the request cannot come near.
+        twin.window(u64::MAX / 4);
+        twin.bulk(MEASURE_BULK);
+        world.run(async {
+            twin.prompt(prompt);
+            twin.events.turns(1).await;
+        });
+        let estimate = twin
+            .stats
+            .all()
+            .into_iter()
+            .find_map(|event| match event {
+                cortex_agent::StatEvent::Context(context) => Some(context.estimate),
+                _ => None,
+            })
+            .expect("the twin's request has a context record");
+        // The estimate is the bytes at the ratio, rounded up to a token.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a positive byte count far below 2^52"
+        )]
+        let bytes = (estimate as f64 * cortex_agent::context::DEFAULT_RATIO) as u64;
+        bytes.saturating_sub(MEASURE_BULK as u64)
     }
 }
 
