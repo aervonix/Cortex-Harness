@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use cortex_testkit::rerun::{self, Rerun};
 use cortex_tools::shell::ShellError;
 use cortex_tools::{ShellKind, ShellSearch};
 
@@ -211,83 +212,89 @@ fn a_configured_shell_is_the_one_used_and_nothing_else() {
     assert_eq!(line.arguments.len(), 3);
 }
 
-/// `target` written relative to this process's current directory, as
-/// `./node_modules/.bin` in a user's `PATH` is relative to wherever the
-/// harness is started. `None` where it cannot be (another drive).
-fn relative_to_here(target: &Path) -> Option<PathBuf> {
-    use std::path::Component;
-    let here = std::env::current_dir().expect("a current directory");
-    // The drive, in any case: `D:` and `d:` are one.
-    let anchor = |path: &Path| {
-        path.components()
-            .take_while(|part| matches!(part, Component::Prefix(_) | Component::RootDir))
-            .collect::<PathBuf>()
-            .to_string_lossy()
-            .to_ascii_lowercase()
-    };
-    if anchor(&here) != anchor(target) {
-        return None;
-    }
-    let names = |path: &Path| {
-        path.components()
-            .filter(|part| matches!(part, Component::Normal(_)))
-            .count()
-    };
-    let mut relative: PathBuf = (0..names(&here)).map(|_| "..").collect();
-    relative.extend(
-        target
-            .components()
-            .filter(|part| matches!(part, Component::Normal(_))),
-    );
-    Some(relative)
-}
-
 /// A user's `PATH` often starts with a relative entry
 /// (`./node_modules/.bin`). It names a directory of wherever the harness
 /// was started, which is usually the workspace, so a file there named like
 /// the shell would run every command, and be started (for its version) as
 /// soon as a session opens. Found by the review of step 13a.
+///
+/// The test runs again as a child whose working directory is the test's
+/// own, so the relative entries really lead to the planted files, and
+/// whose `PATH` has them first: this system's search is the one the
+/// harness makes from its environment, the other system's is made from the
+/// same `PATH` by hand.
 #[test]
-fn a_relative_path_entry_does_not_make_a_file_there_the_shell() {
+fn sys_a_relative_path_entry_does_not_make_a_file_there_the_shell() {
+    const RELATIVE: [&str; 3] = ["", ".", "node_modules/.bin"];
+    if rerun::is_child() {
+        for (windows, name) in [(false, "bash"), (true, "pwsh.exe")] {
+            let path = std::env::var_os("PATH").expect("the child's PATH");
+            let search = if windows == cfg!(windows) {
+                ShellSearch::from_env()
+            } else {
+                ShellSearch {
+                    windows,
+                    path: std::env::split_paths(&path).collect(),
+                    system_root: None,
+                    comspec: None,
+                }
+            };
+            let shown = |found: Result<cortex_tools::Shell, ShellError>| {
+                found.map_or_else(
+                    |error| format!("error: {error}"),
+                    |shell| shell.program().display().to_string(),
+                )
+            };
+            rerun::say(&format!("{name} found"), &shown(search.find(None, None)));
+            rerun::say(
+                &format!("{name} named"),
+                &shown(search.find(Some(name), None)),
+            );
+            let only_relative = ShellSearch {
+                windows,
+                path: RELATIVE.iter().map(PathBuf::from).collect(),
+                system_root: None,
+                comspec: None,
+            };
+            rerun::say(
+                &format!("{name} only relative"),
+                &shown(only_relative.find(None, None)),
+            );
+        }
+        return;
+    }
     let ws = Workspace::new("search_relative_entry");
     let planted = ws.dir.join("node_modules").join(".bin");
     let real = ws.dir.join("real");
-    for (windows, name) in [(false, "bash"), (true, "pwsh.exe")] {
-        program(&planted, name);
-        let wanted = program(&real, name);
-        let Some(relative) = relative_to_here(&planted) else {
-            return;
-        };
-        assert!(relative.is_relative());
-        // The relative entry does lead to the planted file from here.
-        assert!(relative.join(name).is_file(), "{}", relative.display());
+    let mut wanted = Vec::new();
+    for name in ["bash", "pwsh.exe"] {
+        let there = program(&planted, name);
+        // The relative entry does lead to the planted file, from the
+        // child's working directory.
+        assert!(there.is_file());
+        wanted.push((name, program(&real, name)));
+    }
+    let mut path: Vec<PathBuf> = RELATIVE.iter().map(PathBuf::from).collect();
+    path.push(real.clone());
+    let ran = Rerun::this_test().path(&path).cwd(&ws.dir).run();
 
-        let search = ShellSearch {
-            windows,
-            path: vec![
-                PathBuf::new(),
-                PathBuf::from("."),
-                relative.clone(),
-                real.clone(),
-            ],
-            system_root: None,
-            comspec: None,
-        };
-        let found = search.find(None, None).expect("a shell");
+    for (name, wanted) in wanted {
+        let wanted = wanted.display().to_string();
         assert_eq!(
-            found.program(),
-            wanted,
+            ran.said(&format!("{name} found")).as_deref(),
+            Some(wanted.as_str()),
             "the shell is a file found through a relative PATH entry"
         );
         // And by name, as configuration may give it.
-        let configured = search.find(Some(name), None).expect("a shell");
-        assert_eq!(configured.program(), wanted);
+        assert_eq!(
+            ran.said(&format!("{name} named")).as_deref(),
+            Some(wanted.as_str())
+        );
         // With nothing but relative entries there is no shell.
-        let only_relative = ShellSearch {
-            path: vec![relative],
-            ..search
-        };
-        assert!(only_relative.find(None, None).is_err());
+        let only = ran
+            .said(&format!("{name} only relative"))
+            .unwrap_or_default();
+        assert!(only.starts_with("error: "), "{name}: {only}");
     }
 }
 
@@ -355,28 +362,53 @@ fn on_windows_only_an_exe_is_taken_for_a_shell() {
 
 /// `%ComSpec%` and `%SystemRoot%` are believed only when they are
 /// absolute: a relative one names a place from wherever the harness was
-/// started.
+/// started. The test runs again as a child in the test's own directory, so
+/// the relative ones really lead to the planted `cmd.exe`.
 #[test]
-fn a_relative_comspec_or_system_root_is_not_believed() {
+fn sys_a_relative_comspec_or_system_root_is_not_believed() {
+    if rerun::is_child() {
+        let empty = PathBuf::from(std::env::var_os("CX_EMPTY").expect("CX_EMPTY"));
+        let system = PathBuf::from(std::env::var_os("CX_SYSTEM").expect("CX_SYSTEM"));
+        let mut found = search(true, &[&empty]);
+        found.comspec = Some(PathBuf::from("planted/System32/cmd.exe"));
+        found.system_root = Some(system);
+        let shell = found.find(None, None).expect("a shell");
+        rerun::say(
+            "with a relative comspec",
+            &shell.program().display().to_string(),
+        );
+        found.comspec = None;
+        found.system_root = Some(PathBuf::from("planted"));
+        rerun::say(
+            "with a relative system root",
+            &format!(
+                "{:?}",
+                found
+                    .find(None, None)
+                    .map(|shell| shell.program().to_owned())
+            ),
+        );
+        return;
+    }
     let ws = Workspace::new("search_relative_comspec");
     let planted = ws.dir.join("planted");
-    let planted_cmd = program(&planted.join("System32"), "cmd.exe");
+    assert!(program(&planted.join("System32"), "cmd.exe").is_file());
     let system = ws.dir.join("system");
     let real_cmd = program(&system.join("System32"), "cmd.exe");
-    let (Some(relative_root), Some(relative_cmd)) =
-        (relative_to_here(&planted), relative_to_here(&planted_cmd))
-    else {
-        return;
-    };
-
-    let mut found = search(true, &[&ws.dir.join("empty")]);
-    found.comspec = Some(relative_cmd);
-    found.system_root = Some(system.clone());
-    assert_eq!(found.find(None, None).expect("a shell").program(), real_cmd);
-
-    found.comspec = None;
-    found.system_root = Some(relative_root);
-    assert!(found.find(None, None).is_err(), "a relative %SystemRoot%");
+    let ran = Rerun::this_test()
+        .cwd(&ws.dir)
+        .env("CX_EMPTY", ws.dir.join("empty"))
+        .env("CX_SYSTEM", &system)
+        .run();
+    assert_eq!(
+        ran.said("with a relative comspec"),
+        Some(real_cmd.display().to_string())
+    );
+    let relative_root = ran.said("with a relative system root").unwrap_or_default();
+    assert!(
+        relative_root.starts_with("Err("),
+        "a relative %SystemRoot%: {relative_root}"
+    );
 }
 
 #[test]
