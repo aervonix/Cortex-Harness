@@ -12,7 +12,8 @@ use crate::Result;
 
 const USAGE: &str = "\
 usage: cargo xtask try --command 'COMMAND [ARGUMENTS]' [--profile ci|release|dist]
-                       [--count N] [--load N] [--cores K]
+                       [--count N] [--load N] [--cores K] [--filter 'EXPR; EXPR']
+                       [--against REF]
 
 COMMAND is one of:
   test [-p CRATE]... [FILTER]...   the tests, as the blocking job builds and runs
@@ -23,6 +24,17 @@ COMMAND is one of:
                                    (release or dist), --count runs
   perf [ARGS]...                   the performance budgets (step 20)
   ci [ARGS]...                     any form of `cargo xtask ci`
+
+A word of `test` or `stress` that is not `-p CRATE` goes to nextest: a test's
+name, or an option such as `--run-ignored only`. --filter takes nextest filter
+expressions, separated by `;`, each passed as one `-E` argument, spaces and
+all: `test(/shell::/) & !test(=slow); package(cortex-agent)`. nextest runs a
+test that any of them matches.
+
+--against REF makes `test` an A/B run: the workflow checks REF out beside the
+branch, and `cargo xtask ab` builds both once and runs them in turn, --count
+rounds (5 when not given), on one runner, then compares them by tier, crate
+and test.
 
 An empty value is the same as leaving the flag out.";
 
@@ -37,6 +49,23 @@ struct Inputs {
     count: Option<u32>,
     load: Option<usize>,
     cores: Option<usize>,
+    /// nextest filter expressions, each one `-E` argument.
+    filters: Vec<String>,
+    /// The ref an A/B run compares the branch with.
+    against: Option<String>,
+}
+
+/// Where the workflow checks out the ref of an A/B run, beside the branch.
+pub(crate) const AB_BASE: &str = "ab-base";
+
+/// Whether `expression` may be passed to nextest as a filter: what
+/// [`plain`] allows, and the spaces, brackets and marks of a filter or a
+/// regular expression. No quote, `$`, `;`, back-tick or control character.
+fn filter_text(expression: &str) -> bool {
+    !expression.trim().is_empty()
+        && expression.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || b" _-:./=,()|&!~*+@#^[]{}?\\".contains(&byte)
+        })
 }
 
 /// Whether `word` may reach a command line: letters, digits and the marks
@@ -91,6 +120,29 @@ impl Inputs {
                 "--count" => inputs.count = number("--count", value, 10_000)?,
                 "--load" => inputs.load = number("--load", value, 64)?,
                 "--cores" => inputs.cores = number("--cores", value, 64)?,
+                "--filter" => {
+                    for expression in value.split(';').map(str::trim) {
+                        if expression.is_empty() {
+                            continue;
+                        }
+                        if !filter_text(expression) {
+                            return Err(format!(
+                                "`{expression}` has a character a filter does not pass on: \
+                                 letters, digits, spaces and _-:./=,()|&!~*+@#^[]{{}}?\\ only"
+                            ));
+                        }
+                        inputs.filters.push(expression.to_owned());
+                    }
+                }
+                "--against" => {
+                    let against = value.trim();
+                    if !against.is_empty() {
+                        if !plain(against) {
+                            return Err(format!("`--against {against}` is not a ref"));
+                        }
+                        inputs.against = Some(against.to_owned());
+                    }
+                }
                 other => return Err(format!("unknown flag `{other}`\n\n{USAGE}")),
             }
         }
@@ -119,6 +171,12 @@ impl Inputs {
                 "`{verb}` is not a command a try run runs\n\n{USAGE}"
             ));
         }
+        if !self.filters.is_empty() && !matches!(verb.as_str(), "test" | "stress") {
+            return Err("`--filter` chooses tests: it goes with `test` or `stress`".to_owned());
+        }
+        if let Some(against) = &self.against {
+            return self.ab(verb, rest, against);
+        }
         let squeezed = self.load.is_some() || self.cores.is_some();
         if squeezed && !(verb == "stress" || verb == "test" && self.count.is_some()) {
             return Err(
@@ -142,21 +200,17 @@ impl Inputs {
                 }
                 command.extend(owned(&["--cargo-profile", &self.profile]));
                 command.extend(rest.iter().cloned());
+                command.extend(self.filter_arguments());
             }
             "test" if self.profile == "ci" => {
                 // The blocking job's build and run, and the tier report:
                 // packages before `--`, the rest for nextest after it.
                 command.extend(owned(&["ci", "--tiers", "--top", "20"]));
-                let mut others = Vec::new();
-                let mut words = rest.iter();
-                while let Some(word) = words.next() {
-                    if word == "-p" || word == "--package" {
-                        let package = words.next().ok_or("`-p` needs a crate")?;
-                        command.extend(["-p".to_owned(), package.clone()]);
-                    } else {
-                        others.push(word.clone());
-                    }
+                let (packages, mut others) = packages_and_others(rest)?;
+                for package in packages {
+                    command.extend(["-p".to_owned(), package]);
                 }
+                others.extend(self.filter_arguments());
                 if !others.is_empty() {
                     command.push("--".to_owned());
                     command.extend(others);
@@ -171,6 +225,7 @@ impl Inputs {
                     "ci",
                 ]));
                 command.extend(rest.iter().cloned());
+                command.extend(self.filter_arguments());
             }
             "startup" => {
                 if self.profile == "ci" {
@@ -200,6 +255,67 @@ impl Inputs {
         }
         Ok(command)
     }
+}
+
+impl Inputs {
+    /// `-E EXPR` for each filter.
+    fn filter_arguments(&self) -> Vec<String> {
+        self.filters
+            .iter()
+            .flat_map(|filter| ["-E".to_owned(), filter.clone()])
+            .collect()
+    }
+
+    /// The A/B run: `ab` against the tree the workflow checked out.
+    fn ab(&self, verb: &str, rest: &[String], against: &str) -> Result<Vec<String>> {
+        if verb != "test" || self.profile != "ci" {
+            return Err(
+                "`--against` compares the blocking jobs' tests of two refs: it goes with \
+                 `test`, in the ci profile"
+                    .to_owned(),
+            );
+        }
+        if self.load.is_some() || self.cores.is_some() {
+            return Err("`--load` and `--cores` go with a stress run, not an A/B run".to_owned());
+        }
+        let mut command: Vec<String> = ["ab", "--base", AB_BASE, "--label", against, "--top", "20"]
+            .map(str::to_owned)
+            .to_vec();
+        if let Some(count) = self.count {
+            command.extend(["--count".to_owned(), count.max(2).to_string()]);
+        }
+        let (packages, mut others) = packages_and_others(rest)?;
+        for package in packages {
+            command.extend(["-p".to_owned(), package]);
+        }
+        others.extend(self.filter_arguments());
+        if !others.is_empty() {
+            command.push("--".to_owned());
+            command.extend(others);
+        }
+        Ok(command)
+    }
+}
+
+/// The crates `words` name, in any of cargo's spellings (`-p x`,
+/// `--package x`, `-px`, `--package=x`), and the rest of the words, which
+/// go to nextest.
+fn packages_and_others(words: &[String]) -> Result<(Vec<String>, Vec<String>)> {
+    let mut packages = Vec::new();
+    let mut others = Vec::new();
+    let mut words = words.iter();
+    while let Some(word) = words.next() {
+        if word == "-p" || word == "--package" {
+            packages.push(words.next().ok_or("`-p` needs a crate")?.clone());
+        } else if let Some(package) = word.strip_prefix("--package=") {
+            packages.push(package.to_owned());
+        } else if let Some(package) = word.strip_prefix("-p").filter(|_| !word.starts_with("--")) {
+            packages.push(package.to_owned());
+        } else {
+            others.push(word.clone());
+        }
+    }
+    Ok((packages, others))
 }
 
 /// `cargo xtask try …`
@@ -282,6 +398,127 @@ mod tests {
             ]),
             Ok("stress --cargo-profile ci -p cortex-agent --count 300".to_owned())
         );
+    }
+
+    #[test]
+    fn filters_and_nextest_options_reach_nextest_as_they_are_meant() {
+        // Several filter expressions, spaces and all, each one argument.
+        let arguments: Vec<String> = [
+            "--command",
+            "test --package=cortex-tools -pcortex-agent --run-ignored only shell::",
+            "--filter",
+            "test(/shell::/) & !test(=slow) ; package(cortex-agent) ;",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let command = Inputs::parse(&arguments).unwrap().command().unwrap();
+        assert_eq!(
+            command,
+            [
+                "ci",
+                "--tiers",
+                "--top",
+                "20",
+                "-p",
+                "cortex-tools",
+                "-p",
+                "cortex-agent",
+                "--",
+                "--run-ignored",
+                "only",
+                "shell::",
+                "-E",
+                "test(/shell::/) & !test(=slow)",
+                "-E",
+                "package(cortex-agent)"
+            ]
+        );
+        assert_eq!(
+            try_command(&[
+                "--command",
+                "test -p cortex-tools",
+                "--count",
+                "20",
+                "--filter",
+                "test(~shell)"
+            ]),
+            Ok("stress --count 20 --cargo-profile ci -p cortex-tools -E test(~shell)".to_owned())
+        );
+        assert_eq!(
+            try_command(&[
+                "--command",
+                "test",
+                "--profile",
+                "release",
+                "--filter",
+                "test(=a)"
+            ]),
+            Ok("test --cargo-profile release --profile ci -E test(=a)".to_owned())
+        );
+        for (arguments, expected) in [
+            (
+                &["--command", "test", "--filter", "test(x); rm -rf /'"][..],
+                "does not pass on",
+            ),
+            (
+                &["--command", "test", "--filter", "test($HOME)"],
+                "does not pass on",
+            ),
+            (
+                &["--command", "perf", "--filter", "test(x)"],
+                "goes with `test` or `stress`",
+            ),
+        ] {
+            let error = try_command(arguments).unwrap_err();
+            assert!(error.contains(expected), "{arguments:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn against_makes_a_test_run_an_ab_run_of_the_two_refs() {
+        assert_eq!(
+            try_command(&[
+                "--command",
+                "test -p cortex-core",
+                "--against",
+                "main",
+                "--count",
+                "6",
+                "--filter",
+                "test(/slow/)"
+            ]),
+            Ok("ab --base ab-base --label main --top 20 --count 6 -p cortex-core -- -E test(/slow/)"
+                .to_owned())
+        );
+        assert_eq!(
+            try_command(&["--command", "test", "--against", "origin/main"]),
+            Ok("ab --base ab-base --label origin/main --top 20".to_owned())
+        );
+        for (arguments, expected) in [
+            (
+                &["--command", "stress -p x", "--against", "main"][..],
+                "goes with `test`",
+            ),
+            (
+                &[
+                    "--command",
+                    "test",
+                    "--against",
+                    "main",
+                    "--profile",
+                    "release",
+                ],
+                "in the ci profile",
+            ),
+            (&["--command", "test", "--against", "a b"], "not a ref"),
+            (
+                &["--command", "test", "--against", "main", "--load", "2"],
+                "not an A/B run",
+            ),
+        ] {
+            let error = try_command(arguments).unwrap_err();
+            assert!(error.contains(expected), "{arguments:?}: {error}");
+        }
     }
 
     #[test]

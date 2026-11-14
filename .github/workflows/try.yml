@@ -6,6 +6,9 @@
 #   gh workflow run try --ref <branch> -f command=startup -f profile=dist
 #   gh workflow run try --ref <branch> -f os=windows -f command="test -p cortex-tools shell::"
 #   gh workflow run try --ref <branch> -f command="stress -p cortex-testkit" -f count=200 -f load=6 -f cores=2
+#   gh workflow run try --ref <branch> -f command="test -p cortex-agent" -f filter="test(/denials/); test(=x)"
+#   gh workflow run try --ref <branch> -f os=windows -f command=test -f against=main -f count=5
+#   gh workflow run try --ref <branch> -f os=linux-22.04 -f command="test -p cortex-sandbox"
 #   ci-wait --workflow try                    (from the branch, for its head commit)
 #
 # The inputs reach `cargo xtask try` as arguments, through the environment,
@@ -23,7 +26,7 @@ on:
       os:
         description: "Where to run it."
         type: choice
-        options: [both, linux, windows]
+        options: [both, linux, windows, linux-22.04]
         default: both
       command:
         description: "test [-p CRATE] [FILTER], stress -p CRATE [ARGS], startup, perf [ARGS] or ci [ARGS]."
@@ -44,6 +47,14 @@ on:
         default: ""
       cores:
         description: "Pin a stress run to this many cores. Empty: every core."
+        required: false
+        default: ""
+      filter:
+        description: "nextest filter expressions for test or stress, separated by ;. Empty: none."
+        required: false
+        default: ""
+      against:
+        description: "A ref to compare the branch with, both run in turn on one runner (count rounds). Empty: no comparison."
         required: false
         default: ""
 
@@ -71,7 +82,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.os == 'linux' && '[{"name":"linux","os":"ubuntu-latest"}]' || inputs.os == 'windows' && '[{"name":"windows","os":"windows-latest"}]' || '[{"name":"linux","os":"ubuntu-latest"},{"name":"windows","os":"windows-latest"}]') }}
+        # linux-22.04: Landlock ABI 4, the partial case no other runner has.
+        include: ${{ fromJSON(inputs.os == 'linux' && '[{"name":"linux","os":"ubuntu-latest"}]' || inputs.os == 'windows' && '[{"name":"windows","os":"windows-latest"}]' || inputs.os == 'linux-22.04' && '[{"name":"linux-22.04","os":"ubuntu-22.04"}]' || '[{"name":"linux","os":"ubuntu-latest"},{"name":"windows","os":"windows-latest"}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Keep cargo's and rustup's files off the system disk (Windows)
@@ -85,10 +97,22 @@ jobs:
           "TMP=$env:RUNNER_TEMP\tmp" >> $env:GITHUB_ENV
       - name: Install the toolchain from rust-toolchain.toml
         run: rustup toolchain install
+      # Not on 22.04: the cache's key names the OS and not its version, and
+      # build scripts built on the newer image do not run on the older one.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: matrix.name != 'linux-22.04'
         with:
           save-if: "false"
           cache-bin: "false"
+      # An A/B run's other tree, beside the branch, built in a directory of
+      # its own (`cargo xtask ab`).
+      - name: Check out the ref to compare with
+        if: inputs.against != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.against }}
+          path: ab-base
+          persist-credentials: false
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
@@ -101,12 +125,15 @@ jobs:
           TRY_COUNT: ${{ inputs.count }}
           TRY_LOAD: ${{ inputs.load }}
           TRY_CORES: ${{ inputs.cores }}
+          TRY_FILTER: ${{ inputs.filter }}
+          TRY_AGAINST: ${{ inputs.against }}
         run: |
           set -o pipefail
           mkdir -p target/try
           cargo run --locked --quiet --package xtask -- try \
             --command "$TRY_COMMAND" --profile "$TRY_PROFILE" \
             --count "$TRY_COUNT" --load "$TRY_LOAD" --cores "$TRY_CORES" \
+            --filter "$TRY_FILTER" --against "$TRY_AGAINST" \
             2>&1 | tee target/try/output.log
       - name: Put the end of the output in the summary
         if: ${{ !cancelled() }}
@@ -130,5 +157,6 @@ jobs:
             target/try/output.log
             target/nextest/ci/junit.xml
             target/nextest/stress/junit.xml
+            ab-base/target/nextest/ci/junit.xml
           if-no-files-found: ignore
           retention-days: 14

@@ -56,8 +56,7 @@ AGENTS.md          the rules for agents; CLAUDE.md is one line that includes it
 .github/workflows/ci.yml             the blocking checks
 .github/workflows/main.yml           after each merge: release build, size, crate count
 .github/workflows/nightly.yml        nightly: advisories, unused dependencies, every release target
-.github/workflows/try.yml            by hand: one xtask command on Linux, Windows or both, for a branch with no pull request
-.github/workflows/windows-try.yml    by hand: one crate's tests on Windows (the older form of `try`)
+.github/workflows/try.yml            by hand: one xtask command on Linux, Windows, both or Ubuntu 22.04, for a branch with no pull request; or two refs compared on one runner
 ```
 
 A crate may depend only on the workspace crates that [docs/architecture/01-workspace.md](docs/architecture/01-workspace.md) lists for it. `cargo xtask rules` checks this from `cargo metadata`. If the design has to change, change that page and the table in `xtask/src/rules/crate_graph.rs` in the same pull request.

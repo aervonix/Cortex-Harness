@@ -17,8 +17,10 @@
 
 use std::process::ExitCode;
 
+mod ab;
 mod alias;
 mod checks;
+mod combine;
 mod compare;
 mod decide;
 mod junit;
@@ -95,9 +97,20 @@ Showing that the tests bite
 
 On the runners, without a pull request (the `try` workflow runs this)
   try --command 'COMMAND [ARGS]' [--profile ci|release|dist] [--count N]
-      [--load N] [--cores K]
+      [--load N] [--cores K] [--filter 'EXPR; EXPR'] [--against REF]
                     One of test, stress, startup, perf or ci, as the workflow's
                     inputs ask: `try --help` has the rules.
+  ab --base DIR [--label NAME] [--count N] [-p CRATE]... [-- NEXTEST ARGS]
+                    This tree's tests and those of the tree at DIR, each built
+                    once, run in turn N rounds on this machine, and compared
+                    by each test's median: a change's cost apart from the
+                    runner's speed.
+
+Before a push
+  combine PR...     Put this branch on top of the open pull requests named, in
+                    order, in a scratch worktree under the build directory,
+                    and run `cargo xtask ci` there. This worktree and branch
+                    are not touched. `combine --help` has the rest.
 
 Not blocking (the `main` and `nightly` workflows run these)
   size [--check]    Build the `dist` profile and report the binary's size and
@@ -202,6 +215,8 @@ fn run(command: &str, rest: &[String]) -> Result<()> {
         "alias" => alias::run(rest),
         "stress" => stress::run(rest),
         "try" => try_run::run(rest),
+        "ab" => ab::run(rest),
+        "combine" => combine::run(rest),
         "owner-guard" => owner_guard::run(rest),
         "fuzz" => outside::fuzz(rest),
         "live" => outside::live(rest),
