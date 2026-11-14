@@ -173,16 +173,9 @@ fn grant(
         // narrows.
         return Ok(created);
     };
-    if metadata.file_type().is_symlink() {
-        // The root itself is a link now. It was a real directory, or did
-        // not exist, when the roots were resolved: a confined command
-        // swapped it. Fail closed.
-        return Err(format!(
-            "{}: a write or read root is a symbolic link now, which it was not when the \
-             session started: it was replaced",
-            root.display()
-        ));
-    }
+    // A symbolic link, on the way to the root or as the root itself, is for
+    // the open to refuse, not for this to judge: a file gets the rights a
+    // file may have.
     let access = if metadata.is_dir() {
         access
     } else {
@@ -191,11 +184,13 @@ fn grant(
     let fd = match open_no_symlinks(root) {
         Ok(fd) => fd,
         Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {
-            // A directory on the way to the root is a link now: openat2
-            // refused to follow it. Fail closed.
+            // The root, or a directory on the way to it, is a link now:
+            // `openat2` refused to follow it. It was a real directory, or
+            // was not there, when the harness resolved the roots, so a
+            // confined command replaced it. Fail closed.
             return Err(format!(
-                "{}: a directory on the way to a root is a symbolic link now, which it was \
-                 not when the session started: it was replaced",
+                "{}: a root, or a directory on the way to it, is a symbolic link now, which it \
+                 was not when the session started: it was replaced",
                 root.display()
             ));
         }

@@ -1,0 +1,126 @@
+# The fixes to step 26, from its third independent review: the harness's
+# own git inside the sandbox, the kill that sweeps a session, the look's
+# commondir and links, the owner and extended-attribute refusals, the
+# write roots opened with no link followed, and the programs passed over
+# because a confined command could have planted them.
+
+[break] harness-git-not-confined
+rule: While commands are confined, the harness's own git runs inside the sandbox, so a program a confined command named in the repository's configuration cannot run unconfined.
+file: crates/cortex-core/src/sandbox.rs
+in: SessionSandbox::start_git
+find: self.reader.as_ref().filter(|_| self.confines())
+replace: self.reader.as_ref().filter(|_| false)
+packages: cortex-core
+caught-by:
+    cortex-core::it harness_git::sys_a_filter_a_confined_command_plants_runs_inside_the_sandbox
+
+[break] harness-git-read-policy-widened
+rule: The harness's own git runs under a reading policy with no write root, so a planted filter can change nothing.
+file: crates/cortex-core/src/sandbox.rs
+in: SessionSandbox::new
+find: write: Vec::new(),
+replace: write: policy.write.clone(),
+packages: cortex-core
+caught-by:
+    cortex-core sandbox::tests::the_harness_git_runs_inside_the_sandbox_reading_only
+
+[break] change-list-not-marked-incomplete
+rule: A git that fails or is refused inside the sandbox leaves the change list incomplete, never complete.
+file: crates/cortex-tools/src/shell/changes.rs
+in: Changes::stop_short
+find: self.complete = false;
+replace: self.complete = true;
+packages: cortex-tools
+caught-by:
+    cortex-tools shell::changes::tests::changes_are_a_payload_for_front_ends
+
+[break] after-look-runs-an-unconfined-git
+rule: A look whose command ran confined does not run git again once the session has stopped confining.
+file: crates/cortex-tools/src/shell/changes.rs
+in: ChangeDetector::after
+find: before.confined && !self.confinement.confines()
+replace: false
+packages: cortex-tools
+caught-by:
+    cortex-tools::it changes::sys_a_look_is_left_incomplete_when_the_session_un_confines
+
+[break] kill-reports-a-clean-end-when-it-is-not
+rule: When the kill cannot clear the session within its bound, it says so, so the turn stops and the end is not reported clean over a process that is still running.
+file: crates/cortex-sandbox/src/tree/unix.rs
+in: kill_session
+find: false
+occurrence: 2
+replace: true
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it tree::sys_a_process_that_keeps_forking_is_never_a_clean_end
+
+[break] a-commondir-is-not-followed
+rule: A git directory's commondir is recorded and followed to the common directory's configuration and hooks.
+file: crates/cortex-sandbox/src/protect.rs
+in: Look::record_git
+find: self.follow_commondir(git);
+replace: let _ = git;
+packages: cortex-sandbox
+caught-by:
+    cortex-sandbox protect::tests::a_commondir_in_the_main_repository_is_found
+
+[break] a-cargo-link-is-not-recorded
+rule: A .cargo made as a link is recorded, like one made as a directory.
+file: crates/cortex-sandbox/src/protect.rs
+in: Look::walk
+find: ".cargo" =>
+replace: ".cargo" if is_dir =>
+packages: cortex-sandbox
+caught-by:
+    cortex-sandbox protect::tests::a_cargo_made_as_a_link_is_found
+
+[break] the-extended-attribute-setters-are-allowed
+rule: The sandbox refuses the extended-attribute setters, so a confined command cannot change a file's access-control list outside the write roots.
+file: crates/cortex-sandbox/src/confine.rs
+in: seccomp
+find: libc::SYS_setxattr,
+replace:
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_the_owner_and_extended_attributes_cannot_be_changed
+
+[break] the-owner-can-be-changed
+rule: The sandbox refuses the owner-change calls.
+file: crates/cortex-sandbox/src/confine.rs
+in: seccomp
+find: libc::SYS_chown,
+replace:
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_the_owner_and_extended_attributes_cannot_be_changed
+
+[break] a-swapped-root-is-followed
+rule: The launcher opens each write root with no symbolic link followed, so a root a confined command replaced with a link is refused.
+file: crates/cortex-sandbox/src/confine.rs
+in: open_no_symlinks
+find: libc::RESOLVE_NO_SYMLINKS
+replace: 0u64
+packages: cortex-sandbox, cortex-core
+caught-by:
+    cortex-sandbox::it confined::sys_a_write_root_swapped_for_a_link_refuses_the_next_command
+
+[break] a-shell-in-a-write-root-is-used
+rule: A shell whose real path is inside a write root is passed over when the session would confine.
+file: crates/cortex-core/src/assemble.rs
+in: shell_outside_roots
+find: under_a_write_root(candidate.program(), roots).is_none()
+replace: true
+packages: cortex-core
+caught-by:
+    cortex-core assemble::tests::a_shell_inside_a_write_root_is_passed_over
+
+[break] a-program-in-a-write-root-is-found
+rule: A program found for the harness is passed over when its real path is inside a write root to avoid.
+file: crates/cortex-base/src/program.rs
+in: find_outside
+find: !avoid.iter().any(|root| real.starts_with(root))
+replace: true
+packages: cortex-base
+caught-by:
+    cortex-base program::tests::find_outside_passes_over_a_program_inside_a_root
