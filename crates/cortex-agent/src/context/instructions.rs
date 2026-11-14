@@ -516,17 +516,13 @@ mod tests {
     #[test]
     fn on_windows_a_workspace_at_a_drives_root_has_its_files_and_nested_directories() {
         let root = windows("C:\\");
-        let found = places(
-            &root,
-            Some(&windows("C:\\Users\\me\\AppData\\Roaming\\cx")),
-            &names(),
-        );
-        let shown: Vec<&str> = found.iter().map(|place| place.shown.as_str()).collect();
+        let found = places(&root, Some(&windows("D:\\Config\\cx")), &names());
+        let places: Vec<&str> = found.iter().map(|place| place.shown.as_str()).collect();
         assert_eq!(
-            shown,
+            places,
             [
-                "C:\\Users\\me\\AppData\\Roaming\\cx\\AGENTS.md",
-                "C:\\Users\\me\\AppData\\Roaming\\cx\\CLAUDE.md",
+                "D:\\Config\\cx\\AGENTS.md",
+                "D:\\Config\\cx\\CLAUDE.md",
                 "AGENTS.md",
                 "CLAUDE.md"
             ]
