@@ -76,7 +76,10 @@ pub use git::{GIT_ENV, GIT_HARDENING};
 pub use hash::{ContentHash, ContentHasher};
 pub use id::{IdCounter, IdGenerator};
 pub use nofollow::{OpenError, open_regular};
-pub use path::{AbsPath, PathError, PathOptions, PathResolver, PathStyle, RelPath, ResolvedPath};
+pub use path::{
+    AbsPath, PathError, PathOptions, PathResolver, PathStyle, RelPath, ResolvedPath,
+    location_within, same_location, strip_location_prefix,
+};
 pub use redact::SecretFilter;
 pub use rng::{Rng, SeededRng, SystemRng};
 pub use secret::Secret;

@@ -146,8 +146,15 @@ impl Env {
     /// outside the home directory is written whole, with `/` separators.
     #[must_use]
     pub fn display_path(&self, path: &Path) -> String {
+        // By place: on Windows a path the harness resolved has the
+        // extended-length prefix, and the home directory from the
+        // environment does not.
+        let style = match self.platform {
+            Platform::Unix => cortex_base::PathStyle::Posix,
+            Platform::Windows => cortex_base::PathStyle::Windows,
+        };
         if let Some(home) = self.home()
-            && let Ok(inside) = path.strip_prefix(&home)
+            && let Some(inside) = style.strip_location_prefix(path, &home)
         {
             let inside = inside.to_string_lossy().replace('\\', "/");
             return if inside.is_empty() {
@@ -248,6 +255,19 @@ mod tests {
         );
         let nowhere = Env::empty(Platform::Unix);
         assert_eq!(nowhere.home(), None);
+        assert_eq!(nowhere.display_path(Path::new("/a/b")), "/a/b");
+
+        // On Windows, a path the harness resolved has the extended-length
+        // prefix and the folder's own case; the variable has neither.
+        let windows = Env::empty(Platform::Windows).with("USERPROFILE", r"C:\Users\someone");
+        assert_eq!(
+            windows.display_path(Path::new(r"\\?\C:\Users\Someone\work\app")),
+            "~/work/app"
+        );
+        assert_eq!(
+            windows.display_path(Path::new(r"\\?\C:\Users\someone2\x")),
+            "//?/C:/Users/someone2/x"
+        );
         assert_eq!(nowhere.display_path(Path::new("/a/b")), "/a/b");
     }
 

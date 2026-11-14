@@ -478,7 +478,9 @@ fn policy_of(grant: &SandboxPolicy, temp: &Temp, landlock: u8) -> Policy {
     // A temporary directory that was not made, or is not the session's own,
     // is not written to: someone else could read it, or it leads elsewhere.
     if !temp.made {
-        write.retain(|root| *root != temp_path);
+        // By place: when the directory was not made, neither side could be
+        // resolved, and one is in the extended-length form on Windows.
+        write.retain(|root| !cortex_base::same_location(root, &temp_path));
     }
     Policy {
         read: if grant.read.all {

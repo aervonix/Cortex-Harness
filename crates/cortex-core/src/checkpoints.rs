@@ -205,10 +205,13 @@ impl Rounds {
     pub(crate) fn record_protected(&self, changed: &[Changed]) -> Vec<std::path::PathBuf> {
         let mut by_hand = Vec::new();
         for changed in changed {
-            let Some(file) = changed
-                .path
-                .strip_prefix(self.root.to_fs_path())
-                .ok()
+            // By place: a protected path from the configuration is written
+            // plainly, and the root's file-system form is extended-length on
+            // Windows.
+            let relative =
+                cortex_base::strip_location_prefix(&changed.path, &self.root.to_fs_path());
+            let Some(file) = relative
+                .as_deref()
                 .and_then(|relative| relative.to_str())
                 .and_then(|relative| self.root.join(relative).ok())
             else {

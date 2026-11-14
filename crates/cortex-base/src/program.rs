@@ -93,7 +93,9 @@ pub fn find_outside(
                 return false;
             }
             let real = std::fs::canonicalize(candidate).unwrap_or_else(|_| candidate.clone());
-            !avoid.iter().any(|root| real.starts_with(root))
+            !avoid
+                .iter()
+                .any(|root| crate::path::location_within(&real, root))
         })
 }
 

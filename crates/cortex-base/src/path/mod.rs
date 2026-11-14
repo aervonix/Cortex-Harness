@@ -19,6 +19,12 @@
 //! the result is inside the workspace. **A permission check must be made on
 //! a `ResolvedPath`**, never on text alone.
 //!
+//! **Two paths of the system's own** (a canonicalized one, one from the
+//! environment) are compared as places with [`same_location`] and
+//! [`location_within`], never with `==` or [`Path::starts_with`]: on
+//! Windows a canonical path has the extended-length prefix and a plain one
+//! does not, and the standard library calls them different.
+//!
 //! # What is refused
 //!
 //! By the reasoning of decision 0028 (enforced values fail closed), a path
@@ -59,6 +65,7 @@
 //! little too much and an allow rule must not.
 
 mod lexical;
+mod location;
 mod resolve;
 
 use std::borrow::Cow;
@@ -67,6 +74,7 @@ use std::path::{Path, PathBuf};
 
 use lexical::{Part, Root};
 
+pub use location::{location_within, same_location, strip_location_prefix};
 pub use resolve::{PathOptions, PathResolver, ResolvedPath};
 
 /// How many hexadecimal digits of the hash a project key keeps: 128 bits.

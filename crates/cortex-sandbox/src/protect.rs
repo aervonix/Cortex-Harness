@@ -405,7 +405,9 @@ impl Look {
 
     /// Whether a directory between the workspace and `path` is a link.
     fn through_a_link(&self, path: &Path) -> bool {
-        let Ok(below) = path.strip_prefix(&self.root) else {
+        // By place: a fixed protected path is written plainly, and the
+        // workspace's form may be extended-length on Windows.
+        let Some(below) = cortex_base::strip_location_prefix(path, &self.root) else {
             return false;
         };
         let mut walked = self.root.clone();
@@ -668,7 +670,7 @@ impl Look {
                 } else {
                     path.parent().unwrap_or(path).join(target)
                 };
-                lexically_resolved(&joined).starts_with(&self.root)
+                cortex_base::location_within(&lexically_resolved(&joined), &self.root)
             }
             Ok(_) => true,
             Err(_) => true,

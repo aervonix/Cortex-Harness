@@ -811,7 +811,12 @@ fn shell_outside_roots(
 )]
 fn under_a_write_root(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
     let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    roots.iter().find(|root| real.starts_with(root)).cloned()
+    // By place: a root that could not be resolved stays plain, and the real
+    // path is extended-length on Windows.
+    roots
+        .iter()
+        .find(|root| cortex_base::location_within(&real, root))
+        .cloned()
 }
 
 /// Whether a shell cached by an earlier session may be reused by a session
