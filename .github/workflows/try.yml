@@ -127,7 +127,14 @@ jobs:
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-nextest@0.9.151
-      - name: Run
+      # The log is kept in the runner's temporary folder, and nothing is made
+      # under `target` before cargo makes it. On Windows the command runs in
+      # PowerShell, as the blocking test job's does: run from Git Bash, with
+      # `target/try` made first by its `mkdir`, Windows tests of a file held
+      # with no sharing failed there that pass in the blocking job
+      # (docs/steps/tooling-3/ci.md).
+      - name: Run (Linux)
+        if: runner.os != 'Windows'
         shell: bash
         env:
           TRY_COMMAND: ${{ inputs.command }}
@@ -139,22 +146,41 @@ jobs:
           TRY_AGAINST: ${{ inputs.against }}
         run: |
           set -o pipefail
-          mkdir -p target/try
           cargo run --locked --quiet --package xtask -- try \
             --command "$TRY_COMMAND" --profile "$TRY_PROFILE" \
             --count "$TRY_COUNT" --load "$TRY_LOAD" --cores "$TRY_CORES" \
             --filter "$TRY_FILTER" --against "$TRY_AGAINST" \
-            2>&1 | tee target/try/output.log
+            2>&1 | tee "$RUNNER_TEMP/try-output.log"
+      - name: Run (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TRY_COMMAND: ${{ inputs.command }}
+          TRY_PROFILE: ${{ inputs.profile }}
+          TRY_COUNT: ${{ inputs.count }}
+          TRY_LOAD: ${{ inputs.load }}
+          TRY_CORES: ${{ inputs.cores }}
+          TRY_FILTER: ${{ inputs.filter }}
+          TRY_AGAINST: ${{ inputs.against }}
+        run: |
+          # A line cargo writes to its standard error is not an error here.
+          $ErrorActionPreference = 'Continue'
+          cargo run --locked --quiet --package xtask -- try `
+            --command "$env:TRY_COMMAND" --profile "$env:TRY_PROFILE" `
+            --count "$env:TRY_COUNT" --load "$env:TRY_LOAD" --cores "$env:TRY_CORES" `
+            --filter "$env:TRY_FILTER" --against "$env:TRY_AGAINST" `
+            2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath "$env:RUNNER_TEMP\try-output.log"
+          exit $LASTEXITCODE
       - name: Put the end of the output in the summary
         if: ${{ !cancelled() }}
         shell: bash
         run: |
-          if [ -f target/try/output.log ]; then
+          if [ -f "$RUNNER_TEMP/try-output.log" ]; then
             {
               echo "### The last 80 lines of the output"
               echo
               echo '```text'
-              tail -n 80 target/try/output.log | sed 's/\x1b\[[0-9;]*m//g'
+              tail -n 80 "$RUNNER_TEMP/try-output.log" | sed 's/\x1b\[[0-9;]*m//g'
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -164,7 +190,7 @@ jobs:
         with:
           name: try-${{ matrix.name }}
           path: |
-            target/try/output.log
+            ${{ runner.temp }}/try-output.log
             target/nextest/ci/junit.xml
             target/nextest/stress/junit.xml
             target/ab/*.xml
