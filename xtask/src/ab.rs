@@ -318,7 +318,13 @@ pub(crate) fn run(arguments: &[String]) -> Result<()> {
         label: format!("head, this tree (the median of {} runs)", head_runs.len()),
         cases: medians(&head_runs),
     };
-    let compared = compare::compare(&head_side, &base_side, Os::here(), request.top);
+    let compared = compare::compare_with(
+        &head_side,
+        &base_side,
+        Os::here(),
+        request.top,
+        compare::Start::Shared,
+    );
     println!("{compared}");
     crate::steps::append_job_summary(&format!(
         "### Two trees on one runner\n\n```text\n{}\n{compared}\n```\n",

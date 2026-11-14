@@ -39,17 +39,54 @@ fn tenths(seconds: f64) -> f64 {
 /// start on both sides, each crate's change, and each tier's `top` tests
 /// that moved most.
 pub(crate) fn compare(new: &Side, old: &Side, os: Os, top: usize) -> String {
+    compare_with(new, old, os, top, Start::EachSide)
+}
+
+/// Whose start cost is taken off each side's tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Start {
+    /// Each side's own: two runs on two runners, which start a process at
+    /// two speeds.
+    EachSide,
+    /// One for both, from both sides' tests together: two trees run in turn
+    /// on one machine (`cargo xtask ab`). Each side's own would differ by
+    /// the noise of a millisecond, which over a thousand tests is a second.
+    Shared,
+}
+
+/// [`compare`], with the start cost taken as `start` says.
+pub(crate) fn compare_with(new: &Side, old: &Side, os: Os, top: usize, start: Start) -> String {
     let (new_start, new_sample) = tiers::start_of(&new.cases);
     let (old_start, old_sample) = tiers::start_of(&old.cases);
+    let (new_start, old_start, start_line) = match start {
+        Start::EachSide => (
+            new_start,
+            old_start,
+            format!(
+                "process start: new {:.0} ms a test, old {:.0} ms (each side's 1st percentile of \
+                 {new_sample} and {old_sample} unit and integration tests), taken off each \
+                 side's tests",
+                1000.0 * new_start,
+                1000.0 * old_start,
+            ),
+        ),
+        Start::Shared => {
+            let both: Vec<_> = new.cases.iter().chain(&old.cases).cloned().collect();
+            let (shared, sample) = tiers::start_of(&both);
+            (
+                shared,
+                shared,
+                format!(
+                    "process start: {:.1} ms a test for both sides, which ran on one machine (the \
+                     1st percentile of their {sample} unit and integration tests together)",
+                    1000.0 * shared
+                ),
+            )
+        }
+    };
     let mut text = format!(
-        "  new: {}\n  old: {}\n  process start: new {:.0} ms a test, old {:.0} ms (each side's 1st \
-         percentile of {} and {} unit and integration tests), taken off each side's tests\n",
-        new.label,
-        old.label,
-        1000.0 * new_start,
-        1000.0 * old_start,
-        new_sample,
-        old_sample,
+        "  new: {}\n  old: {}\n  {start_line}\n",
+        new.label, old.label,
     );
     if new_sample.min(old_sample) < 500 {
         text.push_str(
@@ -205,6 +242,48 @@ fn moved(new: &Side, old: &Side, new_start: f64, old_start: f64, tier: Tier) -> 
             .then_with(|| a.name.cmp(&b.name))
     });
     moved
+}
+
+#[cfg(test)]
+mod shared_start_tests {
+    use super::{Side, Start, compare_with};
+    use crate::junit::TestCase;
+    use crate::tiers::Os;
+
+    fn side(label: &str, start: f64, work: f64) -> Side {
+        Side {
+            label: label.to_owned(),
+            cases: (0..600)
+                .map(|n| TestCase {
+                    binary: "cortex-base".to_owned(),
+                    name: format!("t{n}"),
+                    seconds: start + if n % 2 == 0 { work } else { 0.0 },
+                    failed: false,
+                    retried: false,
+                    repeat: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// One machine, one start: a millisecond of noise in one side's
+    /// quickest tests is not taken off all its others.
+    #[test]
+    fn two_trees_on_one_machine_share_one_start_cost() {
+        let old = side("old", 0.005, 0.010);
+        let new = side("new", 0.006, 0.009);
+        let shared = compare_with(&new, &old, Os::Linux, 0, Start::Shared);
+        assert!(
+            shared.contains("for both sides, which ran on one machine"),
+            "{shared}"
+        );
+        let each = compare_with(&new, &old, Os::Linux, 0, Start::EachSide);
+        assert!(each.contains("each side's 1st percentile"), "{each}");
+        // The same tests, the same work: each side's own start sees no
+        // change, one start sees the 0.3 s the new side's tests took more.
+        assert!(each.contains("-0.3 s"), "{each}");
+        assert!(shared.contains("+0.3 s"), "{shared}");
+    }
 }
 
 #[cfg(test)]
