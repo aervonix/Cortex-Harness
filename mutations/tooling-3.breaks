@@ -448,3 +448,12 @@ find: if untracked {
 replace: if true {
 caught-by:
     workspace::tests::sys_a_directory_that_a_checkout_ignores_is_listed_by_walking_it
+
+[break] partial-landlock-without-the-backends
+rule: The partial-Landlock run builds the sandbox's backends, without which its confinement tests are not compiled.
+file: xtask/src/nonblocking.rs
+in: partial_arguments
+find: "cortex-sandbox/backends".to_owned()
+replace: "cortex-sandbox/default".to_owned()
+caught-by:
+    nonblocking::partial_tests::the_partial_case_must_be_seen_and_the_tests_must_pass
