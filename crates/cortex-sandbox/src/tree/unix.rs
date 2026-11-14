@@ -19,6 +19,8 @@ use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use cortex_base::CancelToken;
+
 use super::guard::{Guard, Watch};
 use super::{Exit, Limits, ReadOutcome, ended};
 
@@ -189,7 +191,7 @@ impl Inner {
         // A process that made a process group of its own is still in the
         // command's session, and dies with it. The lock is held, so the
         // command is not reaped and the session's id is still its own.
-        if !kill_session(self.pid) {
+        if !kill_session(self.pid, &CancelToken::new()) {
             self.escaped.store(true, Ordering::Release);
         }
         Ok(())
@@ -229,7 +231,7 @@ impl Inner {
         count_group(self.pid, self.started.elapsed())
     }
 
-    pub(super) fn end(&self) {
+    pub(super) fn end(&self, cancel: &CancelToken) {
         {
             let state = lock(&self.state);
             if state.ended {
@@ -238,7 +240,7 @@ impl Inner {
             // The command is not reaped yet, so the group and the session
             // are still ours.
             let _ = signal_group(self.pid, libc::SIGKILL);
-            if !kill_session(self.pid) {
+            if !kill_session(self.pid, cancel) {
                 self.escaped.store(true, Ordering::Release);
             }
         }
@@ -264,7 +266,7 @@ impl Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        self.end();
+        self.end(&CancelToken::new());
     }
 }
 
@@ -431,13 +433,22 @@ pub(super) fn signal_group(group: libc::pid_t, signal: libc::c_int) -> io::Resul
 /// The caller holds that `leader` leads a session this process started and
 /// has not reaped.
 #[cfg(target_os = "linux")]
-pub(super) fn kill_session(leader: libc::pid_t) -> bool {
+pub(super) fn kill_session(leader: libc::pid_t, cancel: &CancelToken) -> bool {
     if leader <= 1 {
         return true;
     }
     let mut empty = 0;
     let mut seen = false;
     for _ in 0..KILL_SWEEPS {
+        // A turn the user is pulling out of does not wait on a fork storm:
+        // the sweep gives up when the interrupt is raised, and reports the
+        // session as not cleared, so the continuity check covers it (found
+        // by the independent review of the step 26 fixes). The group was
+        // already signalled `SIGKILL` once above, so what the bomb leaves is
+        // dying; this only stops the harness waiting on the confirmation.
+        if cancel.is_cancelled() {
+            return false;
+        }
         if sweep_session(leader) == 0 {
             empty += 1;
             // A command that left nothing is clear at once; one whose
@@ -549,7 +560,7 @@ fn sweep_session(leader: libc::pid_t) -> usize {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(super) fn kill_session(_leader: libc::pid_t) -> bool {
+pub(super) fn kill_session(_leader: libc::pid_t, _cancel: &CancelToken) -> bool {
     true
 }
 
@@ -890,6 +901,6 @@ mod tests {
             std::thread::yield_now();
         }
         assert_eq!(count_group(tree.pid, young).expect("read the table"), 0);
-        tree.end();
+        tree.end(&CancelToken::new());
     }
 }

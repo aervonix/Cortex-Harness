@@ -343,6 +343,11 @@ fn sys_a_guard_that_died_is_started_again() {
     let third = Tree::spawn(ChildSpec::new(&roll, "third").command(ENTRY), Some(&guard))
         .expect("start the third tree, with a new guard");
     let third_child = roll.next(LIMIT);
+    // The new guard's process may not be in the table the instant `spawn`
+    // returns under load, so wait for it before counting.
+    until(LIMIT, "the new guard's process to appear", || {
+        guard_processes().len() == 1
+    });
     let new = guard_processes();
     assert_eq!(new.len(), 1);
     assert_ne!(new, old);
@@ -782,4 +787,36 @@ fn sys_a_process_that_makes_a_group_of_its_own_is_still_killed_with_the_tree() {
         );
         std::thread::yield_now();
     }
+}
+
+/// A turn the user is pulling out of does not wait on the kill's sweep for
+/// what a command left running: `end_until` with a raised interrupt stops the
+/// sweep and reports the tree as escaped, so the continuity check covers it.
+/// The whole tree is still signalled to die first, so nothing is left alive
+/// by the early return (found by the independent review of the step 26
+/// fixes). Tested with a token that is already cancelled, so no real time
+/// passes.
+#[cfg(target_os = "linux")]
+#[test]
+fn sys_a_raised_interrupt_stops_the_kill_sweep() {
+    let roll = Roll::new();
+    let command = ChildSpec::new(&roll, "parent")
+        .exiting(0)
+        .with_child(ChildSpec::new(&roll, "left-behind").stubborn())
+        .command(ENTRY);
+    let tree = Tree::spawn(command, None).expect("start the command");
+    let both = roll.all(&["parent", "left-behind"], LIMIT);
+    assert_eq!(tree.wait().expect("wait"), Exit::Code(0));
+    assert!(both[1].is_alive());
+
+    let cancel = cortex_base::CancelToken::new();
+    cancel.cancel();
+    tree.end_until(&cancel);
+    assert!(
+        tree.escaped(),
+        "a cancelled end reports the sweep did not confirm the session clear"
+    );
+    // The tree was signalled to die all the same: the left-behind process is
+    // gone, the sweep only stopped waiting to confirm it.
+    assert!(both[1].gone_within(LIMIT), "the tree was not killed");
 }

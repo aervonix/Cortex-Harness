@@ -409,8 +409,8 @@ caught-by:
 rule: Every process of a command's session dies with the tree, one that made a process group of its own included.
 file: crates/cortex-sandbox/src/tree/unix.rs
 in: Inner::end
-find: if !kill_session(self.pid) {
-replace: if false && !kill_session(self.pid) {
+find: if !kill_session(self.pid, cancel) {
+replace: if false && !kill_session(self.pid, cancel) {
 caught-by:
     cortex-sandbox::it tree::sys_a_process_that_makes_a_group_of_its_own_is_still_killed_with_the_tree
 

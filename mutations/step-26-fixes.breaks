@@ -173,3 +173,13 @@ replace: true
 packages: cortex-core
 caught-by:
     cortex-core assemble::tests::a_shell_inside_a_write_root_is_passed_over
+
+[break] the-kill-sweep-ignores-the-interrupt
+rule: The kill's sweep stops when the turn's interrupt is raised, and reports the tree as escaped.
+file: crates/cortex-sandbox/src/tree/unix.rs
+in: kill_session
+find: if cancel.is_cancelled() {
+replace: if false {
+packages: cortex-sandbox
+caught-by:
+    cortex-sandbox::it tree::sys_a_raised_interrupt_stops_the_kill_sweep

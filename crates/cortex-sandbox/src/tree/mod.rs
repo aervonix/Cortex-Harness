@@ -56,6 +56,8 @@ use std::io;
 use std::process::Command;
 use std::sync::Arc;
 
+use cortex_base::CancelToken;
+
 pub use guard::{Guard, run_guard};
 
 #[cfg(unix)]
@@ -236,7 +238,18 @@ impl Tree {
     ///
     /// Dropping the last handle does the same.
     pub fn end(&self) {
-        self.inner.end();
+        self.inner.end(&CancelToken::new());
+    }
+
+    /// As [`end`](Self::end), but stops the kill's sweep for processes a
+    /// command left running when `cancel` is raised, and then reports the
+    /// tree as escaped ([`escaped`](Self::escaped)). A turn the user is
+    /// pulling out of does not wait on a process that forks in a loop: the
+    /// whole tree was already signalled to die, and the continuity check
+    /// covers what the sweep could not confirm. On Windows the token is
+    /// unused: the Job Object dies as one.
+    pub fn end_until(&self, cancel: &CancelToken) {
+        self.inner.end(cancel);
     }
 
     /// Whether a kill of the tree ran out its bound with a process of the
