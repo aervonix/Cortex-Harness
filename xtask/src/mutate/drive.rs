@@ -142,7 +142,12 @@ impl CargoRunner {
             // The copy never shares a build directory with the tree it was
             // copied from, whatever the caller's environment says.
             .env("CARGO_TARGET_DIR", &self.target)
-            .env_remove("CARGO_BUILD_TARGET_DIR");
+            .env_remove("CARGO_BUILD_TARGET_DIR")
+            // The log is read for the compiler's errors and by a person, not
+            // shown on a terminal. CI sets `CARGO_TERM_COLOR=always`, which
+            // cargo, rustc and nextest honour even into a file, and an
+            // `error` wrapped in escape sequences is not found.
+            .env("CARGO_TERM_COLOR", "never");
         command
     }
 
@@ -174,11 +179,21 @@ impl CargoRunner {
     }
 }
 
-/// The compiler's errors in cargo's output, or failing that its last lines.
+/// The compiler's errors in cargo's output, or failing that its last lines
+/// that are not cargo's progress (`Checking …`, `Finished …`).
+///
+/// Escape sequences are taken out first: the runner asks for no colour,
+/// and this holds if something asks for it all the same.
 fn errors_of(output: &str) -> String {
-    let errors: Vec<&str> = output
+    let plain = without_escapes(output);
+    let lines: Vec<&str> = plain
         .lines()
         .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let errors: Vec<&str> = lines
+        .iter()
+        .copied()
         // `error[E0425]: ...`, or with `--message-format short`,
         // `src/lib.rs:16:20: error: ...`. Not cargo's own closing line.
         .filter(|line| {
@@ -190,8 +205,58 @@ fn errors_of(output: &str) -> String {
     if !errors.is_empty() {
         return errors.join(" | ");
     }
-    let lines: Vec<&str> = output.lines().map(str::trim).collect();
-    lines[lines.len().saturating_sub(5)..].join(" | ")
+    let said: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|line| !is_progress(line))
+        .collect();
+    said[said.len().saturating_sub(5)..].join(" | ")
+}
+
+/// `text` without its ANSI escape sequences: `ESC [` up to the letter that
+/// ends a control sequence, or `ESC` and one character.
+fn without_escapes(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut characters = text.chars();
+    while let Some(character) = characters.next() {
+        if character != '\u{1b}' {
+            plain.push(character);
+            continue;
+        }
+        if characters.next() == Some('[') {
+            for inside in characters.by_ref() {
+                if ('@'..='~').contains(&inside) {
+                    break;
+                }
+            }
+        }
+    }
+    plain
+}
+
+/// Whether a trimmed line is one of cargo's or nextest's progress lines:
+/// a status word, then what it is about.
+fn is_progress(line: &str) -> bool {
+    const STATUS: [&str; 16] = [
+        "Adding",
+        "Blocking",
+        "Building",
+        "Checking",
+        "Compiling",
+        "Downloaded",
+        "Downloading",
+        "Finished",
+        "Fresh",
+        "Locking",
+        "Running",
+        "Starting",
+        "Summary",
+        "Updating",
+        "Waiting",
+        "Executable",
+    ];
+    line.split_once(' ')
+        .is_some_and(|(word, _)| STATUS.contains(&word))
 }
 
 impl Runner for CargoRunner {
@@ -1348,6 +1413,8 @@ replace: \"inside\"
         ] {
             assert_eq!(variable(removed), Some(None), "{removed}");
         }
+        // Whatever the caller asked for, a log with no colour in it.
+        assert_eq!(variable("CARGO_TERM_COLOR"), Some(Some("never".to_owned())));
     }
 
     #[test]
@@ -1383,6 +1450,33 @@ error: could not compile `demo` (lib test) due to 2 previous errors
             super::errors_of("one\ntwo\nthree\nfour\nfive\nsix\n"),
             "two | three | four | five | six"
         );
+    }
+
+    /// The nightly run of 2026-11-14 (issue #40): CI sets
+    /// `CARGO_TERM_COLOR=always`, every `error` came wrapped in escape
+    /// sequences, none was found, and the message was cargo's last lines,
+    /// `Checking demo …` first. This is that run's output, as it was.
+    #[test]
+    fn coloured_output_still_gives_the_compilers_errors_and_never_cargos_progress() {
+        let coloured = "\u{1b}[1m\u{1b}[92m    Checking\u{1b}[0m demo v0.0.0 (/runner/tree/crates/demo)\n\
+            crates/demo/src/lib.rs:16:20: \u{1b}[1m\u{1b}[91merror\u{1b}[0m: expected one of `!`, `.`, \
+            or an operator, found `the`: expected one of 8 possible tokens\n\
+            \u{1b}[1m\u{1b}[91merror\u{1b}[0m: could not compile `demo` (lib test) due to 1 previous error\n";
+        assert_eq!(
+            super::errors_of(coloured),
+            "crates/demo/src/lib.rs:16:20: error: expected one of `!`, `.`, or an operator, \
+             found `the`: expected one of 8 possible tokens"
+        );
+        // No error to quote: the last lines, without cargo's progress.
+        let progress = "\u{1b}[1m\u{1b}[92m   Compiling\u{1b}[0m demo v0.0.0 (/tree)\n\
+            linker `cc` not found\n\
+            \u{1b}[1m\u{1b}[92m    Finished\u{1b}[0m `test` profile [unoptimized] target(s) in 0.1s\n\
+            note: something else\n";
+        assert_eq!(
+            super::errors_of(progress),
+            "linker `cc` not found | note: something else"
+        );
+        assert_eq!(super::without_escapes("a\u{1b}[1;31mb\u{1b}[0mc\u{1b}=d"), "abcd");
     }
 
     /// Runs `list` with `jobs` runners that pretend, and time for
