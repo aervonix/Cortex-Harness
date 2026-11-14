@@ -252,8 +252,14 @@ pub(crate) fn run(arguments: &[String]) -> Result<()> {
     let request = Request::parse(arguments)?;
     crate::checks::require_nextest()?;
     let head = workspace::root();
-    let base = std::path::absolute(&request.base)
-        .map_err(|error| format!("{}: {error}", request.base.display()))?;
+    // Without its dots: the path is the build directory's too, and is
+    // compiled into the tests (`CARGO_TARGET_TMPDIR`), where a Unix socket
+    // under `…/repo/../ab-base/target/tmp/…` ran past the 108 bytes of its
+    // address on a hosted runner.
+    let base = normalised(
+        &std::path::absolute(&request.base)
+            .map_err(|error| format!("{}: {error}", request.base.display()))?,
+    );
     if !base.join("Cargo.toml").is_file() {
         return Err(format!(
             "{} is not a checkout of the workspace",
