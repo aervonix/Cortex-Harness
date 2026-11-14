@@ -93,8 +93,11 @@ fn context_settings(settings: &Settings) -> ContextSettings {
         .iter()
         .map(|name| (*name).to_owned())
         .collect();
+    // Only plain documents: a name with a separator, or one that is not a
+    // `.md` file, could make the harness read and send something that is
+    // not instructions (`cortex_agent::context::is_instruction_name`).
     for name in &context.instruction_names {
-        if !names.contains(name) {
+        if cortex_agent::context::is_instruction_name(name) && !names.contains(name) {
             names.push(name.clone());
         }
     }

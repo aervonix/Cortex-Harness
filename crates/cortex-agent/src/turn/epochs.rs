@@ -225,6 +225,7 @@ impl Session {
             reason: Some(reason),
             base: Some(built.base),
             instructions: discovered.marks.clone(),
+            altered: false,
         }
     }
 
@@ -255,8 +256,12 @@ impl Session {
         if self.context.epoch.is_none() || self.context.unchecked {
             let (built, discovered) = self.build_prompt().await;
             self.warn_instructions(turn, &discovered);
+            // An epoch whose prompt the log does not hold as it was sent
+            // (the filter masked something in it) cannot go on: its next
+            // request would not begin as the earlier ones did.
             let goes_on = self.context.epoch.as_ref().is_some_and(|epoch| {
-                epoch.tools == self.context.tools
+                !epoch.altered
+                    && epoch.tools == self.context.tools
                     && match epoch.base {
                         Some(base) => base == built.base,
                         None => epoch.system == built.system,
@@ -265,8 +270,24 @@ impl Session {
             if goes_on {
                 // The prompt is the one the harness would build, but for
                 // the instruction files: what changed in them is told as a
-                // notice, below.
+                // notice, below. A session read again on a later day is
+                // told the date.
                 self.context.unchecked = false;
+                let today = date_of(self.clock.now());
+                if self
+                    .context
+                    .date
+                    .as_deref()
+                    .is_some_and(|date| date != today)
+                {
+                    self.record_notice(
+                        turn,
+                        NoticeSource::Harness,
+                        crate::context::date_text(&today),
+                    )
+                    .await?;
+                    self.context.date = Some(today);
+                }
             } else {
                 let reason = if self.context.epoch.is_none() && self.context.history.len() == 0 {
                     EpochReason::Start
@@ -564,11 +585,7 @@ impl Session {
     fn trimmed(&self, messages: &[Message], limit: u64) -> Vec<Message> {
         let budget = &self.context.budget;
         let room = limit.saturating_mul(9) / 10;
-        let starts_with_summary = matches!(
-            self.context.history.messages().first(),
-            Some(first) if first.role == Role::User
-                && matches!(first.parts.first(), Some(Part::Text(text)) if text.text.contains("This conversation was compacted"))
-        );
+        let starts_with_summary = self.context.history.starts_with_summary();
         let first = usize::from(starts_with_summary);
         let mut from = messages.len();
         for index in (first..messages.len()).rev() {
@@ -763,7 +780,11 @@ impl Session {
     /// `Compacting`: the summary, then the new epoch.
     pub(super) async fn compacting(&mut self, turn: &mut Turn, prep: Prep) -> Phase {
         self.enter(TurnState::Compacting);
-        let focus = self.manual_focus.take();
+        self.manual = false;
+        let focus = self
+            .manual_focus
+            .take()
+            .filter(|focus| !focus.trim().is_empty());
         let notice = |state, message: String, before: Option<u64>, after: Option<u64>| {
             Notice::Compaction(CompactionNotice {
                 message,
@@ -1063,11 +1084,13 @@ impl Session {
 
     /// The debug build's check: within an epoch, and with the same
     /// settings, a request's stable prefix begins with the one before it.
+    /// A reload that changed nothing keeps the request before it, so the
+    /// history read again from the log is held to the one built live.
     fn check_prefix(&mut self, model: &RoleModel, request: &ModelRequest, settings: u64) {
         let Some(bytes) = model.client.stable_prefix(request) else {
             return;
         };
-        let key = hash_of(&(settings, self.context.epoch_number, self.context.generation));
+        let key = hash_of(&(settings, self.context.epoch_number));
         if let Some((last_key, last)) = &self.context.last_prefix
             && *last_key == key
             && let Err(at) = check_prefix(last, &bytes)

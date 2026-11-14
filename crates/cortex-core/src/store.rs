@@ -105,8 +105,9 @@ fn epoch_body(epoch: EpochStart) -> Body {
     })
 }
 
-/// An epoch as the loop is given it, from the log's entry.
-fn epoch_start(epoch: &Epoch) -> EpochStart {
+/// An epoch as the loop is given it, from the log's entry. `redacted` is
+/// the entry's mark: the filter masked something in it.
+fn epoch_start(epoch: &Epoch, redacted: bool) -> EpochStart {
     let text = |value: &serde_json::Value, key: &str| {
         value
             .get(key)
@@ -136,6 +137,10 @@ fn epoch_start(epoch: &Epoch) -> EpochStart {
             .iter()
             .map(|mark| (mark.path.clone(), mark.hash))
             .collect(),
+        // The hash was taken of the prompt and the tools as they were sent,
+        // before the filter: one that no longer matches is of a prompt the
+        // log holds masked.
+        altered: redacted || Epoch::hash_of(&epoch.system, &epoch.tools) != epoch.hash,
     }
 }
 
@@ -147,7 +152,7 @@ fn epochs_of(entries: &[Entry]) -> (Vec<(usize, EpochStart)>, Option<serde_json:
     let mut items = 0;
     for entry in entries {
         match &entry.body {
-            Body::Epoch(epoch) => epochs.push((items, epoch_start(epoch))),
+            Body::Epoch(epoch) => epochs.push((items, epoch_start(epoch, entry.redacted))),
             Body::Summary { carried: value, .. } => carried = Some(value.clone()),
             _ => {}
         }
@@ -735,7 +740,10 @@ mod tests {
         let after = entry(Body::Plan(PlanRecord {
             plan: plan("after"),
         }));
-        assert_eq!(plan_of(&[before.clone(), carried, after]), Some(plan("after")));
+        assert_eq!(
+            plan_of(&[before.clone(), carried, after]),
+            Some(plan("after"))
+        );
         // A summary that carries no plan says nothing about it.
         let none = summary(serde_json::json!({"plan": null}));
         assert_eq!(plan_of(&[before, none]), Some(plan("before")));
@@ -757,6 +765,7 @@ mod tests {
             reason: Some(EpochReason::Compaction),
             base: Some(cortex_base::ContentHash::of(b"base")),
             instructions: vec![("AGENTS.md".to_owned(), cortex_base::ContentHash::of(b"x"))],
+            altered: false,
         };
         let entries = [
             entry(epoch_body(epoch.clone())),
@@ -764,8 +773,19 @@ mod tests {
             entry(epoch_body(epoch.clone())),
         ];
         let (epochs, carried) = epochs_of(&entries);
-        assert_eq!(epochs, [(0, epoch.clone()), (1, epoch)]);
+        assert_eq!(epochs, [(0, epoch.clone()), (1, epoch.clone())]);
         assert_eq!(carried, Some(serde_json::json!({"files": []})));
+
+        // A prompt the filter masked something in is not the one that was
+        // sent: the hash says so, and so does the mark.
+        let Body::Epoch(mut masked) = epoch_body(epoch.clone()) else {
+            unreachable!()
+        };
+        masked.system = "be [redacted]".to_owned();
+        let (epochs, _) = epochs_of(&[entry(Body::Epoch(masked))]);
+        assert!(epochs[0].1.altered);
+        let mut marked = entry(epoch_body(epoch));
+        marked.redacted = true;
+        assert!(epochs_of(&[marked]).0[0].1.altered);
     }
 }
-

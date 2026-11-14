@@ -397,8 +397,13 @@ pub(crate) fn live(arguments: &[String]) -> Result<()> {
     require_key_file(provider)?;
     let (name, path) = ledger_variable()?;
     ignored_test(provider.smoke, &[(name, &path)])?;
+    // The headless run of the binary adds its spend to the same ledger.
     match provider.headless {
-        Some(name) => run_ignored(&["--package", "cortex-cli", "--test", "system"], name, &[]),
+        Some(test) => run_ignored(
+            &["--package", "cortex-cli", "--test", "system"],
+            test,
+            &[(name, &path)],
+        ),
         None => Ok(()),
     }
 }

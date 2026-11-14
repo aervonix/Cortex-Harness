@@ -54,6 +54,12 @@ impl InstructionFiles for DiskInstructions {
             .as_ref()
             .is_some_and(|dir| path.parent().as_ref() == Some(dir));
         let real = if users {
+            // In the configuration directory, only the user's own
+            // instruction files: never the harness's files beside them.
+            let name = path.file_name().unwrap_or_default();
+            if !cortex_agent::context::DEFAULT_NAMES.contains(&name) {
+                return Ok(None);
+            }
             path.to_fs_path()
         } else {
             let root = self.resolver.root();

@@ -174,25 +174,42 @@ pub(crate) struct Resumed {
 /// - **Only an item counts.** A record the model is never sent (`plan`,
 ///   `lease`, `outcome`, `base`) can be marked when the filter masked
 ///   something in it, and changes nothing the model was sent.
-/// - **The mark ends where the reasoning after it is tied to another
-///   history:** at a `summary` entry, after which nothing of the earlier
-///   history is replayed with its reasoning, and at an `epoch` entry that
-///   was not a change of model. An epoch begun by a change of model keeps
-///   the history and its prefix, so the mark goes on through it.
+/// - **A summary begins a new history:** the mark is then set again from
+///   what that history holds, which is the summary itself and the turns it
+///   did not cover (those after its `covers_through`, replayed after it). A
+///   summary the filter masked something in, or a marked turn it replays,
+///   marks what follows; otherwise nothing before the summary does.
+/// - **An epoch that began a new prefix ends the mark** (`start`,
+///   `resume`): what follows it was produced against the history as the
+///   log holds it. One begun by a change of model keeps the history and its
+///   prefix, and one begun by a compaction follows its summary, so the
+///   mark goes on through both, and through an epoch of a reason this
+///   build does not know.
 pub(crate) fn resumed(entries: &[Entry]) -> Resumed {
     let mut resumed = Resumed::default();
     let mut altered = false;
+    // The item entries so far: their ids, and whether each is marked.
+    let mut seen: Vec<(String, bool)> = Vec::new();
     for entry in entries {
-        let ends = match &entry.body {
-            Body::Summary { .. } => true,
-            Body::Epoch(epoch) => epoch.reason.as_deref() != Some("model"),
-            _ => false,
-        };
-        if ends {
-            altered = false;
+        match &entry.body {
+            Body::Summary { item, .. } => {
+                let replayed_marked = item.covers_through.as_ref().is_some_and(|through| {
+                    seen.iter()
+                        .rposition(|(id, _)| id == through.as_str())
+                        .is_some_and(|at| seen[at + 1..].iter().any(|(_, marked)| *marked))
+                });
+                altered = entry.redacted || replayed_marked;
+            }
+            Body::Epoch(epoch) if matches!(epoch.reason.as_deref(), Some("start" | "resume")) => {
+                altered = false;
+            }
+            _ => {}
         }
-        if entry.body.as_item().is_some() {
-            altered |= entry.redacted;
+        if let Some(item) = entry.body.as_item() {
+            if !matches!(entry.body, Body::Summary { .. }) {
+                altered |= entry.redacted;
+            }
+            seen.push((item.id().unwrap_or_default().to_owned(), entry.redacted));
         }
         let Some(item) = entry.body.as_item() else {
             continue;
@@ -485,18 +502,73 @@ mod tests {
         }
 
         #[test]
-        fn a_change_of_model_carries_the_mark_and_another_epoch_ends_it() {
-            assert_eq!(
-                raw(&[user(1, true), epoch(2, "model"), answer(3)]),
-                [false]
-            );
-            for reason in ["start", "resume", "compaction"] {
+        fn an_epoch_of_a_new_prefix_ends_the_mark_and_others_carry_it() {
+            for reason in ["model", "compaction", "later"] {
+                assert_eq!(
+                    raw(&[user(1, true), epoch(2, reason), answer(3)]),
+                    [false],
+                    "{reason}"
+                );
+            }
+            for reason in ["start", "resume"] {
                 assert_eq!(
                     raw(&[user(1, true), epoch(2, reason), answer(3)]),
                     [true],
                     "{reason}"
                 );
             }
+        }
+
+        fn summary_entry(number: u32, covers_through: Option<&str>, redacted: bool) -> Entry {
+            entry(
+                number,
+                Body::Summary {
+                    item: SummaryItem {
+                        id: ItemId::new(format!("i_{number}")),
+                        text: "The summary.".to_owned(),
+                        covers_through: covers_through.map(ItemId::new),
+                        usage: None,
+                        created_at: None,
+                    },
+                    carried: Value::Null,
+                },
+                redacted,
+            )
+        }
+
+        #[test]
+        fn a_masked_summary_or_a_masked_turn_it_replays_marks_what_follows() {
+            // The summary itself was masked (the user's last message held a
+            // key), and the compaction's epoch follows it.
+            let masked = [
+                user(1, false),
+                answer(2),
+                summary_entry(3, None, true),
+                epoch(4, "compaction"),
+                answer(5),
+            ];
+            assert_eq!(raw(&masked), [true, false]);
+            // A turn after `covers_through` is replayed after the summary:
+            // its mark goes on into the new history.
+            let replayed = [
+                user(1, false),
+                answer(2),
+                user(3, true),
+                answer(4),
+                summary_entry(5, Some("i_2"), false),
+                epoch(6, "compaction"),
+                answer(7),
+            ];
+            assert_eq!(raw(&replayed), [true, false, false]);
+            // A mark among the turns the summary covers does not.
+            let covered = [
+                user(1, true),
+                answer(2),
+                summary_entry(3, Some("i_2"), false),
+                epoch(4, "compaction"),
+                answer(5),
+            ];
+            assert_eq!(raw(&covered), [false, true]);
         }
     }
 }

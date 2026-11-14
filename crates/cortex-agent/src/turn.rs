@@ -149,7 +149,9 @@ pub struct Session {
     /// The epoch in which a summary in the background failed: no other is
     /// started in it.
     background_failed: Option<u64>,
-    /// What a compaction the user asked for should keep in particular.
+    /// A compaction the user asked for is waiting.
+    manual: bool,
+    /// What it should keep in particular.
     manual_focus: Option<String>,
     /// The context record of the request in flight, sent with its
     /// `Request` event.
@@ -410,6 +412,7 @@ impl Session {
             usage_sent: None,
             background: None,
             background_failed: None,
+            manual: false,
             manual_focus: None,
             pending_context: None,
         };
@@ -525,8 +528,12 @@ impl Session {
             self.env.workspace.files.forget_all();
         }
         // A summary taken over the history as it was is not of the branch
-        // the loop reads now.
+        // the loop reads now, and the request before is not the one the
+        // next must begin with.
         self.drop_background();
+        if changed {
+            self.context.last_prefix = None;
+        }
         let opened = self.store.open().await?;
         self.context.load(&opened);
         self.shared.lock().history = !opened.items.is_empty();
@@ -619,6 +626,7 @@ impl Session {
             }
         }
         if let Some(focus) = prompt.compact {
+            self.manual = true;
             self.manual_focus = focus;
             return Ok(());
         }
@@ -659,7 +667,8 @@ impl Session {
                 }
                 Pending::Notice { source, text } => self.record_notice(turn, source, text).await,
                 Pending::Compact(focus) => {
-                    self.manual_focus = Some(focus.unwrap_or_default());
+                    self.manual = true;
+                    self.manual_focus = focus;
                     Ok(())
                 }
             };
@@ -677,7 +686,7 @@ impl Session {
         if let Err(error) = self.collect_background(turn).await {
             return Phase::Finishing(End::store(&error));
         }
-        if self.manual_focus.is_some() {
+        if self.manual {
             return Phase::Compacting(prep);
         }
         match self.pressure() {

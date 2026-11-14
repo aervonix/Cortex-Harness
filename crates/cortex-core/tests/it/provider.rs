@@ -301,7 +301,12 @@ fn a_local_server_is_asked_without_a_key() {
          model\"\nprotocol = \"openai-chat\"\ncontext_window = 32000\nmax_output = \
          4000\ninput = [\"text\"]\n",
     );
-    let transport = ScriptedTransport::new([sse(OPENAI_STREAM.to_owned())]);
+    // The server is first asked what it loaded the model with: it has not
+    // loaded it yet, so the catalog's figure stands.
+    let transport = ScriptedTransport::new([
+        Reply::ok(r#"{"models": []}"#),
+        sse(OPENAI_STREAM.to_owned()),
+    ]);
     let core = world.core_with(|options| {
         options.connector = None;
         options.transport = Some(Arc::new(transport.clone()));
@@ -324,9 +329,66 @@ fn a_local_server_is_asked_without_a_key() {
         assert_eq!(end.outcome, TurnOutcome::Completed, "{:?}", end.error);
         front.close().await;
     });
-    let request = &transport.requests()[0];
+    let probe = &transport.requests()[0];
+    assert_eq!(probe.url, "http://localhost:11434/api/ps");
+    let request = &transport.requests()[1];
     assert_eq!(request.url, "http://localhost:11434/v1/chat/completions");
     assert_eq!(request.headers.get("authorization"), None);
+}
+
+/// The context size a local server loaded a model with stands in for the
+/// catalog's: a model the catalog says takes 32,000 tokens, loaded with
+/// 1,024, is too full for the harness's prompt alone, and the loop goes
+/// to compact before it sends anything (`docs/decisions/0035-where-the-context-limit-comes-from.md`).
+#[test]
+fn a_local_servers_loaded_context_size_stands_in_for_the_catalogs() {
+    let world = World::new("ollama_probe", []);
+    world.user_config(
+        "[models.house]\nprovider = \"ollama\"\nid = \"house-model\"\nname = \"House \
+         model\"\nprotocol = \"openai-chat\"\ncontext_window = 32000\nmax_output = \
+         4000\ninput = [\"text\"]\n",
+    );
+    let transport = ScriptedTransport::new([
+        Reply::ok(
+            r#"{"models": [{"name": "house-model:latest", "model": "house-model:latest", "context_length": 1024}]}"#,
+        ),
+        sse(OPENAI_STREAM.to_owned()),
+    ]);
+    let core = world.core_with(|options| {
+        options.connector = None;
+        options.transport = Some(Arc::new(transport.clone()));
+        options.overrides.push(cortex_config::Override {
+            key: "model.main".to_owned(),
+            value: "house-model".to_owned(),
+            flag: Some("--model".to_owned()),
+        });
+    });
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            ClientInfo::headless(),
+            SessionSettings::default(),
+        )
+        .await
+        .unwrap();
+        // The probe is answered before the prompt is sent.
+        while transport.requests().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        front.turn("hello").await;
+        front.close().await;
+    });
+    let requests = transport.requests();
+    assert_eq!(requests[0].url, "http://localhost:11434/api/ps");
+    let sent = String::from_utf8_lossy(&requests[1].body).into_owned();
+    assert!(
+        sent.contains("replaced by a summary"),
+        "the second request asks for a summary: {sent}"
+    );
 }
 
 /// A provider that has a key variable and no key anywhere is refused
