@@ -47,7 +47,7 @@ A level says who decides when no rule has already settled the question: the **ho
 - **The safe list** is three lists together: the built-in table of read-only commands (below), commands the user approved for the session or the project, and commands learned for the project and accepted by the user ([14-adaptation.md](14-adaptation.md)), such as its build and test commands.
 - **The sandbox applies at every level except `unrestricted`.** A command that runs, whether it was asked about or not, runs inside the sandbox where one is enforcing. Asking and confining are separate protections.
 - **`guided` and `autonomous` need an enforcing sandbox.** They are refused, with an explanation, where the sandbox is not enforcing: Windows until its sandbox step, or a Linux kernel without Landlock. There, `supervised` is the highest level short of `unrestricted`, for single sessions and for teams alike.
-- **`unrestricted` must be chosen explicitly**, by flag or user configuration. A project cannot select it, nor `guided` or `autonomous`. It cannot be given to a team or passed down to a child session. The status line shows any level above `supervised` prominently.
+- **`unrestricted` must be chosen explicitly**, by flag or user configuration. A project cannot select it, nor `guided` or `autonomous`. It cannot be given to a team or passed down to a child session. The hint row shows any level above `supervised` prominently.
 - **The decisions a team adds** (the plan, starting Employees, merging, spending past a threshold) follow the same ladder. Their rows are in [17-coordinator.md](17-coordinator.md).
 - A front end that cannot ask (headless without pre-approval) treats "supervisor" as "refused" and says so in the result.
 
@@ -115,7 +115,7 @@ There are three kinds of lease, and they are the same type.
 - **A parent can hand a child a subset, and only a subset.** A session that starts another session (a run, or an Employee) proposes a lease, and the harness gives the child `parent.narrow(proposed)`. Narrowing is defined field by field: the lower level; the parent's `deny` and `ask` rules always carried over; `allow` rules kept only where the parent allows the same thing; writable roots intersected; the network allowed only if both allow it; budgets capped by what the parent has left; an expiry no later than the parent's; the stop conditions of both.
 - **What reads the lease.** The permission engine and the sandbox launcher read only the current lease's grant. The limits ledger ([03-agent-loop.md](03-agent-loop.md)) charges the lease's budget before each request.
 - **A task lease cannot exceed what the user could configure.** Managed configuration caps it, and a project cannot grant one.
-- The status line shows the level and, for a task lease, what remains of its time and budget. `/lease` shows the full terms.
+- The hint row shows the level when it is not the default and, for a task lease, what remains of its time and budget. `/lease` shows the full terms.
 - Property tests check that `narrow` always returns a lease within both inputs, and that no sequence of narrowing widens anything.
 - **A lease that is not understood in full is refused whole.** The wire form of a lease, a grant, a rule, a sandbox policy, a budget, the hard limits and a stop condition rejects any field and any value it does not know, with the error code `lease_not_understood`. Elsewhere the protocol ignores what it does not know; here that would let a build that predates a restriction drop it, and hold a wider lease than was granted ([decision 0028](../decisions/0028-enforced-values-fail-closed.md)).
 
@@ -492,7 +492,7 @@ The shell tool has the hook for it since step 11 (`cortex_tools::process::Launch
 | Session, process group, death signal and the guard process | Clean-up. Built in step 11, in `cortex_sandbox::tree` ([decision 0030](../decisions/0030-process-tree-control-in-cortex-sandbox.md)), and used with or without the sandbox. | Nothing. |
 
 - No root, no helper program, no user namespaces, no container runtime. This matters because Ubuntu 24.04 and later restrict unprivileged user namespaces by default, which breaks the namespace-based approach other tools use unless an administrator installs a profile.
-- **Detection.** At start-up the harness asks the kernel which Landlock version it has. If Landlock is missing or disabled, the sandbox is reported as "not enforcing" in the status line, commands that run are not confined, and the `guided` and `autonomous` levels are refused.
+- **Detection.** At start-up the harness asks the kernel which Landlock version it has. If Landlock is missing or disabled, the sandbox is reported as "not enforcing" in the hint row, commands that run are not confined, and the `guided` and `autonomous` levels are refused.
 - **Known limits, stated plainly.**
   - Landlock rules only add permissions. With the workspace writable, protected paths inside it cannot be blocked by Landlock alone. The harness therefore checks the protected paths after every sandboxed command and, if one changed, stops the turn, shows the change and offers to restore it from a checkpoint taken before the command. This detects; it does not prevent.
   - Reads are not restricted by default, so a sandboxed command can read files such as SSH keys. It cannot send them anywhere while the network is off. A stricter read policy is a configuration option.
@@ -563,7 +563,7 @@ A namespace-based backend (mount and network namespaces, with protected paths mo
 | Job Object limits | Since step 26 every tree is held to 1,024 processes at once and, where Windows says how much memory the machine has, three quarters of it committed by the whole tree (`cortex_sandbox::tree::Limits`). A command that starts processes without end, or takes the machine's memory, fails there instead of taking the machine with it. |
 | Approvals | Every shell command that no rule allows is asked. |
 
-There is no filesystem or network confinement of child processes on Windows in the first release. The status line says "sandbox: off", and the `guided` and `autonomous` levels are not available. Extension scripts are still confined, because their confinement is the script runtime and not the OS.
+There is no filesystem or network confinement of child processes on Windows in the first release. The hint row says "sandbox: off", and the `guided` and `autonomous` levels are not available. Extension scripts are still confined, because their confinement is the script runtime and not the OS.
 
 ### Windows: later, after its own spike
 
@@ -598,7 +598,7 @@ The policy type is OS-neutral, so a Seatbelt backend can be added behind the sam
 
 ### Leaving the sandbox
 
-When a sandboxed command fails because of the sandbox, the result names the blocked operation. The model can ask to run the command again with more access. That request is an approval like any other, and the status line shows when a command ran outside the sandbox.
+When a sandboxed command fails because of the sandbox, the result names the blocked operation. The model can ask to run the command again with more access. That request is an approval like any other, and the hint row shows when a command ran outside the sandbox.
 
 **As built in step 26.**
 

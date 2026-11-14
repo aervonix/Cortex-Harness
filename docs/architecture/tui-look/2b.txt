@@ -1,0 +1,19 @@
+╭─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✗ Run cargo publish --dry-run -p parser  blocked: network · 0.4s                                │
+│   error: failed to query the crates.io index: network unreachable                               │
+│   (sandbox.network is "off": confined commands have no network)                                 │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+◇ The dry run has to reach crates.io, and the sandbox has no network. I'll ask
+  to run it outside the sandbox.
+? Run outside the sandbox?
+
+    cargo publish --dry-run -p parser
+    in crates/parser
+
+  It would run with your full rights: it can write anywhere you can, and use the
+  network. This is asked every time.
+
+  y Run once outside the sandbox   n Deny
+
+  esc denies · ctrl+o shows it whole                                         opus-5.5 high · fast

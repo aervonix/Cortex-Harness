@@ -1,0 +1,11 @@
+[0m◇[0m Done. [0;1;36m1_000[0m lexes as one integer, [0;1;36m1_[0m is an error with its own message, and the[0m
+[0m  new test covers both.[0m
+[0;90m╭─────────────────────────────────────────────────────────────────────────────────────────────────╮[0m
+[0;90m│[0m [0;1;38;2;122;60;251m◆[0m /effort                                                                                       [0;90m│[0m
+[0;90m╰─────────────────────────────────────────────────────────────────────────────────────────────────╯[0m
+[0m  [0;38;2;122;60;251m  [0mlow     [0;90ma quick look, least reasoning[0m
+[0m  [0;38;2;122;60;251m  [0mmedium  [0;90mbalanced[0m
+[0m  [0;38;2;122;60;251m◆ [0;1;38;2;122;60;251mhigh    [0;90mcareful work; the default for this model   current[0m
+[0m  [0;38;2;122;60;251m  [0mmax     [0;90mthe most reasoning the model allows[0m
+[0m
+[0m    [0;1;38;2;122;60;251mtab - fast mode[0m  [0;38;2;122;60;251mon[0;90m  · about 2.5x the output speed, at 2x the price[0m

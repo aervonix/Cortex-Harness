@@ -1,0 +1,17 @@
+[0;90m· AGENTS.md changed; the new text applies from the next request.[0m
+[0m
+[0;1;38;2;122;60;251m◆[0m [0;1mNow make the same change in the JSON lexer.[0m
+[0m
+[0;90m· Context compacted in the background: 148.2k → 23.6k tokens (a 3.1k summary,[0m
+[0m  [0;90mthe last 6 turns kept). ctrl+o shows the summary.[0m
+[0;90m· The sandbox stopped a command writing ~/.cargo/credentials.toml.[0m
+[0;90m· Fast mode was refused (429), so this request runs at standard speed; fast[0m
+[0m  [0;90mresumes after 14:32.[0m
+[0;90m· The provider is overloaded (529). Retrying in 4s, attempt 2 of 5.[0m
+[0m
+[0;31m✗[0m [0;31mThe request failed after 5 attempts: the connection to the provider was reset.[0m
+[0m  [0;90mPress enter to try the turn again, or pick another model with /model.[0m
+[0;90m╭─────────────────────────────────────────────────────────────────────────────────────────────────╮[0m
+[0;90m│[0m [0;1;38;2;122;60;251m◆[0m [0;90mDescribe a task, or ask a question[0m                                                            [0;90m│[0m
+[0;90m╰─────────────────────────────────────────────────────────────────────────────────────────────────╯[0m
+[0;90m  this turn $0.03, session $0.61[0m                                                    [0;90mopus-5.5 high[0m  [0m

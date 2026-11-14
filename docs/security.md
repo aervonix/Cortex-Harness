@@ -8,7 +8,7 @@ What can go wrong when a model drives tools on a developer's machine, and what C
 - The user is trusted. So is the user-level configuration.
 - A repository is not trusted until the user says so, and then only for the specific definitions they saw.
 - **Only the OS sandbox is a boundary.** Permission rules and approval prompts reduce risk and catch mistakes. They do not stop a determined attack, and the docs and the UI never suggest they do.
-- Limits are stated where they exist. A weaker platform (Windows in the first release) shows its state in the status line and falls back to asking.
+- Limits are stated where they exist. A weaker platform (Windows in the first release) shows its state in the hint row and falls back to asking.
 
 ## 1. Model-driven shell commands
 
@@ -190,7 +190,7 @@ The reference harnesses load extensions into the agent process with the user's f
 | **At the edge the agent stops and reports**, and the session falls back to its standing lease. | No drift into a stream of prompts that train the user to approve without reading. |
 | **A lease cannot exceed managed or user configuration, and a project cannot grant one.** | A repository cannot make itself trusted. |
 | **A child's lease is always a subset** (`narrow`, with property tests). | Runs, attempts and Employees cannot hold more than their parent. |
-| The level and what remains of the lease are always in the status line. | The user can see at a glance that the agent is working unasked, and for how much longer. |
+| The level and what remains of the lease are always in the hint row. | The user can see at a glance that the agent is working unasked, and for how much longer. |
 
 **Residual risk.** Inside its scope a lease permits everything it says. A lease that allows running the project's tests allows whatever the tests do, inside the sandbox. This is the same trust the user already places in the project's own build.
 

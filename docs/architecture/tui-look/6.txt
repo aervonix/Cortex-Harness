@@ -1,0 +1,42 @@
+◇ All 46 tests pass, and cargo fmt is clean.
+
+◆ 1_000 lexes as 1. Fix scan_number so digit separators
+  work, and add a test.
+
+∴ Reasoned for 6s
+  The loop breaks on any non-digit, so _ ends the literal.
+  Check whether a trailing _ is meant to be an error first.
+
+◇ scan_number stops at the first character that is not a
+  digit, so 1_000 ends after the 1. I'll read the scanner
+  and allow _ between digits.
+
+╭─────────────────────────────────────────────────────────╮
+│ ✓ Read lex.rs  lines 120–178                            │
+│ ✓ Edit lex.rs  +5 −1                                    │
+│    141       while let Some(c) = self.peek() {          │
+│    142 −         if !c.is_ascii_digit() { break; }      │
+│    142 +         if c == '_' && self.peek_next().is_so… │
+│    143 +             self.bump();                       │
+│    144 +             continue;                          │
+│    145 +         }                                      │
+│    146 +         if !c.is_ascii_digit() { break; }      │
+│    147           self.bump();                           │
+│ ✗ Run cargo test -p parser  exit 101 · 3.4s             │
+│   test lex::numbers::trailing_separator ... FAILED      │
+│   assertion failed: lex("1_").is_err()                  │
+│   test result: FAILED. 47 passed; 1 failed; 0 ignored;… │
+╰─────────────────────────────────────────────────────────╯
+
+◇ One test fails: 1_ must be an error, but the scanner now
+  stops before the _ and returns 1. A separator has to be
+  followed by a digit, so the other case becomes an error:
+
+  if c == '_' {
+      if !self.peek_next().is_some_and(|d| d.is_ascii_digi…
+          return Err(self.error("digit separator mu
+
+╭─────────────────────────────────────────────────────────╮
+│ ◆ also run clippy when that's done                      │
+╰─────────────────────────────────────────────────────────╯
+  ⣾ 14s  esc stops · enter steers …  opus-5.5 high · fast

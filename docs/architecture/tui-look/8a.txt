@@ -1,0 +1,39 @@
+ Viewer   ~/src/parser · session of 14:02 · turns 2 and 3               esc returns to the session
+───────────────────────────────────────────────────────────────────────────────────────────────────
+◆ Run the tests and the formatter before I start on the lexer.
+
+╭─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✓ Run cargo test --workspace  46 passed · 5.1s                                                  │
+│ ✓ Run cargo fmt --check  clean · 0.4s                                                           │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+◇ All 46 tests pass, and cargo fmt is clean.
+
+◆ 1_000 lexes as 1. Fix scan_number so digit separators work, and add a test.
+
+∴ Reasoned for 6s
+  The loop breaks on any non-digit, so _ ends the literal. Check whether a
+  trailing _ is meant to be an error first.
+
+◇ scan_number stops at the first character that is not a digit, so 1_000 ends
+  after the 1. I'll read the scanner and allow _ between digits.
+
+╭─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✓ Read lex.rs  lines 120–178                                                                    │
+│ ✓ Edit lex.rs  +5 −1                                                                            │
+│ ✗ Run cargo test -p parser  exit 101 · 3.4s                                                     │
+╰──────────────────────────────────────────────────────────────────────────────── enter expands ─╯
+
+◇ One test fails: 1_ must be an error, but the scanner now stops before the _
+  and returns 1. A separator has to be followed by a digit, so the other case
+  becomes an error:
+
+  if c == '_' {
+      if !self.peek_next().is_some_and(|d| d.is_ascii_digit()) {
+          return Err(self.error("digit separator must be followed by a digit"));
+      }
+      self.bump();
+      continue;
+  }
+───────────────────────────────────────────────────────────────────────────────────────────────────
+ up/down moves between boxes · enter expands · / searches · esc returns                 box 2 of 2

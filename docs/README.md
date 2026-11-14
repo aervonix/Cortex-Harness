@@ -35,7 +35,7 @@ These docs are the specification that every build step works from. They were wri
 | [06-permissions-and-sandbox.md](architecture/06-permissions-and-sandbox.md) | Levels and leases (one autonomy model), rules, command analysis, approvals, project trust, and what is sandboxed on each OS. |
 | [07-sessions-and-context.md](architecture/07-sessions-and-context.md) | The session log, resume and branches, snapshots and undo, what goes into a request, instruction files, budgeting, compaction. |
 | [08-configuration.md](architecture/08-configuration.md) | Layers, profiles, reloading, reading other tools' set-up, the first run, credentials. |
-| [09-tui.md](architecture/09-tui.md) | Rendering, the look, panels, the editor, keys, slash commands, the terminal layer. |
+| [09-tui.md](architecture/09-tui.md) | Rendering, the look, panels, the editor, keys, slash commands, the terminal layer. The look's reference screens are in [tui-look/](architecture/tui-look/README.md). |
 | [10-headless.md](architecture/10-headless.md) | Output formats and exit codes. |
 | [11-rpc-protocol.md](architecture/11-rpc-protocol.md) | Transports, messages, versioning, roles, methods, events, backpressure. |
 | [12-extensions.md](architecture/12-extensions.md) | Commands, skills, hooks, script extensions, extensions the harness writes itself. |

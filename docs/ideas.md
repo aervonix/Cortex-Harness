@@ -52,7 +52,7 @@ Two of them came with conditions from the owner, and the design pages say how ea
 
 ## 3. Autonomy leases
 
-**What it is.** A lease is a contract the user grants in one sentence: "for the next 30 minutes or 2 dollars, you may edit under `src/` and `tests/`, run the project's build and test commands, and nothing else; stop and report if the tests fail three times in a row." Inside the lease the agent does not ask. At its edge it stops and summarises. The status line shows what remains of the lease.
+**What it is.** A lease is a contract the user grants in one sentence: "for the next 30 minutes or 2 dollars, you may edit under `src/` and `tests/`, run the project's build and test commands, and nothing else; stop and report if the tests fail three times in a row." Inside the lease the agent does not ask. At its edge it stops and summarises. The hint row shows what remains of the lease.
 
 **What is new.** Harnesses offer modes (ask for everything, or ask for nothing) and remembered approvals for single commands. Neither describes a bounded piece of delegated work. A lease has scope, a budget, a time limit and stop conditions in one object that the user can read back, and that the policy engine and the sandbox enforce.
 

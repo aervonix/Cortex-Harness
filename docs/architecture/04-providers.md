@@ -266,7 +266,7 @@ Caching is treated as a property of request shape, not a switch.
 | Gemini | Implicit caching. Nothing to place. |
 | Local servers | Nothing. Their prefix reuse is automatic. |
 
-**Reporting.** Cache reads and writes are separate usage fields (below), shown in the status line and stored per request, so a broken prefix shows up as a number, not a guess.
+**Reporting.** Cache reads and writes are separate usage fields (below), shown by `/usage` and stored per request, so a broken prefix shows up as a number, not a guess.
 
 ## Usage and cost
 

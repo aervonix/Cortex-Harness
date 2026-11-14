@@ -1,0 +1,18 @@
+╭─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✓ Run cargo clippy -p parser -- -D warnings  no warnings · 8.1s                                 │
+╰─────────────────────────────────────────────────────────────────────────────── ctrl+o expands ─╯
+
+◇ Clippy is clean. I'll add it to CI so it stays that way; that file is
+  protected, so it needs your approval.
+? Edit .github/workflows/ci.yml?
+  CI configuration is protected, so a change to it always asks.
+
+     29         - uses: dtolnay/rust-toolchain@stable
+     30 −         with: { components: rustfmt }
+     30 +         with: { components: rustfmt, clippy }
+     31         - run: cargo test --workspace
+     32 +       - run: cargo clippy --workspace -- -D warnings
+
+  y Allow once   s Allow this session   a Always allow here   n Deny   e Deny with a note
+
+  esc denies · ctrl+o shows it whole                                         opus-5.5 high · fast

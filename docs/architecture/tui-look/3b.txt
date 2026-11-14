@@ -1,0 +1,11 @@
+◇ Done. 1_000 lexes as one integer, 1_ is an error with its own message, and the
+  new test covers both.
+╭─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ◆ /effort                                                                                       │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+    low     a quick look, least reasoning
+    medium  balanced
+  ◆ high    careful work; the default for this model   current
+    max     the most reasoning the model allows
+
+    tab - fast mode  on  · about 2.5x the output speed, at 2x the price

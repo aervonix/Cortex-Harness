@@ -1,0 +1,11 @@
+◇ Done. 1_000 lexes as one integer, 1_ is an error with its own message, and the
+  new test covers both.
+╭─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ◆ /model                                                                                        │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+    opus-5.5      anthropic   200k  $5 · $25 /M    fast  current
+  ◆ sonnet-5.5    anthropic   200k  $3 · $15 /M
+    haiku-5.5     anthropic   200k  $1 · $5 /M
+    fable-5.2     anthropic   200k  $15 · $75 /M   fast
+    deepseek-v4   deepseek    128k  $0.27 · $1.10 /M
+    qwen3-coder   openrouter  256k  $0.40 · $1.60 /M

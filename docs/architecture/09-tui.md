@@ -2,7 +2,7 @@
 
 The interactive front end. It is written in Rust and lives in the main binary, in two crates: `cortex-term` (terminal layer and renderer, no knowledge of agents) and `cortex-tui` (the application). The language choice is [decision 0001](../decisions/0001-tui-language.md) and the rendering approach is [decision 0002](../decisions/0002-tui-rendering.md). The owner accepted both on 2026-11-12, and both were confirmed on 2026-11-13 by the Windows Terminal checklist.
 
-The look described here is our own. It was designed from the requirements, not from another tool's screen. Glyphs, wording, colours, commands and default keys are defaults. The owner accepted them as drafted on 2026-11-12; the TUI build steps implement what this page says and do not need to invent more.
+The look described here is our own: its glyphs, colours and wording are ours, in the arrangement modern terminal agents share. Glyphs, wording, colours, commands and default keys are defaults. The owner accepted a first draft on 2026-11-12, reopened it, and chose this look on 2026-11-14 after three rounds of proposals ([decision 0033](../decisions/0033-tui-look.md)). The TUI build steps implement what this page says and do not need to invent more.
 
 It follows the [vision](../vision.md)'s interface policy: a clean chat-style flow by default, panels that open when there is something to show and close again, and the logo's purple (`#7A3CFB`) as the accent colour.
 
@@ -20,11 +20,10 @@ The transcript lives in the terminal's own scrollback. The harness owns only a s
  │                                                                            │
  ├──────────────────── live region (owned by the harness) ────────────────────┤
  │  the unfinished tail of what is streaming                                  │
- │  running tools with a short output tail                                    │
+ │  the running tool round, in its box                                        │
  │  task list, approval dialog or completion menu, when present               │
- │  ─────────────────────────────────────────────────────────────────────     │
- │  › the editor                                                              │
- │  status line                                                               │
+ │  ╭ ◆ the input box ───────────────────────────────────────────────────╮    │
+ │  hint row: the keys and the status that matter now                         │
  └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -39,8 +38,8 @@ The transcript lives in the terminal's own scrollback. The harness owns only a s
 | List, quote, heading | Line by line. |
 | Table | When the table ends, because column widths depend on every row. A table taller than the live region's limit is committed in parts with the widths known so far. |
 | Inline markup still open at the end of a line (bold, code) | The line is held for at most two more lines, then committed as it is. |
-| Reasoning | Not committed while streaming. Replaced by one summary line when it ends. |
-| Tool call | A running tool is live. Its final chip, and any output or diff shown with it, is committed when it completes. |
+| Reasoning | Not committed while streaming. Replaced by its summary (`∴ Reasoned for 6s` and the provider's summary) when it ends. |
+| Tool round | Live while any of its calls runs. The round's box, with each call's line and any open detail, is committed when its last call completes ("Tool rounds", below). |
 | User prompt | On submit. |
 
 **The price.** Committed lines are wrapped for the width at the time. If the window is resized, earlier output is not re-wrapped by the harness. Collapsing or re-expanding old output in place is not possible either; long content is opened in the viewer (below) instead.
@@ -83,7 +82,7 @@ Properties this gives, each checked by tests ([../testing-and-ci.md](../testing-
 - No scroll-region or cursor-position queries are needed, which avoids the terminals and multiplexers that mishandle them.
 - Nothing above the live region is touched.
 
-**Live region height.** At most half the window, and at least the editor and the status line. Content that would exceed it is clipped with a marker (for example a tool's output tail shows fewer lines). The presenter itself only refuses a region taller than the screen: it keeps the region's bottom rows, because rows that had scrolled away could not be reached again.
+**Live region height.** At most half the window, and at least the input box and the hint row. Content that would exceed it is clipped with a marker (for example a tool's output tail shows fewer lines). The presenter itself only refuses a region taller than the screen: it keeps the region's bottom rows, because rows that had scrolled away could not be reached again.
 
 **The last column stays empty.** A line may use every column but the last (`Inline::width`). A row that filled the last column would leave the terminal waiting to wrap, which terminals handle differently (some wrap at once, and the next line break then leaves a blank row), and the erase after it would take its last character. Lines are cut to that width by the renderer, between grapheme clusters, so a line is always one row.
 
@@ -108,96 +107,154 @@ The budgets for frame time, input latency and idle CPU are in [../performance-bu
 
 ## Layout and look
 
-Widths below assume 80 columns or more. Text wraps at the window width or `tui.max_width` (default 110), whichever is smaller.
+The owner chose this look on 2026-11-14, after three rounds of proposals ([decision 0033](../decisions/0033-tui-look.md)). Its reference screens are in [tui-look/](tui-look/README.md): the same session drawn at 100 and 60 columns, on a dark and a light background, in 16 colours, with no colour and in ASCII. They were generated from one source and each was drawn through the inline presenter into the test kit's virtual terminal before the choice.
+
+- **Prose** wraps at `tui.prose_width` (default 80) or the window's width, whichever is smaller.
+- **Code, diffs and boxes** use the window's width, less the last column.
+- **Two indent levels:** a block's text sits two columns in, after its glyph. A tool call's detail sits two columns in from its call line, inside the round's box.
 
 ### A session, as it appears in the scrollback
 
 ```
-▌ fix the failing lexer test and explain what was wrong
+◇ All 46 tests pass, and cargo fmt is clean.
 
-∴ thought for 6s
-The test fails because `scan_number` stops at the first underscore, so
-`1_000` is read as `1`. I'll check how digits are consumed.
+◆ 1_000 lexes as 1. Fix scan_number so digit separators work, and add a test.
 
-  ⏵ search  scan_number in crates/parser                    ✓ 3 matches
-  ⏵ read    crates/parser/src/lex.rs  120–178               ✓ 59 lines
-  ⏵ edit    crates/parser/src/lex.rs                        ✓ +4 −1
-    @@ scan_number
-    141    while let Some(c) = self.peek() {
-    142 -      if !c.is_ascii_digit() { break; }
-    142 +      if c == '_' { self.bump(); continue; }
-    143 +      if !c.is_ascii_digit() { break; }
-    144        self.bump();
-  ⏵ shell   cargo test -p parser                            ✓ 2.1s
+∴ Reasoned for 6s
+  The loop breaks on any non-digit, so _ ends the literal. Check whether a
+  trailing _ is meant to be an error first.
 
-All 48 tests pass now. The loop treated `_` as the end of the number;
-it now skips separators inside digit runs.
+◇ scan_number stops at the first character that is not a digit, so 1_000 ends
+  after the 1. I'll read the scanner and allow _ between digits.
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ ✓ Read lex.rs  lines 120–178                                                 │
+│ ✓ Edit lex.rs  +5 −1                                                         │
+│    141       while let Some(c) = self.peek() {                               │
+│    142 −         if !c.is_ascii_digit() { break; }                           │
+│    142 +         if c == '_' && self.peek_next().is_some_and(|d| d.is_asci…  │
+│    143 +             self.bump();                                            │
+│    144 +             continue;                                               │
+│    145 +         }                                                           │
+│    146 +         if !c.is_ascii_digit() { break; }                           │
+│    147           self.bump();                                                │
+│ ✗ Run cargo test -p parser  exit 101 · 3.4s                                  │
+│   test lex::numbers::trailing_separator ... FAILED                           │
+│   assertion failed: lex("1_").is_err()                                       │
+│   test result: FAILED. 47 passed; 1 failed; 0 ignored; finished in 0.02s     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+◇ One test fails: 1_ must be an error, but the scanner now stops before the _
+  and returns 1. A separator has to be followed by a digit, so the other case
+  becomes an error:
+
+  if c == '_' {
+      if !self.peek_next().is_some_and(|d| d.is_ascii_digit()) {
+          return Err(self.error("digit separator must be followed by a digit"));
 ```
+
+In colour, the `◆` is the accent and your message is bold. The answer and its `◇` are at full brightness. The reasoning, the box's border and the tool detail are dim. `✓` is green and `✗` red, and the removed and added lines are tinted red and green to the box's edge.
 
 ### Elements
 
 | Element | Appearance | Notes |
 |---|---|---|
-| **User prompt** | Every line starts with a bar `▌` in the user colour, then the text. One blank line before and after. | The bar makes prompts easy to find when scrolling back. |
-| **Assistant text** | Flush left, default colour, no decoration. Blank line between blocks. | Selecting and copying gives clean text. |
-| **Code block** | Flush left, highlighted when the feature is on. A dim line above carries the language name. No border and no background by default. | Copying gives the code and nothing else. |
-| **Inline code** | The `code` colour. | |
-| **Headings** | Bold, with the heading colour. No `#`. | |
-| **Lists, quotes** | Standard markers (`•`, numbers), quotes with a dim `│`. | |
-| **Tables** | Columns aligned with spaces, a dim rule under the header. | Falls back to stacked `key: value` rows when too wide. |
-| **Links** | Underlined text, as a terminal hyperlink where supported, otherwise followed by the URL in dim. | |
-| **Reasoning** | While streaming: one live line, dim italic, showing the latest words. When finished: one dim line, `∴ thought for 6s`. | `tui.reasoning = "summary"` prints the provider's summary, dim and indented, instead of the one-liner. |
-| **Tool chip** | Indented two columns: `⏵`, the tool name in the tool colour, a summary of the arguments, and at the right edge a state mark with a measure. | One line per call. |
-| **Tool output** | Indented four columns, dim. Shown under the chip for failed commands (last 8 lines) and not shown for successful ones. | `tui.tool_output = "auto"`, `"always"` or `"never"`. |
-| **Diff** | Under an edit or write chip, indented four columns: a hunk header, then lines with a line-number column (dim), a sign column, and the text. Removed lines in the removal colour, added lines in the addition colour, with the changed words emphasised. Up to 40 lines, then `… 120 more lines · Ctrl+O to view`. | The line-number column is dropped under 100 columns. |
-| **Notice** | One dim line starting with `·`. | Retries, compaction, sandbox reports, instruction changes. |
-| **Error** | A line starting with `✗` in the error colour, then an indented dim line with what to do next. | |
-| **Turn summary** | Optional dim line after a turn: duration, tokens and cost. | Off by default. `tui.turn_summary = true`. |
+| **Your message** | `◆` in the accent, then the text in bold. Wrapped lines sit two columns in. One blank line before and after. | The input box starts with the same `◆`, so a message looks the same before and after it is sent. |
+| **Answer** | `◇` in the terminal's own foreground, then the text at normal weight. Wrapped lines sit two columns in. A blank line between blocks. | The answer is the only text at full brightness outside a box. Its glyph is neither dim nor the accent: the accent means "you". Selecting and copying gives the text with a two-column indent; `/copy` gives it clean. |
+| **Code block** | Under the answer, two columns in, highlighted when the feature is on. No border, no background, no language line. | A line wider than the room is **cut** with `…`, not wrapped: one source line stays one row, so the code keeps its shape and a diff keeps its line numbers. The whole line is in the viewer and in `/copy`. |
+| **Inline code** | The `code` colour. No background. | |
+| **Headings** | Bold. No `#`. | |
+| **Lists, quotes** | `–` for an unordered item and numbers for an ordered one. A quote has a dim `│`. | |
+| **Tables** | Columns aligned with spaces, and a dim rule under the header. | Falls back to stacked `key: value` rows when too wide. |
+| **Links** | Underlined text: a terminal hyperlink where supported, otherwise followed by the URL in dim. | |
+| **Reasoning** | While streaming, two live rows: the spinner, `Reasoning` and the elapsed time, dim; then the latest words in dim italic. When finished: `∴ Reasoned for 6s`, dim, then the provider's summary in dim italic, two columns in. | `tui.reasoning = "duration"` keeps only the first line; the summary is then in the viewer. |
+| **Tool round** | A box with a dim rounded border around one round of tool calls: one line per call, and each call's detail under it when open. | See "Tool rounds", below. |
+| **Diff** | Inside an open box, under its call. A gutter holds the line number (dim) and the sign, right beside the code. Added and removed lines are tinted to the box's edge, the sign takes the line's colour, and changed words are bold. Context lines are dim. | No `+` or `−` at the far left. A diff of up to `tui.tool_detail` lines starts open. |
+| **Tool output** | Dim, under its call when open: a failure's last 3 lines, or a running command's last 4. | All of it is in the viewer. |
+| **Notice** | `·`, then one dim sentence. Wrapped lines sit two columns in. | Retries, a speed fallback, compaction with its token counts, sandbox reports, instruction changes. A new kind of notice takes the same form. |
+| **Error** | `✗` and a sentence in the error colour, then a dim sentence on what to do next, two columns in. | |
+| **Session header** | At the start of a session, once: a small box with a dim rounded border holding `◆ Cortex-Harness` and the version; the model, effort, folder and branch; and one dim line on what the project profile holds. | |
+| **Turn summary** | Optional dim line after a turn: duration, tokens and cost. | Off by default (`tui.turn_summary = true`). Either way, the hint row shows the last turn's cost for a while. |
 
-**Tool chip states.**
+### Tool rounds
 
-| Mark | Meaning | Right-hand text |
+**One box per round:** the calls the model asked for together. A round is what runs together, and a box for each call would add two border rows to every call.
+
+**A call's line:** its state mark, then the tool as a bold imperative with its target (`Read lex.rs`, `Edit lex.rs`, `Run cargo test -p parser`, `Search scan_number`; an extension's tool by its own name), then two spaces and its measure, dim. An edit's measure is `+5 −1` in the diff colours, and a failure's measure (`exit 101 · 3.4s`) is in the error colour. A path is shortened to its file name; the whole path is in the viewer.
+
+| Mark | Meaning | Measure |
 |---|---|---|
-| spinner | running | elapsed time |
-| `?` | waiting for approval | "approval needed" |
-| `✓` | succeeded | a measure: lines, matches, `+4 −1`, duration |
-| `✗` | failed | exit code or a short reason |
+| spinner (accent) | running | elapsed time |
+| `?` (warning) | waiting for approval | "approval needed" |
+| `✓` (success) | succeeded | lines, matches, `+4 −1`, duration |
+| `✗` (error) | failed | exit code or a short reason, and the duration |
 | `⊘` | denied | |
 | `■` | interrupted | |
 
 The spinner is an eight-frame braille cycle at 100 ms. `tui.reduced_motion = true` replaces it with a static mark.
 
+**Open and closed.** Closed, a box shows only the call lines. Open, each call's detail sits under its line, two columns in. What starts open, with `tui.tool_output = "auto"` (the default):
+
+| Detail | Starts |
+|---|---|
+| A failure's output | open, the last 3 lines |
+| A diff of up to `tui.tool_detail` lines (default 12) | open |
+| A longer diff | closed |
+| A successful command's output, a read, a search | closed |
+| A running command's output | closed; open, its last 4 lines |
+
+`"always"` opens every detail, and `"never"` keeps every box closed.
+
+**While a round runs, its box is in the live region.**
+- `Ctrl+T` opens or closes it in place, and its bottom border says which (`ctrl+t expands`, `ctrl+t collapses`).
+- With more than one live box, `Ctrl+P` moves focus to them as it does to panels, and `Enter` opens or closes the focused one.
+- An open box in the live region shows at most `tui.tool_detail` rows of detail; the rest is in the viewer.
+
+**When the round's last call ends,** the box and its detail commit together, as they are, and never change after. A closed box with detail behind it says `ctrl+o expands` in its bottom border, dim. Calls that finish early wait for the round: their detail appears when the round commits, and until then the open box shows it in the live region.
+
 ### The live region
 
 ```
-The loop treated `_` as the end of the number; it now skips separ▏
-  ⏵ shell   cargo test -p parser                                  ⣽ 1.4s
-      Compiling parser v0.3.0
-      Running unittests src/lib.rs
-  ☐ update the changelog   ☑ fix scan_number   ☑ add a test
-──────────────────────────────────────────────── esc interrupt · enter steer ──
-› also run clippy when that's done▏
- opus-5.5 · high    ▰▰▰▱▱▱▱▱▱▱ 31% · 62k    $0.42  supervised · sandboxed
+          return Err(self.error("digit separator mu
+
+╭────────────────────────────────────────────────────────────────────────────╮
+│ ◆ also run clippy when that's done                                         │
+╰────────────────────────────────────────────────────────────────────────────╯
+  ⣾ 14s  esc stops · enter steers this turn · tab queues it      opus-5.5 high · fast
 ```
 
 From top to bottom:
 
-1. **Streaming tail.** The unfinished last line or lines of the current block.
-2. **Running tools.** A chip per running tool. A shell command shows the last 4 lines of its output.
-3. **Panels.** Whatever currently has something to show (next section). In the picture: the plan, collapsed to one line.
-4. **Rule.** A dim line. Its right end shows the keys that matter right now. While a turn is running it shows how a typed message will be delivered.
-5. **Editor.** Starts with `›`. Grows to 8 lines, then scrolls inside itself. When empty it shows a dim hint.
-6. **Status line.**
+1. **Streaming tail.** The unfinished last line or lines of the current block, or the two reasoning rows.
+2. **The running round.** Its box, with the calls' lines and any open detail.
+3. **Panels.** Whatever currently has something to show ("Panels", below).
+4. **Dialog.** An approval or question replaces the input box while it is open.
+5. **Input box.** A rounded box with a dim border, holding `◆` and the text. It grows to 8 lines, then scrolls inside itself. When it is empty it shows a dim placeholder.
+6. **Hint row.** One dim row under the input box, in place of a status line. Its left side holds the keys that matter now, and its right side the status that matters now.
 
-| Segment | Content |
+The hint row's left side:
+
+| When | Shows |
 |---|---|
-| Model | Short model name and reasoning level. |
-| Context | A ten-cell gauge, the percentage of the context window in use, and the token count. The gauge takes the warning colour at 70% and the error colour at 90%. |
-| Cost | Session cost, when prices are known, and the cache hit rate of the last request (`cache 94%`). When a provider reports a limit and less than a fifth of it is left, what remains and when it resets. |
-| Access | The level and sandbox state: `sandboxed`, `sandbox off`, or `unrestricted` in the warning colour. Under a task lease (after the first release), what remains of its time and budget. |
-| Extras | Shown when relevant: queued prompt count, MCP or extension problems, rate-limit wait. |
+| A turn is running | The spinner and the turn's elapsed time, then `esc stops · enter steers this turn · tab queues it instead`. Steering and queueing are offered only while a turn runs. |
+| A dialog, a menu or a focused panel | Its keys. |
+| Idle, after a turn | The turn's cost and the session's, for a while. |
+| Idle, in the first sessions | `/ commands · @ files · alt+enter new line`. |
 
-Segments are dropped from the right when the window is narrow. Under 50 columns the status line shows the model and the gauge only.
+The hint row's right side:
+
+| Segment | Shown |
+|---|---|
+| Model | Always: the short model name and the reasoning level. |
+| Speed | When not `standard`: `fast` in the accent, and a cooldown while one runs ([decision 0027](../decisions/0027-speed-tiers.md)). |
+| Context | From 50% of the context window: the percentage, in the warning colour from 70% and the error colour from 90%. |
+| Cost | When a budget is set: the spend against it ([14-adaptation.md](14-adaptation.md)). Otherwise on the left, for a while after each turn. When a provider reports a limit and less than a fifth of it is left: what remains and when it resets. |
+| Access | When it is not the default: `sandbox off` or `unrestricted` in the warning colour, a command that ran outside the sandbox, and under a task lease (after the first release) what remains of its time and budget. |
+| Extras | When relevant: the queued prompt count, MCP or extension problems, a rate-limit wait. |
+
+- **Narrow windows.** Segments are dropped from the right when the window is narrow. Under 50 columns the hint row shows the model and the context only.
+- **Everything else is a key away:** `/usage` for cost and the cache hit rate, `/context` for what the window holds, `/status` for the rest.
+- **Height.** While an answer streams, the live region is 6 rows: the tail, a blank row, the 3 rows of the input box, and the hint row. A running round adds its 2 border rows, one row per call, and any open detail. Rows that do not change (the box's borders) cost nothing on a frame that commits nothing.
 
 ### Panels
 
@@ -205,78 +262,133 @@ A panel is a bounded block in the live region that appears when it has something
 
 | Panel | Opens when | Shows | Closes when |
 |---|---|---|---|
-| **Plan** | The `plan` tool has items. | Collapsed: one line of items with `☐`, `◧` (active), `☑`, `⊘` (skipped). Expanded: one item per line. | The plan is empty or all items are done and the turn has ended. |
+| **Plan** | The `plan` tool has items. | `◇ Plan  1 of 4 done`. Collapsed: that line with the active item after it. Expanded: one item per line, two columns in, with `☐`, `◧` (active, in the accent), `☑` and `⊘` (skipped). | The plan is empty or all items are done and the turn has ended. |
 | **Review** | A turn ended having changed files. | One line per changed file with `+` and `−` counts, and the verification result. | The next prompt is sent. The changes stay reachable through `/view` and `/undo`. |
-| **Usage** | `/usage`, or a limit is near. | This session: tokens by class, cache hit rate, cost by model, speed. History: usage and cost per provider and model for today, the week, the month and all time, with a breakdown per project, and what is left of each provider's limits ([18-usage.md](18-usage.md)). | Dismissed, or the limit is no longer near. |
+| **Usage** | `/usage`, or a limit is near. | This session: tokens by class, cache hit rate, cost by model, speed. History: usage and cost per provider and model for today, the week, the month and all time, with a breakdown per project, and what is left of each provider's limits ([18-usage.md](18-usage.md)). Near a limit and not opened: one line in the warning colour. | Dismissed, or the limit is no longer near. |
 | **Project** | Learned entries are waiting for review, or `/project`. | Proposed commands, conventions and facts with their sources. | Reviewed or dismissed. |
 | **Attempts** (after the first release) | Parallel attempts are running. | One row per attempt: variant, state, cost, checks. | A winner is picked or the attempts are discarded. |
 | **Employees** (after the first release) | A Coordinator team is running. | One row per Employee: task, state (working, waiting, needs approval, stuck, done), model, spend, last activity. `Enter` attaches to that Employee: the transcript view switches to its session, and a banner shows whose session it is and how to return. | The team has finished and its work is integrated or discarded. |
-| **Escalations** (after the first release) | Something is waiting for the user's decision. | The queue: who is asking, what kind of decision, the question. `Enter` opens the detail (command, diff, plan) with the choices. A count shows in the status line. | The queue is empty. |
+| **Escalations** (after the first release) | Something is waiting for the user's decision. | The queue: who is asking, what kind of decision, the question. `Enter` opens the detail (command, diff, plan) with the choices. A count shows in the hint row. | The queue is empty. |
 
 - **Height.** Each panel is collapsed by default to one to three lines. The live region's overall limit still applies; when several panels compete, the oldest collapses first.
-- **Focus.** `Ctrl+P` moves focus from the editor to the panels and back. In a focused panel, `Up` and `Down` move, `Enter` expands or opens the item in the viewer, and `Esc` returns to the editor.
+- **Focus.** `Ctrl+P` moves focus from the input to the live tool boxes and the panels, and back. In a focused panel, `Up` and `Down` move, `Enter` expands an item or opens it in the viewer, and `Esc` returns to the input. The focused item is drawn in the accent, in bold.
 - **Editing the plan.** With the plan panel focused: `Space` skips or restores an item, `e` rewords it, `Alt+Up` and `Alt+Down` reorder, `a` adds, `d` deletes. Each change takes effect at once and is passed to the agent at its next safe boundary ([05-tools.md](05-tools.md)).
-- **In the full-screen presenter**, on a wide window, panels may sit beside the transcript instead of above the editor. The components are the same. The owner chose stacked panels as the default on 2026-11-12.
+- **In the full-screen presenter**, on a wide window, panels may sit beside the transcript instead of above the input. The components are the same. The owner chose stacked panels as the default on 2026-11-12.
 
 ### Dialogs and menus
 
-They appear inside the live region, between the task list and the rule. While a dialog is open the editor is replaced by the dialog's own input.
+Dialogs appear in the live region, above the hint row, in place of the input box.
 
 **Approval.**
 
 ```
-  Allow this command?                                    shell · outside sandbox
-    cargo publish --dry-run
-    in crates/parser
-  y once   s this session   a always here   n deny   e deny with note   v view
+? Edit .github/workflows/ci.yml?
+  CI configuration is protected, so a change to it always asks.
+
+     29         - uses: dtolnay/rust-toolchain@stable
+     30 −         with: { components: rustfmt }
+     30 +         with: { components: rustfmt, clippy }
+     31         - run: cargo test --workspace
+     32 +       - run: cargo clippy --workspace -- -D warnings
+
+  y Allow once   s Allow this session   a Always allow here   n Deny   e Deny with a note
+
+  esc denies · ctrl+o shows it whole                                  opus-5.5 high · fast
 ```
 
-- The detail lines show exactly what will run, wrapped, never shortened. Control characters are drawn as visible symbols.
-- For edits the dialog shows the diff, clipped to the live region, with `v` opening the viewer.
-- Letters choose directly. `Esc` denies.
+- **The question** is bold, after a `?` in the warning colour. A dim line says why it is asked.
+- **The detail** shows exactly what will run, wrapped, never shortened, or the diff with the line-number and sign gutter. Control characters are drawn as visible symbols. A diff is clipped to the live region, and `Ctrl+O` opens it whole.
+- **The answers** are on one line, each key in the accent. Letters choose directly, and `Esc` denies. A choice is offered only where [06-permissions-and-sandbox.md](06-permissions-and-sandbox.md) offers it.
+- **Leaving the sandbox** asks `Run outside the sandbox?`. It shows the command and its folder, and says in the warning colour that it would run with the user's full rights and that this is asked every time. It offers only `y Run once outside the sandbox` and `n Deny`.
 
-**Menus** (slash commands, file completion, model and session pickers) open below the editor and replace the status line, up to 8 rows, filtered as the user types. The selected row is reversed. `Tab` or `Enter` accepts, `Esc` closes.
+**Menus** (slash commands, file completion, model and session pickers) open below the input box, in place of the hint row. They show up to 8 rows, filtered as the user types. The selected row is marked with `◆` and drawn in the accent, in bold. `Tab` or `Enter` accepts, and `Esc` closes. The `/effort` menu ends with its fast-mode row, `tab - fast mode` and its state, when the model offers a fast speed.
 
-**The viewer.** `Ctrl+O`, or `/view`, opens long content in a temporary full-screen view with scrolling and search: a tool's full output, a whole diff, the reasoning summary, a compaction summary. Closing it returns to the session exactly as it was. This is how inline mode offers "expand" without rewriting the scrollback.
+### The viewer
+
+`Ctrl+O`, or `/view`, opens the session in a temporary full-screen view on the alternate screen.
+
+- **Layout.** A title row (`Viewer`, the folder, the session and its turns, and `esc returns to the session`), then the transcript, then a key row.
+- **Boxes.** Every tool box starts closed, and the latest is selected, with its border in the accent. `Up` and `Down` move between boxes. `Enter` opens or closes the selected one with all its detail: the whole diff and the whole output, not a tail.
+- **Moving and searching.** `PageUp` and `PageDown` scroll, and `/` searches.
+- **Returning.** `Esc` returns to the inline screen exactly as it was.
+- **Other long content.** The viewer also opens the reasoning summary, a compaction summary, and an item named by `/view n`.
+
+This is how inline mode offers "expand" without rewriting the scrollback.
+
+### The mouse
+
+**Not in inline mode.** A terminal reports the mouse for the whole window or not at all; no mode limits it to some rows.
+- With reporting on, the wheel is sent to the program instead of scrolling the scrollback, and a drag no longer selects text (Windows Terminal and xterm then need `Shift`). That breaks the two things inline mode exists for.
+- Reporting cannot be turned on only while the pointer is over the live region, because nothing is reported until it is on.
+- tmux passes clicks only when its own mouse mode is on.
+- The inline presenter never asks where the cursor is, so it does not know which screen row its live region starts on. Mapping a click to a box would need the cursor-position query that [decision 0002](../decisions/0002-tui-rendering.md) avoids.
+
+Inline, the keys do the work: `Ctrl+T`, and `Ctrl+P` then `Enter`.
+
+**In the viewer and the full-screen presenter,** which own the screen, mouse reporting is on while they are shown (modes 1000 and 1006):
+- a click on a box opens or closes it;
+- the wheel scrolls the transcript;
+- `Shift` and a drag select text with the terminal's own selection.
+
+It costs an SGR mouse decoder in `cortex-term`, about 150 lines with its tests. On Windows it also needs the console's mouse input turned on while the alternate screen is shown; the layer turns that input off today. Step 25 builds both. Until then, the viewer works by keys alone.
 
 ### Colour and glyphs
 
 **Colours are semantic tokens.** The default theme uses one brand colour, the accent, and maps every other token to the terminal's own 16 colours, so the UI follows the user's terminal theme, light or dark.
 
-**The accent is the logo's purple, `#7A3CFB`.**
+**The accent is the logo's purple, `#7A3CFB`.** It marks your `◆` (in the transcript and the input), the spinner, `fast`, the active plan item, the answer keys in a dialog, the selected menu row, and the viewer's selected box. Nothing else.
 
 | Terminal | Accent shown as |
 |---|---|
-| True colour | `#7A3CFB` for marks, rules, the gauge and selection backgrounds. |
+| True colour | `#7A3CFB`. |
 | 256 colours | Index 99, the nearest. |
-| 16 colours | Magenta. |
+| 16 colours | Named by the theme: bright magenta (13) on a dark background, magenta (5) on a light one. |
 
-On a dark background that purple has a contrast of about 3.9 to 1, enough for marks and not for running text. Text in the accent colour therefore uses a lighter tint (`accent.text`), chosen to reach at least 4.5 to 1 against the terminal's background, which is queried at start-up; on a light background the base colour already reaches 5.4 to 1 and is used as it is. When the background cannot be determined, the dark-background tint is used.
+**The theme names its 16-colour accent itself.** The automatic reduction (`Color::for_depth`) brings `#7A3CFB` to the nearest xterm colour, which is bright blue (12), not magenta.
+
+**On a dark background at 16 colours, the accent marks but does not carry text.** No magenta reaches 4.5 to 1 there: on Windows Terminal's default scheme (Campbell, `#0C0C0C`), magenta is 2.4 to 1 and bright magenta 3.2 to 1. There, accent-coloured text (the selected menu row, the focused plan item) is drawn bold in the default colour, and only glyphs take the magenta. On a light background magenta reaches 5.9 to 1 (One Half Light) and is used as it is.
+
+**The tint for text.** In true colour, on a dark background, that purple has a contrast of about 3.6 to 1, enough for marks and not for text. Text in the accent colour therefore uses a lighter tint (`accent.text`), chosen to reach at least 4.5 to 1 against the terminal's background, which is queried at start-up: `#8D57FC`, 4.6 to 1, on Campbell. On a light background the base colour already reaches 5.2 to 1 and is used as it is. When the background cannot be determined, the dark-background tint is used.
 
 | Token | Default | Used for |
 |---|---|---|
-| `text` | default foreground | Assistant text. |
-| `muted` | bright black | Notices, hints, line numbers, the rule. |
-| `accent` | the logo purple, as above | The editor mark, the prompt bar, selections, the active plan item, the gauge. |
+| `text` | default foreground | Answers, and the answer's `◇`. |
+| `muted` | bright black | Reasoning (italic), tool detail, notices, hints, line numbers, box borders and rules. |
+| `accent` | the logo purple, as above | The marks listed above. |
 | `accent.text` | a tint of the accent, as above | Accent-coloured text. |
-| `user` | the accent | The prompt bar. |
-| `tool` | blue | Tool names. |
-| `code` | yellow | Inline code. |
+| `user` | the accent | Your `◆`. Your message itself is bold, in the default colour. |
+| `title` | bold default foreground | A tool call's imperative, a dialog's question. |
+| `code` | bright cyan on a dark background; cyan and bold on a light one | Inline code. Bright cyan is 11.3 to 1 on Campbell. Cyan is 3.3 to 1 on One Half Light, under the target for text, so it is bold there. |
 | `heading` | bold default foreground | Headings. |
-| `success` | green | Success marks. |
-| `warning` | yellow | Warnings, the gauge at 70%. |
-| `error` | red | Errors, the gauge at 90%. |
-| `diff.add` | green | Added lines. |
-| `diff.del` | red | Removed lines. |
+| `success` | green | `✓`, an edit's `+` count. |
+| `warning` | yellow | `?`, warnings, the context from 70%. |
+| `error` | red | `✗`, errors, a failure's measure, the context from 90%. |
+| `diff.add`, `diff.del` | green and red | The sign of an added or removed line, and the whole line where there is no background colour. |
+| `diff.add.bg`, `diff.del.bg` | in true colour, 20% of green (`#2EA043`) or red (`#E03E3E`) mixed into the background on a dark one, 13% on a light one; none otherwise | The tint of an added or removed line. The text on it keeps the default foreground: 9.1 to 10.2 to 1 on the two sample schemes. |
 | `diff.emph` | bold | Changed words inside a changed line. |
 
-- Themes are TOML tables that assign a colour to each token: an ANSI colour name, a 256-colour index or a hex value. `tui.theme` selects a built-in or user theme.
-- `NO_COLOR` and `--no-color` turn colour off. Meaning is never carried by colour alone: every state also has a glyph or a word.
-- Colour depth is detected and hex values are reduced when the terminal cannot show them.
+- **Blue on a dark background.** Plain blue is not used for text there: Campbell's blue (`#0037DA`) is 2.4 to 1 on its background, and its bright blue 5.0 to 1. A theme that wants blue on a dark background uses bright blue.
+- **Themes** are TOML tables that assign a colour to each token: an ANSI colour name, a 256-colour index or a hex value. `tui.theme` selects a built-in or user theme.
+- **Without colour.** `NO_COLOR` and `--no-color` turn colour off. Meaning is never carried by colour alone: every state has a glyph or a word, diff lines keep their sign, removed lines are dim, and your `◆`, the answer keys and the selection are bold.
+- **Colour depth** is detected, and hex values are reduced when the terminal cannot show them.
 
-**Glyphs.** `tui.glyphs = "auto"` uses the Unicode set above when the locale is UTF-8, and an ASCII set otherwise (`|`, `>`, `*`, `[x]`, `ok`, `!!`). Width is computed per grapheme, and the layout never depends on an ambiguous-width character being narrow.
+**Glyphs.** `tui.glyphs = "auto"` uses the Unicode set when the locale is UTF-8, and the ASCII set otherwise (and on the old console host).
 
-**Density.** `tui.density = "comfortable"` (default) puts a blank line between items. `"compact"` does not.
+| Use | Unicode | ASCII |
+|---|---|---|
+| You, the input | `◆` | `>` |
+| The answer | `◇` | `o` |
+| Reasoning | `∴` | `~` |
+| Succeeded, failed, waiting, denied, interrupted | `✓` `✗` `?` `⊘` `■` | `+` `x` `?` `-` `#` |
+| Spinner | `⣾⣽⣻⢿⡿⣟⣯⣷` | `\|/-\` |
+| Notice | `·` | `.` |
+| Box corners and edges | `╭ ╮ ╰ ╯ ─ │` | `+ + + + - \|` |
+| Plan items | `☐ ◧ ☑ ⊘` | `[ ] [>] [x] [-]` |
+| A removed line's sign, an ellipsis, an arrow | `−` `…` `→` | `-` `...` `->` |
+
+Width is computed per grapheme, and the layout never depends on an ambiguous-width character being narrow. Whether each Unicode glyph is in Windows Terminal's default font is checked by eye with the reference screens in [tui-look/](tui-look/README.md).
+
+**Density.** `tui.density = "comfortable"` (default) puts a blank line between blocks. `"compact"` puts one only between turns, and shows reasoning as its first line alone.
 
 ## Input
 
@@ -291,7 +403,7 @@ A multi-line text editor of our own. A text-area crate was considered and not us
 - **Files.** Typing `@` opens file completion over the workspace, with fuzzy matching and the ignore rules. An accepted path is inserted as a token and sent as a reference the agent can read.
 - **Commands.** `/` at the start of the prompt opens the command menu.
 - **External editor.** `Ctrl+G` opens the prompt in `$EDITOR` and reads it back.
-- **While a turn is running** the editor stays usable. `Enter` sends the text to the running turn (steer). `Tab` on an empty completion context switches the pending message between "steer" and "queue", shown on the rule. See [03-agent-loop.md](03-agent-loop.md).
+- **While a turn is running** the editor stays usable. `Enter` sends the text to the running turn (steer). `Tab` on an empty completion context switches the pending message between "steer" and "queue", shown on the hint row. See [03-agent-loop.md](03-agent-loop.md).
 
 ### Default keys
 
@@ -299,14 +411,15 @@ Every binding can be changed in `[keys]`. Bindings are looked up through a key m
 
 | Key | Action |
 |---|---|
-| `Enter` | Send. In a menu: accept. |
+| `Enter` | Send. In a menu: accept. On a focused live box: open or close it. |
 | `Shift+Enter`, `Alt+Enter`, `Ctrl+J` | New line. Three keys because not every terminal can tell `Shift+Enter` from `Enter`. |
 | `Esc` | Close the menu or dialog. Otherwise interrupt the running turn. |
 | `Ctrl+C` | Interrupt the running turn. If idle: clear the editor. Twice when idle and empty: quit. |
 | `Ctrl+D` | Quit when the editor is empty. |
 | `Ctrl+L` | Redraw the live region. |
-| `Ctrl+O` | Open the most recent long output in the viewer. |
-| `Ctrl+P` | Move focus between the editor and the panels. |
+| `Ctrl+O` | Open the viewer at the latest tool box. |
+| `Ctrl+P` | Move focus between the input, the live tool boxes and the panels. |
+| `Ctrl+T` | Open or close the running round's box in place. |
 | `Ctrl+R` | Search prompt history. |
 | `Ctrl+G` | Edit the prompt in the external editor. |
 | `Tab` | Accept a completion. With no completion and a turn running: switch steer and queue. |
@@ -415,6 +528,6 @@ Covered in [../testing-and-ci.md](../testing-and-ci.md): snapshot tests of view 
 
 ## Not in the first release
 
-Mouse support in inline mode, image display, a vi editing mode, screen-reader mode, and running the user's own shell commands from the prompt. None is ruled out by the design.
+Mouse support in inline mode ("The mouse", above; the viewer and the full-screen presenter have it from step 25), image display, a vi editing mode, screen-reader mode, and running the user's own shell commands from the prompt. None is ruled out by the design.
 
 Planned for after the release, each with its own build step: task leases and `/lease`, the attempts panel, the Employees and escalations panels, the full context profiler behind `/context`, and other tools' records in `/usage`.

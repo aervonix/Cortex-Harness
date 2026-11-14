@@ -1,0 +1,40 @@
+[0m◇[0m All 46 tests pass, and [0;96mcargo[0m [0;96mfmt[0m is clean.[0m
+[0m
+[0;1;38;2;122;60;251m◆[0m [0;1m1_000 lexes as 1. Fix scan_number so digit separators work, and add a test.[0m
+[0m
+[0;90m∴[0;90m Reasoned for 6s[0m
+[0m  [0;3;90mThe loop breaks on any non-digit, so _ ends the literal. Check whether a[0m
+[0m  [0;3;90mtrailing _ is meant to be an error first.[0m
+[0m
+[0m◇[0m [0;96mscan_number[0m stops at the first character that is not a digit, so [0;96m1_000[0m ends[0m
+[0m  after the [0;96m1[0m. I'll read the scanner and allow [0;96m_[0m between digits.[0m
+[0m
+[0;90m╭─────────────────────────────────────────────────────────────────────────────────────────────────╮[0m
+[0;90m│[0m [0;92m✓[0m [0;1mRead lex.rs[0m  [0;90mlines 120–178[0m                                                                    [0;90m│[0m
+[0;90m│[0m [0;92m✓[0m [0;1mEdit lex.rs[0m  [0;92m+5[0m [0;91m−1[0m                                                                            [0;90m│[0m
+[0;90m│[0m   [0;90m 141[0m   [0;90m    while let Some(c) = self.peek() {[0m                                                  [0;90m│[0m
+[0;90m│[0m   [0;90;48;2;54;22;22m 142 [0;91;48;2;54;22;22m− [0;48;2;54;22;22m        if !c.is_ascii_digit() { break; }                                             [0m [0;90m│[0m
+[0;90m│[0m   [0;90;48;2;19;42;23m 142 [0;92;48;2;19;42;23m+ [0;48;2;19;42;23m        if c == '_' && self.peek_next().is_some_and(|d| d.is_ascii_digit()) {         [0m [0;90m│[0m
+[0;90m│[0m   [0;90;48;2;19;42;23m 143 [0;92;48;2;19;42;23m+ [0;48;2;19;42;23m            self.bump();                                                              [0m [0;90m│[0m
+[0;90m│[0m   [0;90;48;2;19;42;23m 144 [0;92;48;2;19;42;23m+ [0;48;2;19;42;23m            continue;                                                                 [0m [0;90m│[0m
+[0;90m│[0m   [0;90;48;2;19;42;23m 145 [0;92;48;2;19;42;23m+ [0;48;2;19;42;23m        }                                                                             [0m [0;90m│[0m
+[0;90m│[0m   [0;90;48;2;19;42;23m 146 [0;92;48;2;19;42;23m+ [0;48;2;19;42;23m        if !c.is_ascii_digit() { break; }                                             [0m [0;90m│[0m
+[0;90m│[0m   [0;90m 147[0m   [0;90m        self.bump();[0m                                                                   [0;90m│[0m
+[0;90m│[0m [0;91m✗[0m [0;1mRun cargo test -p parser[0m  [0;91mexit 101 · 3.4s[0m                                                     [0;90m│[0m
+[0;90m│[0m   [0;90mtest lex::numbers::trailing_separator ... FAILED[0m                                              [0;90m│[0m
+[0;90m│[0m   [0;90massertion failed: lex("1_").is_err()[0m                                                          [0;90m│[0m
+[0;90m│[0m   [0;90mtest result: FAILED. 47 passed; 1 failed; 0 ignored; finished in 0.02s[0m                        [0;90m│[0m
+[0;90m╰─────────────────────────────────────────────────────────────────────────────────────────────────╯[0m
+[0m
+[0m◇[0m One test fails: [0;96m1_[0m must be an error, but the scanner now stops before the [0;96m_[0m
+[0m  and returns [0;96m1[0m. A separator has to be followed by a digit, so the other case[0m
+[0m  becomes an error:[0m
+[0m
+[0m  [0;95mif[0m c == [0;92m'_'[0m {[0m
+[0m  [0m    [0;95mif[0m ![0;96mself[0m.peek_next().is_some_and(|d| d.is_ascii_digit()) {[0m
+[0m  [0m        [0;95mreturn[0m [0;96mErr[0m([0;96mself[0m.error([0;92m"digit separator mu[0m
+[0m
+[0;90m╭─────────────────────────────────────────────────────────────────────────────────────────────────╮[0m
+[0;90m│[0m [0;1;38;2;122;60;251m◆[0m also run clippy when that's done                                                              [0;90m│[0m
+[0;90m╰─────────────────────────────────────────────────────────────────────────────────────────────────╯[0m
+[0m  [0;38;2;122;60;251m⣾[0;90m 14s  [0;90mesc stops · enter steers this turn · tab queues it instead[0m          [0;90mopus-5.5 high[0;90m · [0;38;2;141;87;252mfast[0m  [0m

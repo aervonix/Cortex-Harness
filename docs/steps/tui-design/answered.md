@@ -1,0 +1,11 @@
+# Answered in the TUI design round, on 2026-11-14
+
+This round is not a numbered step of the build plan. It ran before step 21 so that the owner could choose the TUI's look from real alternatives before anything visible was built. Its records are here, in a folder named for the job. The choice and the rounds are in [decision 0033](../../decisions/0033-tui-look.md), and the look is specified in [architecture/09-tui.md](../../architecture/09-tui.md).
+
+| Question | The owner's answer, 2026-11-14 | Recorded in |
+|---|---|---|
+| **Round 1:** four looks (Flow, the drafted look made concrete; Outline; Ledger; Dock). | **None.** They felt cluttered and crowded with text. The owner wants something cleaner and prettier, and named Codex CLI's terminal UI as inspiration for the feel, not as something to copy. | [Decision 0033](../../decisions/0033-tui-look.md), "The rounds" |
+| **Round 2:** three quieter looks (Haze, Margin, Tide). | **None.** They were still unconventional. The owner wants a modern, conventional terminal UI. The brief's ban on the shared idioms of terminal agents was lifted: leading glyphs, a bounded input, a header card, short bold tool lines and a checklist plan. Glyphs, colours and wording stay ours. | [Decision 0033](../../decisions/0033-tui-look.md), "The rounds" |
+| **Round 3:** two conventional looks (Roomy, Trim). | **Roomy**, with two changes: answers stand apart from reasoning and tool calls, and tool calls go in boxes that expand. Round 2's faults were fixed as well: diffs with a gutter, inline code without a chip, no band on the prompt, and two indent levels. | [Decision 0033](../../decisions/0033-tui-look.md), "Decision" |
+| **Roomy 2:** Roomy with those changes, a box per tool round, `Ctrl+T` inline, the `Ctrl+O` viewer with box navigation, and the mouse only in the viewer and the full-screen presenter. | **Chosen.** | [architecture/09-tui.md](../../architecture/09-tui.md), "Layout and look"; owner decision 4 in [build-plan.md](../../build-plan.md) |
+| **Cost and the cache rate always on screen,** as the vision put it, or shown when they matter. | **When they matter** (round 2's brief): after a turn, when a budget is set, and in `/usage`. | [vision.md](../../vision.md), "It is lean without being bare" |

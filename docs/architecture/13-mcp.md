@@ -80,7 +80,7 @@ timeout_ms = 30000
 - **Lazy, parallel start.** Servers are started in the background when a session starts. The first prompt does not wait for them. A `tool_search` or `tool_call` that needs a server still starting waits for it, up to the start-up timeout (default 10 s).
 - **Era detection.** For each server the client probes for the current protocol revision and falls back to the older handshake, then remembers the answer for that server.
 - **Tool lists** are cached per server with the lifetime the server gives. Change notifications refresh them.
-- **Failure.** A server that fails to start or crashes is reported in the status line and to the model on its next use. Local servers are restarted on next use, with backoff.
+- **Failure.** A server that fails to start or crashes is reported in the hint row and to the model on its next use. Local servers are restarted on next use, with backoff.
 - **Shutdown.** Standard input is closed, then the process tree is terminated through the same staged kill as shell commands.
 - **Windows.** Many servers are started through script shims (`npx` and similar), which cannot be executed directly. The launcher resolves the program on the path, detects shims, and runs them through the command interpreter with arguments it has escaped itself, refusing arguments that cannot be escaped safely.
 

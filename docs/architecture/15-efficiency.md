@@ -203,7 +203,7 @@ Adopted by the owner on 2026-11-12 ([../ideas.md](../ideas.md)), with one condit
 
 ## Live usage view
 
-Always visible in the status line ([09-tui.md](09-tui.md)): the context gauge, tokens, and session cost. `/usage` opens a panel. Its history side (usage and cost per provider, model and project over time, limits left, and other tools' records) is specified in [18-usage.md](18-usage.md). Its session side shows:
+A glance away in the hint row ([09-tui.md](09-tui.md)): the turn's and the session's cost after each turn, the context once it passes half the window, and the spend whenever a budget is set. `/usage` opens a panel. Its history side (usage and cost per provider, model and project over time, limits left, and other tools' records) is specified in [18-usage.md](18-usage.md). Its session side shows:
 
 - tokens by class for the session and the last request: fresh input, cache read, cache write, output, reasoning;
 - **cache hit rate:** cache-read tokens as a share of all input tokens, for the last request and the session;

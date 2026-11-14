@@ -19,7 +19,7 @@ Numbers the product and the tooling must meet, how each is measured, and where e
 
 | Loading configuration: the managed, user, project and local files, a profile, the environment and the command line, checked and merged | ≤ 1 ms | ≤ 3 ms | ≤ 10 ms | Step 9, desktop, release build, files in the page cache, median of 2,000 loads: 127 µs for four files with a profile, three environment and command-line settings, 41 effective settings and four rules (slowest 0.5 ms); 4.7 µs when none of the four files exists. It is part of each start-up budget above, not an addition to them: under 1% of the headless budget. Runners are not measured yet. **After the fixes that followed the review of step 9 (2026-11-13)**, a project's files are found through the path resolver, which looks at each directory on the way to them: measured the same way with the workspace nine directories below the root, 184 µs for the same set (slowest 0.6 ms) and 33 µs when no file exists. |
 
-**How.** A pseudo-terminal harness records the time from spawning the process to the first frame that shows the editor and status line. Thirty runs, median and 95th percentile. The alias `cx` is the same file under a second name ([decisions/0013-naming.md](decisions/0013-naming.md)), so it has the same budget; the measurement is taken under both names.
+**How.** A pseudo-terminal harness records the time from spawning the process to the first frame that shows the input box and hint row. Thirty runs, median and 95th percentile. The alias `cx` is the same file under a second name ([decisions/0013-naming.md](decisions/0013-naming.md)), so it has the same budget; the measurement is taken under both names.
 
 **Rules that protect it.**
 
