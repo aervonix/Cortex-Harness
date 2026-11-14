@@ -316,7 +316,10 @@ mod imp {
         for group in left {
             if let Ok(group) = libc::pid_t::try_from(group) {
                 let _ = unix::signal_group(group, libc::SIGKILL);
-                unix::kill_session(group);
+                // The harness is dead, so there is no result to weaken: a
+                // session that outruns the bound is left, as the guard
+                // moves on to the next group.
+                let _ = unix::kill_session(group);
             }
         }
     }

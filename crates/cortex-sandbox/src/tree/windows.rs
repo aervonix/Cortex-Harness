@@ -317,6 +317,12 @@ impl Inner {
         Ok(Exit::Code(i32::from_ne_bytes(code.to_ne_bytes())))
     }
 
+    pub(super) fn escaped(&self) -> bool {
+        // A Job Object is killed as one, and a process cannot leave it, so
+        // nothing of the tree outruns the kill.
+        false
+    }
+
     pub(super) fn end(&self) {
         {
             let ended_now = lock(&self.state);

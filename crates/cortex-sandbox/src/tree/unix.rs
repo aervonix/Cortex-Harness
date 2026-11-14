@@ -16,7 +16,7 @@ use std::io::{self, PipeReader, PipeWriter, Read};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::guard::{Guard, Watch};
@@ -48,6 +48,10 @@ pub(super) struct Inner {
     started: std::time::Instant,
     /// The guard's knowledge of this group, given up when the tree ends.
     watch: Option<Watch>,
+    /// Set when a kill of the tree ran out its bound with a process of the
+    /// session still alive (a process that forks in a loop): the tree
+    /// could not be made to die whole, so what it left may still write.
+    escaped: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -143,6 +147,7 @@ impl Inner {
             exit: Mutex::new(None),
             started: std::time::Instant::now(),
             watch: None,
+            escaped: AtomicBool::new(false),
         };
         if let Some(pending) = pending {
             match pending.started(child_group(pid)) {
@@ -184,8 +189,14 @@ impl Inner {
         // A process that made a process group of its own is still in the
         // command's session, and dies with it. The lock is held, so the
         // command is not reaped and the session's id is still its own.
-        kill_session(self.pid);
+        if !kill_session(self.pid) {
+            self.escaped.store(true, Ordering::Release);
+        }
         Ok(())
+    }
+
+    pub(super) fn escaped(&self) -> bool {
+        self.escaped.load(Ordering::Acquire)
     }
 
     fn signal(&self, signal: libc::c_int) -> io::Result<()> {
@@ -227,7 +238,9 @@ impl Inner {
             // The command is not reaped yet, so the group and the session
             // are still ours.
             let _ = signal_group(self.pid, libc::SIGKILL);
-            kill_session(self.pid);
+            if !kill_session(self.pid) {
+                self.escaped.store(true, Ordering::Release);
+            }
         }
         // A thread in `wait` returns now that the command is dead, and
         // gives up the lock. If nobody asked, the exit is read here, while
@@ -377,32 +390,68 @@ pub(super) fn signal_group(group: libc::pid_t, signal: libc::c_int) -> io::Resul
     Ok(())
 }
 
-/// Kills every process of the session `leader` leads that is not in its
-/// process group: one that made a group of its own, which a signal to the
-/// group does not reach. In the sandbox no process can leave the session
-/// (the filter answers `setsid` as done without doing it), so this reaches
-/// all of a command's processes there.
+/// Kills every process of the session `leader` leads, the leader excepted:
+/// its group, and any process that made a group of its own, which a signal
+/// to the group alone does not reach. In the sandbox no process can leave
+/// the session (the filter answers `setsid` as done without doing it), so
+/// this reaches all of a command's processes there.
+///
+/// It sweeps until a sweep finds the session empty, or [`KILL_SWEEPS`]
+/// sweeps have run, and says which. One sweep is not enough: a process
+/// that forks in a loop, each child in a group of its own and each parent
+/// exiting at once, is at a new id by the time one pass of the process
+/// table reaches where it was, so the pass misses the live generation
+/// (found by the third review of step 26). Each sweep stops a process it
+/// finds (`SIGSTOP`) before it kills it, so a forker caught in the window
+/// between two forks cannot fork again, and a few sweeps clear the chain.
+/// When the bound is reached with something still alive, the caller is
+/// told, so that the turn stops and the result does not call the tree's
+/// end clean.
 ///
 /// Each process is held by a process descriptor before it is looked at
 /// again and signalled, so a signal never reaches a process that took the
 /// id of one that had ended. A kernel without process descriptors (before
-/// Linux 5.3) is sent the signal by id after the second look.
+/// Linux 5.3) is sent the signal by id after a second look.
 ///
 /// The caller holds that `leader` leads a session this process started and
 /// has not reaped.
+#[cfg(target_os = "linux")]
+pub(super) fn kill_session(leader: libc::pid_t) -> bool {
+    if leader <= 1 {
+        return true;
+    }
+    for _ in 0..KILL_SWEEPS {
+        if sweep_session(leader) == 0 {
+            return true;
+        }
+    }
+    // A last look, after the final sweep's kills: a forker that was dying
+    // when the last sweep found it is a zombie now, not alive.
+    sweep_session(leader) == 0
+}
+
+/// The most sweeps [`kill_session`] makes. A sweep is a read of the process
+/// table and a few signals, so the bound is generous: the cost of one more
+/// sweep is far less than that of a process that outlived its tree and
+/// writes a protected path after the look.
+#[cfg(target_os = "linux")]
+const KILL_SWEEPS: usize = 2000;
+
+/// One sweep: stops and kills every live process of the session `leader`
+/// leads but the leader, and returns how many it found alive. Stopping a
+/// process before killing it keeps a forker from forking once more between
+/// being found and being killed.
 #[cfg(target_os = "linux")]
 #[allow(
     clippy::disallowed_methods,
     reason = "a read of the process table, as `count_group`'s"
 )]
-pub(super) fn kill_session(leader: libc::pid_t) {
-    if leader <= 1 {
-        return;
-    }
+fn sweep_session(leader: libc::pid_t) -> usize {
     let session = leader.to_string();
     let Ok(entries) = std::fs::read_dir("/proc") else {
-        return;
+        return 0;
     };
+    let mut alive = 0;
     for entry in entries.flatten() {
         let Some(id) = entry
             .file_name()
@@ -414,16 +463,20 @@ pub(super) fn kill_session(leader: libc::pid_t) {
         if id == leader || !in_session(id, &session) {
             continue;
         }
+        alive += 1;
         // SAFETY: `pidfd_open` takes two integers and returns a new
         // descriptor or -1; the descriptor is owned at once.
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, id, 0) };
         if fd < 0 {
-            // No process descriptors on this kernel: the second look and
-            // the signal by id.
+            // No process descriptors on this kernel: a second look, then
+            // stop and kill by id.
             if in_session(id, &session) {
                 // SAFETY: `kill` takes two integers; `id` is greater than
                 // one and a process, not a group.
-                unsafe { libc::kill(id, libc::SIGKILL) };
+                unsafe {
+                    libc::kill(id, libc::SIGSTOP);
+                    libc::kill(id, libc::SIGKILL);
+                }
             }
             continue;
         }
@@ -434,27 +487,33 @@ pub(super) fn kill_session(leader: libc::pid_t) {
         // Looked at again while held: if the id is another process's now,
         // its session is not this one.
         if in_session(id, &session) {
-            // SAFETY: the call takes a descriptor this function owns, a
-            // signal number, a null pointer (no extra information) and no
-            // flags.
-            unsafe {
-                libc::syscall(
-                    libc::SYS_pidfd_send_signal,
-                    std::os::fd::AsRawFd::as_raw_fd(&held),
-                    libc::SIGKILL,
-                    std::ptr::null::<libc::siginfo_t>(),
-                    0u32,
-                )
-            };
+            for signal in [libc::SIGSTOP, libc::SIGKILL] {
+                // SAFETY: the call takes a descriptor this function owns, a
+                // signal number, a null pointer (no extra information) and
+                // no flags.
+                unsafe {
+                    libc::syscall(
+                        libc::SYS_pidfd_send_signal,
+                        std::os::fd::AsRawFd::as_raw_fd(&held),
+                        signal,
+                        std::ptr::null::<libc::siginfo_t>(),
+                        0u32,
+                    );
+                }
+            }
         }
     }
+    alive
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(super) fn kill_session(_leader: libc::pid_t) {}
+pub(super) fn kill_session(_leader: libc::pid_t) -> bool {
+    true
+}
 
-/// Whether the live process `id` is in the session `session` and outside
-/// its leader's group (the group is signalled as a whole).
+/// Whether the live process `id` is in the session `session` (its leader
+/// excepted by the caller, by id). A zombie, or a process that has been
+/// reaped, is not alive.
 #[cfg(target_os = "linux")]
 #[allow(
     clippy::disallowed_methods,
@@ -468,12 +527,12 @@ fn in_session(id: libc::pid_t, session: &str) -> bool {
         return false;
     };
     let mut fields = fields.split(' ');
-    let (Some(state), Some(_parent), Some(group), Some(its_session)) =
+    let (Some(state), Some(_parent), Some(_group), Some(its_session)) =
         (fields.next(), fields.next(), fields.next(), fields.next())
     else {
         return false;
     };
-    its_session == session && group != session && state != "Z" && state != "X"
+    its_session == session && state != "Z" && state != "X"
 }
 
 /// How many live processes are in the group `group` leads, or in the

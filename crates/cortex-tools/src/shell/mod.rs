@@ -578,6 +578,7 @@ fn payload(shell: &Shell, finished: &Finished, changes: Option<&Changes>) -> Jso
         }),
         "background_stopped": finished.left_running,
         "outlived": finished.outlived,
+        "escaped": finished.escaped,
         "output_lost": finished.output_lost,
         "output_bytes": finished.output.total_bytes,
         "changes": changes.map(Changes::to_json),
@@ -607,6 +608,14 @@ fn write_result(
         closing.push(
             "[A process the command started is still running and still holds the command's \
              output. It is outside the command's process tree, so it could not be stopped.]"
+                .to_owned(),
+        );
+    }
+    if finished.escaped {
+        closing.push(
+            "[A process the command started kept forking and could not all be killed within the \
+             bound. Something of the command may still be running inside the sandbox, where it \
+             can change a file that decides what runs later. The turn stops here.]"
                 .to_owned(),
         );
     }
@@ -766,6 +775,7 @@ mod tests {
             stopped_with: None,
             left_running: false,
             outlived: false,
+            escaped: false,
             output_lost: false,
             duration: Duration::from_millis(1234),
             output: Captured {
