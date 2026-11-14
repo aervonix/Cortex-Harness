@@ -1,6 +1,6 @@
 # After step 15: context management
 
-Step 15 added context management to `cortex-agent` and wired it into `cortex-core`. That is about 8,700 lines of source and tests over 52 files in the crates, with 105 new tests, and no new dependency. Measured on the step's pull request (#43) on 2026-11-14, against the main branch's run at `714db6e`, the base the branch was rebased on:
+Step 15 added context management to `cortex-agent` and wired it into `cortex-core`. That is about 8,700 lines of source and tests over 52 files in the crates, with 78 new tests (76 on Windows, where two are Unix-only), and no new dependency. Measured on the step's pull request (#43) on 2026-11-14, against the main branch's run at `714db6e`, the base the branch was rebased on:
 
 | Job | Main, `714db6e` (run 43580906780) | This step, `0d051d3` (run 43582887347) |
 |---|---|---|
