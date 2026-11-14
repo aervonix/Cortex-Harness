@@ -63,8 +63,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use landlock::{
-    ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
-    RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope,
+    ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, Ruleset, RulesetAttr,
+    RulesetCreatedAttr, RulesetStatus, Scope,
 };
 use seccompiler::{
     BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
@@ -153,22 +153,52 @@ fn landlock(policy: &Policy) -> Result<(), String> {
 
 /// Adds a rule that allows `access` beneath `root`. A root that is not
 /// there is skipped; a file is given the rights that apply to a file.
+///
+/// The root is opened with no symbolic link resolved on the way to it, so
+/// that a root, or any directory on the way to it, that a confined command
+/// replaced with a link since the harness resolved the roots is refused,
+/// not followed to wherever it leads (finding 6 of the third review of
+/// step 26). The harness resolves the roots once, when the session's
+/// policy is made (`cortex-core`'s `policy_of`), so a link the user set up
+/// on purpose is already followed then and its real path is what is
+/// granted here; only a link that appeared since is refused.
 fn grant(
     created: landlock::RulesetCreated,
     root: &Path,
     access: BitFlags<AccessFs>,
     abi: ABI,
 ) -> Result<landlock::RulesetCreated, String> {
-    let Ok(metadata) = std::fs::metadata(root) else {
+    let Ok(metadata) = std::fs::symlink_metadata(root) else {
+        // Not there at all: nothing to grant. A grant not made only
+        // narrows.
         return Ok(created);
     };
+    if metadata.file_type().is_symlink() {
+        // The root itself is a link now. It was a real directory, or did
+        // not exist, when the roots were resolved: a confined command
+        // swapped it. Fail closed.
+        return Err(format!(
+            "{}: a write or read root is a symbolic link now, which it was not when the \
+             session started: it was replaced",
+            root.display()
+        ));
+    }
     let access = if metadata.is_dir() {
         access
     } else {
         access & AccessFs::from_file(abi)
     };
-    let fd = match PathFd::new(root) {
+    let fd = match open_no_symlinks(root) {
         Ok(fd) => fd,
+        Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {
+            // A directory on the way to the root is a link now: openat2
+            // refused to follow it. Fail closed.
+            return Err(format!(
+                "{}: a directory on the way to a root is a symbolic link now, which it was \
+                 not when the session started: it was replaced",
+                root.display()
+            ));
+        }
         // Gone between the look and the open: nothing to grant.
         Err(_) if std::fs::symlink_metadata(root).is_err() => return Ok(created),
         Err(error) => return Err(format!("{}: {error}", root.display())),
@@ -176,6 +206,51 @@ fn grant(
     created
         .add_rule(PathBeneath::new(fd, access))
         .map_err(|error| format!("{}: {error}", root.display()))
+}
+
+/// Opens `path` as an `O_PATH` descriptor, refusing to follow a symbolic
+/// link anywhere on the way to it or as its last component
+/// (`RESOLVE_NO_SYMLINKS`), through `openat2` (Linux 5.6; every kernel the
+/// sandbox enforces on has it). The descriptor is for Landlock to name the
+/// tree by, never read or written.
+#[allow(
+    unsafe_code,
+    reason = "decision 0030: the no-link open is only reachable through a system call; \
+              cortex-sandbox is where such calls live"
+)]
+fn open_no_symlinks(path: &Path) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut raw: Vec<u8> = path.as_os_str().as_bytes().to_vec();
+    raw.push(0);
+    // SAFETY: `open_how` is a plain C struct of integers; all-zero is its
+    // documented empty form, which the fields below then fill.
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    // `O_PATH` opens the node itself, for naming only; `O_CLOEXEC` so the
+    // command does not inherit it. `O_DIRECTORY` is not set, so that a file
+    // root (`/dev/null`) opens too.
+    how.flags = (libc::O_PATH | libc::O_CLOEXEC) as u64;
+    how.resolve = libc::RESOLVE_NO_SYMLINKS;
+    // SAFETY: `openat2` takes a directory fd (`AT_FDCWD`, since the path is
+    // absolute), a NUL-terminated path, a pointer to `open_how` and its
+    // size. It returns a new descriptor or -1; the descriptor is owned at
+    // once.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            raw.as_ptr(),
+            std::ptr::addr_of!(how),
+            std::mem::size_of::<libc::open_how>(),
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let fd = i32::try_from(fd).map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))?;
+    // SAFETY: `fd` was just returned by `openat2` and nothing else owns it.
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
 }
 
 /// What x32 system calls add to a number on x86-64.

@@ -825,7 +825,10 @@ fn sys_a_process_that_keeps_forking_does_not_outlive_the_tree() {
         "        os._exit(0)",
         "    os.setpgid(0, 0)",
         "    if time.monotonic() > stop - 3.0:",
-        &format!("        open({:?}, 'w').write('alive')", marker.to_str().expect("a path")),
+        &format!(
+            "        open({:?}, 'w').write('alive')",
+            marker.to_str().expect("a path")
+        ),
         "        os._exit(0)",
     ]
     .join("\n");
@@ -874,7 +877,12 @@ fn live_session_members(sid: u32) -> usize {
     };
     entries
         .flatten()
-        .filter_map(|entry| entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()))
+        .filter_map(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+        })
         .filter(|&id| id != sid)
         .filter(|id| {
             std::fs::read_to_string(format!("/proc/{id}/stat")).is_ok_and(|stat| {
@@ -882,8 +890,7 @@ fn live_session_members(sid: u32) -> usize {
                     let mut fields = fields.split(' ');
                     let (state, _parent, _group, its_session) =
                         (fields.next(), fields.next(), fields.next(), fields.next());
-                    its_session == Some(&session)
-                        && !matches!(state, Some("Z") | Some("X") | None)
+                    its_session == Some(&session) && !matches!(state, Some("Z") | Some("X") | None)
                 })
             })
         })

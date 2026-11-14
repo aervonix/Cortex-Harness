@@ -436,6 +436,7 @@ fn sys_the_tool_reports_what_its_command_changed() {
             "base_commit": head,
             "head_moved": false,
             "complete": true,
+            "incomplete": null,
         }),
         "{}",
         ran.text()
