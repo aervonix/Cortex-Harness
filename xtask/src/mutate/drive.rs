@@ -321,7 +321,7 @@ impl Runner for CargoRunner {
 /// tracks and what it does not ignore; or, where there is no repository (a
 /// copy made for a remote build), every file outside `.git` and any
 /// `target` directory.
-fn tree_files(root: &Path) -> Result<Vec<String>> {
+pub(crate) fn tree_files(root: &Path) -> Result<Vec<String>> {
     if root.join(".git").exists() {
         return workspace::repository_files(root);
     }
@@ -413,7 +413,7 @@ fn code_hash(root: &Path, files: &[String]) -> Result<u64> {
 /// differ, and removes what the tree no longer has. A file that is already
 /// the same is not touched, so its build stays valid. A break left in the
 /// copy by a run that was killed is undone here.
-fn sync(root: &Path, copy: &Path, files: &[String]) -> Result<()> {
+pub(crate) fn sync(root: &Path, copy: &Path, files: &[String]) -> Result<()> {
     for file in files {
         let from = root.join(file);
         let to = copy.join(file);

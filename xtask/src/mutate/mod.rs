@@ -31,6 +31,8 @@ mod jobs;
 pub(crate) mod lex;
 mod list;
 
+pub(crate) use drive::{sync, tree_files};
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::ops::Range;

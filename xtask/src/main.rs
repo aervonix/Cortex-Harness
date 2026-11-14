@@ -34,6 +34,7 @@ mod replace;
 mod rules;
 mod runs;
 mod schema;
+mod scratch_test;
 mod startup;
 mod steps;
 mod stress;
@@ -110,6 +111,13 @@ On the runners, without a pull request (the `try` workflow runs this)
                     once, run in turn N rounds on this machine, and compared
                     by each test's median: a change's cost apart from the
                     runner's speed.
+
+Reviews
+  scratch-test CRATE FILE [-- NEXTEST ARGS]
+                    Run the tests of one throwaway file as a module of CRATE's
+                    integration tests, in a copy of the tree under
+                    target/scratch-test/: nothing to register, nothing left
+                    in the worktree.
 
 Before a push
   combine PR...     Put this branch on top of the open pull requests named, in
@@ -231,6 +239,7 @@ fn run(command: &str, rest: &[String]) -> Result<()> {
         "try" => try_run::run(rest),
         "ab" => ab::run(rest),
         "combine" => combine::run(rest),
+        "scratch-test" => scratch_test::run(rest),
         "owner-guard" => owner_guard::run(rest),
         "fuzz" => outside::fuzz(rest),
         "live" => outside::live(rest),
