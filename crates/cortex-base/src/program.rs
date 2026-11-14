@@ -75,6 +75,15 @@ pub fn find_outside(
     if windows && Path::new(name).extension().is_none() {
         names.insert(0, OsString::from(format!("{name}.exe")));
     }
+    // A candidate is compared by its real path, so each avoid root is taken
+    // to its real path too: on Windows `canonicalize` returns a verbatim
+    // (`\\?\`) path, and a plain root would never be a prefix of it, so an
+    // avoid root the caller passed unresolved would never catch a candidate
+    // under it (found on Windows by the independent review's test).
+    let avoid: Vec<PathBuf> = avoid
+        .iter()
+        .map(|root| std::fs::canonicalize(root).unwrap_or_else(|_| root.clone()))
+        .collect();
     directories
         .iter()
         .filter(|directory| directory.is_absolute())
