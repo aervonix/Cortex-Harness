@@ -1,0 +1,220 @@
+# Step 15: context management, in cortex-agent, and what it added to
+# cortex-core.
+#
+# Each rule of the context is broken here: the frozen prefix, appended
+# notices, epochs at a change of model, the carried state, replayed turns
+# without reasoning, the redaction mark, the budget, background summaries
+# and the overflow fallback, and what may be read as an instruction file.
+
+[break] notice-edits-the-system-prompt
+rule: A changed instruction file is appended as a notice; the system prompt is not rewritten within the epoch.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::tell_changes
+find: self.record_notice(turn, NoticeSource::Instructions, text).await?;
+replace: if let Some(epoch) = self.context.epoch.as_mut() { epoch.system.push_str(&text); }
+caught-by:
+    cortex-agent::it context::changed_new_and_removed_instruction_files_are_told_as_notices
+    cortex-agent::it context::the_prefix_holds_over_a_long_session_and_breaks_when_history_is_edited
+
+[break] tools-reordered-inside-an-epoch
+rule: The tool list is fixed for the epoch: every request of it declares the same tools in the same order.
+file: crates/cortex-agent/src/context/mod.rs
+in: Context::assemble
+find: .map(|epoch| (epoch.system.clone(), epoch.tools.clone()))
+replace: .map(|epoch| { let mut tools = epoch.tools.clone(); let count = tools.len().max(1); tools.rotate_left(self.history.len() % count); (epoch.system.clone(), tools) })
+caught-by:
+    cortex-agent::it context::the_prefix_holds_over_a_long_session_and_breaks_when_history_is_edited
+
+[break] epoch-boundary-inside-a-round
+rule: An epoch boundary never falls inside a tool round: the turns a compaction replays never begin with results whose call it summarised.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::covered_now
+find: if messages[index].role != Role::Tool {
+replace: if true {
+caught-by:
+    cortex-agent::it context::a_compaction_that_keeps_recent_turns_never_splits_a_round
+
+[break] carried-file-dropped
+rule: A compaction carries the files read and changed exactly, every one.
+file: crates/cortex-agent/src/context/compact.rs
+in: Carried::files_from
+find: files.sort_by(|one, other| one.path.cmp(&other.path));
+replace: files.sort_by(|one, other| one.path.cmp(&other.path)); files.pop();
+caught-by:
+    cortex-agent::it context::a_compaction_carries_the_plan_the_files_and_the_last_message_exactly
+
+[break] carried-plan-item-dropped
+rule: A compaction carries the plan exactly, every item of it.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::finish_compaction
+find: plan: self.context.parts.plan.as_ref().map(|board| board.get()),
+replace: plan: self.context.parts.plan.as_ref().map(|board| { let mut plan = board.get(); plan.items.pop(); plan }),
+caught-by:
+    cortex-agent::it context::a_compaction_carries_the_plan_the_files_and_the_last_message_exactly
+
+[break] last-user-message-changed
+rule: A compaction carries the user's last message word for word.
+file: crates/cortex-agent/src/context/mod.rs
+in: Context::note
+find: Item::UserMessage(user) => self.last_user = Some(user.parts.clone()),
+replace: Item::UserMessage(user) => self.last_user = Some(user.parts.iter().take(1).map(|_| Part::text("(the user's message)")).collect()),
+caught-by:
+    cortex-agent::it context::a_compaction_carries_the_plan_the_files_and_the_last_message_exactly
+    cortex-agent::it context::a_summary_prepared_in_the_background_is_used_and_the_newer_turns_follow_it_without_reasoning
+
+[break] replayed-turns-keep-reasoning
+rule: The turns replayed after a summary carry no reasoning: they were produced under another prefix.
+file: crates/cortex-agent/src/context/history.rs
+in: History::extend_projected
+find: project(message)
+replace: message.clone()
+caught-by:
+    cortex-agent::it context::a_summary_prepared_in_the_background_is_used_and_the_newer_turns_follow_it_without_reasoning
+    cortex-agent context::tests::turns_replayed_after_a_summary_are_the_same_live_and_read_again
+
+[break] redaction-mark-not-reset-at-a-summary
+rule: The redaction mark is set again at a summary from what the new history holds.
+file: crates/cortex-core/src/redact.rs
+in: resumed
+find: altered = entry.redacted || replayed_marked;
+replace: altered = altered || entry.redacted || replayed_marked;
+caught-by:
+    cortex-core redact::tests::resumed_marks::a_summary_ends_the_mark_and_a_mark_after_it_begins_again
+    cortex-core redact::tests::resumed_marks::a_masked_summary_or_a_masked_turn_it_replays_marks_what_follows
+
+[break] redaction-mark-counts-records
+rule: Only an item entry sets the redaction mark: a record the model is never sent does not.
+file: crates/cortex-core/src/redact.rs
+in: resumed
+find: if let Some(item) = entry.body.as_item() {
+replace: altered |= entry.redacted; if let Some(item) = entry.body.as_item() {
+caught-by:
+    cortex-core redact::tests::resumed_marks::only_an_item_marks
+
+[break] system-append-not-last
+rule: The user's appended text is the last section of the system prompt.
+file: crates/cortex-agent/src/context/prompt.rs
+in: build
+find: let instructions_at = parts.len();
+replace: if let Some(append) = sections.append { parts.push(append.to_owned()); } let instructions_at = parts.len();
+caught-by:
+    cortex-agent context::prompt::tests::the_sections_come_in_their_order_and_the_appended_text_last
+
+[break] background-summary-used-after-a-rewind
+rule: A summary taken in the background over a history a rewind changed is not used.
+file: crates/cortex-agent/src/turn.rs
+in: Session::reload
+find: self.drop_background();
+replace:
+caught-by:
+    cortex-agent::it context::a_summary_over_history_a_rewind_took_away_is_not_used
+
+[break] trigger-without-the-output-reserve
+rule: The limit a request is held to keeps room for the answer.
+file: crates/cortex-agent/src/context/budget.rs
+in: limit_of
+find: let reserve = max_output.min(OUTPUT_RESERVE_CAP).min(window / 4);
+replace: let reserve = 0 * max_output;
+caught-by:
+    cortex-agent context::budget::tests::the_limit_keeps_room_for_the_answer_and_a_margin
+    cortex-agent::it transitions::a_context_over_budget_is_compacted_before_the_request
+
+[break] overflow-fallback-retried-again
+rule: When the provider says a request does not fit, the loop compacts and tries once more, and no more.
+file: crates/cortex-agent/src/turn.rs
+in: Session::failed
+find: error.kind == cortex_base::ErrorKind::ContextOverflow && !prep.overflowed
+replace: error.kind == cortex_base::ErrorKind::ContextOverflow
+caught-by:
+    cortex-agent::it sessions::a_request_that_still_does_not_fit_after_one_compaction_ends_the_turn
+
+[break] model-change-starts-no-epoch
+rule: A change of the main role's model starts an epoch that keeps the prompt and the tools.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::context_before_request
+find: || epoch.effort != self.model.effort
+replace: && epoch.effort != self.model.effort
+caught-by:
+    cortex-agent::it context::a_change_of_model_starts_an_epoch_that_keeps_the_prompt_and_tells_the_seen_files
+
+[break] new-epoch-not-told-to-the-seen-files
+rule: Every new epoch is a new epoch of the table of seen files: the next read of a file is whole.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::begin_epoch
+find: self.new_file_epoch();
+replace:
+caught-by:
+    cortex-agent::it context::a_change_of_model_starts_an_epoch_that_keeps_the_prompt_and_tells_the_seen_files
+
+[break] nested-file-given-twice
+rule: A nested instruction file is given once, however many of its directory's files a tool touches.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::nested_instructions
+find: if self.context.given.files.contains_key(&found.place.shown) { continue; }
+replace:
+caught-by:
+    cortex-agent::it context::a_nested_instruction_file_is_given_once_when_a_tool_first_touches_its_directory
+
+[break] summary-not-on-the-fast-role
+rule: A summary is asked of the fast role's model when there is one.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::summary_model
+find: return (ModelRole::Fast, fast);
+replace: let _ = fast;
+caught-by:
+    cortex-agent::it context::a_summary_prepared_in_the_background_is_used_and_the_newer_turns_follow_it_without_reasoning
+
+[break] trigger-does-not-wait-for-the-background
+rule: A trigger that comes before the background summary is ready waits for it.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::compacting
+find: Some(Background::Running(job)) if focus.is_none() && usable(&job.covered) =>
+replace: Some(Background::Running(job)) if focus.is_none() && usable(&job.covered) && false =>
+caught-by:
+    cortex-agent::it context::the_trigger_waits_for_a_summary_still_under_way
+
+[break] masked-epoch-goes-on
+rule: An epoch whose prompt the log holds masked is not gone on with when the session is read again.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::context_turn_start
+find: !epoch.altered &&
+replace:
+caught-by:
+    cortex-agent::it context::an_epoch_whose_prompt_the_log_holds_masked_is_not_gone_on_with
+
+[break] auto-compaction-off-ignored
+rule: With automatic compaction off, the turn stops at the trigger and asks.
+file: crates/cortex-agent/src/turn.rs
+in: Session::prepare
+find: if !self.context.parts.settings.auto_compact {
+replace: if false {
+caught-by:
+    cortex-agent::it context::with_automatic_compaction_off_the_turn_stops_and_asks
+
+[break] first-message-not-dated
+rule: The epoch's first user message carries the date it was recorded on.
+file: crates/cortex-agent/src/context/history.rs
+in: History::push
+find: dated.parts.insert(0, Part::text(date_text(date)));
+replace: let _ = date;
+caught-by:
+    cortex-agent::it context::the_system_prompt_has_its_sections_and_the_project_instructions
+    cortex-agent context::tests::the_epochs_first_user_message_carries_its_own_date_live_and_read_again
+
+[break] any-name-is-an-instruction-file
+rule: Only a plain `.md` file name can be an instruction file's, so no setting makes the harness send another file.
+file: crates/cortex-agent/src/context/instructions.rs
+in: is_instruction_name
+find: && name.to_ascii_lowercase().ends_with(".md")
+replace:
+caught-by:
+    cortex-agent context::instructions::tests::a_name_must_be_a_plain_document_and_the_user_dir_has_only_the_defaults
+
+[break] instruction-link-out-of-the-workspace-followed
+rule: An instruction file that is a link out of the workspace is not read.
+file: crates/cortex-core/src/instructions.rs
+in: DiskInstructions::read
+find: if !resolved.is_inside_workspace() ||
+replace: if
+caught-by:
+    cortex-core::it context::instruction_files_are_read_as_the_agent_would_read_them

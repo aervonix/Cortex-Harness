@@ -1300,3 +1300,50 @@ fn an_epoch_whose_prompt_the_log_holds_masked_is_not_gone_on_with() {
     assert_eq!(epochs.len(), 2, "the same prompt, but the log's is masked");
     assert_eq!(epochs[1].reason, Some(EpochReason::Resume));
 }
+
+#[test]
+fn a_compaction_that_keeps_recent_turns_never_splits_a_round() {
+    // The most recent turn is a round and its answer; what is kept is no
+    // more than they come to, so the boundary would fall between the call
+    // and its result if it were let.
+    let world = World::new(
+        "keep_recent_round",
+        [
+            says("Before."),
+            calls(&[("c1", "read", json!({"path": "a"}))]),
+            says("After the round."),
+            says("A summary."),
+            says("Next."),
+        ],
+    );
+    let mut setup = Setup::new(&world);
+    setup.context = ContextSettings {
+        keep_recent_tokens: 12,
+        ..ContextSettings::default()
+    };
+    let rig = setup.start(&world);
+    world.run(async {
+        rig.prompt("first");
+        rig.events.turns(1).await;
+        rig.prompt("second");
+        rig.events.turns(2).await;
+    });
+    rig.handle.compact(None).unwrap();
+    world.run(async {
+        rig.events.turns(3).await;
+        rig.prompt("third");
+        rig.events.turns(4).await;
+    });
+    let request = last_request(&world.provider);
+    assert_valid_history(&request.messages);
+    assert!(
+        request.messages.iter().all(|message| message.role != Role::Tool)
+            || request.messages.iter().any(|message| message
+                .parts
+                .iter()
+                .any(|part| matches!(part, Part::ToolCall(_)))),
+        "a result is never replayed without its call: {:#?}",
+        request.messages
+    );
+}
+

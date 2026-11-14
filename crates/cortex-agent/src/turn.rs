@@ -527,11 +527,12 @@ impl Session {
         if changed {
             self.env.workspace.files.forget_all();
         }
-        // A summary taken over the history as it was is not of the branch
-        // the loop reads now, and the request before is not the one the
-        // next must begin with.
-        self.drop_background();
+                // After a change of history, a summary taken over the history as it
+        // was is not of the branch the loop reads now, and the request
+        // before is not the one the next must begin with. A reload that
+        // changed nothing keeps both.
         if changed {
+            self.drop_background();
             self.context.last_prefix = None;
         }
         let opened = self.store.open().await?;

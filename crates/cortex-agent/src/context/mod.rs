@@ -242,10 +242,6 @@ pub(crate) struct Context {
     pub(crate) history: History,
     /// What the model has of each instruction file.
     pub(crate) given: Given,
-    /// Goes up each time the context is read from the store, so that a
-    /// summary prepared over a history that is no longer the branch's is
-    /// known as such.
-    pub(crate) generation: u64,
     pub(crate) budget: Budget,
     /// The date the epoch's history tells the model.
     pub(crate) date: Option<String>,
@@ -274,7 +270,6 @@ impl Context {
             unchecked: false,
             history: History::default(),
             given: Given::default(),
-            generation: 0,
             budget: Budget::default(),
             date: None,
             last_user: None,
@@ -290,7 +285,6 @@ impl Context {
     /// it: the epoch in force on the branch, and the history from its last
     /// summary on.
     pub(crate) fn load(&mut self, opened: &Opened) {
-        self.generation += 1;
         self.unchecked = true;
         // The count was of the history as it was; the ratio of bytes to
         // tokens is still the model's.

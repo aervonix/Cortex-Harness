@@ -104,7 +104,7 @@ rule: When the loop reads its history again it starts a new epoch of the table o
 file: crates/cortex-agent/src/turn.rs
 in: Session::reload
 find:
-    self.env.workspace.files.begin_epoch();
+    self.new_file_epoch();
     if changed {
         self.env.workspace.files.forget_all();
     }
