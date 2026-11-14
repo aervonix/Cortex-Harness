@@ -328,12 +328,12 @@ caught-by:
     cortex-base program::tests::a_relative_path_entry_does_not_make_a_file_there_the_program
     cortex-tools::it shell_search::sys_a_relative_path_entry_does_not_make_a_file_there_the_shell
 
-[break] session-store-starts-git-by-name
-rule: The session store starts git by the path found in an absolute directory of PATH, never by its bare name. Until the third tooling step a test could not give its process a PATH with a relative entry, and the break survived; the test kit's rerun helper gives a child one (Linux only: the planted git is a shell script).
-file: crates/cortex-session/src/base.rs
-in: SystemGit::run
-find: let mut child = Command::new(program)
-replace: let _ = program; let mut child = Command::new("git")
+[break] harness-starts-git-by-name
+rule: The harness starts git by the path found in an absolute directory of PATH, never by its bare name. Since the fixes of step 26 the session store and the shell tool start git through one function, `cortex_base::git::start`. The test kit's rerun helper gives a child a PATH with a relative entry, which is the one thing a test cannot give its own process (Linux only: the planted git is a shell script).
+file: crates/cortex-base/src/git.rs
+in: start
+find: let mut command = Command::new(&started.program);
+replace: let _ = &started.program; let mut command = Command::new("git");
 caught-by:
     cortex-session::it base::sys_git_is_never_found_through_a_relative_path_entry
 

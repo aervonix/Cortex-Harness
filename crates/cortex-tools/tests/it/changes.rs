@@ -536,3 +536,55 @@ fn sys_every_git_the_look_starts_goes_through_its_confinement() {
     );
     assert!(changes.is_empty(), "{changes:?}");
 }
+
+/// A confinement whose `confines()` can be turned off between the two
+/// looks, as a session that turns to `unrestricted` mid-command does.
+#[derive(Debug)]
+struct Flipping(std::sync::atomic::AtomicBool);
+
+impl cortex_base::git::Confinement for Flipping {
+    fn confines(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn start(
+        &self,
+        program: &Path,
+        arguments: Vec<std::ffi::OsString>,
+    ) -> Result<cortex_base::git::Started, String> {
+        Ok(cortex_base::git::Started {
+            program: program.to_owned(),
+            arguments,
+            stdin: None,
+        })
+    }
+}
+
+/// A command that ran while the session confined, with the session no
+/// longer confining when the look after it runs, leaves the change list
+/// incomplete rather than run git over a repository the command touched:
+/// the confined command may have planted a program in the configuration
+/// (found by the third review of step 26).
+#[test]
+fn sys_a_look_is_left_incomplete_when_the_session_un_confines() {
+    let ws = Workspace::new("changes_unconfined");
+    let root = repository(&ws, &[("a.txt", "one\n")]);
+    let flipping = std::sync::Arc::new(Flipping(std::sync::atomic::AtomicBool::new(true)));
+    let detector = ChangeDetector::new(&root)
+        .trusting_the_repository(true)
+        .with_git(flipping.clone());
+    // The look before the command runs while the session confines.
+    let before = detector.before();
+    ws.file("a.txt", "two\n");
+    // The session turns to `unrestricted`: nothing is confined now.
+    flipping
+        .0
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    let changes = detector.after(&before);
+    assert!(!changes.complete);
+    assert_eq!(
+        changes.incomplete,
+        Some(cortex_tools::shell::Incomplete::GitNotConfined)
+    );
+    assert!(changes.is_empty(), "{changes:?}");
+}
