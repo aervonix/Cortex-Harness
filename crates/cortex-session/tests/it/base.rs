@@ -896,3 +896,50 @@ fn sys_a_session_that_never_got_a_prompt_leaves_nothing_behind() {
     );
     assert!(world.project.index().list().unwrap().is_empty());
 }
+
+/// The session store starts git by the path found in an absolute directory
+/// of `PATH`, never by its bare name: a relative entry
+/// (`node_modules/.bin`) would find a `git` the workspace holds, and run it
+/// as soon as a session opens. Found by the review of the fixes to step
+/// 13a. The test runs again as a child whose working directory is the
+/// workspace and whose `PATH` begins with the relative entry, which is the
+/// one thing a test cannot give its own process.
+#[cfg(unix)]
+#[test]
+fn sys_git_is_never_found_through_a_relative_path_entry() {
+    use cortex_testkit::rerun::{self, Rerun};
+    use std::os::unix::fs::PermissionsExt;
+
+    if rerun::is_child() {
+        let here = std::env::current_dir().expect("a working directory");
+        let ran = SystemGit
+            .run(&here, &["--version"], 4096)
+            .expect("git runs");
+        rerun::say("version", String::from_utf8_lossy(&ran.stdout).trim());
+        return;
+    }
+    let scratch = cortex_testkit::scratch!("git_never_through_a_relative_entry");
+    let planted = scratch.join("node_modules/.bin/git");
+    scratch.file(
+        "node_modules/.bin/git",
+        "#!/bin/sh\n: > \"$0.ran\"\necho 'git version planted'\n",
+    );
+    std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut path = vec![std::path::PathBuf::from("node_modules/.bin")];
+    path.extend(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .filter(|entry| entry.is_absolute()),
+    );
+
+    let ran = Rerun::this_test().path(&path).cwd(scratch.path()).run();
+
+    let version = ran.said("version").unwrap_or_default();
+    assert!(
+        version.starts_with("git version") && !version.contains("planted"),
+        "{version}"
+    );
+    assert!(
+        !scratch.join("node_modules/.bin/git.ran").exists(),
+        "the planted git ran"
+    );
+}

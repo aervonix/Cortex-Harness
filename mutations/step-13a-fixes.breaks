@@ -326,15 +326,16 @@ replace:
 packages: cortex-base, cortex-tools
 caught-by:
     cortex-base program::tests::a_relative_path_entry_does_not_make_a_file_there_the_program
-    cortex-tools::it shell_search::a_relative_path_entry_does_not_make_a_file_there_the_shell
+    cortex-tools::it shell_search::sys_a_relative_path_entry_does_not_make_a_file_there_the_shell
 
 [break] session-store-starts-git-by-name
-rule: The session store starts git by the path found in an absolute directory of PATH, never by its bare name. A test cannot change the process's own PATH, which is what the bare name is searched in, so nothing a test sees changes: the search itself is `program-search-looks-in-relative-entries`.
+rule: The session store starts git by the path found in an absolute directory of PATH, never by its bare name. Until the third tooling step a test could not give its process a PATH with a relative entry, and the break survived; the test kit's rerun helper gives a child one (Linux only: the planted git is a shell script).
 file: crates/cortex-session/src/base.rs
 in: SystemGit::run
 find: let mut child = Command::new(program)
 replace: let _ = program; let mut child = Command::new("git")
-expect: survives
+caught-by:
+    cortex-session::it base::sys_git_is_never_found_through_a_relative_path_entry
 
 [break] drive-relative-shell-looked-up-as-a-name
 rule: On Windows a configured shell with a drive and no root (`C:bash.exe`) is a relative path, refused. Its test is Windows-only (`shell_search::on_windows_a_shell_named_with_a_drive_and_no_root_is_refused`, run in CI and windows-try), and on Linux such a name is one plain file name, so a run of the breaks at a Linux desk sees nothing.

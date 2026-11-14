@@ -221,3 +221,153 @@ find: if failed.is_empty() && !one.caught_by.is_empty() =>
 replace: if failed.is_empty() && one.caught_by.is_empty() && false =>
 caught-by:
     mutate::drive::tests::a_break_with_tests_named_that_nothing_catches_points_at_a_second_guard
+
+# --------------------------------------------------------------- try and ab
+
+[break] try-filter-not-one-argument
+rule: Each filter expression reaches nextest as one argument after -E.
+file: xtask/src/try_run.rs
+in: filter_arguments
+find: .flat_map(|filter| ["-E".to_owned(), filter.clone()])
+replace: .flat_map(|filter| [filter.clone()])
+caught-by:
+    try_run::tests::filters_and_nextest_options_reach_nextest_as_they_are_meant
+
+[break] try-filter-lets-a-dollar-through
+rule: A filter holds no quote, `$`, `;` or back-tick.
+file: xtask/src/try_run.rs
+in: filter_text
+find: b" _-:./=,()|&!~*+@#^[]{}?\\".contains(&byte)
+replace: b" _-:./=,()|&!~*+@#^[]{}?\\$".contains(&byte)
+caught-by:
+    try_run::tests::filters_and_nextest_options_reach_nextest_as_they_are_meant
+
+[break] try-package-equals-goes-to-nextest
+rule: `--package=x` names a crate, as `-p x` does.
+file: xtask/src/try_run.rs
+in: packages_and_others
+find: } else if let Some(package) = word.strip_prefix("--package=") {
+replace: } else if let Some(package) = word.strip_prefix("--package=").filter(|_| false) {
+caught-by:
+    try_run::tests::filters_and_nextest_options_reach_nextest_as_they_are_meant
+
+[break] try-against-ignored
+rule: With --against, test is an A/B run of the two refs.
+file: xtask/src/try_run.rs
+in: Inputs::command
+find: if let Some(against) = &self.against {
+replace: if let Some(against) = self.against.as_ref().filter(|_| false) {
+caught-by:
+    try_run::tests::against_makes_a_test_run_an_ab_run_of_the_two_refs
+
+[break] ab-order-never-alternates
+rule: An A/B run's rounds alternate which tree runs first.
+file: xtask/src/ab.rs
+in: order
+find: if round.is_multiple_of(2) {
+replace: if true {
+caught-by:
+    ab::tests::the_order_alternates_so_drift_falls_on_both_sides
+
+[break] ab-takes-the-first-run
+rule: Each test's time is the median of its runs, so one slow run moves nothing.
+file: xtask/src/ab.rs
+in: medians
+find: seconds[middle]
+occurrence: 2
+replace: seconds[0]
+caught-by:
+    ab::tests::each_test_takes_its_median_and_one_slow_run_moves_nothing
+
+# ------------------------------------------------------------------ combine
+
+[break] combine-fetches-into-the-session
+rule: combine writes nothing to the session's repository: what it fetches goes to its clone.
+file: xtask/src/combine.rs
+in: combine
+find: git(tree, &fetch)?;
+replace: git(Path::new(&places.source), &fetch)?; git(tree, &fetch)?;
+caught-by:
+    combine::tests::sys_two_pull_requests_that_agree_combine_and_the_check_sees_all_three
+    combine::tests::sys_two_pull_requests_that_conflict_name_the_layer_the_commit_and_the_file
+
+[break] combine-runs-past-a-conflict
+rule: A commit that does not apply stops the combination, and nothing is run on it.
+file: xtask/src/combine.rs
+in: combine
+find: if picked.is_err() {
+replace: if picked.is_err() && false {
+caught-by:
+    combine::tests::sys_two_pull_requests_that_conflict_name_the_layer_the_commit_and_the_file
+
+[break] combine-layers-out-of-order
+rule: The layers go on in the order named, this branch last.
+file: xtask/src/combine.rs
+in: combine
+find: for layer in layers {
+occurrence: 2
+replace: for layer in layers.iter().rev() {
+caught-by:
+    combine::tests::sys_two_pull_requests_that_agree_combine_and_the_check_sees_all_three
+
+[break] combine-forgets-the-pull-requests
+rule: Each pull request is fetched into the clone by its head.
+file: xtask/src/combine.rs
+in: combine
+find: refspecs.push(format!("+{fetch}:{}", layer.head));
+replace: let _ = fetch;
+caught-by:
+    combine::tests::sys_two_pull_requests_that_agree_combine_and_the_check_sees_all_three
+
+# --------------------------------------------------------- partial Landlock
+
+[break] partial-landlock-passes-unseen
+rule: A run that did not show the partial case is a failure, not a pass.
+file: xtask/src/nonblocking.rs
+in: partial_verdict
+find: if let Some(line) = printed.lines().find(|line| line.contains(PARTIAL_MARK)) {
+replace: if let Some(line) = printed.lines().next().or(Some("")) {
+caught-by:
+    nonblocking::partial_tests::the_partial_case_must_be_seen_and_the_tests_must_pass
+
+# -------------------------------------------------------- the rerun helper
+
+[break] rerun-path-not-given
+rule: The child gets the PATH it is given.
+file: crates/cortex-testkit/src/rerun.rs
+in: Rerun::command
+find: command.env("PATH", path);
+replace: let _ = path;
+packages: cortex-testkit, cortex-tools
+caught-by:
+    cortex-testkit rerun::tests::sys_a_rerun_test_gets_the_environment_it_is_given
+    cortex-tools::it shell_search::sys_a_relative_path_entry_does_not_make_a_file_there_the_shell
+
+[break] rerun-cwd-not-given
+rule: The child runs in the directory it is given.
+file: crates/cortex-testkit/src/rerun.rs
+in: Rerun::command
+find: command.current_dir(cwd);
+replace: let _ = cwd;
+packages: cortex-testkit, cortex-tools
+caught-by:
+    cortex-testkit rerun::tests::sys_a_rerun_test_gets_the_environment_it_is_given
+    cortex-tools::it shell_search::sys_a_relative_comspec_or_system_root_is_not_believed
+
+[break] rerun-that-ran-nothing-passes
+rule: A rerun whose name matches no test fails: it would pass having run nothing.
+file: crates/cortex-testkit/src/rerun.rs
+in: Rerun::run
+find: ran.stdout.contains("running 1 test")
+replace: true
+caught-by:
+    cortex-testkit rerun::tests::sys_a_rerun_of_a_test_that_is_not_there_fails
+
+[break] rerun-said-only-at-the-start-of-a-line
+rule: What a child said is found anywhere in a line: the harness writes the test's name before its first line.
+file: crates/cortex-testkit/src/rerun.rs
+in: Ran::said
+find: .filter_map(|line| line.split_once(&prefix).map(|(_, value)| value))
+replace: .filter_map(|line| line.strip_prefix(&prefix))
+caught-by:
+    cortex-testkit rerun::tests::sys_a_rerun_test_gets_the_environment_it_is_given

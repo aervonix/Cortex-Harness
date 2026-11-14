@@ -292,8 +292,8 @@ mod partial_tests {
         let shown = "    PASS [ 0.1s] cortex-sandbox::it confined::sys_a_signal_to_a_process_outside_the_sandbox_is_refused\n\
                      Landlock 4 does not scope signals: the gap the status names\n";
         assert_eq!(partial_verdict(true, shown), Ok(()));
-        let error = partial_verdict(true, "    PASS [ 0.1s] cortex-sandbox::it confined::x\n")
-            .unwrap_err();
+        let error =
+            partial_verdict(true, "    PASS [ 0.1s] cortex-sandbox::it confined::x\n").unwrap_err();
         assert!(error.contains("the partial case ran nowhere"), "{error}");
         let error = partial_verdict(false, shown).unwrap_err();
         assert!(error.contains("tests failed"), "{error}");
