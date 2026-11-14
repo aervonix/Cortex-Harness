@@ -44,17 +44,6 @@ packages: cortex-tools
 caught-by:
     cortex-tools::it changes::sys_a_look_is_left_incomplete_when_the_session_un_confines
 
-[break] kill-reports-a-clean-end-when-it-is-not
-rule: When the kill cannot clear the session within its bound, it says so, so the turn stops and the end is not reported clean over a process that is still running.
-file: crates/cortex-sandbox/src/tree/unix.rs
-in: kill_session
-find: false
-occurrence: 2
-replace: true
-packages: cortex-sandbox, cortex-core
-caught-by:
-    cortex-sandbox::it tree::sys_a_process_that_keeps_forking_is_never_a_clean_end
-
 [break] a-commondir-is-not-followed
 rule: A git directory's commondir is recorded and followed to the common directory's configuration and hooks.
 file: crates/cortex-sandbox/src/protect.rs

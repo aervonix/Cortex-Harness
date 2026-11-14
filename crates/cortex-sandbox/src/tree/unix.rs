@@ -471,7 +471,7 @@ const CONFIRM_IDLE: usize = 2;
 /// killed is clear: enough in a row that a gap between two generations of a
 /// process that forks in a loop cannot fake them.
 #[cfg(target_os = "linux")]
-const CONFIRM_CLEAR: usize = 64;
+const CONFIRM_CLEAR: usize = 128;
 
 /// One pass: stops every running member of the session `leader` leads and
 /// kills every stopped one, the leader excepted, and returns how many live
