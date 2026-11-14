@@ -134,9 +134,11 @@ pub(crate) struct Carried {
 }
 
 impl Carried {
-    /// The files the session's table knows, merged over the ones an
-    /// earlier summary on the branch carried (a resumed session's table
-    /// starts empty): what the table says of a file wins.
+    /// The files read and changed: the ones the last summary on the branch
+    /// carried, then the ones the branch's tool results touched since
+    /// ([`Touched`], which clears a hash it cannot vouch for), then what
+    /// this process's table knows, whose hash wins. A resumed session's
+    /// table starts empty, and a rewind empties it.
     pub(crate) fn files_from(
         root: &AbsPath,
         table: &[SeenFile],

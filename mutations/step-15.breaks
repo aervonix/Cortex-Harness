@@ -47,8 +47,8 @@ caught-by:
 rule: A compaction carries the plan exactly, every item of it.
 file: crates/cortex-agent/src/turn/epochs.rs
 in: Session::finish_compaction
-find: plan: self.context.parts.plan.as_ref().map(|board| board.get()),
-replace: plan: self.context.parts.plan.as_ref().map(|board| { let mut plan = board.get(); plan.items.pop(); plan }),
+find: plan: self.context.parts.plan.as_ref().map(|board| board.get())
+replace: plan: self.context.parts.plan.as_ref().map(|board| { let mut plan = board.get(); plan.items.pop(); plan })
 caught-by:
     cortex-agent::it context::a_compaction_carries_the_plan_the_files_and_the_last_message_exactly
 
@@ -56,8 +56,8 @@ caught-by:
 rule: A compaction carries the user's last message word for word.
 file: crates/cortex-agent/src/context/mod.rs
 in: Context::note
-find: Item::UserMessage(user) => self.last_user = Some(user.parts.clone()),
-replace: Item::UserMessage(user) => self.last_user = Some(user.parts.iter().take(1).map(|_| Part::text("(the user's message)")).collect()),
+find: Item::UserMessage(user) => self.last_user = Some(user.parts.clone())
+replace: Item::UserMessage(user) => self.last_user = Some(user.parts.iter().take(1).map(|_| Part::text("(the user's message)")).collect())
 caught-by:
     cortex-agent::it context::a_compaction_carries_the_plan_the_files_and_the_last_message_exactly
     cortex-agent::it context::a_summary_prepared_in_the_background_is_used_and_the_newer_turns_follow_it_without_reasoning
@@ -279,8 +279,8 @@ caught-by:
 rule: A summary at the trigger is a request of the ledger.
 file: crates/cortex-agent/src/turn/epochs.rs
 in: Session::compacting
-find: if let Err(reached) = self.ledger.take_request() { return self.limit_reached(turn, &reached).await; }
-replace:
+find: if let Err(reached) = self.ledger.take_request() {
+replace: if let Err(reached) = Ok::<(), crate::ledger::LimitReached>(()) {
 caught-by:
     cortex-agent::it context::a_summary_at_the_trigger_is_a_request_the_ledger_counts
 
@@ -297,8 +297,8 @@ caught-by:
 rule: A session read again whose log holds an entry otherwise than it was sent is not held to the request before.
 file: crates/cortex-agent/src/turn.rs
 in: Session::reload
-find: if changed || opened.masked {
-replace: if changed {
+find: if changed || diverged || opened.masked {
+replace: if changed || diverged {
 caught-by:
     cortex-agent::it context::a_session_read_again_whose_log_holds_an_entry_masked_goes_on
 
@@ -319,4 +319,58 @@ find: held = std::iter::once((item.id.as_str().to_owned(), entry.redacted, true)
 replace: held.push((item.id.as_str().to_owned(), entry.redacted, true));
 caught-by:
     cortex-core redact::tests::resumed_marks::a_second_summary_holds_what_the_first_replayed_and_not_the_first
+
+[break] a-cut-only-at-a-users-message
+rule: A summary request cut to fit keeps whole rounds from the newest back, starting at any message that is not a tool's results.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::trimmed
+find: let begins_round = |index: usize| messages[index].role != Role::Tool;
+replace: let begins_round = |index: usize| messages[index].role == Role::User;
+caught-by:
+    cortex-agent::it context::after_an_overflow_in_one_long_turn_the_summary_request_keeps_its_last_round
+
+[break] nothing-kept-when-nothing-fits
+rule: A summary request cut to fit keeps the last round even when it alone is past the room, so that the summary is of the work.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::trimmed
+find: if from == messages.len() {
+replace: if false {
+caught-by:
+    cortex-agent::it context::after_an_overflow_in_one_long_turn_the_summary_request_keeps_its_last_round
+
+[break] cut-room-counts-only-the-messages
+rule: The room a cut summary request gives its messages leaves out what it holds besides: the prompt, the tools and the instructions.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::summary_request
+find: self.trimmed(messages, (limit / 2).saturating_sub(fixed))
+replace: self.trimmed(messages, limit / 2)
+caught-by:
+    cortex-agent::it context::after_an_overflow_in_one_long_turn_the_summary_request_keeps_its_last_round
+
+[break] interrupt-gives-up-a-finished-summary
+rule: An interrupt stops a summary whose request still runs; one that has finished stays, to be used.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::stop_background
+find: if matches!(&self.background, Some(Background::Running(job)) if !job.handle.is_finished())
+replace: if matches!(&self.background, Some(Background::Running(_)))
+caught-by:
+    cortex-agent::it context::an_interrupt_keeps_a_summary_whose_request_had_finished
+
+[break] refused-summary-leaves-the-compaction-open
+rule: A compaction that began and is not finished ends with a notice that says it failed, the ledger's refusal of its summary included.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::compacting
+find: self.notify( turn, notice( CompactionState::Failed, format!( "The conversation was not compacted: {}", reached.message() ), None, None, ), );
+replace:
+caught-by:
+    cortex-agent::it context::a_summary_the_ledger_refuses_closes_the_compaction_it_began
+
+[break] a-failed-append-keeps-the-request-before
+rule: After an append failed or the loop panicked, the history read again is not held to the request before it.
+file: crates/cortex-agent/src/turn.rs
+in: Session::reload
+find: if changed || diverged || opened.masked {
+replace: if changed || opened.masked {
+caught-by:
+    cortex-agent::it sessions::a_compaction_whose_epoch_was_not_recorded_goes_on_from_what_the_log_holds
 

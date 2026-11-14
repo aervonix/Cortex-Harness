@@ -164,6 +164,10 @@ pub(crate) struct Inbox {
     /// loop reads the history again, the table of seen files forgets every
     /// file.
     pub(crate) history_changed: bool,
+    /// Memory may hold what the log does not (an append failed, or the
+    /// loop panicked): the history read again is not the one the last
+    /// request was built from.
+    pub(crate) diverged: bool,
     /// Whether the conversation has anything in it, from this process or
     /// from the log it was opened from ([`SessionHandle::has_history`]).
     pub(crate) history: bool,

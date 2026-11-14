@@ -576,12 +576,23 @@ impl Session {
         let (_, limit) = self.limit(model);
         let budget = &self.context.budget;
         let whole = budget.tokens(self.context.content_bytes());
+        // What the request holds besides the messages: the prompt, the
+        // tools and the instructions. The messages get the rest.
+        let fixed = budget.tokens(
+            self.context
+                .content_bytes()
+                .saturating_sub(self.context.history.bytes())
+                + crate::context::SUMMARY_INSTRUCTIONS.len() as u64,
+        );
         request.messages = if overflowed {
-            self.trimmed(messages, limit / 2)
+            self.trimmed(messages, (limit / 2).saturating_sub(fixed))
         } else if whole <= limit {
             messages.to_vec()
         } else {
-            self.trimmed(messages, limit.saturating_mul(9) / 10)
+            self.trimmed(
+                messages,
+                (limit.saturating_mul(9) / 10).saturating_sub(fixed),
+            )
         };
         request.messages.push(instructions_message(focus));
         request
@@ -594,7 +605,10 @@ impl Session {
     fn trimmed(&self, messages: &[Message], room: u64) -> Vec<Message> {
         let budget = &self.context.budget;
         let starts_with_summary = self.context.history.starts_with_summary();
-        let first = usize::from(starts_with_summary);
+        let first = usize::from(starts_with_summary).min(messages.len());
+        // A round begins at any message that is not a tool's results: the
+        // cut is made only there, so that no call is left without them.
+        let begins_round = |index: usize| messages[index].role != Role::Tool;
         let mut from = messages.len();
         for index in (first..messages.len()).rev() {
             let tokens = budget
@@ -603,22 +617,33 @@ impl Session {
             if tokens > room {
                 break;
             }
-            if messages[index].role == Role::User {
+            if begins_round(index) {
                 from = index;
             }
+        }
+        // Nothing fitted: the last round is kept all the same, so that the
+        // summary is of the work, and a request still too large fails
+        // where it can be seen.
+        if from == messages.len() {
+            from = (first..messages.len())
+                .rev()
+                .find(|&index| begins_round(index))
+                .unwrap_or(first);
         }
         let mut out = Vec::new();
         if starts_with_summary {
             out.push(messages[0].clone());
         }
-        out.push(Message {
-            role: Role::User,
-            parts: vec![Part::text(format!(
-                "{}The earlier part of this conversation is left out here: it did not fit.",
-                crate::context::NOTICE_LEAD
-            ))],
-            origin: None,
-        });
+        if from > first {
+            out.push(Message {
+                role: Role::User,
+                parts: vec![Part::text(format!(
+                    "{}The earlier part of this conversation is left out here: it did not fit.",
+                    crate::context::NOTICE_LEAD
+                ))],
+                origin: None,
+            });
+        }
         out.extend(messages[from..].iter().map(project));
         out
     }
@@ -778,9 +803,10 @@ impl Session {
     }
 
     /// Stops a summary that runs in the background: the turn was
-    /// interrupted, and an interrupt means stop. One that is ready stays.
+    /// interrupted, and an interrupt means stop. One that is ready, or whose
+    /// request has finished, stays.
     pub(super) fn stop_background(&mut self) {
-        if matches!(self.background, Some(Background::Running(_))) {
+        if matches!(&self.background, Some(Background::Running(job)) if !job.handle.is_finished()) {
             self.drop_background();
         }
     }
@@ -901,6 +927,18 @@ impl Session {
                     let (role, model) = self.summary_model();
                     // A summary is a request: the ledger is asked first.
                     if let Err(reached) = self.ledger.take_request() {
+                        self.notify(
+                            turn,
+                            notice(
+                                CompactionState::Failed,
+                                format!(
+                                    "The conversation was not compacted: {}",
+                                    reached.message()
+                                ),
+                                None,
+                                None,
+                            ),
+                        );
                         return self.limit_reached(turn, &reached).await;
                     }
                     let request = self.summary_request(

@@ -386,6 +386,7 @@ impl Session {
                 reload: false,
                 changing: false,
                 history_changed: false,
+                diverged: false,
                 history: !opened.items.is_empty(),
                 windows: std::collections::BTreeMap::new(),
                 closed: false,
@@ -479,6 +480,7 @@ impl Session {
         Self::hold(&mut inbox);
         inbox.running = None;
         inbox.reload = true;
+        inbox.diverged = true;
         inbox.state = TurnState::Idle;
         self.shared.emit_updated(&inbox);
     }
@@ -549,7 +551,13 @@ impl Session {
     /// (`docs/architecture/07-sessions-and-context.md`, "What each part of
     /// a session's state follows").
     async fn reload(&mut self) -> Result<(), StoreError> {
-        let changed = std::mem::take(&mut self.shared.lock().history_changed);
+        let (changed, diverged) = {
+            let mut inbox = self.shared.lock();
+            (
+                std::mem::take(&mut inbox.history_changed),
+                std::mem::take(&mut inbox.diverged),
+            )
+        };
         self.new_file_epoch();
         if changed {
             self.env.workspace.files.forget_all();
@@ -563,10 +571,11 @@ impl Session {
         }
         let opened = self.store.open().await?;
         // Nor is the request before the one the next must begin with when
-        // the log holds an entry otherwise than it was sent (masked by the
-        // secret filter, or stored as its projection): the history read
-        // again is not the one that request was built from.
-        if changed || opened.masked {
+        // memory held what the log does not, or the log holds an entry
+        // otherwise than it was sent (masked by the secret filter, or
+        // stored as its projection): the history read again is not the one
+        // that request was built from.
+        if changed || diverged || opened.masked {
             self.context.last_prefix = None;
         }
         self.context.load(&opened);
@@ -1474,7 +1483,9 @@ impl Session {
                     Err(error) => Err(error),
                 };
                 if recorded.is_err() {
-                    self.shared.lock().reload = true;
+                    let mut inbox = self.shared.lock();
+                    inbox.reload = true;
+                    inbox.diverged = true;
                 }
             }
         }
@@ -1548,6 +1559,7 @@ impl Session {
             if store_failed {
                 // Memory is brought back to what the log holds.
                 inbox.reload = true;
+                inbox.diverged = true;
             }
             // Told under the lock, so that a prompt accepted from another
             // thread is not followed by a stale "idle".
