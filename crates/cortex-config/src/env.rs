@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(windows.get("PROGRAMDATA"), Some(r"C:\ProgramData"));
         assert_eq!(windows.get("programdata"), Some(r"C:\ProgramData"));
 
-        let unix = Env::empty(Platform::Unix).with("Home", "/users/other");
+        let unix = Env::empty(Platform::Unix).with("Home", "/Profiles/other");
         assert_eq!(unix.get("HOME"), None);
         assert_eq!(unix.platform(), Platform::Unix);
     }
@@ -236,22 +236,22 @@ mod tests {
 
     #[test]
     fn a_path_under_the_home_directory_is_shown_with_a_tilde() {
-        let env = Env::empty(Platform::Unix).with("HOME", "/users/someone");
+        let env = Env::empty(Platform::Unix).with("HOME", "/Profiles/someone");
         assert_eq!(
             env.display_path(Path::new(
-                "/users/someone/.config/cortex-harness/config.toml"
+                "/Profiles/someone/.config/cortex-harness/config.toml"
             )),
             "~/.config/cortex-harness/config.toml"
         );
-        assert_eq!(env.display_path(Path::new("/users/someone")), "~");
+        assert_eq!(env.display_path(Path::new("/Profiles/someone")), "~");
         assert_eq!(
             env.display_path(Path::new("/etc/cortex-harness/config.toml")),
             "/etc/cortex-harness/config.toml"
         );
         // Another user's directory is not this user's home.
         assert_eq!(
-            env.display_path(Path::new("/users/someone-else/x")),
-            "/users/someone-else/x"
+            env.display_path(Path::new("/Profiles/someone-else/x")),
+            "/Profiles/someone-else/x"
         );
         let nowhere = Env::empty(Platform::Unix);
         assert_eq!(nowhere.home(), None);
@@ -259,14 +259,14 @@ mod tests {
 
         // On Windows, a path the harness resolved has the extended-length
         // prefix and the folder's own case; the variable has neither.
-        let windows = Env::empty(Platform::Windows).with("USERPROFILE", r"C:\Users\someone");
+        let windows = Env::empty(Platform::Windows).with("USERPROFILE", r"C:\Profiles\someone");
         assert_eq!(
-            windows.display_path(Path::new(r"\\?\C:\Users\Someone\work\app")),
+            windows.display_path(Path::new(r"\\?\C:\Profiles\Someone\work\app")),
             "~/work/app"
         );
         assert_eq!(
-            windows.display_path(Path::new(r"\\?\C:\Users\someone2\x")),
-            "//?/C:/Users/someone2/x"
+            windows.display_path(Path::new(r"\\?\C:\Profiles\someone2\x")),
+            "//?/C:/Profiles/someone2/x"
         );
         assert_eq!(nowhere.display_path(Path::new("/a/b")), "/a/b");
     }
@@ -274,11 +274,11 @@ mod tests {
     #[test]
     fn debug_names_the_variables_and_shows_no_value() {
         let env = Env::empty(Platform::Unix)
-            .with("HOME", "/users/someone")
+            .with("HOME", "/Profiles/someone")
             .with("ANTHROPIC_API_KEY", "sk-test-env-0001");
         let printed = format!("{env:?} {env:#?}");
         assert!(!printed.contains("sk-test-env-0001"), "{printed}");
-        assert!(!printed.contains("/users/someone"), "{printed}");
+        assert!(!printed.contains("/Profiles/someone"), "{printed}");
         assert!(
             printed.contains("ANTHROPIC_API_KEY") && printed.contains("Unix"),
             "{printed}"

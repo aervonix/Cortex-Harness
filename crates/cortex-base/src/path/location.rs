@@ -352,19 +352,19 @@ mod tests {
                 .map(|rest| rest.to_string_lossy().into_owned())
         };
         assert_eq!(
-            strip(Windows, r"\\?\C:\Users\Me\Work\App\x.toml", r"c:\users\me").as_deref(),
+            strip(Windows, r"\\?\C:\Profiles\Me\Work\App\x.toml", r"c:\Profiles\me").as_deref(),
             Some(r"Work\App\x.toml")
         );
         assert_eq!(
-            strip(Windows, r"\\?\C:\Users\Me", "C:/Users/me/").as_deref(),
+            strip(Windows, r"\\?\C:\Profiles\Me", "C:/Profiles/me/").as_deref(),
             Some("")
         );
-        assert_eq!(strip(Windows, r"C:\Users\Mee\x", r"C:\Users\Me"), None);
+        assert_eq!(strip(Windows, r"C:\Profiles\Mee\x", r"C:\Profiles\Me"), None);
         assert_eq!(
-            strip(Posix, "/home/me/work/x", "/home/me").as_deref(),
+            strip(Posix, "/srv/me/work/x", "/srv/me").as_deref(),
             Some("work/x")
         );
-        assert_eq!(strip(Posix, "/home/Me/x", "/home/me"), None);
+        assert_eq!(strip(Posix, "/srv/Me/x", "/srv/me"), None);
     }
 
     #[test]
