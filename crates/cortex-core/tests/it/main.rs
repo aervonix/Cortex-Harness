@@ -24,6 +24,8 @@
               helpers are shared between the modules of this one binary"
 )]
 
+#[cfg(target_os = "linux")]
+mod adversary;
 mod approvals;
 mod context;
 mod events;
@@ -686,7 +688,7 @@ fn ends_in(seen: &[Outgoing]) -> Vec<TurnCompleted> {
         .collect()
 }
 
-fn requests_in(seen: &[Outgoing]) -> Vec<(RequestId, ApprovalRequest)> {
+pub(crate) fn requests_in(seen: &[Outgoing]) -> Vec<(RequestId, ApprovalRequest)> {
     seen.iter()
         .filter_map(|outgoing| match outgoing {
             Outgoing::Request {

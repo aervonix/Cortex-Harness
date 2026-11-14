@@ -688,7 +688,12 @@ fn sys_a_stopped_turn_runs_no_more_commands_of_the_same_response() {
         ),
     ]));
     world.provider.push(says("Done."));
-    let core = world.core_with(|options| options.launcher = Some(launcher()));
+    // What the turn reaches, as the adversarial fixture sees it.
+    let reach = crate::adversary::Reach::start(&world);
+    let core = world.core_with(|options| {
+        options.launcher = Some(launcher());
+        options.shell_env = Some(world.shell_env(&reach.env()));
+    });
     world.run(async {
         let front = Front::start_as(
             &world,
@@ -703,6 +708,13 @@ fn sys_a_stopped_turn_runs_no_more_commands_of_the_same_response() {
         assert!(world.read("after.txt").is_none(), "{:?}", front.results());
         assert!(world.read("written.txt").is_none(), "{:?}", front.results());
     });
+    let reached = reach.reached(&world);
+    assert_eq!(
+        reached.protected,
+        [".git/hooks/pre-commit (made)"],
+        "{reached:#?}"
+    );
+    assert!(reached.nothing_outside(), "{reached:#?}");
 }
 
 #[cfg(target_os = "linux")]
