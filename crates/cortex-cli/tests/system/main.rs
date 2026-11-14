@@ -100,6 +100,7 @@ impl Machine {
     }
 
     pub fn with_config(test: &str, extra: &str) -> Self {
+        let _set_up = cortex_testkit::profile::phase("set-up");
         let scratch = Scratch::outside("cortex-cli-system", test);
         let home = scratch.path().join("home");
         let workspace = scratch.path().join("work").join("app");
@@ -198,6 +199,7 @@ impl Machine {
 
     /// Runs the binary to its end.
     pub fn run(&self, arguments: &[&str]) -> Run {
+        let _running = cortex_testkit::profile::phase("the binary runs to its end");
         Run::of(self.command(arguments).output().expect("the binary runs"))
     }
 

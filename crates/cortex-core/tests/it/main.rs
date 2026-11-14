@@ -147,6 +147,7 @@ pub struct World {
 
 impl World {
     pub fn new(test: &str, responses: impl IntoIterator<Item = Response>) -> Self {
+        let _set_up = cortex_testkit::profile::phase("set-up");
         // In the system's temporary directory, so that no repository is
         // above the workspace.
         let scratch = cortex_testkit::Scratch::outside("cortex-core-it", test);
@@ -302,6 +303,7 @@ impl World {
     }
 
     pub fn core_with(&self, change: impl FnOnce(&mut CoreOptions)) -> Core {
+        let _starting = cortex_testkit::profile::phase("start a core");
         let mut options = self.options();
         change(&mut options);
         Core::start(options).expect("the core starts")
@@ -363,6 +365,7 @@ impl World {
 
 impl Drop for World {
     fn drop(&mut self) {
+        cortex_testkit::profile::tear_down();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -394,6 +397,7 @@ impl Front {
         info: ClientInfo,
         settings: SessionSettings,
     ) -> Result<Self, OpError> {
+        let _opening = cortex_testkit::profile::phase("connect and open a session");
         let client = core.connect(info);
         let result = core
             .handle(
@@ -508,6 +512,7 @@ impl Front {
 
     /// Sends a prompt and waits for its turn to end.
     pub async fn turn(&self, text: &str) -> TurnCompleted {
+        let _turn = cortex_testkit::profile::phase("a turn");
         let before = self.ends().len();
         self.prompt(text).await;
         self.turns(before + 1).await;
@@ -518,6 +523,7 @@ impl Front {
     /// that is asked about, once. Returns the tools that were asked about,
     /// in order.
     pub async fn turn_allowing(&self, text: &str) -> Vec<String> {
+        let _turn = cortex_testkit::profile::phase("a turn, allowing what is asked");
         let before = self.ends().len();
         self.prompt(text).await;
         let mut asked = Vec::new();

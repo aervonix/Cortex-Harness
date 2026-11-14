@@ -824,6 +824,7 @@ impl World {
 
     /// A world whose order of events has this seed.
     pub fn seeded(test: &str, seed: u64, responses: impl IntoIterator<Item = Response>) -> Self {
+        let _set_up = cortex_testkit::profile::phase("set-up");
         let clock = FakeClock::starting_at("2026-11-13T10:00:00Z").unwrap();
         let shared: SharedClock = Arc::new(clock.clone());
         let scratch = cortex_testkit::scratch!(test);
@@ -865,6 +866,14 @@ impl World {
     /// Runs a future on the test's runtime, with the sessions.
     pub fn run<T>(&self, future: impl Future<Output = T>) -> T {
         self.runtime.block_on(future)
+    }
+}
+
+impl Drop for World {
+    fn drop(&mut self) {
+        // What follows, the runtime and the directory going, is tear-down
+        // in the test's time profile.
+        cortex_testkit::profile::tear_down();
     }
 }
 

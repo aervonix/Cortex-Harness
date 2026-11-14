@@ -44,6 +44,9 @@ pub struct Scratch {
     dir: PathBuf,
     /// A parent that was made for this directory alone, and goes with it.
     own_parent: Option<PathBuf>,
+    /// The test's time profile, written when the directory goes, when
+    /// `CORTEX_TESTKIT_PROFILE` is on.
+    _profile: crate::profile::Report,
 }
 
 /// A [`Scratch`] for the test named, under the directory Cargo gives this
@@ -97,6 +100,7 @@ impl Scratch {
         Self {
             dir,
             own_parent: None,
+            _profile: crate::profile::report(test),
         }
     }
 

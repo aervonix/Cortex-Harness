@@ -59,6 +59,9 @@ const SHARE: f64 = 0.8;
 #[derive(Debug)]
 pub struct Doing {
     id: u64,
+    /// The same wait in the time profile, when it is on: none when it is
+    /// off, so that a wait takes no further lock.
+    mark: Option<Mutex<crate::profile::Mark>>,
 }
 
 struct Entry {
@@ -82,21 +85,29 @@ pub fn doing(what: impl Into<String>) -> Doing {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let thread = std::thread::current();
+    let what = what.into();
+    let mark = crate::profile::enabled().then(|| Mutex::new(crate::profile::wait(|| what.clone())));
     let entry = Entry {
         id,
         thread: thread.name().unwrap_or("an unnamed thread").to_owned(),
         since: Instant::now(),
-        what: what.into(),
+        what,
     };
     lock().push(entry);
-    Doing { id }
+    Doing { id, mark }
 }
 
 impl Doing {
     /// Says what the thread is doing now.
     pub fn now(&self, what: impl Into<String>) {
+        let what = what.into();
+        if let Some(mark) = &self.mark {
+            mark.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .next(|| what.clone());
+        }
         if let Some(entry) = lock().iter_mut().find(|entry| entry.id == self.id) {
-            entry.what = what.into();
+            entry.what = what;
             entry.since = Instant::now();
         }
     }
@@ -186,7 +197,7 @@ fn limit_of(profile: &str, test: &str) -> u64 {
 }
 
 /// How long ago this process started, where the system says.
-fn process_age() -> Option<Duration> {
+pub(crate) fn process_age() -> Option<Duration> {
     if !cfg!(target_os = "linux") {
         return None;
     }
