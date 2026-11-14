@@ -95,8 +95,8 @@ caught-by:
 rule: The sanitising function makes every control character but the line feed and the tab visible.
 file: crates/cortex-term/src/sanitize.rs
 in: sanitize
-find: '\n' | '\t' => out.push(c),
-replace: '\n' | '\t' | '\u{1b}' => out.push(c),
+find: '\n' | '\t' => out.push(c)
+replace: '\n' | '\t' | '\u{1b}' => out.push(c)
 caught-by:
     sanitize::tests::every_control_character_but_line_feed_and_tab_is_made_visible
 
@@ -195,8 +195,8 @@ caught-by:
 rule: Streamed content is drawn at most 60 times a second.
 file: crates/cortex-term/src/schedule.rs
 in: Scheduler::wake
-find: Some(last) => last + self.interval,
-replace: Some(_) => now,
+find: Some(last) => last + self.interval
+replace: Some(_) => now
 caught-by:
     schedule::tests::streamed_content_is_drawn_at_most_sixty_times_a_second
 
@@ -269,8 +269,8 @@ caught-by:
 [break] autowrap-left-off-after-a-panic
 rule: Putting the terminal back after a panic or a signal turns automatic wrap back on.
 file: crates/cortex-term/src/sys/mod.rs
-find: b"\x1b[?2026l\x1b[0m\r\x1b[J\x1b[?1004l\x1b[?2004l\x1b[?7h\x1b[?25h",
-replace: b"\x1b[?2026l\x1b[0m\r\x1b[J\x1b[?1004l\x1b[?2004l\x1b[?25h",
+find: b"\x1b[?2026l\x1b[0m\r\x1b[J\x1b[?1004l\x1b[?2004l\x1b[?7h\x1b[?25h"
+replace: b"\x1b[?2026l\x1b[0m\r\x1b[J\x1b[?1004l\x1b[?2004l\x1b[?25h"
 caught-by:
     sys::tests::the_restore_sequence_turns_off_what_was_turned_on
 

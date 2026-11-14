@@ -60,9 +60,9 @@ caught-by:
 rule: A stop reason mapped wrongly (length as end).
 file: crates/cortex-llm/src/openai_chat/decode.rs
 find:
-    "length" => StopReason::MaxOutput,
+    "length" => StopReason::MaxOutput
 replace:
-    "length" => StopReason::End,
+    "length" => StopReason::End
 packages: cortex-llm, cortex-testkit
 caught-by:
     openai_chat::decode::a_call_that_never_gets_a_name_is_left_out_and_said_to_be_malformed
@@ -74,11 +74,11 @@ file: crates/cortex-llm/src/openai_chat/request.rs
 find:
     if !info.offers(&request.speed) {
         return Err(BuildError::new(format!(
-            "the model `{}` does not offer the speed `{}`",
+            "the model `{}` does not offer the speed `{}`"
 replace:
     if false && !info.offers(&request.speed) {
         return Err(BuildError::new(format!(
-            "the model `{}` does not offer the speed `{}`",
+            "the model `{}` does not offer the speed `{}`"
 packages: cortex-llm, cortex-testkit
 caught-by:
     openai_chat::request::a_model_with_no_tier_is_never_told_a_speed
@@ -88,9 +88,9 @@ caught-by:
 rule: Fast written as `fast`, not `priority`.
 file: crates/cortex-llm/src/openai_chat/request.rs
 find:
-    Speed::Fast => "priority",
+    Speed::Fast => "priority"
 replace:
-    Speed::Fast => "fast",
+    Speed::Fast => "fast"
 packages: cortex-llm, cortex-testkit
 caught-by:
     openai_chat::request::a_hand_written_fixture_holds_the_request_its_response_would_answer
@@ -100,9 +100,9 @@ caught-by:
 rule: `priority` in a response not read as fast.
 file: crates/cortex-llm/src/openai_chat/decode.rs
 find:
-    "priority" | "fast" => Some(Speed::Fast),
+    "priority" | "fast" => Some(Speed::Fast)
 replace:
-    "fast" => Some(Speed::Fast),
+    "fast" => Some(Speed::Fast)
 packages: cortex-llm, cortex-testkit
 caught-by:
     openai_chat::decode::at_every_cut::openai
@@ -112,9 +112,9 @@ caught-by:
 rule: A response's tier read from every model.
 file: crates/cortex-llm/src/openai_chat/decode.rs
 find:
-    reads_tier: !request.model.info.speeds.is_empty() && !flags::speeds_are_models(request),
+    reads_tier: !request.model.info.speeds.is_empty() && !flags::speeds_are_models(request)
 replace:
-    reads_tier: true,
+    reads_tier: true
 packages: cortex-llm, cortex-testkit
 caught-by:
     openai_chat::decode::a_tier_is_read_only_from_a_model_that_is_asked_for_one_that_way
@@ -157,9 +157,9 @@ find:
         wire.prompt_tokens.unwrap_or(0),
         cache_read,
         cache_write,
-    ),
+    )
 replace:
-    input: wire.prompt_tokens.unwrap_or(0),
+    input: wire.prompt_tokens.unwrap_or(0)
 packages: cortex-llm, cortex-testkit
 caught-by:
     openai_chat::conversation::the_servers_that_report_a_cache_say_it_was_read
@@ -203,9 +203,9 @@ caught-by:
 rule: A rate limit always the tier's.
 file: crates/cortex-llm/src/openai_chat/classify.rs
 find:
-    Throttle::RateLimit if offer.separate_limit => Some(sent.clone()),
+    Throttle::RateLimit if offer.separate_limit => Some(sent.clone())
 replace:
-    Throttle::RateLimit if true || offer.separate_limit => Some(sent.clone()),
+    Throttle::RateLimit if true || offer.separate_limit => Some(sent.clone())
 packages: cortex-llm, cortex-testkit
 caught-by:
     openai_chat::classify::a_refusal_at_a_speed_tier_is_the_tiers_only_when_the_tier_refuses
@@ -238,9 +238,9 @@ packages: cortex-llm, cortex-testkit
 rule: Pieces of reasoning_details never joined.
 file: crates/cortex-llm/src/openai_chat/decode.rs
 find:
-    Some(position) if position < open.details.len() => position,
+    Some(position) if position < open.details.len() => position
 replace:
-    Some(position) if false && position < open.details.len() => position,
+    Some(position) if false && position < open.details.len() => position
 packages: cortex-llm, cortex-testkit
 caught-by:
     openai_chat::conversation::a_models_own_response_goes_back_with_its_reasoning_as_it_came
@@ -293,10 +293,10 @@ find:
     .and_then(|instances| instances.first())
     .and_then(|instance| instance.get("config"))
     .and_then(|config| config.get("context_length"))
-    .and_then(Value::as_u64),
+    .and_then(Value::as_u64)
 replace:
     .and_then(|entry| entry.get("max_context_length"))
-    .and_then(Value::as_u64),
+    .and_then(Value::as_u64)
 packages: cortex-llm, cortex-testkit
 caught-by:
     openai_chat::endpoints::each_local_server_is_asked_where_it_keeps_its_loaded_context_size
@@ -328,9 +328,9 @@ caught-by:
 rule: Reasoning in tags not taken out.
 file: crates/cortex-llm/src/openai_chat/decode.rs
 find:
-    tags: flags::reasoning_tags(request, provider).then(|| Tags::Start(String::new())),
+    tags: flags::reasoning_tags(request, provider).then(|| Tags::Start(String::new()))
 replace:
-    tags: None,
+    tags: None
 packages: cortex-llm, cortex-testkit
 caught-by:
     openai_chat::decode::at_every_cut::lmstudio
@@ -340,9 +340,9 @@ caught-by:
 rule: Reasoning shown though the request asked for none.
 file: crates/cortex-llm/src/openai_chat/decode.rs
 find:
-    show_reasoning: request.reasoning.visibility != ReasoningVisibility::None,
+    show_reasoning: request.reasoning.visibility != ReasoningVisibility::None
 replace:
-    show_reasoning: true,
+    show_reasoning: true
 packages: cortex-llm, cortex-testkit
 caught-by:
     openai_chat::decode::reasoning_that_is_not_to_be_shown_is_still_stored
@@ -351,9 +351,9 @@ caught-by:
 rule: `stop` with tool calls taken for the end of the turn.
 file: crates/cortex-llm/src/openai_chat/decode.rs
 find:
-    "stop" | "tool_calls" | "function_call" if has_calls => StopReason::ToolCalls,
+    "stop" | "tool_calls" | "function_call" if has_calls => StopReason::ToolCalls
 replace:
-    "tool_calls" | "function_call" if has_calls => StopReason::ToolCalls,
+    "tool_calls" | "function_call" if has_calls => StopReason::ToolCalls
 packages: cortex-llm, cortex-testkit
 caught-by:
     openai_chat::decode::a_response_with_tool_calls_stops_for_them_whatever_word_the_server_uses
@@ -375,9 +375,9 @@ caught-by:
 rule: A reset in milliseconds read as seconds.
 file: crates/cortex-llm/src/openai_chat/classify.rs
 find:
-    100_000_000_000.. => UtcTime::from_unix_millis(number),
+    100_000_000_000.. => UtcTime::from_unix_millis(number)
 replace:
-    100_000_000_000.. => UtcTime::from_unix(number, 0),
+    100_000_000_000.. => UtcTime::from_unix(number, 0)
 packages: cortex-llm, cortex-testkit
 caught-by:
     openai_chat::classify::tests::a_reset_is_read_in_all_three_forms
@@ -409,9 +409,9 @@ caught-by:
 rule: The output limit always under `max_tokens`.
 file: crates/cortex-llm/src/openai_chat/request.rs
 find:
-    flags::max_tokens_field(provider),
+    flags::max_tokens_field(provider)
 replace:
-    "max_tokens",
+    "max_tokens"
 packages: cortex-llm, cortex-testkit
 caught-by:
     openai_chat::conversation::a_session_changes_from_an_anthropic_model_to_a_compatible_one
@@ -497,10 +497,10 @@ rule: The usage endpoint's answer kept (debug of the body).
 file: crates/cortex-llm/src/openai_chat/account.rs
 find:
     let mut usage = AccountUsage {
-        available: None,
+        available: None
 replace:
     let mut usage = AccountUsage {
-        available: Some(String::from_utf8_lossy(body).contains("sk-or")).filter(|found| *found),
+        available: Some(String::from_utf8_lossy(body).contains("sk-or")).filter(|found| *found)
 packages: cortex-llm, cortex-testkit
 caught-by:
     openai_chat::endpoints::openrouters_key_endpoint_gives_the_keys_budget_and_never_its_label

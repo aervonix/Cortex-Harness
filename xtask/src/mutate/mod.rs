@@ -33,6 +33,7 @@ mod list;
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -50,7 +51,9 @@ copy of the tree, and reports which tests fail. BREAK is a break's name
 (`step-12/deny-beats-allow`), a whole list (`step-12`) or the end of a name.
 Without one, every break.
 
-  --check        Only check that every break still applies. Runs nothing.
+  --check        Only check that every break still applies, and the pre-flight:
+                 no `find` ending in a comma, no `in` naming two items, no two
+                 breaks making one change. Runs nothing.
   --list         Print the breaks chosen, and stop.
   --report       Print what is known so far for the tree as it is. Runs nothing.
   --minutes N    Stop starting new work after N minutes, and carry on from
@@ -345,23 +348,45 @@ fn check(root: &Path, breaks: &[Break]) -> Vec<String> {
     let mut problems = Vec::new();
     // Each file's text and tokens, read once: a list has many breaks of
     // one file, and this runs on every pull request.
-    let mut files: BTreeMap<&str, Option<(String, Vec<lex::Token>)>> = BTreeMap::new();
+    // With the tokens a search uses, and those a comparison does.
+    type Read = (String, Vec<lex::Token>, Vec<lex::Token>);
+    let mut files: BTreeMap<&str, Option<Read>> = BTreeMap::new();
+    // Each change made, by its file and what it does, with the first break
+    // that makes it.
+    let mut changes: BTreeMap<(&str, Change), String> = BTreeMap::new();
     for one in breaks {
         let read = files.entry(one.file.as_str()).or_insert_with(|| {
             let source = read_source(root, one).ok()?;
-            let tokens = lex::tokens(&source);
-            Some((source, tokens))
+            let code = lex::code_tokens(&source);
+            let tokens = lex::without_layout_commas(&source, &code);
+            Some((source, tokens, code))
         });
-        let Some((source, tokens)) = read else {
+        let Some((source, tokens, code)) = read else {
             // Read again for the message, which names this break.
             if let Err(problem) = read_source(root, one) {
                 problems.push(problem);
             }
             continue;
         };
-        if let Err(problem) = apply_in(one, source, tokens) {
-            problems.push(problem);
-            continue;
+        let (range, items) = match locate(one, source, tokens) {
+            Ok(located) => located,
+            Err(problem) => {
+                problems.push(problem);
+                continue;
+            }
+        };
+        problems.extend(preflight(one, source, tokens, &items));
+        let change = change_of(source, code, &range, &one.replace);
+        if let Some(first) = changes.get(&(one.file.as_str(), change.clone())) {
+            problems.push(format!(
+                "{}: break `{}` makes the same change as `{first}`: once the code is read by \
+                 token, the two are one break, and a second run of it tests nothing more.\n  \
+                 Delete one of them, or make it break the rule its `rule:` names.",
+                one.place(),
+                one.id
+            ));
+        } else {
+            changes.insert((one.file.as_str(), change), one.id.clone());
         }
         match one.test_packages() {
             Err(problem) => problems.push(problem),
@@ -385,6 +410,150 @@ fn check(root: &Path, breaks: &[Break]) -> Vec<String> {
         }
     }
     problems
+}
+
+/// What a change does to a file, read by token: how many tokens it keeps
+/// at the start and at the end, and the tokens it puts between them. Two
+/// breaks with the same change are one break, whatever their `find` and
+/// `replace` say: `a && b` made `a`, and `&& b` made nothing.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Change {
+    kept_before: usize,
+    kept_after: usize,
+    put: Vec<String>,
+}
+
+/// The change that putting `replace` over the bytes `range` of `source`
+/// makes, from the tokens of `source` (`code`, [`lex::code_tokens`]).
+///
+/// The file with the break made is never lexed: its tokens are those of
+/// `source` before the range, `replace`'s, and those of `source` after it.
+/// Every break of a list is judged on every pull request, and lexing two
+/// whole files for each took the step from 0.2 s to 1.3 s.
+fn change_of(source: &str, code: &[lex::Token], range: &Range<usize>, replace: &str) -> Change {
+    let before = |index: usize| code[index].text(source);
+    let first = code.partition_point(|token| token.start < range.start);
+    let after_range = code.partition_point(|token| token.start < range.end);
+    let middle = lex::code_texts(replace);
+    let length = first + middle.len() + (code.len() - after_range);
+    let after = |index: usize| -> &str {
+        if index < first {
+            before(index)
+        } else if index < first + middle.len() {
+            middle[index - first]
+        } else {
+            before(index - first - middle.len() + after_range)
+        }
+    };
+    // The tokens outside the range are the same on both sides by
+    // construction: the comparison starts at the range, not at the ends.
+    let most = code.len().min(length);
+    let kept_before = (first..most)
+        .find(|&index| before(index) != after(index))
+        .unwrap_or(most);
+    let same_after = code.len() - after_range;
+    let kept_after = (same_after.min(most - kept_before)..most - kept_before)
+        .find(|&back| before(code.len() - 1 - back) != after(length - 1 - back))
+        .unwrap_or(most - kept_before);
+    Change {
+        kept_before,
+        kept_after,
+        put: (kept_before..length - kept_after)
+            .map(|index| after(index).to_owned())
+            .collect(),
+    }
+}
+
+/// What makes a break that applies today stop applying, or apply to code
+/// it did not mean, on a later day: the checks of the pre-flight that come
+/// after the break is made ([`apply_in`] has the others).
+///
+/// - Its `find` ends in a comma. `rustfmt` adds and removes the comma
+///   before a closing bracket as it wraps and joins lines, and the search
+///   passes over such a comma, so the day the code is laid out again the
+///   break no longer finds it.
+/// - Its `in:` names more than one item. The break is made in the one item
+///   whose code it finds today; when the code of another of them changes,
+///   it may find that one instead, or both. Not when each of them is under
+///   a `#[cfg(…)]`: one function for each system, of which a build has one.
+fn preflight(
+    one: &Break,
+    source: &str,
+    tokens: &[lex::Token],
+    items: &[Range<usize>],
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    if ends_in_a_layout_comma(&one.find) {
+        problems.push(format!(
+            "{}: break `{}` has a `find` that ends in a comma, which rustfmt moves: the break \
+             stops applying when the line is wrapped or joined.\n  End `find` before the comma.",
+            one.place(),
+            one.id
+        ));
+    }
+    if let Some(anchor) = &one.anchor
+        && items.len() > 1
+        && !items
+            .iter()
+            .all(|item| lex::under_cfg(source, tokens, item.start))
+    {
+        let lines: Vec<String> = items
+            .iter()
+            .map(|item| lex::line_of(source, tokens[item.start].start).to_string())
+            .collect();
+        problems.push(format!(
+            "{}: break `{}` has `in: {anchor}`, which names {} items in `{}`, at lines {}.\n  \
+             Name the one meant (`Type::method`, or the `impl`'s trait or type), or leave \
+             `in` out if `find` is in the file once.",
+            one.place(),
+            one.id,
+            items.len(),
+            one.file,
+            lines.join(", ")
+        ));
+    }
+    problems
+}
+
+/// Whether `find` ends in a comma that `rustfmt` may move: one after an
+/// argument, an element or a field. Not the comma after a match arm that is
+/// an expression (`Some(1) => one,`), which the formatter always writes.
+fn ends_in_a_layout_comma(find: &str) -> bool {
+    let texts = lex::code_texts(find);
+    let Some((&",", before)) = texts.split_last() else {
+        return false;
+    };
+    // The piece the comma ends: back to the comma before it at the same
+    // depth, or to the bracket the piece is inside.
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (index, text) in before.iter().enumerate().rev() {
+        match *text {
+            ")" | "]" | "}" => depth += 1,
+            "(" | "[" | "{" if depth == 0 => {
+                start = index + 1;
+                break;
+            }
+            "(" | "[" | "{" => depth -= 1,
+            "," if depth == 0 => {
+                start = index + 1;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let piece = &before[start..];
+    // A match arm has `=>` outside the brackets of its pattern and value.
+    let mut depth = 0usize;
+    for (index, text) in piece.iter().enumerate() {
+        match *text {
+            "(" | "[" | "{" => depth += 1,
+            ")" | "]" | "}" => depth = depth.saturating_sub(1),
+            "=" if depth == 0 && piece.get(index + 1) == Some(&">") => return false,
+            _ => {}
+        }
+    }
+    true
 }
 
 /// The text of the file a break changes.
@@ -422,19 +591,36 @@ fn apply(one: &Break, source: &str) -> Result<String> {
 
 /// [`apply`], for a source whose tokens are already known.
 fn apply_in(one: &Break, source: &str, tokens: &[lex::Token]) -> Result<String> {
+    let (range, _) = locate(one, source, tokens)?;
+    let mut broken = String::with_capacity(source.len() + one.replace.len());
+    broken.push_str(&source[..range.start]);
+    broken.push_str(&one.replace);
+    broken.push_str(&source[range.end..]);
+    Ok(broken)
+}
+
+/// Where in `source` a break is made: the bytes its `replace` goes over.
+/// An error says why the break cannot be made, as [`apply`] does.
+///
+/// With the range, the items its `in` names, for the pre-flight.
+fn locate(
+    one: &Break,
+    source: &str,
+    tokens: &[lex::Token],
+) -> Result<(Range<usize>, Vec<Range<usize>>)> {
     let inside = one
         .anchor
         .as_ref()
         .map(|anchor| format!(" inside `{anchor}`"))
         .unwrap_or_default();
-    let located = lex::locate_in(
+    let located = lex::locate_with_items(
         source,
         tokens,
         one.anchor.as_deref(),
         &one.find,
         one.occurrence,
     );
-    let range = located.map_err(|missing| {
+    let (range, items) = located.map_err(|missing| {
         let (why, fix) = match missing {
             lex::Missing::NothingToFind => (
                 "its `find` has no code in it".to_owned(),
@@ -485,10 +671,6 @@ fn apply_in(one: &Break, source: &str, tokens: &[lex::Token]) -> Result<String> 
             one.id
         )
     })?;
-    let mut broken = String::with_capacity(source.len() + one.replace.len());
-    broken.push_str(&source[..range.start]);
-    broken.push_str(&one.replace);
-    broken.push_str(&source[range.end..]);
     // Judged on the code that is replaced: the rest of the file is the same
     // text on both sides.
     if lex::same_tokens(&source[range.clone()], &one.replace) {
@@ -499,7 +681,7 @@ fn apply_in(one: &Break, source: &str, tokens: &[lex::Token]) -> Result<String> 
             one.id
         ));
     }
-    Ok(broken)
+    Ok((range, items))
 }
 
 #[cfg(test)]
@@ -672,7 +854,7 @@ rule: r
 file: crates/demo/src/lib.rs
 in: over
 find: seconds > budget
-replace: true
+replace: false
 packages: cortex-nowhere
 ";
 
@@ -685,6 +867,179 @@ packages: cortex-nowhere
         assert!(problems[2].starts_with("mutations/demo.breaks:20: break `demo/no-crate`"));
         assert!(problems[2].contains("no such crate"), "{}", problems[2]);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The source the pre-flight's lists are made against: a call with
+    /// arguments, a match, one function for each system, and two items of
+    /// one name.
+    const PREFLIGHT: &str = "\
+pub fn limit(seconds: u64) -> u64 {
+    clamp(seconds, 1, 600)
+}
+
+pub fn kind(code: u16) -> &'static str {
+    match code {
+        413 => \"too large\",
+        503 => \"overloaded\",
+        _ => \"other\",
+    }
+}
+
+#[cfg(unix)]
+fn owner() -> bool {
+    uid() == 0
+}
+
+#[cfg(windows)]
+fn owner() -> bool {
+    sid().is_admin()
+}
+
+pub struct Budget;
+
+impl Budget {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Budget::new()
+    }
+}
+";
+
+    fn problems_with(list: &str) -> Vec<String> {
+        let root = super::drive::tests::tree(
+            "preflight",
+            &[
+                ("crates/demo/Cargo.toml", "[package]\n"),
+                ("crates/demo/src/lib.rs", PREFLIGHT),
+            ],
+        );
+        let problems = check(&root, &breaks("demo", list));
+        let _ = std::fs::remove_dir_all(&root);
+        problems
+    }
+
+    #[test]
+    fn a_list_the_preflight_passes() {
+        let list = "\
+[break] limit-too-high
+rule: r
+file: crates/demo/src/lib.rs
+find: clamp(seconds, 1, 600)
+replace: clamp(seconds, 1, 6000)
+
+[break] an-arm-removed
+rule: r
+file: crates/demo/src/lib.rs
+in: kind
+find: 413 => \"too large\",
+replace:
+
+[break] owner-anyone
+rule: r
+file: crates/demo/src/lib.rs
+in: owner
+find: uid() == 0
+replace: true
+
+[break] new-in-default
+rule: r
+file: crates/demo/src/lib.rs
+in: Default::default
+find: Budget::new()
+replace: Budget
+";
+        assert_eq!(problems_with(list), [] as [String; 0]);
+    }
+
+    #[test]
+    fn the_preflight_names_each_kind_of_break_that_will_go_wrong() {
+        let list = "\
+[break] same-code
+rule: r
+file: crates/demo/src/lib.rs
+find: clamp(seconds, 1, 600)
+replace: clamp( seconds, 1, /* the same */ 600 )
+
+[break] gone
+rule: r
+file: crates/demo/src/lib.rs
+find: clamp(seconds, 2, 600)
+replace: 0
+
+[break] twice
+rule: r
+file: crates/demo/src/lib.rs
+find: Self
+replace: Budget
+
+[break] comma
+rule: r
+file: crates/demo/src/lib.rs
+find: seconds, 1,
+replace: seconds, 0,
+
+[break] two-items
+rule: r
+file: crates/demo/src/lib.rs
+in: Budget
+find: Self
+occurrence: 1
+replace: Budget
+
+[break] first
+rule: r
+file: crates/demo/src/lib.rs
+find: 600)
+replace: 6000)
+
+[break] same-change
+rule: r
+file: crates/demo/src/lib.rs
+in: limit
+find: clamp(seconds, 1, 600)
+replace: clamp(seconds, 1, 6000)
+";
+        let problems = problems_with(list);
+        let said = |name: &str, what: &str| {
+            problems.iter().any(|problem| {
+                problem.contains(&format!("`demo/{name}`")) && problem.contains(what)
+            })
+        };
+        assert_eq!(problems.len(), 6, "{problems:#?}");
+        assert!(said("same-code", "changes nothing"), "{problems:#?}");
+        assert!(said("gone", "is not in"), "{problems:#?}");
+        assert!(said("twice", "times, at lines"), "{problems:#?}");
+        assert!(
+            said("comma", "ends in a comma, which rustfmt moves"),
+            "{problems:#?}"
+        );
+        assert!(
+            said("two-items", "names 3 items in `crates/demo/src/lib.rs`"),
+            "{problems:#?}"
+        );
+        assert!(
+            said("same-change", "makes the same change as `demo/first`"),
+            "{problems:#?}"
+        );
+    }
+
+    #[test]
+    fn a_comma_is_a_layout_comma_unless_it_ends_a_match_arm() {
+        use super::ends_in_a_layout_comma as layout;
+        assert!(layout("f(a, b,"));
+        assert!(layout("x: 1,"));
+        assert!(layout("seconds,"));
+        assert!(!layout("f(a, b)"));
+        assert!(!layout("Some(413) => Signal::ContextLength,"));
+        assert!(!layout("x => f(a, b),"));
+        assert!(!layout("'\\u{80}'..='\\u{9f}' => Some(C1),"));
+        // An arm's comma ends the arm, not an argument inside its value.
+        assert!(layout("x => f(a,"));
     }
 
     #[test]

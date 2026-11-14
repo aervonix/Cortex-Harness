@@ -48,7 +48,6 @@ caught-by:
 [break] launcher-gains-a-default
 rule: Launcher keeps no default bodies.
 file: crates/cortex-tools/src/process/mod.rs
-in: Launcher
 find: fn explain(&self, exit: Option<Exit>, output: &str) -> Option<String>;
 replace: fn explain(&self, exit: Option<Exit>, output: &str) -> Option<String>; fn added(&self) {}
 packages: xtask
@@ -59,7 +58,6 @@ caught-by:
 [break] policy-gains-a-default
 rule: Policy keeps no default bodies.
 file: crates/cortex-agent/src/policy.rs
-in: Policy
 find: fn read_gate(&self) -> Arc<dyn ReadGate>;
 replace: fn read_gate(&self) -> Arc<dyn ReadGate>; fn added(&self) -> u8 { 0 }
 packages: xtask
@@ -148,3 +146,78 @@ find: if name.is_empty() || name.contains(['/', '\\']) {
 replace: if name.is_empty() {
 caught-by:
     rules::rust_source::tests::programs_started_by_a_path_or_in_tests_pass
+
+# ------------------------------------------------------------ the pre-flight
+
+[break] preflight-passes-a-layout-comma
+rule: A find that ends in a comma rustfmt moves is refused.
+file: xtask/src/mutate/mod.rs
+in: preflight
+find: if ends_in_a_layout_comma(&one.find) {
+replace: if false && ends_in_a_layout_comma(&one.find) {
+caught-by:
+    mutate::tests::the_preflight_names_each_kind_of_break_that_will_go_wrong
+
+[break] preflight-refuses-an-arm-comma
+rule: The comma after a match arm that is an expression is the formatter's always, and passes.
+file: xtask/src/mutate/mod.rs
+in: ends_in_a_layout_comma
+find: "=" if depth == 0 && piece.get(index + 1) == Some(&">") => return false
+replace: "=" if false => return false
+caught-by:
+    mutate::tests::a_comma_is_a_layout_comma_unless_it_ends_a_match_arm
+    mutate::tests::a_list_the_preflight_passes
+
+[break] preflight-passes-an-anchor-of-two-items
+rule: An `in` that names more than one item is refused.
+file: xtask/src/mutate/mod.rs
+in: preflight
+find: && items.len() > 1
+replace: && items.len() > 3
+caught-by:
+    mutate::tests::the_preflight_names_each_kind_of_break_that_will_go_wrong
+
+[break] preflight-refuses-cfg-twins
+rule: An `in` that names one function for each system passes.
+file: xtask/src/mutate/lex.rs
+in: under_cfg
+find: if open + 1 < at && text(open + 1) == "cfg" {
+replace: if false {
+caught-by:
+    mutate::tests::a_list_the_preflight_passes
+
+[break] anchor-finds-the-item-itself
+rule: A later segment of an anchor is looked for inside the item, not as the item: `Default::default` is the function.
+file: xtask/src/mutate/lex.rs
+in: items_of
+find: scope.start + 1..scope.end
+replace: scope.clone()
+caught-by:
+    mutate::tests::a_list_the_preflight_passes
+
+[break] preflight-passes-a-repeated-change
+rule: Two breaks that make the same change are refused.
+file: xtask/src/mutate/mod.rs
+in: check
+find: if let Some(first) = changes.get(&(one.file.as_str(), change.clone())) {
+replace: if let Some(first) = None::<&String> {
+caught-by:
+    mutate::tests::the_preflight_names_each_kind_of_break_that_will_go_wrong
+
+[break] change-read-by-its-whole-text
+rule: A change is what it does between the first and last token it changes, not the find and replace as written.
+file: xtask/src/mutate/mod.rs
+in: change_of
+find: .find(|&index| before(index) != after(index))
+replace: .find(|_| true)
+caught-by:
+    mutate::tests::the_preflight_names_each_kind_of_break_that_will_go_wrong
+
+[break] not-caught-forgets-the-second-guard
+rule: NOT CAUGHT, for a break whose list names its tests, says a second guard may now cover it.
+file: xtask/src/mutate/drive.rs
+in: judge
+find: if failed.is_empty() && !one.caught_by.is_empty() =>
+replace: if failed.is_empty() && one.caught_by.is_empty() && false =>
+caught-by:
+    mutate::drive::tests::a_break_with_tests_named_that_nothing_catches_points_at_a_second_guard

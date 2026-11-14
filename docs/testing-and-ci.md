@@ -221,7 +221,21 @@ A value is on the key's line, or on the indented lines after a key that ends its
 
 **`find` is matched by token,** not as text. White space, comments and a comma before a closing bracket are not tokens, so however `rustfmt` lays the code out, the break still applies. An exact-text break stops applying the day a line is wrapped, and that is how breaks were lost in earlier steps.
 
-**A break that does not apply is an error, never a result.** `cargo xtask check` has a step, `breaks`, that applies every break of every list to the tree in memory and fails when one cannot be made: its code is gone, or is there twice, or its replacement is the same code. It reads the files the breaks name and runs nothing (0.1 s for the 300 breaks there are), so it is in the blocking checks: a change that moves code out from under a break updates the break in the same pull request, or deletes it if the rule is gone. The message names the list and the line, and says which.
+**A break that does not apply is an error, never a result.** `cargo xtask check` has a step, `breaks`, that applies every break of every list to the tree in memory and fails when one cannot be made: its code is gone, or is there twice, or its replacement is the same code. It reads the files the breaks name and runs nothing (0.2 s on the desktop for the 617 breaks there are, the pre-flight below included, which is what it took without it), so it is in the blocking checks: a change that moves code out from under a break updates the break in the same pull request, or deletes it if the rule is gone. The message names the list and the line, and says which.
+
+**The pre-flight** (since the third tooling step) is the same step, and `cargo xtask mutate --check` runs it alone. Besides a break that cannot be made, it refuses one that will go wrong later, or that tests nothing another does not:
+
+| It refuses | Why |
+|---|---|
+| A `replace` that is its `find` once both are read by token | The break changes nothing, and would be reported as one no test caught. |
+| A `find` that is not there, or is there more than once | The break is not made, or is made in a place nobody chose. |
+| A `find` that ends in a comma | `rustfmt` adds and removes the comma before a closing bracket, and the search passes over such a comma, so the day the line is wrapped or joined the break no longer applies. The comma after a match arm that is an expression (`503 => Signal::Overload,`) is the formatter's always, and passes. |
+| An `in` that names more than one item | Two `impl` blocks with a `new`: the break is made in whichever holds its code today. Not when each of them is under a `#[cfg(…)]` (a function for each system, of which a build has one). |
+| Two breaks, in any lists, that make the same change | Read by token, from the first token they change to the last: `a && b` made `a` is `&& b` made nothing. The second tests nothing more. |
+
+What it cannot see is **a break that a second guard in the code has made unable to fail.** Step 13a's fixes closed the Windows credentials file by name and then its whole folder: after that, the break that removed only the first could fail no test, because the second still refused the read. Only running the breaks shows it, and `mutate` then says NOT CAUGHT, and for a break that names its tests, that another guard may now cover it: break both in one break, or mark it `expect: survives` and name the other guard in its `rule`.
+
+When the pre-flight was written it found 43 breaks whose `find` ended in a comma, in the lists of steps 9, 12, 13a, 20, 26 and 31 and both earlier tooling steps. 38 of them had a `replace` that ended in one too, and lost both; the five others were match arms, which is how the rule came to pass them. It found two `in`s of its own step's that named a trait and its `impl` in one file, and no two breaks that made the same change.
 
 **`cargo xtask mutate [BREAK…]`** runs the breaks: all of them, or the ones named (a break, a whole list, or the end of a name).
 

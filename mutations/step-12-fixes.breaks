@@ -150,8 +150,8 @@ caught-by:
 rule: `cd -P` takes `..` through links, and is not followed.
 file: crates/cortex-policy/src/engine.rs
 in: cd_operand
-find: 'P' => physical = true,
-replace: 'P' => physical = false,
+find: 'P' => physical = true
+replace: 'P' => physical = false
 caught-by:
     bypasses::a_cd_with_options_or_a_redirection_still_says_where_it_leads
 
@@ -170,8 +170,8 @@ caught-by:
 rule: `rg` is not on the table of commands that only read: it reads hidden and ignored files, and runs programs.
 file: crates/cortex-policy/src/command/table.rs
 in: POSIX
-find: row(&["fd", "fdfind"], unix(FD, PATHS)),
-replace: row(&["fd", "fdfind"], unix(FD, PATHS)), row(&["rg"], unix(FD, PATHS)),
+find: row(&["fd", "fdfind"], unix(FD, PATHS))
+replace: row(&["fd", "fdfind"], unix(FD, PATHS)), row(&["rg"], unix(FD, PATHS))
 caught-by:
     bypasses::a_search_that_reaches_hidden_and_ignored_files_is_asked_about
 
@@ -179,8 +179,8 @@ caught-by:
 rule: `git grep --no-index` reads files git does not track, and is not on the table.
 file: crates/cortex-policy/src/command/table.rs
 in: GIT_GREP
-find: L("cached"),
-replace: L("cached"), L("no-index"),
+find: L("cached")
+replace: L("cached"), L("no-index")
 caught-by:
     bypasses::a_search_that_reaches_hidden_and_ignored_files_is_asked_about
 
@@ -188,8 +188,8 @@ caught-by:
 rule: `git grep --untracked` reads files git does not track, and is not on the table.
 file: crates/cortex-policy/src/command/table.rs
 in: GIT_GREP
-find: L("cached"),
-replace: L("cached"), L("untracked"),
+find: L("cached")
+replace: L("cached"), L("untracked")
 caught-by:
     bypasses::a_search_that_reaches_hidden_and_ignored_files_is_asked_about
 
@@ -245,8 +245,8 @@ caught-by:
 rule: An approval of `curl` covers only the exact line.
 file: crates/cortex-policy/src/engine.rs
 in: EXACT_LINE
-find: "curl",
-replace: "curl-never",
+find: "curl"
+replace: "curl-never"
 caught-by:
     approvals::an_approval_reaches_no_further_than_the_line_it_was_given_for
 
@@ -333,8 +333,8 @@ caught-by:
 [break] host-lift-not-escaped
 rule: Approving a host covers that host and no other: its name is matched literally.
 file: crates/cortex-policy/src/engine.rs
-find: pattern: literal_name(&host.trim_end_matches('.').to_ascii_lowercase()),
-replace: pattern: host.trim_end_matches('.').to_ascii_lowercase(),
+find: pattern: literal_name(&host.trim_end_matches('.').to_ascii_lowercase())
+replace: pattern: host.trim_end_matches('.').to_ascii_lowercase()
 caught-by:
     approvals::approving_a_host_covers_that_host_and_no_other
 
@@ -531,8 +531,8 @@ caught-by:
 rule: A command that only reads, with a pattern, is asked about at `read-only` and not refused.
 file: crates/cortex-policy/src/engine.rs
 in: Engine::judge_part
-find: reads: !writes && self.only_reads_but_for_patterns(part),
-replace: reads: false,
+find: reads: !writes && self.only_reads_but_for_patterns(part)
+replace: reads: false
 caught-by:
     bypasses::patterns_and_lost_directories_hold_against_the_second_review
 

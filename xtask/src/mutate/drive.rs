@@ -690,6 +690,20 @@ fn judge(one: &Break, outcome: &Outcome, tests: &[String]) -> Verdict {
                 )
             }
         }
+        Outcome::Ran { failed, .. } if failed.is_empty() && !one.caught_by.is_empty() => {
+            Verdict::Flagged(
+                "NOT CAUGHT",
+                format!(
+                    "No test failed with this break made, though its list names {}. If they \
+                     still test this rule, another guard in the code may now stop what the \
+                     break lets through (step 13a closed a file by name, then its whole \
+                     folder, and the break of the first could no longer fail). Break both \
+                     guards in one break, or mark it `expect: survives` and name the other \
+                     guard in its `rule`. Otherwise write a test that fails with it.",
+                    quoted(&one.caught_by.iter().map(String::as_str).collect::<Vec<_>>())
+                ),
+            )
+        }
         Outcome::Ran { failed, .. } if failed.is_empty() => Verdict::Flagged(
             "NOT CAUGHT",
             "No test failed with this break made. Write a test that fails with it. If nothing \
@@ -1180,7 +1194,9 @@ pub(crate) mod tests {
 
     use super::super::list::{self, Break};
     use super::super::tests::breaks;
-    use super::{CargoRunner, Finished, Options, Runner, Tested, drive, report_only};
+    use super::{
+        CargoRunner, Finished, Options, Outcome, Runner, Tested, Verdict, drive, report_only,
+    };
     use crate::Result;
     use crate::junit::TestCase;
 
@@ -1667,6 +1683,43 @@ error: could not compile `demo` (lib test) due to 2 previous errors
             "{}",
             run.said
         );
+    }
+
+    /// A break its list says is caught, which nothing catches now, may have
+    /// been made unable to fail by a second guard in the code: the message
+    /// says so, and what to do.
+    #[test]
+    fn a_break_with_tests_named_that_nothing_catches_points_at_a_second_guard() {
+        let named = list::parse(
+            "mutations/demo.breaks",
+            "[break] b\nrule: r\nfile: f.rs\nfind: x\nreplace: y\ncaught-by:\n    t::one\n",
+        )
+        .unwrap()
+        .remove(0);
+        let unnamed = list::parse(
+            "mutations/demo.breaks",
+            "[break] b\nrule: r\nfile: f.rs\nfind: x\nreplace: y\n",
+        )
+        .unwrap()
+        .remove(0);
+        let nothing = Outcome::Ran {
+            failed: Vec::new(),
+            seconds: 1.0,
+        };
+        let tests = ["demo t::one".to_owned()];
+        let Verdict::Flagged(label, advice) = super::judge(&named, &nothing, &tests) else {
+            panic!("not flagged");
+        };
+        assert_eq!(label, "NOT CAUGHT");
+        assert!(
+            advice.contains("though its list names `t::one`"),
+            "{advice}"
+        );
+        assert!(advice.contains("another guard in the code"), "{advice}");
+        let Verdict::Flagged(_, advice) = super::judge(&unnamed, &nothing, &tests) else {
+            panic!("not flagged");
+        };
+        assert!(!advice.contains("another guard"), "{advice}");
     }
 
     #[test]

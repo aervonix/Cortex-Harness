@@ -48,8 +48,8 @@ file: crates/cortex-core/src/shell_cache.rs
 in: resolved
 find:
     Ok(real) => cortex_base::AbsPath::from_os(&real)
-        .map_or(real, |path| PathBuf::from(path.to_native_string())),
-replace: Ok(_) => program.to_path_buf(),
+        .map_or(real, |path| PathBuf::from(path.to_native_string()))
+replace: Ok(_) => program.to_path_buf()
 caught-by:
     cortex-core shell_cache::tests::a_shell_is_kept_under_its_resolved_path
 
@@ -230,10 +230,10 @@ caught-by:
 rule: A rule an approval would add keeps an effect this version does not know.
 file: crates/cortex-protocol/src/methods.rs
 in: AddedRule
-find: pub effect: Effect,
+find: pub effect: Effect
 replace:
     #[serde(deserialize_with = "crate::open::listed")]
-    pub effect: Effect,
+    pub effect: Effect
 caught-by:
     cortex-protocol tests::an_approval_request_whose_adds_this_version_does_not_know_is_still_read
 
@@ -243,8 +243,8 @@ caught-by:
 rule: A resumed session has history from its log before this process sends anything.
 file: crates/cortex-agent/src/turn.rs
 in: Session::open
-find: history: !opened.items.is_empty(),
-replace: history: false,
+find: history: !opened.items.is_empty()
+replace: history: false
 packages: cortex-agent, cortex-core
 caught-by:
     cortex-core::it settings::a_resumed_sessions_first_change_of_model_warns_that_it_is_resent_uncached
