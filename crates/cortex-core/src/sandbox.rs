@@ -30,7 +30,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, PoisonError};
 
 use cortex_base::git::{Confinement, Started};
 
@@ -40,7 +40,7 @@ use cortex_protocol::lease::{Level, NetworkAccess, SandboxPolicy};
 use cortex_protocol::session::SandboxStatus;
 use cortex_sandbox::launch::Launcher as SandboxLauncher;
 use cortex_sandbox::policy::{Network, Policy, Reach};
-use cortex_sandbox::protect::{Changed, Limits, Watch};
+use cortex_sandbox::protect::{Changed, Limits, Snapshot, Watch};
 use cortex_sandbox::support::{Assessment, Support, Unconfined};
 use cortex_tools::process::{Argument, CommandLine, Direct, Exit, Launch, LaunchCx, Launcher};
 
@@ -135,6 +135,11 @@ pub(crate) struct SessionSandbox {
     /// The protected paths, looked at before and after each confined
     /// command, when the sandbox enforces.
     watch: Option<Watch>,
+    /// The look taken before a command that outran its kill (escaped), kept
+    /// so that a protected path it changes after its turn ended is found
+    /// before the next confined command and at the session's close (found
+    /// by the third review of step 26).
+    escaped: std::sync::Mutex<Option<Snapshot>>,
 }
 
 impl SessionSandbox {
@@ -193,9 +198,30 @@ impl SessionSandbox {
             confine: AtomicBool::new(false),
             temp,
             watch,
+            escaped: std::sync::Mutex::new(None),
         };
         sandbox.set_level(level);
         sandbox
+    }
+
+    /// Remembers the look taken before a command that outran its kill, so
+    /// that a protected path it changes after its turn is found later.
+    pub(crate) fn remember_escape(&self, before: Snapshot) {
+        *self.escaped.lock().unwrap_or_else(PoisonError::into_inner) = Some(before);
+    }
+
+    /// If a command escaped its kill, looks again at the protected paths
+    /// and says what changed since the look before that command, then
+    /// forgets it. Blocks. `None` when none escaped, or nothing changed.
+    pub(crate) fn recheck_escape(&self) -> Option<Vec<Changed>> {
+        let before = self
+            .escaped
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()?;
+        let watch = self.watch.as_ref()?;
+        let (changed, _) = watch.changes_since(&before);
+        (!changed.is_empty()).then_some(changed)
     }
 
     /// Whether a command that runs now is confined.
@@ -521,6 +547,7 @@ fn remove_temp(path: &Path) {
 
 #[cfg(test)]
 mod tests {
+    use cortex_base::Rng;
     use cortex_sandbox::support::Support;
 
     use super::*;
@@ -590,5 +617,61 @@ mod tests {
         let started = git.start(Path::new("/usr/bin/git"), arguments).unwrap();
         assert_eq!(started.program, PathBuf::from("/usr/bin/git"));
         assert_eq!(started.stdin, None);
+    }
+
+    /// After a command escapes its kill, the protected paths are looked at
+    /// again against the look before that command, so a hook it writes
+    /// after its turn is found; only the first escape is remembered.
+    #[test]
+    fn a_change_after_an_escaped_command_is_found_on_re_check() {
+        let workspace = std::env::temp_dir().join(format!(
+            "cortex-core-recheck-{:016x}",
+            cortex_base::rng::SystemRng::new().next_u64()
+        ));
+        let hooks = workspace.join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let root =
+            cortex_base::AbsPath::from_os(&std::fs::canonicalize(&workspace).unwrap()).unwrap();
+        let grant = cortex_policy::default_sandbox(&root, &[], &[]);
+        let core = CoreSandbox::new(
+            Support::Landlock(8),
+            Some((
+                PathBuf::from("/opt/cortex"),
+                vec![OsString::from("__sandbox")],
+            )),
+        );
+        let (state, enforcing) = core.state(true);
+        let sandbox = SessionSandbox::new(
+            &core,
+            state,
+            enforcing.map(|(landlock, _)| landlock),
+            &Level::Autonomous,
+            &grant,
+            Temp {
+                path: workspace.join("tmp"),
+                made: false,
+            },
+            root.to_fs_path().as_path(),
+            Limits::default(),
+        );
+        // Nothing escaped yet: no re-check finds anything.
+        assert!(sandbox.recheck_escape().is_none());
+        // A command runs; the look before it is remembered as if it
+        // escaped its kill.
+        let before = sandbox.watch().expect("a watch").take();
+        sandbox.remember_escape(before);
+        // The escaped process writes a hook after the turn.
+        std::fs::write(hooks.join("pre-commit"), "#!/bin/sh\ncurl evil\n").unwrap();
+        // The re-check finds it, and forgets the escape (a second finds
+        // nothing).
+        let changed = sandbox.recheck_escape().expect("the hook is found");
+        assert!(
+            changed
+                .iter()
+                .any(|one| one.path.ends_with(".git/hooks/pre-commit")),
+            "{changed:?}"
+        );
+        assert!(sandbox.recheck_escape().is_none());
+        let _ = std::fs::remove_dir_all(&workspace);
     }
 }

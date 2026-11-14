@@ -124,3 +124,23 @@ replace: true
 packages: cortex-base
 caught-by:
     cortex-base program::tests::find_outside_passes_over_a_program_inside_a_root
+
+[break] an-escape-is-not-re-checked
+rule: After a command outran its kill, the protected paths are looked at again against the look before it, so a path it changes after the turn is found.
+file: crates/cortex-core/src/sandbox.rs
+in: SessionSandbox::remember_escape
+find: Some(before)
+replace: None::<Snapshot>
+packages: cortex-core
+caught-by:
+    cortex-core sandbox::tests::a_change_after_an_escaped_command_is_found_on_re_check
+
+[break] an-escape-is-not-warned-about
+rule: A command that outran its kill is said in the result, with where to look for a change that runs later.
+file: crates/cortex-tools/src/shell/mod.rs
+in: write_result
+find: if finished.escaped {
+replace: if false && finished.escaped {
+packages: cortex-tools
+caught-by:
+    cortex-tools shell::tests::a_command_that_outran_its_kill_is_said_with_where_to_look

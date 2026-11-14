@@ -614,8 +614,11 @@ fn write_result(
     if finished.escaped {
         closing.push(
             "[A process the command started kept forking and could not all be killed within the \
-             bound. Something of the command may still be running inside the sandbox, where it \
-             can change a file that decides what runs later. The turn stops here.]"
+             bound. Something of the command may still be running inside the sandbox, and may \
+             change a protected path after this check — a git hook (`.git/hooks`), git's \
+             configuration (`.git/config`), a CI file (`.github/workflows`), `.cortex` or another \
+             watched name — which would run later, outside the sandbox. Look at those paths \
+             before trusting the workspace. The turn stops here.]"
                 .to_owned(),
         );
     }
@@ -920,6 +923,33 @@ mod tests {
             None,
         );
         assert!(!text.contains("incomplete"), "{text}");
+    }
+
+    #[test]
+    fn a_command_that_outran_its_kill_is_said_with_where_to_look() {
+        let store = MemoryStore::new();
+        let ended = Finished {
+            escaped: true,
+            ..finished(b"ok\n", Some(Exit::Code(0)), Ending::Exited)
+        };
+        let (text, _) = write_result(
+            &ended,
+            &OutputLimits::default(),
+            Keep::HeadAndTail,
+            &store,
+            &|_, _| None,
+            None,
+        );
+        // It warns, and names the watched paths to look at.
+        assert!(
+            text.contains("kept forking and could not all be killed"),
+            "{text}"
+        );
+        assert!(
+            text.contains(".git/hooks") && text.contains(".git/config"),
+            "{text}"
+        );
+        assert!(text.contains("The turn stops here"), "{text}");
     }
 
     #[test]

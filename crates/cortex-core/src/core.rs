@@ -676,11 +676,41 @@ impl Core {
         let log = Arc::clone(&live.log);
         let sandbox = Arc::clone(&live.sandbox);
         let closed = Self::blocking(move || {
+            // A process a command left running (one that outran its kill)
+            // may have changed a protected path after its turn ended. There
+            // is no turn to stop at close, so the change is recorded as a
+            // notice the next session reads, and the user is pointed at it
+            // (found by the third review of step 26). The undo of the change
+            // waits on the resume (`docs/outstanding/the-last-writes-of-a-killed-command.md`).
+            let escaped = sandbox.recheck_escape();
             // Nothing of the session runs any more: what its commands left
             // in their temporary directory goes.
             sandbox.remove_temp();
             let mut kept = lock(&log);
             if let Some(disk) = kept.disk() {
+                if let Some(changed) = &escaped
+                    && disk.session.is_born()
+                {
+                    let names: Vec<String> = changed
+                        .iter()
+                        .map(|one| one.path.display().to_string())
+                        .collect();
+                    let _ = disk.session.append(
+                        None,
+                        Body::Notice(cortex_protocol::item::NoticeItem {
+                            id: ItemId::new("escaped-change"),
+                            source: NoticeSource::Harness,
+                            text: format!(
+                                "A process an earlier command left running changed protected \
+                                 paths after its turn ended: {}. They decide what runs later \
+                                 outside the sandbox; look at them before trusting the workspace, \
+                                 and undo the turn to put them back.",
+                                names.join(", ")
+                            ),
+                            created_at: None,
+                        }),
+                    );
+                }
                 // The base state, if its capture ends in time. It nearly
                 // always has by now: it takes far less than one request to
                 // a model. A capture that is slower than this is let go

@@ -394,6 +394,13 @@ impl Tool for RecordingShell {
             // A turn a command of it stopped runs no more of its calls:
             // [`StopsWithTurn`], around every tool, sees to that.
             //
+            // A command that outran its kill may have changed a protected
+            // path after its turn ended: the change is found now, before
+            // this command runs, and stops the turn if there was one
+            // (found by the third review of step 26).
+            if let Some(stop) = self.recheck_escape(cx).await {
+                return stop;
+            }
             // Every confined command has its protected paths looked at
             // before and after it, one the engine marked as only reading
             // too: the program it runs may do otherwise. One the user let
@@ -410,6 +417,9 @@ impl Tool for RecordingShell {
                 }
                 None => None,
             };
+            // Kept so that, if this command outruns its kill, the look
+            // before it can be compared again later.
+            let before_escape = before.clone();
             // The command itself runs on this thread, the core's: the
             // kernel's death signal is tied to the thread that started it.
             let mut result = self.tool.run(plan, cx, out).await;
@@ -477,9 +487,18 @@ impl Tool for RecordingShell {
                 .unwrap_or(false);
             if escaped && self.sandbox.watch().is_some() {
                 let note = "[A process the command started kept forking and could not all be \
-                            killed. It may still be running inside the sandbox and writing a \
-                            protected path after the look. The turn stops here.]";
+                            killed. It may still be running inside the sandbox and may change a \
+                            protected path after this check — a git hook (`.git/hooks`), git's \
+                            configuration (`.git/config`), a CI file (`.github/workflows`), \
+                            `.cortex` or another watched name. The turn stops here, and the \
+                            protected paths are looked at again before the next command and at \
+                            the session's close.]";
                 self.policy.stop_turn(cx.turn, note.to_owned());
+                // Remember the look before this command, so that a protected
+                // path it changes after the turn is found later.
+                if let Some(before) = before_escape {
+                    self.sandbox.remember_escape(before);
+                }
             }
             result
         })
@@ -498,6 +517,38 @@ fn note_changed(changes: &Json, cx: &RunCx) {
                 cx.files.note_changed(&file);
             }
         }
+    }
+}
+
+impl RecordingShell {
+    /// Looks at the protected paths again when a command outran its kill,
+    /// and if one changed since the look before that command, records it,
+    /// stops the turn, and returns the result that says so — so this
+    /// command does not run on a workspace an escaped process has changed.
+    /// `None` when none escaped or nothing changed.
+    async fn recheck_escape(&self, cx: &RunCx) -> Option<ToolResult> {
+        let sandbox = Arc::clone(&self.sandbox);
+        let changed = tokio::task::spawn_blocking(move || sandbox.recheck_escape())
+            .await
+            .ok()
+            .flatten()?;
+        let root = cx.paths.root().to_fs_path();
+        let by_hand = match &self.rounds {
+            Some(rounds) => {
+                let rounds = Arc::clone(rounds);
+                let changed = changed.clone();
+                tokio::task::spawn_blocking(move || rounds.record_protected(&changed))
+                    .await
+                    .unwrap_or_default()
+            }
+            None => changed.iter().map(|one| one.path.clone()).collect(),
+        };
+        let note = protected_note(&changed, (true, true), &root, &by_hand)?;
+        self.policy.stop_turn(cx.turn, note.clone());
+        Some(ToolResult::denied(format!(
+            "The command was not run: a process an earlier command left running changed a \
+             protected path after its turn. {note}"
+        )))
     }
 }
 
