@@ -1404,11 +1404,13 @@ fn after_an_overflow_the_summary_request_is_cut_to_fit_what_the_provider_showed(
     );
     let rig = Setup::new(&world).start(&world);
     // The estimate stays below every threshold: only the provider knows
-    // the request is too long.
-    rig.window(4_000);
+    // the request is too long. At the ratio the estimate used, the whole
+    // history would fit the summary request's room; at the ratio the
+    // refusal shows, only the last turn does.
+    rig.window(5_000);
     world.run(async {
         for (turn, prompt) in ["first", "second", "third", "fourth"].iter().enumerate() {
-            rig.bulk(900);
+            rig.bulk(450);
             rig.prompt(prompt);
             rig.events.turns(turn + 1).await;
         }
