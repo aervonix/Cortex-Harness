@@ -24,10 +24,13 @@ use super::Violation;
 use crate::mutate::lex::{self, Token};
 
 /// The traits that are wrapped, and the file each is declared in.
-pub(super) const WRAPPED: [(&str, &str); 3] = [
+pub(super) const WRAPPED: [(&str, &str); 4] = [
     ("crates/cortex-tools/src/contract.rs", "Tool"),
     ("crates/cortex-tools/src/process/mod.rs", "Launcher"),
     ("crates/cortex-agent/src/policy.rs", "Policy"),
+    // Wrapped by the tests' clients that check what a request builds to
+    // (cortex-agent's context tests, cortex-core's secrets tests).
+    ("crates/cortex-llm/src/client.rs", "ModelClient"),
 ];
 
 /// The calls that start the program they are given as their first
@@ -507,8 +510,8 @@ mod tests {
             "pub trait Other {}\n".to_owned(),
         );
         let found = wrapped_traits(&sources);
-        // Tool is not in its file; the other two files are not there.
-        assert_eq!(found.len(), 3, "{found:?}");
+        // Tool is not in its file; the other files are not there.
+        assert_eq!(found.len(), super::WRAPPED.len(), "{found:?}");
         assert!(found[0].message.contains("`Tool` is not declared here"));
         assert!(found[1].message.contains("the file is gone"));
     }
