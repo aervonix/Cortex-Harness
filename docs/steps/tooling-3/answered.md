@@ -18,7 +18,7 @@ This step is not a numbered step of the build plan: it built the third round of 
 - **The A/B base is beside the head's checkout,** so that the head's `.cargo/config.toml` does not reach its build.
 - **The partial-Landlock check fails unless the run named the gap.** A runner image whose kernel moves to Landlock 6 would otherwise turn the job into a copy of the blocking one, in silence.
 - **The rerun helper is in the test kit.** `cortex-base`'s own test of the program search cannot use it (the test kit depends on `cortex-base`) and keeps its path made relative by hand.
-- **The release start-up on Windows,** which tooling 2's `try` run measured, is recorded in [performance-budgets.md](../../performance-budgets.md), "Start-up". Its outstanding item asked about the start overhead of step 11 "in a release build", which on reading is the overhead of starting a shell command (the row "Starting a shell command"), not of starting the binary. That row still says a release build on Windows is not measured. The coordinator chose to delete the item.
+- **The release start-up on Windows,** which tooling 2's `try` run measured, is recorded in [performance-budgets.md](../../performance-budgets.md), "Start-up". Its outstanding item asked about the start overhead of step 11 "in a release build", which on reading is the overhead of starting a shell command (the row "Starting a shell command"), not of starting the binary. That row still says a release build on Windows is not measured, so the item is kept, with a line saying what is measured and how `try` could measure the rest (the coordinator's answer).
 
 ## The independent reviews
 
