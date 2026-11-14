@@ -180,6 +180,40 @@ pub(crate) fn rounds_table(base: &[Vec<TestCase>], head: &[Vec<TestCase>]) -> St
     text
 }
 
+/// `path` with its `.` and `..` taken out by reading it, not the file
+/// system: on Linux `std::path::absolute` keeps them, so `../ab-base` from
+/// the head would otherwise read as inside it.
+pub(crate) fn normalised(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Refuses a base that is the head, or inside it, where the head's
+/// `.cargo/config.toml` would apply to its build too. Both absolute.
+pub(crate) fn refuse_base(head: &Path, base: &Path) -> Result<()> {
+    let (head, base) = (normalised(head), normalised(base));
+    if base == head {
+        return Err("the base is this tree: give another checkout".to_owned());
+    }
+    if base.starts_with(&head) {
+        return Err(format!(
+            "{} is inside this tree, whose .cargo/config.toml would apply to its build too: \
+             put it beside this tree",
+            base.display()
+        ));
+    }
+    Ok(())
+}
+
 /// The trees' build directories: each its own, whatever the caller's
 /// environment says, so that building one never rebuilds the other.
 fn target_of(tree: &Path) -> PathBuf {
@@ -226,16 +260,7 @@ pub(crate) fn run(arguments: &[String]) -> Result<()> {
             base.display()
         ));
     }
-    if base == head {
-        return Err("the base is this tree: give another checkout".to_owned());
-    }
-    if base.starts_with(&head) {
-        return Err(format!(
-            "{} is inside this tree, whose .cargo/config.toml would apply to its build too: \
-             put it beside this tree",
-            base.display()
-        ));
-    }
+    refuse_base(&head, &base)?;
     let label = request
         .label
         .clone()
@@ -264,6 +289,16 @@ pub(crate) fn run(arguments: &[String]) -> Result<()> {
             workspace::forget_report(&report)?;
             run_in(at, nextest(at, &request, false), "the tests")?;
             let cases = junit::read(&report)?;
+            // Each round's report, kept where the head's run keeps its own
+            // (the `try` workflow uploads the folder).
+            let kept = head.join("target").join("ab").join(format!(
+                "{}-round-{}.xml",
+                if which == Which::Base { "base" } else { "head" },
+                round + 1
+            ));
+            std::fs::create_dir_all(kept.parent().unwrap_or(&head))
+                .and_then(|()| std::fs::copy(&report, &kept))
+                .map_err(|error| format!("could not keep {}: {error}", kept.display()))?;
             runs[which as usize].push(cases);
         }
     }
@@ -353,6 +388,22 @@ mod tests {
             let error = Request::parse(&strings(words)).unwrap_err();
             assert!(error.contains(expected), "{words:?}: {error}");
         }
+    }
+
+    /// `../ab-base` from the head is beside it, on every system: on Linux
+    /// `std::path::absolute` keeps the `..`, and a comparison of the
+    /// components read it as inside.
+    #[test]
+    fn a_base_beside_the_head_is_taken_and_one_inside_it_refused() {
+        let head = std::path::absolute("work/repo").unwrap();
+        let beside = std::path::absolute("work/repo/../ab-base").unwrap();
+        assert_eq!(super::refuse_base(&head, &beside), Ok(()));
+        let inside = std::path::absolute("work/repo/./ab-base").unwrap();
+        let error = super::refuse_base(&head, &inside).unwrap_err();
+        assert!(error.contains("is inside this tree"), "{error}");
+        let same = std::path::absolute("work/repo/x/..").unwrap();
+        let error = super::refuse_base(&head, &same).unwrap_err();
+        assert!(error.contains("the base is this tree"), "{error}");
     }
 
     #[test]

@@ -245,7 +245,7 @@ pub(super) fn bare_programs(file: &str, source: &str, test_file: bool) -> Vec<Vi
     let all = lex::tokens(source);
     let text = |index: usize| all[index].text(source);
     let tests = test_modules(source, &all);
-    let constants = string_constants(source, &all);
+    let constants = string_constants(source, &all, &tests);
     let lines: Vec<&str> = source.lines().collect();
     let mut violations = Vec::new();
     for (index, token) in all.iter().enumerate().take(all.len().saturating_sub(5)) {
@@ -341,10 +341,18 @@ fn string_value(token: &str) -> Option<String> {
 /// The names of `source` that hold a string: `const NAME: &str = "…";`,
 /// and `let name = "…";` anywhere in the file (a name bound twice keeps the
 /// last).
-fn string_constants(source: &str, all: &[Token]) -> BTreeMap<String, String> {
+fn string_constants(
+    source: &str,
+    all: &[Token],
+    tests: &[Range<usize>],
+) -> BTreeMap<String, String> {
     let text = |index: usize| all[index].text(source);
     let mut constants = BTreeMap::new();
     for index in 0..all.len().saturating_sub(4) {
+        // A test's `let` names nothing the code outside it starts.
+        if tests.iter().any(|range| range.contains(&index)) {
+            continue;
+        }
         if text(index) == "let"
             && text(index + 2) == "="
             && text(index + 4) == ";"

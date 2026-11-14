@@ -24,11 +24,18 @@ fn found(git: &std::path::Path) {
     let _ = Pty::spawn(&program_path, &[], &[], 80, 24);
 }
 
+fn started_by_a_parameter(shell: &std::path::Path) {
+    // A name of a test's own `let` below is no name here.
+    let _ = Command::new(shell);
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
     fn a_test_runs_the_machines_git() {
         let _ = std::process::Command::new("git");
+        let shell = "sh";
+        super::started_by_a_parameter(std::path::Path::new(shell));
     }
 }
 

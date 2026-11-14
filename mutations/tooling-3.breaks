@@ -457,3 +457,12 @@ find: "cortex-sandbox/backends".to_owned()
 replace: "cortex-sandbox/default".to_owned()
 caught-by:
     nonblocking::partial_tests::the_partial_case_must_be_seen_and_the_tests_must_pass
+
+[break] ab-base-compared-with-its-dots
+rule: A base beside the head, named with `..`, is taken: the paths are compared with their `.` and `..` read out.
+file: xtask/src/ab.rs
+in: refuse_base
+find: let (head, base) = (normalised(head), normalised(base));
+replace: let (head, base) = (head.to_path_buf(), base.to_path_buf());
+caught-by:
+    ab::tests::a_base_beside_the_head_is_taken_and_one_inside_it_refused

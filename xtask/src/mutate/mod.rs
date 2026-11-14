@@ -475,7 +475,8 @@ fn change_of(source: &str, code: &[lex::Token], range: &Range<usize>, replace: &
 /// - Its `in:` names more than one item. The break is made in the one item
 ///   whose code it finds today; when the code of another of them changes,
 ///   it may find that one instead, or both. Not when each of them is under
-///   a `#[cfg(…)]`: one function for each system, of which a build has one.
+///   a `#[cfg(…)]` about the system: one function for each system, of
+///   which a build has one.
 fn preflight(
     one: &Break,
     source: &str,

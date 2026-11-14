@@ -167,6 +167,6 @@ jobs:
             target/try/output.log
             target/nextest/ci/junit.xml
             target/nextest/stress/junit.xml
-            target/try/ab-base-junit.xml
+            target/ab/*.xml
           if-no-files-found: ignore
           retention-days: 14
