@@ -99,9 +99,11 @@ jobs:
           retention-days: 90
 
   # The only job with a token that can write, and all it can write is issues.
+  # Only for a run on the main branch: one dispatched on a branch must not
+  # add to the main branch's issue.
   report:
     needs: [size]
-    if: ${{ failure() }}
+    if: ${{ failure() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
