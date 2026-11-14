@@ -106,9 +106,9 @@ caught-by:
 [break] bare-name-through-a-constant
 rule: A name held in a constant of the same file is a bare name too.
 file: xtask/src/rules/rust_source.rs
-in: bare_programs
-find: .or_else(|| constants.get(argument).cloned())
-replace:
+in: name_of
+find: [one] => string_value(one).or_else(|| constants.get(*one).cloned()),
+replace: [one] => string_value(one),
 caught-by:
     rules::rust_source::tests::each_program_started_by_a_bare_name_is_named_with_its_line
 
@@ -124,8 +124,9 @@ caught-by:
 [break] bare-name-misses-a-wrapper
 rule: Each starter of STARTERS is checked, the command line of the tools among them.
 file: xtask/src/rules/rust_source.rs
-find: const STARTERS: [&str; 3] = ["Command::new", "CommandLine::new", "Shell::new"];
-replace: const STARTERS: [&str; 3] = ["Command::new", "Command::new", "Shell::new"];
+in: STARTERS
+find: "CommandLine::new"
+replace: "Command::new"
 caught-by:
     rules::rust_source::tests::each_program_started_by_a_bare_name_is_named_with_its_line
 
@@ -173,7 +174,7 @@ rule: An `in` that names more than one item is refused.
 file: xtask/src/mutate/mod.rs
 in: preflight
 find: && items.len() > 1
-replace: && items.len() > 3
+replace: && items.len() > 4
 caught-by:
     mutate::tests::the_preflight_names_each_kind_of_break_that_will_go_wrong
 
@@ -181,10 +182,20 @@ caught-by:
 rule: An `in` that names one function for each system passes.
 file: xtask/src/mutate/lex.rs
 in: under_cfg
-find: if open + 1 < at && text(open + 1) == "cfg" {
-replace: if false {
+find: && (open + 2..at).any(|index| SYSTEM_CFG.contains(&text(index)))
+replace: && false
 caught-by:
     mutate::tests::a_list_the_preflight_passes
+    mutate::tests::only_a_cfg_of_the_system_makes_two_items_of_a_name_one
+
+[break] preflight-exempts-any-cfg
+rule: Only a cfg of the system makes two items of a name one: a test's or a feature's does not.
+file: xtask/src/mutate/lex.rs
+in: under_cfg
+find: && (open + 2..at).any(|index| SYSTEM_CFG.contains(&text(index)))
+replace: && (open + 2..at).any(|index| !text(index).is_empty())
+caught-by:
+    mutate::tests::only_a_cfg_of_the_system_makes_two_items_of_a_name_one
 
 [break] anchor-finds-the-item-itself
 rule: A later segment of an anchor is looked for inside the item, not as the item: `Default::default` is the function.
@@ -353,15 +364,16 @@ packages: cortex-testkit, cortex-tools
 caught-by:
     cortex-testkit rerun::tests::sys_a_rerun_test_gets_the_environment_it_is_given
     cortex-tools::it shell_search::sys_a_relative_comspec_or_system_root_is_not_believed
+    cortex-tools::it shell_search::sys_a_relative_path_entry_does_not_make_a_file_there_the_shell
 
 [break] rerun-that-ran-nothing-passes
 rule: A rerun whose name matches no test fails: it would pass having run nothing.
 file: crates/cortex-testkit/src/rerun.rs
 in: Rerun::run
-find: ran.stdout.contains("running 1 test")
+find: ran.stdout.contains("running 1 test") && ran.stdout.contains(" 1 passed;")
 replace: true
 caught-by:
-    cortex-testkit rerun::tests::sys_a_rerun_of_a_test_that_is_not_there_fails
+    cortex-testkit rerun::tests::sys_a_rerun_of_a_test_that_is_not_there_or_is_ignored_fails
 
 [break] rerun-said-only-at-the-start-of-a-line
 rule: What a child said is found anywhere in a line: the harness writes the test's name before its first line.
@@ -371,3 +383,50 @@ find: .filter_map(|line| line.split_once(&prefix).map(|(_, value)| value))
 replace: .filter_map(|line| line.strip_prefix(&prefix))
 caught-by:
     cortex-testkit rerun::tests::sys_a_rerun_test_gets_the_environment_it_is_given
+
+[break] try-filter-after-the-users-dashes
+rule: A filter goes before a `--` of the command's own, where nextest reads it.
+file: xtask/src/try_run.rs
+in: Inputs::with_filters
+find: let at = words.iter().position(|word| word == "--").unwrap_or(words.len());
+replace: let at = words.len();
+caught-by:
+    try_run::tests::filters_and_nextest_options_reach_nextest_as_they_are_meant
+
+# ------------------------------------------- from the independent review
+
+[break] bare-name-only-with-one-argument
+rule: A starter's first argument is read whatever follows it, so a wrapper with more arguments is checked too.
+file: xtask/src/rules/rust_source.rs
+in: bare_programs
+find: "," if depth == 0 => break
+replace: "," if depth == usize::MAX => break
+caught-by:
+    rules::rust_source::tests::each_program_started_by_a_bare_name_is_named_with_its_line
+
+[break] bare-name-made-into-a-string-passes
+rule: A literal made into a String is still a bare name.
+file: xtask/src/rules/rust_source.rs
+in: name_of
+find: [literal, ".", "to_owned" | "to_string" | "into", "(", ")"] => string_value(literal)
+replace: [_literal, ".", "to_owned" | "to_string" | "into", "(", ")"] => None
+caught-by:
+    rules::rust_source::tests::each_program_started_by_a_bare_name_is_named_with_its_line
+
+[break] bare-name-let-binding-passes
+rule: A let of the same file that holds a name is a bare name too.
+file: xtask/src/rules/rust_source.rs
+in: string_constants
+find: text(index) == "let"
+replace: text(index) == "never"
+caught-by:
+    rules::rust_source::tests::each_program_started_by_a_bare_name_is_named_with_its_line
+
+[break] rules-prefilter-reads-nothing
+rule: A file whose text calls a starter is lexed: the pre-filter passes over the others only.
+file: xtask/src/rules/rust_source.rs
+in: calls_a_starter
+find: source.contains(&format!("{starter}("))
+replace: source.contains(&format!("{starter} ("))
+caught-by:
+    rules::rust_source::tests::a_module_under_cfg_test_in_a_file_of_its_own_is_a_test

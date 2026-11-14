@@ -908,6 +908,12 @@ impl Default for Budget {
         Budget::new()
     }
 }
+
+impl fmt::Debug for Budget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(\"budget\")
+    }
+}
 ";
 
     fn problems_with(list: &str) -> Vec<String> {
@@ -952,6 +958,13 @@ file: crates/demo/src/lib.rs
 in: Default::default
 find: Budget::new()
 replace: Budget
+
+[break] debug-says-other
+rule: r
+file: crates/demo/src/lib.rs
+in: Budget::fmt
+find: f.write_str(\"budget\")
+replace: f.write_str(\"other\")
 ";
         assert_eq!(problems_with(list), [] as [String; 0]);
     }
@@ -1019,11 +1032,49 @@ replace: clamp(seconds, 1, 6000)
             "{problems:#?}"
         );
         assert!(
-            said("two-items", "names 3 items in `crates/demo/src/lib.rs`"),
+            said("two-items", "names 4 items in `crates/demo/src/lib.rs`"),
             "{problems:#?}"
         );
         assert!(
             said("same-change", "makes the same change as `demo/first`"),
+            "{problems:#?}"
+        );
+    }
+
+    /// Two functions of one name, one under `cfg(test)` and one under a
+    /// feature, can both be built: an `in` naming them is refused. One for
+    /// each system is not.
+    #[test]
+    fn only_a_cfg_of_the_system_makes_two_items_of_a_name_one() {
+        let source = "#[cfg(test)]\nfn twin() -> u8 { 1 }\n#[cfg(feature = \"x\")]\nfn twin() -> u8 { 2 }\n\
+                      #[cfg(target_os = \"linux\")]\nfn os() -> u8 { 3 }\n#[cfg(not(target_os = \"linux\"))]\nfn os() -> u8 { 4 }\n";
+        let root = super::drive::tests::tree(
+            "preflight_cfg",
+            &[
+                ("crates/demo/Cargo.toml", "[package]\n"),
+                ("crates/demo/src/lib.rs", source),
+            ],
+        );
+        let list = "\
+[break] twin
+rule: r
+file: crates/demo/src/lib.rs
+in: twin
+find: 2
+replace: 5
+
+[break] os
+rule: r
+file: crates/demo/src/lib.rs
+in: os
+find: 3
+replace: 5
+";
+        let problems = check(&root, &breaks("demo", list));
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(problems.len(), 1, "{problems:#?}");
+        assert!(
+            problems[0].contains("`demo/twin` has `in: twin`, which names 2 items"),
             "{problems:#?}"
         );
     }

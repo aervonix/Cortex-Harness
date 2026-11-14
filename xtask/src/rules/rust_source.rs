@@ -30,11 +30,50 @@ pub(super) const WRAPPED: [(&str, &str); 3] = [
     ("crates/cortex-agent/src/policy.rs", "Policy"),
 ];
 
-/// The calls that start the program they are given, by the last two
-/// segments of their path: `std::process::Command::new` and
-/// `tokio::process::Command::new` are both `Command::new`. A type that
-/// starts what it is given joins the list.
-const STARTERS: [&str; 3] = ["Command::new", "CommandLine::new", "Shell::new"];
+/// The calls that start the program they are given as their first
+/// argument, by the last two segments of their path:
+/// `std::process::Command::new` and `tokio::process::Command::new` are both
+/// `Command::new`. A function or type that starts what it is given joins the
+/// list.
+const STARTERS: [&str; 5] = [
+    "Command::new",
+    "CommandLine::new",
+    "Shell::new",
+    "brief::run",
+    "Pty::spawn",
+];
+
+/// Whether a file's text calls a starter: the files that do not are not
+/// lexed, which keeps the rule cheap enough for every pull request.
+/// `rustfmt` never breaks `Command::new(` across lines.
+fn calls_a_starter(source: &str) -> bool {
+    STARTERS
+        .iter()
+        .any(|starter| source.contains(&format!("{starter}(")))
+}
+
+/// What a file's text must hold to declare a module under a test `cfg`.
+const TEST_CFG: [&str; 2] = ["cfg(test)", "cfg(all(test"];
+
+/// Whether a file's text may declare a module under a test `cfg` that is
+/// a file of its own (`#[cfg(test)]` then `mod name;`): the files that do
+/// not are not lexed for it.
+fn may_declare_a_test_module(source: &str) -> bool {
+    TEST_CFG.iter().any(|cfg| {
+        source.match_indices(cfg).any(|(at, _)| {
+            let after = &source[at..];
+            let Some(close) = after.find(']') else {
+                return false;
+            };
+            let rest = after[close + 1..].trim_start();
+            let rest = rest.strip_prefix("pub ").map_or(rest, str::trim_start);
+            rest.strip_prefix("mod ").is_some_and(|rest| {
+                rest.find(|c: char| !c.is_alphanumeric() && c != '_')
+                    .is_some_and(|end| rest[end..].trim_start().starts_with(';'))
+            })
+        })
+    })
+}
 
 /// What marks one call as allowed, on its line or the line before, with
 /// the reason after it.
@@ -66,7 +105,9 @@ pub(super) fn check(sources: &BTreeMap<String, String>) -> Vec<Violation> {
     let mut violations = wrapped_traits(sources);
     let test_files = test_module_files(sources);
     for (file, source) in sources {
-        violations.extend(bare_programs(file, source, test_files.contains(file)));
+        if !test_files.contains(file) && calls_a_starter(source) {
+            violations.extend(bare_programs(file, source, false));
+        }
     }
     violations
 }
@@ -217,12 +258,21 @@ pub(super) fn bare_programs(file: &str, source: &str, test_file: bool) -> Vec<Vi
         {
             continue;
         }
-        // The argument is one token, then the call's `)`.
-        if text(index + 6) != ")" {
-            continue;
+        // The first argument: up to the `,` or `)` that ends it.
+        let mut depth = 0usize;
+        let mut end = index + 5;
+        while end < all.len() {
+            match text(end) {
+                "(" | "[" | "{" => depth += 1,
+                ")" | "]" | "}" if depth == 0 => break,
+                ")" | "]" | "}" => depth -= 1,
+                "," if depth == 0 => break,
+                _ => {}
+            }
+            end += 1;
         }
-        let argument = text(index + 5);
-        let Some(name) = string_value(argument).or_else(|| constants.get(argument).cloned()) else {
+        let argument: Vec<&str> = (index + 5..end).map(text).collect();
+        let Some(name) = name_of(&argument, &constants) else {
             continue;
         };
         if name.is_empty() || name.contains(['/', '\\']) {
@@ -254,6 +304,31 @@ pub(super) fn bare_programs(file: &str, source: &str, test_file: bool) -> Vec<Vi
     violations
 }
 
+/// The text a call's first argument stands for, when it is a string the
+/// file spells out: a literal, as it is or borrowed (`&"git"`), made into a
+/// `String`, an `OsStr` or a path (`"git".to_owned()`, `String::from("git")`,
+/// `OsStr::new("git")`), or a constant or `let` of the file that holds one.
+fn name_of(argument: &[&str], constants: &BTreeMap<String, String>) -> Option<String> {
+    let argument = match argument {
+        ["&", rest @ ..] => rest,
+        all => all,
+    };
+    match argument {
+        [one] => string_value(one).or_else(|| constants.get(*one).cloned()),
+        [literal, ".", "to_owned" | "to_string" | "into", "(", ")"] => string_value(literal),
+        [
+            "String" | "OsStr" | "OsString" | "Path" | "PathBuf",
+            ":",
+            ":",
+            "from" | "new",
+            "(",
+            literal,
+            ")",
+        ] => string_value(literal),
+        _ => None,
+    }
+}
+
 /// What a string literal holds, for the simple ones: `"…"` and `r"…"`,
 /// `r#"…"#`, with no escape in it. `None` for anything else.
 fn string_value(token: &str) -> Option<String> {
@@ -263,10 +338,21 @@ fn string_value(token: &str) -> Option<String> {
     (raw.is_some() || !inner.contains('\\')).then(|| inner.to_owned())
 }
 
-/// The constants of `source` that are a string: `const NAME: &str = "…";`.
+/// The names of `source` that hold a string: `const NAME: &str = "…";`,
+/// and `let name = "…";` anywhere in the file (a name bound twice keeps the
+/// last).
 fn string_constants(source: &str, all: &[Token]) -> BTreeMap<String, String> {
     let text = |index: usize| all[index].text(source);
     let mut constants = BTreeMap::new();
+    for index in 0..all.len().saturating_sub(4) {
+        if text(index) == "let"
+            && text(index + 2) == "="
+            && text(index + 4) == ";"
+            && let Some(value) = string_value(text(index + 3))
+        {
+            constants.insert(text(index + 1).to_owned(), value);
+        }
+    }
     for index in 0..all.len().saturating_sub(6) {
         if text(index) == "const"
             && text(index + 2) == ":"
@@ -329,6 +415,9 @@ fn test_modules(source: &str, all: &[Token]) -> Vec<Range<usize>> {
 pub(super) fn test_module_files(sources: &BTreeMap<String, String>) -> BTreeSet<String> {
     let mut files = BTreeSet::new();
     for (file, source) in sources {
+        if !may_declare_a_test_module(source) {
+            continue;
+        }
         let all = lex::tokens(source);
         let text = |index: usize| all[index].text(source);
         let Some((folder, stem)) = file.rsplit_once('/') else {

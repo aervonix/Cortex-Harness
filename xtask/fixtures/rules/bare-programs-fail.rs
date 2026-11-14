@@ -17,6 +17,14 @@ fn started() {
     );
     // program by name:
     let _ = Command::new("taskkill"); // flagged: an allow needs its reason
+    let _ = Command::new("git".to_owned()); // flagged
+    let _ = Command::new(OsStr::new("sh")); // flagged
+    let _ = Command::new(&String::from("bash")); // flagged
+    let program = "pwsh";
+    let _ = Command::new(program); // flagged
+    let _ = brief::run("git", &["status"], None, &[], limit); // flagged
+    let _ = crate::process::brief::run(TOOL, &[], None, &[], limit); // flagged
+    let _ = Pty::spawn("cmd", &[], &[], 80, 24); // flagged
 }
 
 #[cfg(not(test))]
