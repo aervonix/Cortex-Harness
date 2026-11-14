@@ -81,7 +81,7 @@ impl World {
             session.store(),
             root.clone(),
             KEEP_LIMIT,
-            Arc::new(SystemGit),
+            Arc::new(SystemGit::default()),
         ));
         // No flush to the disk, which takes as long as the disk takes and is
         // not what these tests check. The measurement can ask for it.

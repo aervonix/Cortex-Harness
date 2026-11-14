@@ -477,7 +477,7 @@ fn sys_a_git_workspace_records_what_replay_needs() {
         &world.root,
         true,
         &store,
-        &SystemGit,
+        &SystemGit::default(),
         &world.clock,
         &BaseLimits::default(),
         &no_secrets,
@@ -562,7 +562,7 @@ fn sys_the_base_state_is_recorded_in_the_log_from_a_real_capture() {
         world.root.clone(),
         true,
         session.store(),
-        Arc::new(SystemGit),
+        Arc::new(SystemGit::default()),
         Arc::new(world.clock.clone()),
         BaseLimits::default(),
         Arc::new(no_secrets),
@@ -718,7 +718,7 @@ fn sys_a_secret_added_with_intent_to_add_is_left_out_of_the_patch() {
         &world.root,
         true,
         &store,
-        &SystemGit,
+        &SystemGit::default(),
         &world.clock,
         &BaseLimits::default(),
         &no_secrets,
@@ -806,7 +806,7 @@ fn sys_an_untracked_link_is_recorded_as_a_link_and_never_followed() {
         &world.root,
         true,
         &store,
-        &SystemGit,
+        &SystemGit::default(),
         &world.clock,
         &BaseLimits::default(),
         &no_secrets,
@@ -843,7 +843,7 @@ fn sys_an_untracked_link_to_a_device_does_not_stall_the_capture() {
         world.root.clone(),
         true,
         session.store(),
-        Arc::new(SystemGit),
+        Arc::new(SystemGit::default()),
         Arc::new(world.clock.clone()),
         BaseLimits::default(),
         Arc::new(no_secrets),
@@ -879,7 +879,7 @@ fn sys_a_session_that_never_got_a_prompt_leaves_nothing_behind() {
         &world.root,
         true,
         &session.store(),
-        &SystemGit,
+        &SystemGit::default(),
         &world.clock,
         &BaseLimits::default(),
         &no_secrets,
@@ -912,7 +912,7 @@ fn sys_git_is_never_found_through_a_relative_path_entry() {
 
     if rerun::is_child() {
         let here = std::env::current_dir().expect("a working directory");
-        let ran = SystemGit
+        let ran = SystemGit::default()
             .run(&here, &["--version"], 4096)
             .expect("git runs");
         rerun::say("version", String::from_utf8_lossy(&ran.stdout).trim());
@@ -942,4 +942,90 @@ fn sys_git_is_never_found_through_a_relative_path_entry() {
         !scratch.join("node_modules/.bin/git.ran").exists(),
         "the planted git ran"
     );
+}
+
+/// Where the session's git runs: as the confinement it was given says,
+/// which in a session that confines commands is the sandbox. This one
+/// records each subcommand it is asked to start and starts it as it is, or
+/// refuses.
+#[derive(Debug, Default)]
+struct Recording {
+    asked: Mutex<Vec<String>>,
+    refuse: bool,
+}
+
+impl cortex_base::git::Confinement for Recording {
+    fn confines(&self) -> bool {
+        true
+    }
+
+    fn start(
+        &self,
+        program: &Path,
+        arguments: Vec<std::ffi::OsString>,
+    ) -> Result<cortex_base::git::Started, String> {
+        if self.refuse {
+            return Err("refused".to_owned());
+        }
+        let subcommand = arguments[GIT_HARDENING.len()]
+            .to_string_lossy()
+            .into_owned();
+        self.asked.lock().unwrap().push(subcommand);
+        Ok(cortex_base::git::Started {
+            program: program.to_owned(),
+            arguments,
+            stdin: None,
+        })
+    }
+}
+
+#[test]
+fn sys_every_git_of_the_base_state_goes_through_its_confinement() {
+    if !has_git() {
+        assert!(!in_ci(), "CI has git");
+        return;
+    }
+    let world = World::new("sys_base_confined");
+    let dir = world.workspace.clone();
+    git(&dir, &["init", "--quiet", "--initial-branch=work"]);
+    world.write("a.txt", b"one\n");
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "--quiet", "-m", "start"]);
+    world.write("a.txt", b"two\n");
+    world.write("new.txt", b"new\n");
+    let session = world.create("s_1");
+    let store = session.store();
+
+    let recording = Arc::new(Recording::default());
+    let base = capture(
+        &world.root,
+        true,
+        &store,
+        &SystemGit::within(recording.clone()),
+        &world.clock,
+        &BaseLimits::default(),
+        &no_secrets,
+    );
+    assert!(base.complete, "{base:?}");
+    let asked = recording.asked.lock().unwrap().clone();
+    for wanted in ["rev-parse", "symbolic-ref", "ls-files", "diff"] {
+        assert!(asked.iter().any(|one| one == wanted), "{wanted}: {asked:?}");
+    }
+
+    // A confinement that refuses: nothing is started, and the state says
+    // it is incomplete.
+    let refusing = Arc::new(Recording {
+        refuse: true,
+        ..Recording::default()
+    });
+    let base = capture(
+        &world.root,
+        true,
+        &store,
+        &SystemGit::within(refusing),
+        &world.clock,
+        &BaseLimits::default(),
+        &no_secrets,
+    );
+    assert!(!base.complete, "{base:?}");
 }

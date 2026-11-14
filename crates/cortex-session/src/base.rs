@@ -31,16 +31,19 @@
 //! tool cannot disagree about what is protected.
 //!
 //! git is run with [`GIT_HARDENING`], which turns off what would otherwise
-//! let it write to the repository or start a file-system monitor.
+//! let it write to the repository or start a file-system monitor, and in a
+//! session that confines commands inside the sandbox, reading only
+//! ([`SystemGit::within`]): a confined command may have rewritten the
+//! repository's configuration since the user trusted it.
 
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
+use cortex_base::git::{AsItIs, Confinement, StartError};
 use cortex_base::{AbsPath, Clock, ContentHash, PathStyle, SharedClock};
 use cortex_protocol::item::ArtifactRef;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -319,28 +322,40 @@ pub trait Git: Send + Sync + fmt::Debug {
 }
 
 /// The `git` program on the `PATH`: in its absolute directories only, and
-/// started by the path found (`cortex_base::program::git`), never by its
-/// bare name, which a relative entry of `PATH` would find in the workspace.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SystemGit;
+/// started by the path found, never by its bare name, which a relative
+/// entry of `PATH` would find in the workspace; started the one way the
+/// harness starts its git (`cortex_base::git::start`), inside the
+/// confinement it was given.
+#[derive(Debug, Clone)]
+pub struct SystemGit {
+    confinement: Arc<dyn Confinement>,
+}
+
+impl Default for SystemGit {
+    /// Git as it is: for a harness whose commands are not confined.
+    fn default() -> Self {
+        Self::within(Arc::new(AsItIs))
+    }
+}
+
+impl SystemGit {
+    /// Git started inside `confinement`: in a session that confines
+    /// commands, the sandbox, reading only.
+    #[must_use]
+    pub fn within(confinement: Arc<dyn Confinement>) -> Self {
+        Self { confinement }
+    }
+}
 
 impl Git for SystemGit {
     fn run(&self, dir: &Path, args: &[&str], limit: usize) -> io::Result<GitOutput> {
-        let program = cortex_base::program::git().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "git is not in an absolute directory of PATH",
-            )
-        })?;
-        let mut child = Command::new(program)
-            .args(GIT_HARDENING)
-            .args(args)
-            .current_dir(dir)
-            .envs(cortex_base::GIT_ENV)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
+        let mut child = cortex_base::git::start(&*self.confinement, dir, args).map_err(
+            |error| match error {
+                StartError::Io(error) => error,
+                StartError::NotInstalled => io::Error::new(io::ErrorKind::NotFound, error),
+                StartError::NotConfined(_) => io::Error::other(error),
+            },
+        )?;
         let mut stdout = Vec::new();
         let mut truncated = false;
         if let Some(mut pipe) = child.stdout.take() {
@@ -438,8 +453,24 @@ pub fn capture(
 ) -> BaseState {
     let started = clock.now();
     let directory = root.to_fs_path();
-    let top = git
-        .run(&directory, &["rev-parse", "--show-toplevel"], 64 * 1024)
+    let answer = git.run(&directory, &["rev-parse", "--show-toplevel"], 64 * 1024);
+    // Git is installed and could not be started (the sandbox it must run
+    // in refused it): whether this is a repository is not known, and a
+    // listing would take a repository for plain files and call itself
+    // complete.
+    if let Err(error) = &answer
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        return BaseState {
+            complete: false,
+            trusted,
+            note: Some(format!(
+                "git could not be started, so the workspace's state was not taken: {error}"
+            )),
+            ..BaseState::default()
+        };
+    }
+    let top = answer
         .ok()
         .filter(|output| output.success)
         .and_then(|output| first_line(&output.stdout));

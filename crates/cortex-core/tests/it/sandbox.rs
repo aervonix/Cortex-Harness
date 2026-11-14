@@ -22,9 +22,32 @@ use crate::{Front, World};
 use crate::{calls, says};
 
 /// This test binary as the sandbox launcher: it enters [`crate::launcher_entry`].
-fn launcher() -> (PathBuf, Vec<OsString>) {
+///
+/// On Unix it is started through a shell, which tells the harness's own
+/// git (the launcher's command is the git the harness found) from a
+/// command: for git the test runner's first line goes nowhere and git's
+/// output to standard error, which the entry gives back
+/// ([`crate::LAUNCH_GIT`]). Anything else is started as it was, the shell
+/// replaced by the launcher.
+pub(crate) fn launcher() -> (PathBuf, Vec<OsString>) {
+    let exe = std::env::current_exe().expect("the test binary has a path");
+    #[cfg(unix)]
+    if let Some(git) = cortex_base::program::git() {
+        let script = format!(
+            "case \" $* \" in \" -- {git} \"*) exec \"$0\" --exact launcher_entry --nocapture \
+             {own} \"$@\" 2>&1 >/dev/null;; esac; exec \"$0\" --exact launcher_entry \
+             --nocapture {launch} \"$@\"",
+            git = git.display(),
+            own = crate::LAUNCH_GIT,
+            launch = crate::LAUNCH,
+        );
+        return (
+            PathBuf::from("/bin/sh"),
+            vec![OsString::from("-c"), OsString::from(script), exe.into()],
+        );
+    }
     (
-        std::env::current_exe().expect("the test binary has a path"),
+        exe,
         ["--exact", "launcher_entry", "--nocapture", crate::LAUNCH]
             .map(OsString::from)
             .to_vec(),
@@ -205,7 +228,7 @@ fn a_landlock_with_a_gap_enforces_and_names_the_gap() {
 /// Whether the sandbox enforces on this machine. On CI's Linux runners it
 /// must: there a kernel without it fails the test rather than skipping it.
 #[cfg(target_os = "linux")]
-fn enforcing_here() -> bool {
+pub(crate) fn enforcing_here() -> bool {
     let enforcing = matches!(
         cortex_sandbox::support::detect().assess(),
         cortex_sandbox::support::Assessment::Enforcing { .. }

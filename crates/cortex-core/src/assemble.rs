@@ -55,8 +55,8 @@ use cortex_protocol::session::SessionSettings;
 use cortex_protocol::{ArtifactId, ErrorData, ErrorKind, LeaseId, Plan, SessionId};
 use cortex_session::entry::{LeaseEvent, LeaseRecord, Meta};
 use cortex_session::{
-    BaseCapture, BaseLimits, Body, Durability, KEEP_LIMIT, SessionError, SessionOptions,
-    SessionsRoot,
+    BaseCapture, BaseLimits, Body, Durability, Git, KEEP_LIMIT, SessionError, SessionOptions,
+    SessionsRoot, SystemGit,
 };
 use cortex_tools::process::{Guard, Runner};
 use cortex_tools::{
@@ -73,7 +73,7 @@ use crate::instructions::DiskInstructions;
 use crate::policy::{EnginePolicy, PolicyParts};
 use crate::provider;
 use crate::redact::LogRedactor;
-use crate::sandbox::{self, SessionSandbox, Temp, status_of};
+use crate::sandbox::{self, SessionGit, SessionSandbox, Temp, status_of};
 use crate::shell_cache;
 use crate::store::{Disk, Hooks, Kept, LogStore, SharedLog};
 use cortex_tools::shell::ShellKind;
@@ -881,7 +881,15 @@ pub(crate) fn assemble(
         } => (id.clone(), title.clone(), *ephemeral, false),
         Which::Resume { id } => (id.clone(), None, false, true),
     };
-    let git = Arc::clone(&options.git);
+    // The harness's own git, for the base state and a file's earlier
+    // content: inside the session's sandbox, once it is made, while
+    // commands are confined.
+    let session_git = Arc::new(SessionGit::default());
+    let git: Arc<dyn Git> = options.git.clone().unwrap_or_else(|| {
+        Arc::new(SystemGit::within(
+            Arc::clone(&session_git) as Arc<dyn cortex_base::git::Confinement>
+        ))
+    });
     let mut created_at = clock.now().to_timestamp();
     let mut parent = None;
     let mut stored_title = title.clone();
@@ -1097,6 +1105,7 @@ pub(crate) fn assemble(
         &root.to_fs_path(),
         options.protect_limits.unwrap_or_default(),
     ));
+    session_git.set(Arc::clone(&sandbox));
     let policy = Arc::new(EnginePolicy::new(PolicyParts {
         engine,
         clients: Arc::clone(&inner.clients),
@@ -1142,7 +1151,9 @@ pub(crate) fn assemble(
             repository_trusted,
         };
         let mut tool = ShellTool::new(shell, config).with_runner(runner(inner));
-        tool = tool.with_launcher(Arc::clone(&sandbox) as Arc<dyn cortex_tools::process::Launcher>);
+        tool = tool
+            .with_launcher(Arc::clone(&sandbox) as Arc<dyn cortex_tools::process::Launcher>)
+            .with_git(Arc::clone(&session_git) as Arc<dyn cortex_base::git::Confinement>);
         if let Some(inherited) = &options.shell_env {
             tool = tool.with_inherited_env(inherited.iter().cloned());
         }
