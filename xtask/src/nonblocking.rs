@@ -1,6 +1,7 @@
 //! What the non-blocking workflows run (`docs/testing-and-ci.md`, "Not
 //! blocking"): the release build with its size and crate count, the
-//! unused-dependency check and the advisory check.
+//! unused-dependency check, the advisory check, and the sandbox's tests
+//! with the partial Landlock.
 //!
 //! They live here, like the blocking checks, so that a workflow is a list of
 //! `cargo xtask` commands and the same commands run at a desk.
@@ -232,5 +233,69 @@ cortex-protocol v0.0.0 (/repo/crates/cortex-protocol) (*)
         assert_eq!(budget("x86_64-unknown-linux-musl"), 16 * 1024 * 1024);
         assert_eq!(budget("aarch64-unknown-linux-musl"), 16 * 1024 * 1024);
         assert_eq!(budget("x86_64-pc-windows-msvc"), 18 * 1024 * 1024);
+    }
+}
+
+/// What the sandbox's signal test prints when the kernel's Landlock does not
+/// scope signals: the gap of the partial case, named.
+const PARTIAL_MARK: &str = "does not scope signals: the gap the status names";
+
+/// `cargo xtask partial-landlock`: `cortex-sandbox`'s tests, as the blocking
+/// job runs them, on a kernel whose Landlock is older than 6 (the `nightly`
+/// workflow's Ubuntu 22.04 job, ABI 4). The confinement tests fail rather
+/// than skip on CI where the sandbox does not enforce; this fails too when
+/// the run did not show the partial case, so that a kernel that moves on
+/// does not leave the case untested in silence.
+pub(crate) fn partial_landlock() -> Result<()> {
+    crate::checks::require_nextest()?;
+    let mut run = crate::checks::ci_run(&["cortex-sandbox".to_owned()]);
+    run.extend(["--success-output".to_owned(), "immediate".to_owned()]);
+    println!("$ cargo {}", run.join(" "));
+    let output = Command::new(workspace::cargo())
+        .args(&run)
+        .current_dir(workspace::root())
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("could not run cargo: {error}"))?;
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    print!("{printed}");
+    partial_verdict(output.status.success(), &printed)
+}
+
+/// Whether a run of the sandbox's tests passed and showed the partial case.
+fn partial_verdict(passed: bool, printed: &str) -> Result<()> {
+    if !passed {
+        return Err("the sandbox's tests failed with the partial Landlock".to_owned());
+    }
+    if let Some(line) = printed.lines().find(|line| line.contains(PARTIAL_MARK)) {
+        println!("\nThe partial case ran: {}", line.trim());
+        Ok(())
+    } else {
+        Err(format!(
+            "the tests passed, but none said `{PARTIAL_MARK}`: this kernel's Landlock scopes \
+             signals, so the partial case ran nowhere. Move the job to a runner with Landlock 4 \
+             or 5, or say in docs/testing-and-ci.md that it is no longer tested."
+        ))
+    }
+}
+
+#[cfg(test)]
+mod partial_tests {
+    use super::partial_verdict;
+
+    #[test]
+    fn the_partial_case_must_be_seen_and_the_tests_must_pass() {
+        let shown = "    PASS [ 0.1s] cortex-sandbox::it confined::sys_a_signal_to_a_process_outside_the_sandbox_is_refused\n\
+                     Landlock 4 does not scope signals: the gap the status names\n";
+        assert_eq!(partial_verdict(true, shown), Ok(()));
+        let error = partial_verdict(true, "    PASS [ 0.1s] cortex-sandbox::it confined::x\n")
+            .unwrap_err();
+        assert!(error.contains("the partial case ran nowhere"), "{error}");
+        let error = partial_verdict(false, shown).unwrap_err();
+        assert!(error.contains("tests failed"), "{error}");
     }
 }

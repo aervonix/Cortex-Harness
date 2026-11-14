@@ -126,6 +126,8 @@ Not blocking (the `main` and `nightly` workflows run these)
                     and while streaming, frame cost, frame intervals and bytes
                     per frame, against the TUI's budgets.
   unused            Look for dependencies that no code uses (cargo-machete).
+  partial-landlock  The sandbox's tests on a kernel whose Landlock is older
+                    than 6, failing unless the run showed that partial case.
   advisories        Check the lockfile against the advisory database.
   fuzz [--seconds N] [TARGET...]
                     Fuzz the stream decoders, each target for N seconds
@@ -211,6 +213,7 @@ fn run(command: &str, rest: &[String]) -> Result<()> {
         "size" => nonblocking::size(rest),
         "startup" => startup::run(rest),
         "unused" => nonblocking::unused(),
+        "partial-landlock" => nonblocking::partial_landlock(),
         "advisories" => nonblocking::advisories(),
         "alias" => alias::run(rest),
         "stress" => stress::run(rest),

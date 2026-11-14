@@ -1,8 +1,9 @@
 # Every night: the checks that do not belong on a pull request. So far, the
 # advisory check, the unused-dependency check, a release build for every
 # release target, the property tests with many more cases than a pull
-# request runs, the mutation driver's test against the real cargo, and
-# coverage-guided fuzzing of the stream decoders. Later
+# request runs, the mutation driver's test against the real cargo,
+# coverage-guided fuzzing of the stream decoders, and the sandbox's tests on
+# a kernel with the partial Landlock (ABI 4). Later
 # steps add the long-session memory test and the live smoke tests (tiers 5
 # and 6).
 #
@@ -190,9 +191,32 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  # The sandbox's confinement tests on Ubuntu 22.04, whose kernel has
+  # Landlock ABI 4: the partial case, which enforces with the signal gap
+  # named and which no other runner or machine of ours has
+  # (docs/testing-and-ci.md, "Not blocking"). The tests fail rather than
+  # skip on CI when Landlock is missing, and the command fails when the run
+  # did not show the partial case, so an image whose kernel moves on cannot
+  # turn this job into a second copy of the blocking one. No cache: the
+  # cache's key names the OS and not its version.
+  partial-landlock:
+    if: ${{ !inputs.force_failure }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest@0.9.151
+      - name: The sandbox's tests, with Landlock ABI 4
+        run: cargo run --locked --quiet --package xtask -- partial-landlock
+
   # The only job with a token that can write, and all it can write is issues.
   report:
-    needs: [dependencies, release, properties, fuzz]
+    needs: [dependencies, release, properties, fuzz, partial-landlock]
     if: ${{ failure() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
