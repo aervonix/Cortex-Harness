@@ -108,7 +108,7 @@ One table, shared by all output formats. Pi's print and JSON modes disagree on e
 | 5 | The model stopped without finishing: refusal, content filter, or output limit. | `failed` |
 | 6 | A required permission was denied. | `denied` |
 | 7 | A configured limit was reached: requests, cost or time. | `limit` |
-| 8 | The context could not be made to fit. | `failed` |
+| 8 | The context could not be made to fit: a request that still does not fit after one compaction, a compaction that failed (`compaction_failed`), or the trigger reached with automatic compaction off (`compaction_needed`). | `failed` |
 | 130 | Interrupted (SIGINT, or Ctrl-C). | `interrupted` |
 | 143 | Terminated (SIGTERM). | `interrupted` |
 

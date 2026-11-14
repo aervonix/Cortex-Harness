@@ -36,7 +36,11 @@ pub trait Protocol: Send + Sync + Debug {
     fn classify(&self, failure: &HttpFailure<'_>, request: &ModelRequest) -> ProviderError;
     /// Read the headers of a successful response: request id, rate limits,
     /// the speed that served the request. The default reads nothing.
-    fn read_headers(&self, headers: &Headers, now: UtcTime, out: &mut EventSink) {}
+        fn read_headers(&self, headers: &Headers, now: UtcTime, out: &mut EventSink) {}
+    /// The part of the body that later requests of the epoch repeat byte
+    /// for byte: since step 15, for every protocol.
+    fn stable_prefix(&self, request: &ModelRequest, provider: &ProviderInfo)
+        -> Result<Vec<u8>, BuildError>;
 }
 
 /// Incremental decoder: SSE events in, neutral model events out.
@@ -65,6 +69,7 @@ pub trait Timer: Send + Sync + Debug {
 - `build`, `feed` and `classify` are tested from files: a request snapshot per scenario, and recorded response streams replayed with every possible chunk boundary.
 - **The first protocol changed none of these traits.** Step 14 added one thing beside them: `ImageSource`, through which an image that is stored as an artifact reaches a request ("Images", below).
 - **Neither did the second.** Step 31 added `openai-chat` as a module beside the first, and changed one rule of the client: bytes that arrive before the first event of a response restart the wait for it ("Transport", below).
+- **Step 15 added one method to each of two traits.** `Protocol::stable_prefix`, which both protocols had as a method of their own, is required of every protocol now, so that the loop's prefix check covers whichever one a session speaks; a protocol added later says where its body stops being stable. `ModelClient::stable_prefix` (default: `None`) is how the loop reaches it: `ProviderClient` asks its protocol, and the test kit's scripted provider writes the request's content in a fixed order.
 - **The request carries the model.** `ModelRequest` holds the catalog entry of the model it is for, so `build` and `decoder` take the request and the provider and no third argument. A client is for one provider; which client a role's requests go to is decided where the core is assembled.
 - **`classify` and `decoder` are given the request as it was sent**, because one thing cannot be told without it: whether a refusal belongs to the speed tier the request was sent at ("Speed tiers", below).
 - **A decoder writes to an `EventSink`, not to a list of events.** The sink has one method per thing a response can say (`start`, `text_delta`, `tool_call_start`, `block_end`, `usage`, `end`, `error`, `served_at`, `limits`, `request_id`). It is the one place that turns "the response reported this speed" into "the request ran at this speed", so no adapter can get that rule wrong.
@@ -254,6 +259,7 @@ Caching is treated as a property of request shape, not a switch.
 - History is append-only (invariant 1).
 - Serialisation is deterministic: stable key order, stable tool order, no timestamps or random ids in the prefix.
 - A debug-build check, and a test in every provider's suite, compares each request with the previous one in the epoch and fails if the shared prefix is not byte-identical.
+- **As built in step 15:** the loop asks the client for each request's stable prefix (`ModelClient::stable_prefix`, which is `Protocol::stable_prefix` for a real client), and in a debug build holds it to the one before it in the same epoch and with the same settings (model, reasoning, output limit, speed): one that does not begin with it stops the turn, with the byte where they part. A reload that changed nothing keeps the earlier request, so the history read again from the log is held to the one built live. A request that holds a stored image cannot be built before its client loads the image, and is not checked ([outstanding](../outstanding/the-prefix-check-and-image-references.md)). The loop's tests run it over a long session with steering, notices and tool rounds on Anthropic's and on `openai-chat`'s bytes (`cortex-agent`'s `context::the_prefix_holds_over_a_long_session_and_breaks_when_history_is_edited`), and show it stopping a request that does not begin as the one before.
 - **On Anthropic's current models a changed prefix is more than a cache miss.** Each reasoning block is tied to the system prompt, the tools and every message before it, and a block that is sent back after any of them changed fails a check: on some models with a 400, on others silently. An append-only history is therefore a matter of correctness there, and the same discipline that keeps the cache keeps the reasoning valid.
 
 **The adapter's part: place markers.** The request carries neutral cache hints: "end of the stable prefix" and "end of history so far". Each adapter turns them into its provider's feature.

@@ -1347,3 +1347,32 @@ fn a_compaction_that_keeps_recent_turns_never_splits_a_round() {
     );
 }
 
+#[test]
+fn a_nested_instruction_file_is_not_given_again_after_the_session_is_read_again() {
+    let world = World::new(
+        "instructions_nested_reload",
+        [
+            calls(&[("c1", "read", json!({"path": "src/api/handler.rs", "record": true}))]),
+            says("Done."),
+            calls(&[("c2", "read", json!({"path": "src/api/routes.rs", "record": true}))]),
+            says("Done again."),
+        ],
+    );
+    let rig = Setup::new(&world).start(&world);
+    rig.instructions
+        .set(&root_file(&rig, "src/api/AGENTS.md"), "Return JSON errors.");
+    world.run(async {
+        rig.prompt("go");
+        rig.events.turns(1).await;
+    });
+    // Read again from the store: which directories were looked at is not
+    // kept, what the model was given is read back.
+    drop(rig.handle.change_history().unwrap());
+    world.run(async {
+        rig.prompt("again");
+        rig.events.turns(2).await;
+    });
+    let nested = notice_texts(&rig);
+    assert_eq!(nested.len(), 1, "{nested:#?}");
+}
+

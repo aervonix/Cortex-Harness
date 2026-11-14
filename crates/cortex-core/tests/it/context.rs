@@ -191,3 +191,48 @@ fn a_session_resumed_after_a_compaction_begins_from_its_summary() {
     assert!(said[0].contains("The summary."));
     assert_eq!(said[1], "again");
 }
+
+/// A rule that lets the agent read a directory outside the workspace does
+/// not make a link to it a project's instruction file: the project's are
+/// the project's own.
+#[cfg(unix)]
+#[test]
+fn a_link_out_of_the_workspace_is_not_followed_where_a_rule_allows_reading_there() {
+    let world = World::new("instructions_link_allowed", [says("Hello.")]);
+    let outside = world.dir.join("elsewhere");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("notes.md"), "OUTSIDE-NOTES").unwrap();
+    std::os::unix::fs::symlink(outside.join("notes.md"), world.workspace.join("AGENTS.md")).unwrap();
+    world.user_config(&format!(
+        "[[permissions.rules]]\neffect = \"read\"\nmatch = \"{}/**\"\naction = \"allow\"\n",
+        outside.display()
+    ));
+    let core = world.core();
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        front.turn("go").await;
+        front.close().await;
+    });
+    let system = world.provider.requests()[0].system.clone();
+    assert!(!system.contains("OUTSIDE-NOTES"), "{system}");
+}
+
+#[test]
+fn an_instruction_file_a_rule_denies_is_not_read() {
+    let world = World::new("instructions_denied", [says("Hello.")]);
+    world.put("AGENTS.md", "DENIED-TEXT");
+    world.put("CLAUDE.md", "Allowed text.");
+    world.user_config(
+        "[[permissions.rules]]\neffect = \"read\"\nmatch = \"AGENTS.md\"\naction = \"deny\"\n",
+    );
+    let core = world.core();
+    world.run(async {
+        let front = Front::start(&world, &core).await;
+        front.turn("go").await;
+        front.close().await;
+    });
+    let system = world.provider.requests()[0].system.clone();
+    assert!(!system.contains("DENIED-TEXT"), "{system}");
+    assert!(system.contains("Allowed text."));
+}
+
