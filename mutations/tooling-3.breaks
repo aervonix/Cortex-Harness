@@ -1,0 +1,150 @@
+# The third tooling step: the nightly's fix, the wrapped traits, the
+# mutate pre-flight, the bare-program rule, try's A/B mode and filters,
+# combine, the program-search helper of the test kit and ci-times.
+# Written with the code, and run with `cargo xtask mutate tooling-3`.
+
+# ------------------------------------------------------------- the nightly
+
+[break] mutate-keeps-the-callers-colour
+rule: mutate's cargo runs without colour whatever the caller set, so its errors can be read.
+file: xtask/src/mutate/drive.rs
+in: CargoRunner::command
+find: .env("CARGO_TERM_COLOR", "never")
+replace: .env("CARGO_TERM_COLOR_UNUSED", "never")
+caught-by:
+    mutate::drive::tests::cargo_is_started_in_the_copy_with_its_own_build_directory_and_none_of_the_callers_test_settings
+
+[break] errors-read-through-escapes
+rule: Escape sequences are taken out before the compiler's errors are looked for.
+file: xtask/src/mutate/drive.rs
+in: errors_of
+find: let plain = without_escapes(output);
+replace: let plain = output.to_owned();
+caught-by:
+    mutate::drive::tests::coloured_output_still_gives_the_compilers_errors_and_never_cargos_progress
+
+[break] errors-fall-back-to-progress
+rule: With no error to quote, the message is cargo's last lines that are not its progress.
+file: xtask/src/mutate/drive.rs
+in: errors_of
+find: .filter(|line| !is_progress(line))
+replace: .filter(|_| true)
+caught-by:
+    mutate::drive::tests::coloured_output_still_gives_the_compilers_errors_and_never_cargos_progress
+
+# ------------------------------------------------------ the wrapped traits
+
+[break] tool-gains-a-default
+rule: Tool keeps no default bodies, so a wrapper cannot inherit a method it does not forward.
+file: crates/cortex-tools/src/contract.rs
+in: Tool
+find: fn preview(&self, plan: &Plan, cx: &RunCx) -> Option<Preview>;
+replace: fn preview(&self, plan: &Plan, cx: &RunCx) -> Option<Preview>; fn added(&self) -> bool { false }
+packages: xtask
+caught-by:
+    rules::rust_source::tests::the_wrapped_traits_as_they_are_have_no_default_bodies
+    rules::tests::sys_the_repository_follows_its_own_rules
+
+[break] launcher-gains-a-default
+rule: Launcher keeps no default bodies.
+file: crates/cortex-tools/src/process/mod.rs
+in: Launcher
+find: fn explain(&self, exit: Option<Exit>, output: &str) -> Option<String>;
+replace: fn explain(&self, exit: Option<Exit>, output: &str) -> Option<String>; fn added(&self) {}
+packages: xtask
+caught-by:
+    rules::rust_source::tests::the_wrapped_traits_as_they_are_have_no_default_bodies
+    rules::tests::sys_the_repository_follows_its_own_rules
+
+[break] policy-gains-a-default
+rule: Policy keeps no default bodies.
+file: crates/cortex-agent/src/policy.rs
+in: Policy
+find: fn read_gate(&self) -> Arc<dyn ReadGate>;
+replace: fn read_gate(&self) -> Arc<dyn ReadGate>; fn added(&self) -> u8 { 0 }
+packages: xtask
+caught-by:
+    rules::rust_source::tests::the_wrapped_traits_as_they_are_have_no_default_bodies
+    rules::tests::sys_the_repository_follows_its_own_rules
+
+[break] tool-call-drops-the-preview
+rule: tool_call forwards preview to the tool it calls.
+file: crates/cortex-tools/src/registry.rs
+in: ToolCall::preview
+find: dynamic.tool.preview(&dynamic.plan, cx)
+replace: { let _ = (dynamic, cx); None }
+caught-by:
+    registry::tool_call_previews_what_the_tool_it_calls_would_change
+
+[break] a-default-body-is-not-seen
+rule: The rule names every method of a wrapped trait that has a default body.
+file: xtask/src/rules/rust_source.rs
+in: defaults_of
+find: "{" if inner == 0 => {
+replace: "{" if inner == usize::MAX => {
+caught-by:
+    rules::rust_source::tests::a_trait_with_no_default_bodies_passes_and_each_default_is_named
+
+[break] a-moved-trait-passes
+rule: A wrapped trait that is not where the list says is an error, not a pass.
+file: xtask/src/rules/rust_source.rs
+in: defaults_of
+find: return vec![Violation::new(
+replace: return vec![]; return vec![Violation::new(
+caught-by:
+    rules::rust_source::tests::a_wrapped_trait_that_moved_is_an_error_not_a_pass
+
+# ------------------------------------------------------- bare program names
+
+[break] bare-name-in-a-test-is-flagged
+rule: A program started by name in a test module is not flagged.
+file: xtask/src/rules/rust_source.rs
+in: bare_programs
+find: || tests.iter().any(|range| range.contains(&index))
+replace:
+caught-by:
+    rules::rust_source::tests::programs_started_by_a_path_or_in_tests_pass
+
+[break] bare-name-through-a-constant
+rule: A name held in a constant of the same file is a bare name too.
+file: xtask/src/rules/rust_source.rs
+in: bare_programs
+find: .or_else(|| constants.get(argument).cloned())
+replace:
+caught-by:
+    rules::rust_source::tests::each_program_started_by_a_bare_name_is_named_with_its_line
+
+[break] bare-name-allowed-without-a-reason
+rule: An allow needs its reason.
+file: xtask/src/rules/rust_source.rs
+in: bare_programs
+find: .is_some_and(|(_, reason)| !reason.trim().is_empty())
+replace: .is_some()
+caught-by:
+    rules::rust_source::tests::each_program_started_by_a_bare_name_is_named_with_its_line
+
+[break] bare-name-misses-a-wrapper
+rule: Each starter of STARTERS is checked, the command line of the tools among them.
+file: xtask/src/rules/rust_source.rs
+find: const STARTERS: [&str; 3] = ["Command::new", "CommandLine::new", "Shell::new"];
+replace: const STARTERS: [&str; 3] = ["Command::new", "Command::new", "Shell::new"];
+caught-by:
+    rules::rust_source::tests::each_program_started_by_a_bare_name_is_named_with_its_line
+
+[break] bare-name-test-module-file-missed
+rule: A module under cfg(test) in a file of its own is a test.
+file: xtask/src/rules/rust_source.rs
+in: test_module_files
+find: files.insert(format!("{base}/{name}.rs"));
+replace:
+caught-by:
+    rules::rust_source::tests::a_module_under_cfg_test_in_a_file_of_its_own_is_a_test
+
+[break] bare-name-separator-ignored
+rule: A name with a path separator in it is a path, not a bare name.
+file: xtask/src/rules/rust_source.rs
+in: bare_programs
+find: if name.is_empty() || name.contains(['/', '\\']) {
+replace: if name.is_empty() {
+caught-by:
+    rules::rust_source::tests::programs_started_by_a_path_or_in_tests_pass

@@ -338,6 +338,11 @@ struct SearchArguments {
 }
 
 impl Tool for ToolSearch {
+    fn preview(&self, _plan: &Plan, _cx: &RunCx) -> Option<crate::Preview> {
+        // It changes no file.
+        None
+    }
+
     fn spec(&self) -> &ToolSpec {
         &self.spec
     }
@@ -498,6 +503,12 @@ struct Dynamic {
 }
 
 impl Tool for ToolCall {
+    fn preview(&self, plan: &Plan, cx: &RunCx) -> Option<crate::Preview> {
+        // What the tool it calls would change, as that tool shows it.
+        let dynamic = plan.args::<Dynamic>()?;
+        dynamic.tool.preview(&dynamic.plan, cx)
+    }
+
     fn spec(&self) -> &ToolSpec {
         &self.spec
     }

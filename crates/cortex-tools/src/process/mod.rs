@@ -170,6 +170,11 @@ impl CommandLine {
 /// The sandbox returns the command line of the harness's own launcher,
 /// with the session's policy for its standard input, which applies the
 /// policy and then becomes the command.
+///
+/// **No method has a default body**, as for [`Tool`](crate::Tool): the
+/// session's sandbox wraps a launcher, and a method added later with a
+/// default would be silently not forwarded by it. `cargo xtask rules` keeps
+/// default bodies out of this trait.
 pub trait Launcher: Send + Sync + std::fmt::Debug {
     /// What is started in place of `command`. An error is told to the
     /// model, and nothing is started: a command that cannot be confined as
@@ -179,10 +184,7 @@ pub trait Launcher: Send + Sync + std::fmt::Debug {
     /// One line for the model about what the launcher's confinement did to
     /// a command that has ended: which rule blocked it. `None` when there
     /// is nothing to say.
-    fn explain(&self, exit: Option<Exit>, output: &str) -> Option<String> {
-        let _ = (exit, output);
-        None
-    }
+    fn explain(&self, exit: Option<Exit>, output: &str) -> Option<String>;
 }
 
 /// What a [`Launcher`] is told about the call.
@@ -226,6 +228,11 @@ impl Launcher for Direct {
             command,
             stdin: None,
         })
+    }
+
+    fn explain(&self, _exit: Option<Exit>, _output: &str) -> Option<String> {
+        // Nothing stood between the command and the system.
+        None
     }
 }
 

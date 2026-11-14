@@ -26,7 +26,8 @@ pub(crate) struct Token {
 }
 
 impl Token {
-    fn text(self, source: &str) -> &str {
+    /// The token's text in `source`.
+    pub(crate) fn text(self, source: &str) -> &str {
         &source[self.start..self.end]
     }
 }

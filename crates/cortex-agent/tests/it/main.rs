@@ -449,6 +449,11 @@ impl Probe {
 }
 
 impl Tool for Probe {
+    fn preview(&self, _plan: &Plan, _cx: &RunCx) -> Option<cortex_tools::Preview> {
+        // It changes no file.
+        None
+    }
+
     fn spec(&self) -> &ToolSpec {
         &self.spec
     }
@@ -580,7 +585,7 @@ pub struct ScriptedPolicy {
     /// Each question waits at the gate named after its tool, when one is
     /// set.
     wait: Mutex<Option<Gates>>,
-    /// What `answers_may_stop` says. `None`: the trait's own default.
+    /// What `answers_may_stop` says. `None`: what `AllowAll` says.
     may_stop: Mutex<Option<bool>>,
     wake: Notify,
 }
@@ -693,6 +698,10 @@ impl Policy for ScriptedPolicy {
 
     fn answers_may_stop(&self) -> bool {
         lock(&self.may_stop).unwrap_or_else(|| cortex_agent::AllowAll.answers_may_stop())
+    }
+
+    fn read_gate(&self) -> Arc<dyn cortex_tools::ReadGate> {
+        cortex_agent::AllowAll.read_gate()
     }
 
     fn ask<'a>(&'a self, call: PlannedCall<'a>) -> BoxFuture<'a, Verdict> {

@@ -1476,7 +1476,10 @@ error: could not compile `demo` (lib test) due to 2 previous errors
             super::errors_of(progress),
             "linker `cc` not found | note: something else"
         );
-        assert_eq!(super::without_escapes("a\u{1b}[1;31mb\u{1b}[0mc\u{1b}=d"), "abcd");
+        assert_eq!(
+            super::without_escapes("a\u{1b}[1;31mb\u{1b}[0mc\u{1b}=d"),
+            "abcd"
+        );
     }
 
     /// Runs `list` with `jobs` runners that pretend, and time for
