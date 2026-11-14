@@ -99,7 +99,9 @@ pub(crate) fn parse_artifacts(listed: &str) -> Result<Vec<(String, bool)>> {
         .map(|line| match line.trim().rsplit_once(' ') {
             Some((name, "true")) => Ok((name.to_owned(), true)),
             Some((name, "false")) => Ok((name.to_owned(), false)),
-            _ => Err(format!("an artifact line that is not `name expired`: `{line}`")),
+            _ => Err(format!(
+                "an artifact line that is not `name expired`: `{line}`"
+            )),
         })
         .collect()
 }
@@ -390,7 +392,10 @@ pub(crate) fn ci_times(arguments: &[String]) -> Result<()> {
             let cases = match junit_of(id, os)? {
                 Some(path) => Some(junit::read(&path)?),
                 None => {
-                    println!("run {id} kept no `{}`: its tests did not run", artifact_name(os));
+                    println!(
+                        "run {id} kept no `{}`: its tests did not run",
+                        artifact_name(os)
+                    );
                     None
                 }
             };
@@ -558,8 +563,14 @@ mod artifact_tests {
             // A change of documentation alone: no report.
             (30, named(&[])),
             (29, named(&[("junit-linux", false)])),
-            (28, named(&[("junit-linux", false), ("junit-windows", true)])),
-            (27, named(&[("junit-linux", false), ("junit-windows", false)])),
+            (
+                28,
+                named(&[("junit-linux", false), ("junit-windows", true)]),
+            ),
+            (
+                27,
+                named(&[("junit-linux", false), ("junit-windows", false)]),
+            ),
         ];
         assert_eq!(first_that_kept(&runs, &["junit-linux"]), Some(29));
         assert_eq!(
