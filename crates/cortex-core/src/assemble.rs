@@ -686,7 +686,16 @@ fn find_shell(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&key)
         .cloned();
-    if let Some(shell) = known {
+    // A shell cached by an earlier session is used only when its real path
+    // is still outside this session's write roots. The cache is shared
+    // across the process's sessions and keyed by the program and its
+    // arguments, not by the roots, so a shell a non-confining session (or
+    // one with other roots) resolved must not be inherited by a confining
+    // one without the write-root check (found by the independent review of
+    // the step 26 fixes). On a stale hit the search runs again below.
+    if let Some(shell) = known
+        && cached_shell_is_usable(&shell, confine_roots)
+    {
         return Ok(shell);
     }
     // When the session would confine commands, a shell whose real path is
@@ -803,6 +812,17 @@ fn shell_outside_roots(
 fn under_a_write_root(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
     let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     roots.iter().find(|root| real.starts_with(root)).cloned()
+}
+
+/// Whether a shell cached by an earlier session may be reused by a session
+/// that confines commands to `roots`: only when the shell's real path is
+/// outside them. The cache is shared across the process's sessions and keyed
+/// by the program and its arguments, not by the roots, so a shell a
+/// non-confining session (or one with other roots) resolved must not be
+/// inherited by a confining one without the write-root check (found by the
+/// independent review of the step 26 fixes).
+fn cached_shell_is_usable(shell: &Shell, roots: &[PathBuf]) -> bool {
+    under_a_write_root(shell.program(), roots).is_none()
 }
 
 /// The write roots a session would confine commands to, resolved, when it
@@ -1476,6 +1496,27 @@ mod tests {
             comspec: None,
         };
         assert!(shell_outside_roots(only, None, None, &roots).is_err());
+
+        // A shell an earlier session cached inside what is now a write root
+        // is not reused by a session that confines to that root; one outside
+        // it still is.
+        let planted_shell = shell_outside_roots(
+            ShellSearch {
+                windows: false,
+                path: vec![planted.clone()],
+                system_root: None,
+                comspec: None,
+            },
+            None,
+            None,
+            &[],
+        )
+        .unwrap()
+        .0;
+        assert!(!super::cached_shell_is_usable(&planted_shell, &roots));
+        assert!(super::cached_shell_is_usable(&planted_shell, &[]));
+        assert!(super::cached_shell_is_usable(&shell, &roots));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

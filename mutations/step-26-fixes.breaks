@@ -133,3 +133,43 @@ replace: if false && finished.escaped {
 packages: cortex-tools
 caught-by:
     cortex-tools shell::tests::a_command_that_outran_its_kill_is_said_with_where_to_look
+
+[break] a-commondir-outside-the-workspace-is-followed
+rule: A commondir that points outside the workspace is recorded as a pointer but not followed, so the look never reads or names a file outside the workspace.
+file: crates/cortex-sandbox/src/protect.rs
+in: Look::follow_commondir
+find: if !common.starts_with(&self.root) || self.through_a_link(&common) {
+replace: if self.through_a_link(&common) {
+packages: cortex-sandbox
+caught-by:
+    cortex-sandbox protect::tests::a_commondir_pointing_outside_the_workspace_is_not_followed
+
+[break] a-cargo-link-outside-the-workspace-is-followed
+rule: A .cargo link that leads outside the workspace is recorded as the link but not looked through.
+file: crates/cortex-sandbox/src/protect.rs
+in: Look::leads_inside
+find: lexically_resolved(&joined).starts_with(&self.root)
+replace: lexically_resolved(&joined).starts_with(&self.root) || true
+packages: cortex-sandbox
+caught-by:
+    cortex-sandbox protect::tests::a_cargo_link_leading_outside_is_not_followed
+
+[break] an-unconfined-command-keeps-the-baseline
+rule: After a command that left the sandbox, the continuity baseline is dropped, so the next confined command does not report the approved change as one from outside.
+file: crates/cortex-core/src/checkpoints.rs
+in: RecordingShell::run
+find: self.sandbox.forget_after();
+replace: let _ = &self.sandbox;
+packages: cortex-core
+caught-by:
+    cortex-core::it sandbox::sys_an_unconfined_command_does_not_trip_the_next_command
+
+[break] a-cached-shell-is-not-revalidated
+rule: A shell an earlier session cached inside a write root is not reused by a session that confines to that root.
+file: crates/cortex-core/src/assemble.rs
+in: cached_shell_is_usable
+find: under_a_write_root(shell.program(), roots).is_none()
+replace: true
+packages: cortex-core
+caught-by:
+    cortex-core assemble::tests::a_shell_inside_a_write_root_is_passed_over
