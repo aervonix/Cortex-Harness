@@ -290,6 +290,11 @@ pub struct Finished {
     /// after the tree was killed: a process that left the tree, which the
     /// harness cannot stop.
     pub outlived: bool,
+    /// Whether a process of the command's session outran the kill of its
+    /// tree: one that forks in a loop, which the harness could not be sure
+    /// of clearing within its bound. The tree's end is then not clean, and
+    /// what escaped may still write a protected path after the look.
+    pub escaped: bool,
     /// Whether what the command wrote could not be collected: the reader
     /// did not finish, or the content store failed under it. `output` is
     /// then empty, and that is not the command's doing.
@@ -484,6 +489,8 @@ impl Runner {
         // here, and a reader that is still blocked is let go.
         running.stop.stop();
         running.tree.end();
+        // Whether the end cleared the session, or a forker outran it.
+        let escaped = running.tree.escaped();
         if !run.reader_done {
             // The reader is on its way out: the tree is dead and its read
             // was stopped. It is told once more, for a read that was just
@@ -516,6 +523,7 @@ impl Runner {
             stopped_with: run.stopped_with,
             left_running: run.left_running,
             outlived: run.outlived,
+            escaped,
             duration: self.clock.monotonic().saturating_sub(started),
             // A reader that did not finish, or whose store failed under
             // it, has nothing to hand over, and the result says so.

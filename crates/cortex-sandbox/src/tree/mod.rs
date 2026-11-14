@@ -238,6 +238,16 @@ impl Tree {
     pub fn end(&self) {
         self.inner.end();
     }
+
+    /// Whether a kill of the tree ran out its bound with a process of the
+    /// command's session still alive: a process that forks in a loop,
+    /// which the kill could not be sure of clearing. The tree's end is
+    /// then not clean, and what escaped may still write. Always `false`
+    /// where the whole tree dies at once (Windows' Job Object).
+    #[must_use]
+    pub fn escaped(&self) -> bool {
+        self.inner.escaped()
+    }
 }
 
 /// The reading end of the one pipe a command writes both its standard

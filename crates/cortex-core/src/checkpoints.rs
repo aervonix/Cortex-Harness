@@ -465,6 +465,22 @@ impl Tool for RecordingShell {
                     }
                 }
             }
+            // A command that left a process the kill could not clear may
+            // still be writing a protected path after the look: the turn
+            // stops, so that nothing the model does next builds on a look
+            // that may already be stale (found by the third review of
+            // step 26).
+            let escaped = result
+                .payload()
+                .and_then(|payload| payload.get("escaped"))
+                .and_then(Json::as_bool)
+                .unwrap_or(false);
+            if escaped && self.sandbox.watch().is_some() {
+                let note = "[A process the command started kept forking and could not all be \
+                            killed. It may still be running inside the sandbox and writing a \
+                            protected path after the look. The turn stops here.]";
+                self.policy.stop_turn(cx.turn, note.to_owned());
+            }
             result
         })
     }

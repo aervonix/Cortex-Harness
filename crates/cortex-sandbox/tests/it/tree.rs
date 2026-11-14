@@ -783,3 +783,109 @@ fn sys_a_process_that_makes_a_group_of_its_own_is_still_killed_with_the_tree() {
         std::thread::yield_now();
     }
 }
+
+/// A process that forks in a loop, each child in a group of its own and
+/// each parent exiting at once, outlived a single-pass kill of its tree: it
+/// was at a new id by the time the one pass reached where it had been, so
+/// the pass missed the live generation, and it ran on past the tree's end
+/// (found by the third review of step 26). The kill now sweeps until the
+/// session is empty, stopping what it finds before it kills it, so the
+/// chain is cleared; [`Tree::escaped`] says whether the bound was reached
+/// first.
+///
+/// Linux only: it needs `setsid`, `setpgid` and `/proc`. It needs python3,
+/// which CI's Linux has.
+#[cfg(target_os = "linux")]
+#[test]
+fn sys_a_process_that_keeps_forking_does_not_outlive_the_tree() {
+    if std::process::Command::new("python3")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_err()
+    {
+        assert!(std::env::var_os("CI").is_none(), "CI has python3");
+        return;
+    }
+    // The hopper becomes a session of its own, as the sandbox makes every
+    // command, then forks in a loop, each child in a group of its own and
+    // each parent exiting at once. If it is still alive after a delay it
+    // writes a marker, so a kill that misses it leaves a trace; it stops
+    // itself after a few seconds, so a failed test leaves nothing behind.
+    let scratch = cortex_testkit::Scratch::outside("cortex-sandbox-tree", "hopper");
+    let marker = scratch.join("alive");
+    let hopper = [
+        "import os, time",
+        "os.setsid()",
+        "stop = time.monotonic() + 4.0",
+        "os.setpgid(0, 0)",
+        "while time.monotonic() < stop:",
+        "    if os.fork():",
+        "        os._exit(0)",
+        "    os.setpgid(0, 0)",
+        "    if time.monotonic() > stop - 3.0:",
+        &format!("        open({:?}, 'w').write('alive')", marker.to_str().expect("a path")),
+        "        os._exit(0)",
+    ]
+    .join("\n");
+    let mut command = std::process::Command::new("/bin/sh");
+    command
+        .args(["-c", "python3 -c \"$HOP\" & sleep 0.3"])
+        .env("HOP", hopper)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let tree = Tree::spawn(command, None).expect("start the tree");
+    // The command (the shell) exits; its tree is ended, as the runner ends
+    // it once the command is done.
+    let _ = tree.wait();
+    tree.end();
+
+    // The end blocks until the session is cleared or the bound is reached.
+    assert!(
+        !tree.escaped(),
+        "the kill ran out its bound with a process of the session still alive"
+    );
+    assert_eq!(
+        live_session_members(tree.id()),
+        0,
+        "a process of the session was alive after the tree's end"
+    );
+    // The marker is written a second in, well after the tree's end: a kill
+    // that missed the forker would leave it.
+    let watched = std::time::Instant::now();
+    while watched.elapsed() < std::time::Duration::from_millis(1500) {
+        assert!(
+            !marker.exists(),
+            "a process of the tree wrote a marker after the tree's end"
+        );
+        std::thread::yield_now();
+    }
+}
+
+/// How many live processes share the session `sid` leads, the leader
+/// excepted. A zombie is not alive.
+#[cfg(target_os = "linux")]
+fn live_session_members(sid: u32) -> usize {
+    let session = sid.to_string();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()))
+        .filter(|&id| id != sid)
+        .filter(|id| {
+            std::fs::read_to_string(format!("/proc/{id}/stat")).is_ok_and(|stat| {
+                stat.rsplit_once(") ").is_some_and(|(_, fields)| {
+                    let mut fields = fields.split(' ');
+                    let (state, _parent, _group, its_session) =
+                        (fields.next(), fields.next(), fields.next(), fields.next());
+                    its_session == Some(&session)
+                        && !matches!(state, Some("Z") | Some("X") | None)
+                })
+            })
+        })
+        .count()
+}
