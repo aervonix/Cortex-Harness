@@ -249,7 +249,7 @@ const PARTIAL_MARK: &str = "does not scope signals: the gap the status names";
 pub(crate) fn partial_landlock() -> Result<()> {
     crate::checks::require_nextest()?;
     let mut run = crate::checks::ci_run(&["cortex-sandbox".to_owned()]);
-    run.extend(["--success-output".to_owned(), "immediate".to_owned()]);
+    run.extend(partial_arguments());
     println!("$ cargo {}", run.join(" "));
     let output = Command::new(workspace::cargo())
         .args(&run)
@@ -266,6 +266,19 @@ pub(crate) fn partial_landlock() -> Result<()> {
     partial_verdict(output.status.success(), &printed)
 }
 
+/// What the run adds to the blocking job's: the backends, which only a
+/// build with `cortex-core` in it turns on, and without which the
+/// confinement tests are not compiled at all; and the tests' own output,
+/// where the partial case is named.
+fn partial_arguments() -> [String; 4] {
+    [
+        "--features".to_owned(),
+        "cortex-sandbox/backends".to_owned(),
+        "--success-output".to_owned(),
+        "immediate".to_owned(),
+    ]
+}
+
 /// Whether a run of the sandbox's tests passed and showed the partial case.
 fn partial_verdict(passed: bool, printed: &str) -> Result<()> {
     if !passed {
@@ -276,9 +289,11 @@ fn partial_verdict(passed: bool, printed: &str) -> Result<()> {
         Ok(())
     } else {
         Err(format!(
-            "the tests passed, but none said `{PARTIAL_MARK}`: this kernel's Landlock scopes \
-             signals, so the partial case ran nowhere. Move the job to a runner with Landlock 4 \
-             or 5, or say in docs/testing-and-ci.md that it is no longer tested."
+            "the tests passed, but none said `{PARTIAL_MARK}`, so the partial case ran \
+             nowhere: either the confinement tests were not built (they need \
+             cortex-sandbox's `backends` feature), or this kernel's Landlock scopes signals. In \
+             the second case move the job to a runner with Landlock 4 or 5, or say in \
+             docs/testing-and-ci.md that it is no longer tested."
         ))
     }
 }
@@ -295,6 +310,12 @@ mod partial_tests {
         let error =
             partial_verdict(true, "    PASS [ 0.1s] cortex-sandbox::it confined::x\n").unwrap_err();
         assert!(error.contains("the partial case ran nowhere"), "{error}");
+        // The confinement tests are built only with the backends.
+        assert!(
+            super::partial_arguments()
+                .windows(2)
+                .any(|pair| pair == ["--features", "cortex-sandbox/backends"])
+        );
         let error = partial_verdict(false, shown).unwrap_err();
         assert!(error.contains("tests failed"), "{error}");
     }
