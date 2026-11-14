@@ -48,6 +48,10 @@ pub fn is_child() -> bool {
 
 /// Says `value` under `key`, for the parent to read with [`Ran::said`]. A
 /// value is one line: a line break in it is written as `\n`.
+#[expect(
+    clippy::print_stdout,
+    reason = "the child tells the parent through its standard output"
+)]
 pub fn say(key: &str, value: &str) {
     println!("{SAID}{key}={}", value.replace('\n', "\\n"));
 }
@@ -222,7 +226,7 @@ impl Ran {
         self.stdout
             .lines()
             .filter_map(|line| line.split_once(&prefix).map(|(_, value)| value))
-            .last()
+            .next_back()
             .map(|value| value.replace("\\n", "\n"))
     }
 }

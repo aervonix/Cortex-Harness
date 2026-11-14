@@ -40,6 +40,8 @@ Each cost a session hours to find. The details are in [docs/steps/11/](docs/step
 - **Printing can hide a race.** A line written to the terminal takes longer than the window some races have. When a timing bug will not show, keep the trace in memory and print it only when something has gone wrong. Repeat the whole workspace, not one crate: a race that needs other tests' load beside it never shows in a crate run alone.
 - **Hosted Windows runners differ in speed by a factor of two** (a test's process starts in 6 to 12 ms). Compare two runs only on runners of the same speed, told by the start cost the tier report prints.
 
+- **A terminal on Windows is a pseudo-console (ConPTY), and it re-renders.** What the program wrote is not what the test reads, ConPTY asks the terminal for modes of its own, it starts with virtual-terminal processing off, and a key takes about 16 ms to come through it. [docs/conpty.md](docs/conpty.md) has the facts step 20 learned one CI round trip at a time.
+
 ## Working here
 
 | To | Run |
@@ -67,6 +69,8 @@ Each cost a session hours to find. The details are in [docs/steps/11/](docs/step
 | Run the live smoke test, or record provider fixtures: by hand, never in CI, and it costs money | `cargo xtask live [PROVIDER]`, `cargo xtask record [--provider PROVIDER]`, `cargo xtask record --toolbox`; `record --dry-run` sends nothing, `live --spent` totals the spend |
 
 `./x <command>` is the same as `cargo xtask <command>`.
+
+**At the owner's desk, heavy commands run on the desktop through `rx`,** the owner's script, which copies the worktree there without `.git` and runs the command under a test lock shared with the other sessions: `rx check`, `rx test`, `rx -- <command>`. `rx busy` shows what holds the lock and what is queued for it; `rx --time …` also prints how long the run waited for the lock and how long it ran; `rx --exclusive …` is for performance numbers: it refuses while the desktop is throttled, and waits until the machine is idle before it runs. Windows-only code is linted there with `rx -- cargo xwin clippy --target x86_64-pc-windows-msvc --workspace --all-targets --locked -- -D warnings`, which checks and lints and runs nothing.
 
 - **Run `cargo xtask ci` before you call a change done**, and read its output: every step runs even when an earlier one fails, so one run shows everything that is wrong.
 - **Windows is checked only by CI** unless you have a Windows machine. Write for both from the start: paths, line endings, process handling, file names that differ only by case. To run an `xtask` command on Windows, Linux or both before there is a pull request, push the branch and start the `try` workflow: `gh workflow run try --ref <branch> -f os=windows -f command="test -p <crate> <filter>"`, or `-f command=startup -f profile=dist` to measure a release build's start-up; `-f filter="EXPR; EXPR"` takes nextest filter expressions, `-f against=main` compares the branch with another ref on one runner, and `-f os=linux-22.04` runs on the one runner with Landlock ABI 4 ([docs/testing-and-ci.md](docs/testing-and-ci.md), "A run on the runners without a pull request").
