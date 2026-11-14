@@ -40,6 +40,7 @@ mod denials;
 mod early;
 mod interrupt;
 mod limits;
+mod measure;
 mod order;
 mod plan;
 mod retries;
