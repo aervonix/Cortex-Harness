@@ -143,6 +143,25 @@ fn a_change_that_puts_the_modification_time_back_is_still_found() {
     assert_eq!(changed[0].change, Change::Modified);
 }
 
+/// A file too large to keep or to hash is compared by its size and times
+/// only, and marks the look incomplete, so the result says it was not
+/// fully seen.
+#[test]
+fn a_file_too_large_to_hash_marks_the_look_incomplete() {
+    let scratch = workspace("too_large_to_hash");
+    let ws = scratch.join("ws");
+    let config = ws.join(".git/config");
+    fs::write(&config, vec![b'a'; 4096]).unwrap();
+    let watch = Watch::new(&ws, fixed(&ws)).with_limits(Limits {
+        file_bytes: 0,
+        hash_bytes: 1024,
+        ..Limits::default()
+    });
+    let before = watch.take();
+    // The look did not keep or hash the file, so it says it is incomplete.
+    assert!(!before.is_complete());
+}
+
 #[test]
 fn protected_names_are_found_at_any_depth() {
     let scratch = workspace("any_depth");

@@ -37,8 +37,9 @@
 
 #![allow(
     clippy::disallowed_methods,
+    clippy::disallowed_types,
     reason = "a look at the file system, documented as blocking: its callers run it on the \
-              blocking pool, never on the core thread"
+              blocking pool, never on the core thread; it opens files to hash them"
 )]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,6 +58,10 @@ pub struct Limits {
     pub file_bytes: u64,
     /// The most content kept in all.
     pub total_bytes: u64,
+    /// The largest file whose content is hashed, when it is not kept whole.
+    /// A larger one is compared by its size and times only, and marks the
+    /// look incomplete.
+    pub hash_bytes: u64,
 }
 
 impl Default for Limits {
@@ -66,6 +71,7 @@ impl Default for Limits {
             time: Duration::from_millis(250),
             file_bytes: 256 * 1024,
             total_bytes: 4 * 1024 * 1024,
+            hash_bytes: 16 * 1024 * 1024,
         }
     }
 }
@@ -98,6 +104,11 @@ struct Entry {
     stamp: Stamp,
     /// The content, for a file small enough to keep.
     content: Option<Vec<u8>>,
+    /// A hash of the content, for a file too large to keep whole but small
+    /// enough to read: so a change is found by the content, not only by the
+    /// times the system sets, which a file system may not move finely
+    /// enough.
+    hash: Option<cortex_base::ContentHash>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,6 +348,12 @@ impl Entry {
             (Kind::File, Kind::File) if self.content.is_some() && old.content.is_some() => {
                 (self.content != old.content).then(|| old.before())
             }
+            // Both are hashed: the hash decides, so a change of the same
+            // length with the times put back is still found, whatever the
+            // file system's change time does.
+            (Kind::File, Kind::File) if self.hash.is_some() && old.hash.is_some() => {
+                (self.hash != old.hash).then(|| old.before())
+            }
             // Otherwise what the system sets, which a program cannot put
             // back, and the size and the time.
             _ => (self.stamp != old.stamp
@@ -446,6 +463,22 @@ impl Look {
         if let Some(content) = &content {
             self.kept += u64::try_from(content.len()).unwrap_or(u64::MAX);
         }
+        // A file whose content is not kept is still compared by a hash, so
+        // that a change of the same length with the file's times put back
+        // is found on a file system whose change time the harness cannot
+        // trust (found on `ubuntu-22.04` by the fixes of step 26). A file
+        // too large to hash within the cap is left to its times and marks
+        // the look incomplete, so the result says it was not fully seen.
+        let hash = if kind == Kind::File && content.is_none() {
+            if bytes <= self.limits.hash_bytes {
+                hash_file(path)
+            } else {
+                self.complete = false;
+                None
+            }
+        } else {
+            None
+        };
         self.entries.insert(
             path.to_owned(),
             Entry {
@@ -454,6 +487,7 @@ impl Look {
                 modified: metadata.modified().ok(),
                 stamp: stamp(&metadata),
                 content,
+                hash,
             },
         );
         Some(kind)
@@ -625,6 +659,24 @@ fn lexically_resolved(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// A hash of the file at `path`, read in blocks so that a large file is
+/// not held in memory. `None` when it cannot be read.
+fn hash_file(path: &Path) -> Option<cortex_base::ContentHash> {
+    use std::io::Read;
+    let mut file = fs::File::open(path).ok()?;
+    let mut hasher = cortex_base::ContentHasher::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => hasher.update(&buffer[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return None,
+        }
+    }
+    Some(hasher.finish())
 }
 
 #[cfg(unix)]
