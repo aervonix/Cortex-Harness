@@ -84,8 +84,9 @@ pub(crate) fn rules() -> Result<()> {
 /// before a page that was just edited is out of mind.
 pub(crate) fn links() -> Result<()> {
     let root = workspace::root();
-    let files = workspace::repository_files(&root)?;
-    let violations = rules::check_docs(&root, &files)?;
+    let files = workspace::tracked_files(&root)?;
+    let names = workspace::repository_files(&root)?;
+    let violations = rules::check_docs(&root, &files, &names)?;
     if violations.is_empty() {
         println!(
             "Every link inside the repository leads somewhere, and the step records are in their places."

@@ -53,6 +53,18 @@ pub(crate) fn check(file: &str, text: &str) -> Vec<Violation> {
         if line.trim_start().starts_with('#') || line.trim().is_empty() {
             continue;
         }
+        if let Some(value) = plain_value_that_is_not_one(line) {
+            violations.push(Violation::new(
+                file,
+                line_number,
+                format!(
+                    "`{value}` is not a value YAML can read unquoted: a `: ` in it, or a `:` at \
+                     its end, begins a mapping, and GitHub then reads the whole file as no \
+                     workflow at all (no trigger, no job). Quote it, or end it otherwise \
+                     (`combine::tests::sys_`, not `combine::`)."
+                ),
+            ));
+        }
         let indent = line.len() - line.trim_start().len();
         if indent == 0 {
             in_jobs = line.trim_end() == "jobs:";
@@ -126,6 +138,28 @@ pub(crate) fn check(file: &str, text: &str) -> Vec<Violation> {
 const OWNER_TERMS_LINE: &str = "OWNER_TERMS: ${{ secrets.OWNER_TERMS }}";
 
 /// Whether a line reads a secret, other than in [`OWNER_TERMS_LINE`].
+/// The value of a `key: value` line when it is unquoted and YAML cannot
+/// read it as one: it holds `: ` or ends with `:`. Found when a step's
+/// `run: cargo test … combine::` made the nightly workflow unreadable.
+fn plain_value_that_is_not_one(line: &str) -> Option<&str> {
+    let line = line.trim();
+    let line = line.strip_prefix("- ").unwrap_or(line);
+    let (key, value) = line.split_once(": ")?;
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    let value = value.trim();
+    let quoted_or_block = value
+        .chars()
+        .next()
+        .is_none_or(|first| "\"'|>{[&*!".contains(first));
+    (!quoted_or_block && (value.contains(": ") || value.ends_with(':'))).then_some(value)
+}
+
 fn uses_a_secret_other_than_the_owners_terms(line: &str) -> bool {
     line.contains("secrets.") && line.trim() != OWNER_TERMS_LINE
 }
@@ -240,6 +274,35 @@ mod tests {
             .into_iter()
             .map(|violation| violation.to_string())
             .collect()
+    }
+
+    #[test]
+    fn a_value_yaml_cannot_read_unquoted_is_refused() {
+        let found = messages(
+            ".github/workflows/x.yml",
+            &workflow(
+                "      - name: Plain, with a colon:here and (brackets)\n\
+                 \x20       run: cargo test -p xtask -- --ignored combine::\n\
+                 \x20     - name: Quoted\n\
+                 \x20       run: \"echo a: b\"\n\
+                 \x20     - name: An echo: of a mapping\n\
+                 \x20       run: |\n\
+                 \x20         echo a: b\n",
+            ),
+        );
+        let refused: Vec<&String> = found
+            .iter()
+            .filter(|message| message.contains("YAML"))
+            .collect();
+        assert_eq!(refused.len(), 2, "{found:#?}");
+        assert!(
+            refused[0].contains("`cargo test -p xtask -- --ignored combine::`"),
+            "{refused:?}"
+        );
+        assert!(
+            refused[1].contains("`An echo: of a mapping`"),
+            "{refused:?}"
+        );
     }
 
     fn workflow(steps: &str) -> String {

@@ -54,7 +54,9 @@ impl fmt::Display for Violation {
 pub(crate) fn check_repository(root: &Path) -> Result<Vec<Violation>> {
     let mut violations = Vec::new();
 
-    let files = workspace::repository_files(root)?;
+    // What a pull request holds; a link may lead to a new file too.
+    let files = workspace::tracked_files(root)?;
+    let names = workspace::repository_files(root)?;
     let mut sources = BTreeMap::new();
     for file in &files {
         let path = root.join(file);
@@ -68,7 +70,7 @@ pub(crate) fn check_repository(root: &Path) -> Result<Vec<Violation>> {
         }
     }
     violations.extend(rust_source::check(&sources));
-    violations.extend(check_docs(root, &files)?);
+    violations.extend(check_docs(root, &files, &names)?);
 
     let metadata = workspace::metadata(root)?;
     let manifests = metadata
@@ -93,7 +95,13 @@ pub(crate) fn check_repository(root: &Path) -> Result<Vec<Violation>> {
 /// somewhere, and the step records and open items are where they belong.
 /// They read text files and nothing else, so `cargo xtask links` runs them
 /// without asking cargo anything.
-pub(crate) fn check_docs(root: &Path, files: &[String]) -> Result<Vec<Violation>> {
+///
+/// `files` are read; a link may lead to any of `names`, which holds them.
+pub(crate) fn check_docs(
+    root: &Path,
+    files: &[String],
+    names: &[String],
+) -> Result<Vec<Violation>> {
     let mut texts: BTreeMap<String, String> = BTreeMap::new();
     for file in files {
         if links::is_read(file) || layout::is_read(file) {
@@ -102,7 +110,7 @@ pub(crate) fn check_docs(root: &Path, files: &[String]) -> Result<Vec<Violation>
             texts.insert(file.clone(), String::from_utf8_lossy(&bytes).into_owned());
         }
     }
-    let names: BTreeSet<String> = files.iter().cloned().collect();
+    let names: BTreeSet<String> = names.iter().chain(files).cloned().collect();
     let mut violations = links::check(&texts, &names);
     violations.extend(layout::check(&texts));
     Ok(violations)

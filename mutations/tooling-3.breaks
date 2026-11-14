@@ -430,3 +430,21 @@ find: source.contains(&format!("{starter}("))
 replace: source.contains(&format!("{starter} ("))
 caught-by:
     rules::rust_source::tests::a_module_under_cfg_test_in_a_file_of_its_own_is_a_test
+
+[break] workflow-value-yaml-cannot-read
+rule: An unquoted workflow value that holds `: ` or ends with `:` is refused: GitHub would read the file as no workflow.
+file: xtask/src/rules/workflows.rs
+in: plain_value_that_is_not_one
+find: (value.contains(": ") || value.ends_with(':'))
+replace: value.contains(": ")
+caught-by:
+    rules::workflows::tests::a_value_yaml_cannot_read_unquoted_is_refused
+
+[break] rules-read-untracked-files
+rule: The repo rules read the files git tracks, not a scratch folder nobody added.
+file: xtask/src/workspace.rs
+in: git_files
+find: if untracked {
+replace: if true {
+caught-by:
+    workspace::tests::sys_a_directory_that_a_checkout_ignores_is_listed_by_walking_it
