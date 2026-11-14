@@ -1,0 +1,19 @@
+[0;90m╭─────────────────────────────────────────────────────────────────────────────────────────────────╮[0m
+[0;90m│[0m [0;31m✗[0m [0;1mRun cargo publish --dry-run -p parser[0m  [0;31mblocked: network · 0.4s[0m                                [0;90m│[0m
+[0;90m│[0m   [0;90merror: failed to query the crates.io index: network unreachable[0m                               [0;90m│[0m
+[0;90m│[0m   [0;90m(sandbox.network is "off": confined commands have no network)[0m                                 [0;90m│[0m
+[0;90m╰─────────────────────────────────────────────────────────────────────────────────────────────────╯[0m
+[0m
+[0m◇[0m The dry run has to reach crates.io, and the sandbox has no network. I'll ask[0m
+[0m  to run it outside the sandbox.[0m
+[0;33m?[0m [0;1mRun outside the sandbox?[0m
+[0m
+[0m    [0;38;2;122;60;251mcargo publish --dry-run -p parser[0m
+[0;90m    in crates/parser[0m
+[0m
+[0m  [0;33mIt would run with your full rights: it can write anywhere you can, and use the[0m
+[0m  [0;33mnetwork. This is asked every time.[0m
+[0m
+[0m  [0;1;38;2;122;60;251my[0m Run once outside the sandbox   [0;1;38;2;122;60;251mn[0m Deny   [0m
+[0m
+[0;90m  esc denies · ctrl+o shows it whole[0m                                         [0;90mopus-5.5 high[0;90m · [0;38;2;122;60;251mfast[0m  [0m

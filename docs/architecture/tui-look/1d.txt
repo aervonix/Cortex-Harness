@@ -1,0 +1,21 @@
+◇ All 46 tests pass, and cargo fmt is clean.
+
+◆ 1_000 lexes as 1. Fix scan_number so digit separators work, and add a test.
+
+∴ Reasoned for 6s
+  The loop breaks on any non-digit, so _ ends the literal. Check whether a
+  trailing _ is meant to be an error first.
+
+◇ scan_number stops at the first character that is not a digit, so 1_000 ends
+  after the 1. I'll read the scanner and allow _ between digits.
+
+╭─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✓ Read lex.rs  lines 120–178                                                                    │
+│ ✓ Edit lex.rs  +5 −1                                                                            │
+│ ⣻ Run cargo test -p parser  1.2s                                                                │
+╰─────────────────────────────────────────────────────────────────────────────── ctrl+t expands ─╯
+
+╭─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ◆ Type to steer this turn                                                                       │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+  ⣻ 9s  esc stops · enter steers this turn · tab queues it instead           opus-5.5 high · fast

@@ -169,7 +169,7 @@ pub trait UsageSource {
 
 | Surface | What |
 |---|---|
-| TUI | `/usage` opens the panel. Keys switch range and grouping. The status line shows a provider's limit when less than a fifth is left ([09-tui.md](09-tui.md)). |
+| TUI | `/usage` opens the panel. Keys switch range and grouping. The hint row shows a provider's limit when less than a fifth is left ([09-tui.md](09-tui.md)). |
 | Command line | `cortex usage [--range session\|today\|week\|month\|all] [--by provider\|model\|project\|source] [--json]`. `cortex usage sources` lists detected sources and their state. `cortex usage forget <source>` deletes a source's cache. |
 | RPC | `usage/get` (the session, live) and `usage/report` (a range and grouping). After the first release, `usage/sources` to list, enable and disable sources ([11-rpc-protocol.md](11-rpc-protocol.md)). |
 

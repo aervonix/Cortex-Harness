@@ -157,7 +157,7 @@ Different work deserves different models. Configuration names models by role.
 | `fast` | Utility calls: compaction summaries, session titles, output summaries, proposed profile entries. | Falls back to `main` when not set. |
 | `judge` | Model-graded comparisons in the run engine. | Falls back to `main`. |
 
-**Budget.** The user sets limits per session and per day in money or tokens ([08-configuration.md](08-configuration.md)). The status line shows the spend. Near a limit the harness says so; at the limit it stops and asks.
+**Budget.** The user sets limits per session and per day in money or tokens ([08-configuration.md](08-configuration.md)). The hint row shows the spend. Near a limit the harness says so; at the limit it stops and asks.
 
 **In the first release:** roles, with utility calls routed to `fast`. **Later:** delegating whole sub-tasks (search a large tree, read a long log and report) to the fast model, which needs sub-agents, and choosing the route from measured cost and success.
 

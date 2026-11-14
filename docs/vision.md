@@ -33,7 +33,7 @@ Full-featured, and efficient in every dimension that costs the user something.
 
 | Dimension | What that means |
 |---|---|
-| **Tokens and money** | Context is lean: a structural map of the repository instead of whole files, and a re-read sends only what changed. Tool output is compressed, with the full output one key press away. The prompt is laid out to get the most from provider caches. Tokens, cost and cache hit rate are always visible. |
+| **Tokens and money** | Context is lean: a structural map of the repository instead of whole files, and a re-read sends only what changed. Tool output is compressed, with the full output one key press away. The prompt is laid out to get the most from provider caches. Tokens, cost and cache hit rate are a glance away: shown when they matter (after each turn, when a budget is set, as the context fills), and always in `/usage`. |
 | **Wall-clock time** | A tool starts as soon as its arguments have finished streaming. Independent tools run in parallel. Likely reads are fetched ahead. Compaction runs in the background instead of stopping the session. |
 | **Footprint** | Near-instant start, small memory, and smooth rendering even with very large outputs. |
 | **The user's attention** | Smart permissions and automatic verification, so there is less to watch over. |

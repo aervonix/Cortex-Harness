@@ -1,0 +1,17 @@
+· AGENTS.md changed; the new text applies from the next request.
+
+◆ Now make the same change in the JSON lexer.
+
+· Context compacted in the background: 148.2k → 23.6k tokens (a 3.1k summary,
+  the last 6 turns kept). ctrl+o shows the summary.
+· The sandbox stopped a command writing ~/.cargo/credentials.toml.
+· Fast mode was refused (429), so this request runs at standard speed; fast
+  resumes after 14:32.
+· The provider is overloaded (529). Retrying in 4s, attempt 2 of 5.
+
+✗ The request failed after 5 attempts: the connection to the provider was reset.
+  Press enter to try the turn again, or pick another model with /model.
+╭─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ◆ Describe a task, or ask a question                                                            │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+  this turn $0.03, session $0.61                                                    opus-5.5 high
