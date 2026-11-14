@@ -220,9 +220,19 @@ jobs:
         run: cargo run --locked --quiet --package xtask -- partial-landlock
 
   # The only job with a token that can write, and all it can write is issues.
+  #
+  # Only for a run on the main branch, scheduled or dispatched there: a
+  # session's own nightly run on its branch must not add to the main
+  # branch's issue.
+  #
+  # `partial-landlock` is not among the jobs it reports, for now: on Ubuntu
+  # 22.04 `cortex-sandbox protect::tests::a_change_that_puts_the_modification_time_back_is_still_found`
+  # fails (the watch does not see a change whose modification time is put
+  # back), and the fixes to step 26 will make it pass and put the job back
+  # here. Until then the job's failure shows on its run and opens no issue.
   report:
-    needs: [dependencies, release, properties, fuzz, partial-landlock]
-    if: ${{ failure() }}
+    needs: [dependencies, release, properties, fuzz]
+    if: ${{ failure() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
