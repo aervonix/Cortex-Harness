@@ -90,11 +90,12 @@ pub enum Token {
     Code,
     /// Headings: bold.
     Heading,
-    /// `✓` and an edit's count of added lines: green.
+    /// `✓` and an edit's count of added lines (`+5`): green.
     Success,
     /// `?` and warnings: yellow.
     Warning,
-    /// `✗`, errors and a failure's measure: red; bold without colour.
+    /// `✗`, errors, a failure's measure and an edit's count of removed
+    /// lines (`−1`): red; bold without colour.
     Error,
     /// The colour of an added line's sign, and of the line where there is no
     /// tint: green.
@@ -102,11 +103,11 @@ pub enum Token {
     /// The colour of a removed line's sign, and of the line where there is no
     /// tint: red.
     DiffDel,
-    /// The tint behind an added line, in true colour: green mixed into the
-    /// background. No style at other depths.
+    /// The tint behind an added line, in true colour against a background
+    /// the terminal reported: green mixed into it. No style otherwise.
     DiffAddBg,
-    /// The tint behind a removed line, in true colour: red mixed into the
-    /// background. No style at other depths.
+    /// The tint behind a removed line, in true colour against a background
+    /// the terminal reported: red mixed into it. No style otherwise.
     DiffDelBg,
     /// Changed words inside a changed line: bold.
     DiffEmph,
@@ -210,7 +211,9 @@ pub struct Palette {
     /// reduction of the logo's purple is bright blue.
     pub accent_16: Color,
     /// The colour of text in the accent; `None` computes the accent's tint
-    /// that reaches [`TEXT_CONTRAST`] against the background.
+    /// that reaches [`TEXT_CONTRAST`] against the background. Not used at 16
+    /// colours, where the text is in `accent_16` on a light background and
+    /// bold in the default colour on a dark one.
     pub accent_text: Option<Color>,
     /// Muted text.
     pub muted: Color,
@@ -250,7 +253,7 @@ pub struct Palette {
 impl Palette {
     /// The default theme's colours on a dark background: the bright colours
     /// of the terminal's palette, which reach the contrast target where the
-    /// normal ones do not (Campbell's red is 3.0 to 1 on its background).
+    /// normal ones do not (Campbell's red is 3.2 to 1 on its background).
     #[must_use]
     pub const fn dark() -> Self {
         Self {
@@ -331,7 +334,7 @@ impl Theme {
         Self::with_palette(
             &Palette::for_background(Background::of(rgb)),
             depth,
-            Some(rgb),
+            background,
         )
     }
 
@@ -349,7 +352,8 @@ impl Theme {
         let kind = Background::of(rgb);
         let mut styles = [Style::PLAIN; Token::ALL.len()];
         for token in Token::ALL {
-            styles[token as usize] = resolve(token, palette, depth, kind, rgb);
+            styles[token as usize] =
+                resolve(token, palette, depth, kind, rgb, background.is_some());
         }
         Self {
             depth,
@@ -392,6 +396,7 @@ fn resolve(
     depth: ColorDepth,
     background: Background,
     background_rgb: Rgb,
+    reported: bool,
 ) -> Style {
     let plain = Style::PLAIN;
     let mono = depth == ColorDepth::Mono;
@@ -412,10 +417,11 @@ fn resolve(
             background_rgb,
         )),
     };
-    // The tints exist in true colour only; elsewhere a changed line is drawn
-    // in its colour.
+    // The tints exist in true colour only, and only against a background the
+    // terminal reported: mixed into one it did not, they could be dark bars
+    // under dark text. Elsewhere a changed line is drawn in its colour.
     let tint = |base: Rgb| {
-        (depth == ColorDepth::TrueColor).then(|| {
+        (depth == ColorDepth::TrueColor && reported).then(|| {
             let (r, g, b) = mix(
                 background_rgb,
                 base,
@@ -502,23 +508,83 @@ fn accent_text_color(
         Background::Dark => (255, 255, 255),
         Background::Light => (0, 0, 0),
     };
-    tint_for((r, g, b), background_rgb, TEXT_CONTRAST, toward, depth)
+    let tint = tint_for((r, g, b), background_rgb, TEXT_CONTRAST, toward);
+    match depth {
+        ColorDepth::Indexed256 => nearest_indexed_reaching(tint, background_rgb, TEXT_CONTRAST),
+        _ => Color::Rgb(tint.0, tint.1, tint.2),
+    }
 }
 
-/// The least mix of `base` toward `toward`, in steps of 1%, whose colour as
-/// a terminal of `depth` shows it reaches `target` against `background`. If
-/// none does, `toward` itself.
-fn tint_for(base: Rgb, background: Rgb, target: f64, toward: Rgb, depth: ColorDepth) -> Color {
+/// The least mix of `base` toward `toward`, in steps of 1%, that reaches
+/// `target` against `background`. If none does, `toward` itself.
+fn tint_for(base: Rgb, background: Rgb, target: f64, toward: Rgb) -> Rgb {
     for step in 0..=100u8 {
-        let (r, g, b) = mix(base, toward, f64::from(step) / 100.0);
-        let shown = Color::Rgb(r, g, b).for_depth(depth);
-        if let Some(rgb) = shown_rgb(shown)
-            && contrast(rgb, background) >= target
-        {
-            return shown;
+        let color = mix(base, toward, f64::from(step) / 100.0);
+        if contrast(color, background) >= target {
+            return color;
         }
     }
-    Color::Rgb(toward.0, toward.1, toward.2).for_depth(depth)
+    toward
+}
+
+/// The colour of the 256-colour palette nearest to `rgb` among those that
+/// reach `target` against `background` and keep its hue: within 15 degrees,
+/// and not grey. Taking the nearest colour first and then darkening or
+/// lightening it would not keep the hue: the purple's darker neighbours in
+/// the palette's cube are blue. If no colour keeps the hue, the nearest that
+/// reaches the target.
+fn nearest_indexed_reaching(rgb: Rgb, background: Rgb, target: f64) -> Color {
+    let distance = |a: Rgb, b: Rgb| {
+        let d = |x: u8, y: u8| u32::from(x.abs_diff(y)).pow(2);
+        d(a.0, b.0) + d(a.1, b.1) + d(a.2, b.2)
+    };
+    let (hue, _) = hue_and_saturation(rgb);
+    let mut keeps_hue: Option<(u32, u8)> = None;
+    let mut any: Option<(u32, u8)> = None;
+    for index in 16..=255u8 {
+        let Some(shown) = shown_rgb(Color::Indexed(index)) else {
+            continue;
+        };
+        if contrast(shown, background) < target {
+            continue;
+        }
+        let gap = distance(shown, rgb);
+        let (other, saturation) = hue_and_saturation(shown);
+        let turn = (other - hue).abs();
+        if saturation >= 0.4
+            && turn.min(360.0 - turn) <= 15.0
+            && keeps_hue.is_none_or(|(least, _)| gap < least)
+        {
+            keeps_hue = Some((gap, index));
+        }
+        if any.is_none_or(|(least, _)| gap < least) {
+            any = Some((gap, index));
+        }
+    }
+    keeps_hue.or(any).map_or(
+        Color::Rgb(rgb.0, rgb.1, rgb.2).for_depth(ColorDepth::Indexed256),
+        |(_, index)| Color::Indexed(index),
+    )
+}
+
+/// A colour's hue, in degrees, and its saturation, from 0 to 1 (as HSV
+/// defines them).
+fn hue_and_saturation((r, g, b): Rgb) -> (f64, f64) {
+    let (r, g, b) = (f64::from(r), f64::from(g), f64::from(b));
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let chroma = max - min;
+    if chroma == 0.0 {
+        return (0.0, 0.0);
+    }
+    let sector = if max == r {
+        ((g - b) / chroma).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / chroma + 2.0
+    } else {
+        (r - g) / chroma + 4.0
+    };
+    (sector * 60.0, chroma / max)
 }
 
 /// The red, green and blue a colour is shown as, where that is known: an

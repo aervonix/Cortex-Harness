@@ -1,0 +1,418 @@
+== 60 columns, unicode, true colour, dark
+Text|
+{fg=a8}Muted|
+{fg=#7A3CFB}Accent|
+{fg=#8D57FC}AccentText|
+{fg=#7A3CFB b}User|
+{b}Title|
+{fg=a14}Code|
+{b}Heading|
+{fg=a10}Success|
+{fg=a11}Warning|
+{fg=a9}Error|
+{fg=a10}DiffAdd|
+{fg=a9}DiffDel|
+{bg=#132A17}DiffAddBg|
+{bg=#361616}DiffDelBg|
+{b}DiffEmph|
+Answer|
+{fg=a8 i}Reasoning|
+{u}Link|
+{fg=a8}Border|
+{fg=#7A3CFB}BorderSelected|
+{fg=a8}Hint|
+{fg=#8D57FC b}Key|
+{fg=#8D57FC b}Selected|
+{bg=#132A17}DiffAddLine|
+{bg=#361616}DiffDelLine|
+{fg=a10 bg=#132A17}DiffAddSign|
+{fg=a9 bg=#361616}DiffDelSign|
+{fg=a8 bg=#132A17}DiffAddNumber|
+{fg=a8 bg=#361616}DiffDelNumber|
+{fg=a8}DiffContext|
+{fg=a13}SyntaxKeyword|
+{fg=a14}SyntaxType|
+{fg=a10}SyntaxString|
+{fg=a11}SyntaxNumber|
+{fg=a8}SyntaxComment|
+
+== 60 columns, ascii, true colour, dark
+Text|
+{fg=a8}Muted|
+{fg=#7A3CFB}Accent|
+{fg=#8D57FC}AccentText|
+{fg=#7A3CFB b}User|
+{b}Title|
+{fg=a14}Code|
+{b}Heading|
+{fg=a10}Success|
+{fg=a11}Warning|
+{fg=a9}Error|
+{fg=a10}DiffAdd|
+{fg=a9}DiffDel|
+{bg=#132A17}DiffAddBg|
+{bg=#361616}DiffDelBg|
+{b}DiffEmph|
+Answer|
+{fg=a8 i}Reasoning|
+{u}Link|
+{fg=a8}Border|
+{fg=#7A3CFB}BorderSelected|
+{fg=a8}Hint|
+{fg=#8D57FC b}Key|
+{fg=#8D57FC b}Selected|
+{bg=#132A17}DiffAddLine|
+{bg=#361616}DiffDelLine|
+{fg=a10 bg=#132A17}DiffAddSign|
+{fg=a9 bg=#361616}DiffDelSign|
+{fg=a8 bg=#132A17}DiffAddNumber|
+{fg=a8 bg=#361616}DiffDelNumber|
+{fg=a8}DiffContext|
+{fg=a13}SyntaxKeyword|
+{fg=a14}SyntaxType|
+{fg=a10}SyntaxString|
+{fg=a11}SyntaxNumber|
+{fg=a8}SyntaxComment|
+
+== 80 columns, unicode, true colour, dark
+Text|
+{fg=a8}Muted|
+{fg=#7A3CFB}Accent|
+{fg=#8D57FC}AccentText|
+{fg=#7A3CFB b}User|
+{b}Title|
+{fg=a14}Code|
+{b}Heading|
+{fg=a10}Success|
+{fg=a11}Warning|
+{fg=a9}Error|
+{fg=a10}DiffAdd|
+{fg=a9}DiffDel|
+{bg=#132A17}DiffAddBg|
+{bg=#361616}DiffDelBg|
+{b}DiffEmph|
+Answer|
+{fg=a8 i}Reasoning|
+{u}Link|
+{fg=a8}Border|
+{fg=#7A3CFB}BorderSelected|
+{fg=a8}Hint|
+{fg=#8D57FC b}Key|
+{fg=#8D57FC b}Selected|
+{bg=#132A17}DiffAddLine|
+{bg=#361616}DiffDelLine|
+{fg=a10 bg=#132A17}DiffAddSign|
+{fg=a9 bg=#361616}DiffDelSign|
+{fg=a8 bg=#132A17}DiffAddNumber|
+{fg=a8 bg=#361616}DiffDelNumber|
+{fg=a8}DiffContext|
+{fg=a13}SyntaxKeyword|
+{fg=a14}SyntaxType|
+{fg=a10}SyntaxString|
+{fg=a11}SyntaxNumber|
+{fg=a8}SyntaxComment|
+
+== 80 columns, ascii, true colour, dark
+Text|
+{fg=a8}Muted|
+{fg=#7A3CFB}Accent|
+{fg=#8D57FC}AccentText|
+{fg=#7A3CFB b}User|
+{b}Title|
+{fg=a14}Code|
+{b}Heading|
+{fg=a10}Success|
+{fg=a11}Warning|
+{fg=a9}Error|
+{fg=a10}DiffAdd|
+{fg=a9}DiffDel|
+{bg=#132A17}DiffAddBg|
+{bg=#361616}DiffDelBg|
+{b}DiffEmph|
+Answer|
+{fg=a8 i}Reasoning|
+{u}Link|
+{fg=a8}Border|
+{fg=#7A3CFB}BorderSelected|
+{fg=a8}Hint|
+{fg=#8D57FC b}Key|
+{fg=#8D57FC b}Selected|
+{bg=#132A17}DiffAddLine|
+{bg=#361616}DiffDelLine|
+{fg=a10 bg=#132A17}DiffAddSign|
+{fg=a9 bg=#361616}DiffDelSign|
+{fg=a8 bg=#132A17}DiffAddNumber|
+{fg=a8 bg=#361616}DiffDelNumber|
+{fg=a8}DiffContext|
+{fg=a13}SyntaxKeyword|
+{fg=a14}SyntaxType|
+{fg=a10}SyntaxString|
+{fg=a11}SyntaxNumber|
+{fg=a8}SyntaxComment|
+
+== 120 columns, unicode, true colour, dark
+Text|
+{fg=a8}Muted|
+{fg=#7A3CFB}Accent|
+{fg=#8D57FC}AccentText|
+{fg=#7A3CFB b}User|
+{b}Title|
+{fg=a14}Code|
+{b}Heading|
+{fg=a10}Success|
+{fg=a11}Warning|
+{fg=a9}Error|
+{fg=a10}DiffAdd|
+{fg=a9}DiffDel|
+{bg=#132A17}DiffAddBg|
+{bg=#361616}DiffDelBg|
+{b}DiffEmph|
+Answer|
+{fg=a8 i}Reasoning|
+{u}Link|
+{fg=a8}Border|
+{fg=#7A3CFB}BorderSelected|
+{fg=a8}Hint|
+{fg=#8D57FC b}Key|
+{fg=#8D57FC b}Selected|
+{bg=#132A17}DiffAddLine|
+{bg=#361616}DiffDelLine|
+{fg=a10 bg=#132A17}DiffAddSign|
+{fg=a9 bg=#361616}DiffDelSign|
+{fg=a8 bg=#132A17}DiffAddNumber|
+{fg=a8 bg=#361616}DiffDelNumber|
+{fg=a8}DiffContext|
+{fg=a13}SyntaxKeyword|
+{fg=a14}SyntaxType|
+{fg=a10}SyntaxString|
+{fg=a11}SyntaxNumber|
+{fg=a8}SyntaxComment|
+
+== 120 columns, ascii, true colour, dark
+Text|
+{fg=a8}Muted|
+{fg=#7A3CFB}Accent|
+{fg=#8D57FC}AccentText|
+{fg=#7A3CFB b}User|
+{b}Title|
+{fg=a14}Code|
+{b}Heading|
+{fg=a10}Success|
+{fg=a11}Warning|
+{fg=a9}Error|
+{fg=a10}DiffAdd|
+{fg=a9}DiffDel|
+{bg=#132A17}DiffAddBg|
+{bg=#361616}DiffDelBg|
+{b}DiffEmph|
+Answer|
+{fg=a8 i}Reasoning|
+{u}Link|
+{fg=a8}Border|
+{fg=#7A3CFB}BorderSelected|
+{fg=a8}Hint|
+{fg=#8D57FC b}Key|
+{fg=#8D57FC b}Selected|
+{bg=#132A17}DiffAddLine|
+{bg=#361616}DiffDelLine|
+{fg=a10 bg=#132A17}DiffAddSign|
+{fg=a9 bg=#361616}DiffDelSign|
+{fg=a8 bg=#132A17}DiffAddNumber|
+{fg=a8 bg=#361616}DiffDelNumber|
+{fg=a8}DiffContext|
+{fg=a13}SyntaxKeyword|
+{fg=a14}SyntaxType|
+{fg=a10}SyntaxString|
+{fg=a11}SyntaxNumber|
+{fg=a8}SyntaxComment|
+
+== 80 columns, unicode, true colour, light
+Text|
+{fg=a8}Muted|
+{fg=#7A3CFB}Accent|
+{fg=#7A3CFB}AccentText|
+{fg=#7A3CFB b}User|
+{b}Title|
+{fg=a6 b}Code|
+{b}Heading|
+{fg=a2}Success|
+{fg=a3}Warning|
+{fg=a1}Error|
+{fg=a2}DiffAdd|
+{fg=a1}DiffDel|
+{bg=#DFEEE2}DiffAddBg|
+{bg=#F7E2E2}DiffDelBg|
+{b}DiffEmph|
+Answer|
+{fg=a8 i}Reasoning|
+{u}Link|
+{fg=a8}Border|
+{fg=#7A3CFB}BorderSelected|
+{fg=a8}Hint|
+{fg=#7A3CFB b}Key|
+{fg=#7A3CFB b}Selected|
+{bg=#DFEEE2}DiffAddLine|
+{bg=#F7E2E2}DiffDelLine|
+{fg=a2 bg=#DFEEE2}DiffAddSign|
+{fg=a1 bg=#F7E2E2}DiffDelSign|
+{fg=a8 bg=#DFEEE2}DiffAddNumber|
+{fg=a8 bg=#F7E2E2}DiffDelNumber|
+{fg=a8}DiffContext|
+{fg=a5}SyntaxKeyword|
+{fg=a6}SyntaxType|
+{fg=a2}SyntaxString|
+{fg=a3}SyntaxNumber|
+{fg=a8}SyntaxComment|
+
+== 80 columns, unicode, 16 colours, dark
+Text|
+{fg=a8}Muted|
+{fg=a13}Accent|
+{b}AccentText|
+{fg=a13 b}User|
+{b}Title|
+{fg=a14}Code|
+{b}Heading|
+{fg=a10}Success|
+{fg=a11}Warning|
+{fg=a9}Error|
+{fg=a10}DiffAdd|
+{fg=a9}DiffDel|
+DiffAddBg|
+DiffDelBg|
+{b}DiffEmph|
+Answer|
+{fg=a8 i}Reasoning|
+{u}Link|
+{fg=a8}Border|
+{fg=a13}BorderSelected|
+{fg=a8}Hint|
+{b}Key|
+{b}Selected|
+{fg=a10}DiffAddLine|
+{fg=a9}DiffDelLine|
+{fg=a10 b}DiffAddSign|
+{fg=a9 b}DiffDelSign|
+{fg=a8}DiffAddNumber|
+{fg=a8}DiffDelNumber|
+{fg=a8}DiffContext|
+{fg=a13}SyntaxKeyword|
+{fg=a14}SyntaxType|
+{fg=a10}SyntaxString|
+{fg=a11}SyntaxNumber|
+{fg=a8}SyntaxComment|
+
+== 80 columns, unicode, 16 colours, light
+Text|
+{fg=a8}Muted|
+{fg=a5}Accent|
+{fg=a5}AccentText|
+{fg=a5 b}User|
+{b}Title|
+{fg=a6 b}Code|
+{b}Heading|
+{fg=a2}Success|
+{fg=a3}Warning|
+{fg=a1}Error|
+{fg=a2}DiffAdd|
+{fg=a1}DiffDel|
+DiffAddBg|
+DiffDelBg|
+{b}DiffEmph|
+Answer|
+{fg=a8 i}Reasoning|
+{u}Link|
+{fg=a8}Border|
+{fg=a5}BorderSelected|
+{fg=a8}Hint|
+{fg=a5 b}Key|
+{fg=a5 b}Selected|
+{fg=a2}DiffAddLine|
+{fg=a1}DiffDelLine|
+{fg=a2 b}DiffAddSign|
+{fg=a1 b}DiffDelSign|
+{fg=a8}DiffAddNumber|
+{fg=a8}DiffDelNumber|
+{fg=a8}DiffContext|
+{fg=a5}SyntaxKeyword|
+{fg=a6}SyntaxType|
+{fg=a2}SyntaxString|
+{fg=a3}SyntaxNumber|
+{fg=a8}SyntaxComment|
+
+== 80 columns, unicode, 256 colours, dark
+Text|
+{fg=a8}Muted|
+{fg=i99}Accent|
+{fg=i99}AccentText|
+{fg=i99 b}User|
+{b}Title|
+{fg=a14}Code|
+{b}Heading|
+{fg=a10}Success|
+{fg=a11}Warning|
+{fg=a9}Error|
+{fg=a10}DiffAdd|
+{fg=a9}DiffDel|
+DiffAddBg|
+DiffDelBg|
+{b}DiffEmph|
+Answer|
+{fg=a8 i}Reasoning|
+{u}Link|
+{fg=a8}Border|
+{fg=i99}BorderSelected|
+{fg=a8}Hint|
+{fg=i99 b}Key|
+{fg=i99 b}Selected|
+{fg=a10}DiffAddLine|
+{fg=a9}DiffDelLine|
+{fg=a10 b}DiffAddSign|
+{fg=a9 b}DiffDelSign|
+{fg=a8}DiffAddNumber|
+{fg=a8}DiffDelNumber|
+{fg=a8}DiffContext|
+{fg=a13}SyntaxKeyword|
+{fg=a14}SyntaxType|
+{fg=a10}SyntaxString|
+{fg=a11}SyntaxNumber|
+{fg=a8}SyntaxComment|
+
+== 80 columns, unicode, no colour, dark
+Text|
+{d}Muted|
+Accent|
+{b}AccentText|
+{b}User|
+{b}Title|
+{b}Code|
+{b}Heading|
+Success|
+Warning|
+{b}Error|
+DiffAdd|
+{d}DiffDel|
+DiffAddBg|
+DiffDelBg|
+{b}DiffEmph|
+{b}Answer|
+{d i}Reasoning|
+{u}Link|
+{d}Border|
+{b}BorderSelected|
+{d}Hint|
+{b}Key|
+{b}Selected|
+DiffAddLine|
+{d}DiffDelLine|
+{b}DiffAddSign|
+{b}DiffDelSign|
+{d}DiffAddNumber|
+{d}DiffDelNumber|
+{d}DiffContext|
+SyntaxKeyword|
+SyntaxType|
+SyntaxString|
+SyntaxNumber|
+{d}SyntaxComment|
+

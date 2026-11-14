@@ -7,7 +7,7 @@
 //! ```text
 //! ╭──────────────────────────────╮
 //! │ ✓ Read lex.rs  lines 120–178 │
-//! ╰─────────────── ctrl+t expands ─╯
+//! ╰───────────── ctrl+t expands ─╯
 //! ```
 //!
 //! A box is exactly as wide as it is told, so a box drawn at a view's width
@@ -41,6 +41,10 @@ impl<'a> RoundedBox<'a> {
             border,
         }
     }
+
+    /// The column a row's text starts at, counted from the box's left edge:
+    /// after the border and a space. The input box's cursor is placed from it.
+    pub const TEXT_COLUMN: usize = 2;
 
     /// The columns a row's text has: the width less the two borders and the
     /// space inside each.

@@ -15,8 +15,8 @@ caught-by:
 rule: Text in the accent reaches 4.5 to 1 against the background, in true colour and in 256 colours.
 file: crates/cortex-tui/src/theme.rs
 in: tint_for
-find: contrast(rgb, background) >= target
-replace: contrast(rgb, background) >= target - 1.5
+find: contrast(color, background) >= target
+replace: contrast(color, background) >= target - 1.5
 caught-by:
     theme::tests::the_accents_text_tint_reaches_its_target_on_every_sample_background
     theme::tests::a_tint_is_the_least_mix_that_reaches_the_target
@@ -26,7 +26,9 @@ rule: On a dark background at 16 colours no magenta reaches the target, so accen
 file: crates/cortex-tui/src/theme.rs
 in: resolve
 find: (ColorDepth::Mono, _) | (ColorDepth::Ansi16, Background::Dark) => plain.bold(),
-replace: (ColorDepth::Mono, _) => plain.bold(),
+replace:
+    (ColorDepth::Mono, _) => plain.bold(),
+    (ColorDepth::Ansi16, _) => plain.fg(palette.accent_16),
 caught-by:
     theme::tests::on_a_dark_background_at_16_colours_accent_text_is_bold_in_the_default_colour
 
@@ -77,3 +79,22 @@ replace: let rule = self.width - 6 - label.width();
 caught-by:
     rounded::tests::a_box_is_exactly_as_wide_as_it_is_told
     rounded::tests::a_label_too_long_is_cut_and_one_with_no_room_is_left_out
+
+[break] the-256-colour-accent-text-loses-its-hue
+rule: At 256 colours the accent's text is the nearest colour that reaches the target and keeps the accent's hue, not the nearest that reaches it (which is blue on a light background).
+file: crates/cortex-tui/src/theme.rs
+in: nearest_indexed_reaching
+find: saturation >= 0.4 && turn.min(360.0 - turn) <= 15.0 && keeps_hue.is_none_or(|(least, _)| gap < least)
+replace: keeps_hue.is_none_or(|(least, _)| gap < least)
+caught-by:
+    theme::tests::the_accents_text_keeps_its_hue_at_256_colours
+    theme::tests::the_accents_text_tint_reaches_its_target_on_every_sample_background
+
+[break] a-tint-mixed-into-a-background-nobody-reported
+rule: The diff tints are mixed into the background the terminal reported, and there is none when it reported none.
+file: crates/cortex-tui/src/theme.rs
+in: resolve
+find: (depth == ColorDepth::TrueColor && reported).then(
+replace: (depth == ColorDepth::TrueColor).then(
+caught-by:
+    theme::tests::without_a_reported_background_there_is_no_tint

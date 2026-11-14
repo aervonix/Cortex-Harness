@@ -348,7 +348,7 @@ It costs an SGR mouse decoder in `cortex-term`, about 150 lines with its tests. 
 
 **On a dark background at 16 colours, the accent marks but does not carry text.** No magenta reaches 4.5 to 1 there: on Windows Terminal's default scheme (Campbell, `#0C0C0C`), magenta is 2.4 to 1 and bright magenta 3.2 to 1. There, accent-coloured text (the selected menu row, the focused plan item) is drawn bold in the default colour, and only glyphs take the magenta. On a light background magenta reaches 5.9 to 1 (One Half Light) and is used as it is.
 
-**The tint for text.** In true colour, on a dark background, that purple has a contrast of about 3.6 to 1, enough for marks and not for text. Text in the accent colour therefore uses a lighter tint (`accent.text`), chosen to reach at least 4.5 to 1 against the terminal's background, which is queried at start-up: `#8D57FC`, 4.6 to 1, on Campbell. On a light background the base colour already reaches 5.2 to 1 and is used as it is. When the background cannot be determined, the dark-background tint is used.
+**The tint for text.** In true colour, on a dark background, that purple has a contrast of about 3.6 to 1, enough for marks and not for text. Text in the accent colour therefore uses a lighter tint (`accent.text`), chosen to reach at least 4.5 to 1 against the terminal's background, which is queried at start-up: `#8D57FC`, 4.6 to 1, on Campbell. On a light background the base colour already reaches 5.2 to 1 and is used as it is. When the background cannot be determined, the dark-background tint is used. At 256 colours the tint is the palette's colour nearest to it among those that reach 4.5 to 1 and keep the accent's hue (index 99 on Campbell, 93 on One Half Light): the purple's darker neighbours in the palette are blue.
 
 | Token | Default | Used for |
 |---|---|---|
@@ -360,11 +360,11 @@ It costs an SGR mouse decoder in `cortex-term`, about 150 lines with its tests. 
 | `title` | bold default foreground | A tool call's imperative, a dialog's question. |
 | `code` | bright cyan on a dark background; cyan and bold on a light one | Inline code. Bright cyan is 11.3 to 1 on Campbell. Cyan is 3.3 to 1 on One Half Light, under the target for text, so it is bold there. |
 | `heading` | bold default foreground | Headings. |
-| `success` | green; bright green on a dark background | `✓`, an edit's `+` count. |
+| `success` | green; bright green on a dark background | `✓`, an edit's `+` count (`+5`). |
 | `warning` | yellow; bright yellow on a dark background | `?`, warnings, the context from 70%. |
-| `error` | red; bright red on a dark background | `✗`, errors, a failure's measure, the context from 90%. |
+| `error` | red; bright red on a dark background | `✗`, errors, a failure's measure, an edit's `−` count (`−1`), the context from 90%. |
 | `diff.add`, `diff.del` | green and red; bright on a dark background | The sign of an added or removed line, and the whole line where there is no background colour. |
-| `diff.add.bg`, `diff.del.bg` | in true colour, 20% of green (`#2EA043`) or red (`#E03E3E`) mixed into the background on a dark one, 13% on a light one; none otherwise | The tint of an added or removed line. The text on it keeps the default foreground: 9.1 to 10.2 to 1 on the two sample schemes. |
+| `diff.add.bg`, `diff.del.bg` | in true colour, 20% of green (`#2EA043`) or red (`#E03E3E`) mixed into the background the terminal reported on a dark one, 13% on a light one; none otherwise, and none when the terminal did not report its background | The tint of an added or removed line. The text on it keeps the default foreground: 9.1 to 10.2 to 1 on the two sample schemes. |
 | `diff.emph` | bold | Changed words inside a changed line. |
 
 - **The bright colours on a dark background.** The default theme takes success, warnings, errors and the diff signs from the bright half of the terminal's palette on a dark background, and from the normal half on a light one: Campbell's red is 3.2 to 1 on its background, and its bright red 5.1.
@@ -392,7 +392,7 @@ It costs an SGR mouse decoder in `cortex-term`, about 150 lines with its tests. 
 | An unordered list item | `–` | `-` |
 | The spinner under `tui.reduced_motion` | its first frame, still | its first frame, still |
 
-Width is computed per grapheme, and the layout never depends on an ambiguous-width character being narrow. Whether each Unicode glyph is in Windows Terminal's default font is checked by eye with the reference screens in [tui-look/](tui-look/README.md).
+Width is computed per grapheme, and characters of East Asian ambiguous width are counted narrow, as terminals draw them outside CJK locales. Fourteen glyphs of the Unicode set are ambiguous (`◆ ◇ ∴ ■ · ╭ ╮ ╰ ╯ ─ │ – … →`); a terminal set to draw them wide would widen every box row, and the ASCII set avoids them ([outstanding/ambiguous-width-glyphs.md](../outstanding/ambiguous-width-glyphs.md)). Whether each Unicode glyph is in Windows Terminal's default font is checked by eye with the reference screens in [tui-look/](tui-look/README.md).
 
 **Density.** `tui.density = "comfortable"` (default) puts a blank line between blocks. `"compact"` puts one only between turns, and shows reasoning as its first line alone.
 
