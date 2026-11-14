@@ -427,6 +427,9 @@ impl Tool for RecordingShell {
                 .and_then(|payload| payload.get("changes"))
                 .filter(|changes| !changes.is_null())
                 .cloned();
+            if let Some(changes) = &changes {
+                note_changed(changes, cx);
+            }
             let mut by_hand = found
                 .as_ref()
                 .map(|(changed, _)| changed.iter().map(|one| one.path.clone()).collect())
@@ -464,6 +467,21 @@ impl Tool for RecordingShell {
             }
             result
         })
+    }
+}
+
+/// Tells the table of seen files which files a command changed, for what a
+/// compaction carries across (`docs/architecture/07-sessions-and-context.md`,
+/// "Compaction").
+fn note_changed(changes: &Json, cx: &RunCx) {
+    let root = cx.paths.root();
+    for list in ["created", "modified", "deleted"] {
+        let paths = changes.get(list).and_then(Json::as_array);
+        for path in paths.into_iter().flatten().filter_map(Json::as_str) {
+            if let Ok(file) = root.join(path) {
+                cx.files.note_changed(&file);
+            }
+        }
     }
 }
 

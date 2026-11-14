@@ -99,6 +99,16 @@ impl Models {
         &self.main
     }
 
+    /// The model of a role, when it has one of its own. `main` always has.
+    #[must_use]
+    pub fn role(&self, role: &ModelRole) -> Option<&RoleModel> {
+        if *role == ModelRole::Main {
+            Some(&self.main)
+        } else {
+            self.others.get(role)
+        }
+    }
+
     /// Every role that has a model, `main` first.
     pub fn roles(&self) -> impl Iterator<Item = (ModelRole, &RoleModel)> {
         std::iter::once((ModelRole::Main, &self.main)).chain(

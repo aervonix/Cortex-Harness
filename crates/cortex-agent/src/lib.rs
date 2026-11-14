@@ -15,7 +15,7 @@
 //! | [`store`] | [`SessionStore`], what the loop needs from a session's log, and [`MemorySessionStore`]. |
 //! | [`policy`] | [`Policy`], what it asks of the permission engine, and [`AllowAll`]. |
 //! | [`toolset`] | [`ToolSet`], the tools a session offers. |
-//! | [`context`] | [`Context`], what is sent to the model, and [`StubContext`]. |
+//! | [`context`] | What is sent to the model: the system prompt, instruction files, context epochs, the budget and compaction, from [`ContextParts`]. |
 //! | [`verify`] | [`Verifier`], the verification stage, and [`NoVerifier`]. |
 //! | [`events`] | [`EventSink`], where a session's events go. |
 //! | [`stats`] | [`Stats`] and the statistics events. |
@@ -66,7 +66,11 @@ pub mod turn;
 pub mod verify;
 
 pub use config::{LoopConfig, Models, RoleModel, SessionInfo, Workspace};
-pub use context::{Assembled, Context, ContextError, StubContext};
+pub use context::{
+    Assembled, CORE_INSTRUCTIONS, ContextError, ContextParts, ContextSettings, Environment,
+    FileText, InstructionFiles, MemoryInstructionFiles, NOTICE_LEAD, NoInstructionFiles,
+    PrefixDifference, SUMMARY_INSTRUCTIONS, check_prefix,
+};
 pub use events::EventSink;
 pub use guard::RepetitionLimits;
 pub use ledger::{Account, Ledger, LimitReached, Spent};
@@ -74,8 +78,14 @@ pub use policy::{AllowAll, Decision, PlannedCall, Policy, Verdict};
 pub use session::{HistoryChange, SessionHandle};
 pub use speed::SpeedSettings;
 pub use state::{Observer, TRANSITIONS, TurnState};
-pub use stats::{NoStats, RequestStat, StatEvent, Stats, ToolCallStat, ToolStatOutcome, TurnStat};
-pub use store::{Attempt, MemorySessionStore, Opened, Record, SessionStore, StoreError};
+pub use stats::{
+    ContextSources, ContextStat, NoStats, RequestStat, StatEvent, Stats, ToolCallStat,
+    ToolStatOutcome, TurnStat,
+};
+pub use store::{
+    Attempt, EpochReason, EpochStart, MemorySessionStore, Opened, Record, SessionStore, StoreError,
+    Summary,
+};
 pub use toolset::ToolSet;
 pub use turn::{Session, SessionParts};
 pub use verify::{NoVerifier, Verifier, VerifyCx, VerifyOutcome};

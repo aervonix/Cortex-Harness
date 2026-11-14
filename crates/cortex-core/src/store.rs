@@ -35,11 +35,14 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
-use cortex_agent::{Opened, Record, SessionHandle, SessionStore, StoreError};
+use cortex_agent::{
+    EpochReason, EpochStart, Opened, Record, SessionHandle, SessionStore, StoreError,
+};
+use cortex_llm::ToolDefinition;
 use cortex_protocol::event::{Actor, Event, InfoNotice, Notice, PlanUpdated, TurnCompleted};
 use cortex_protocol::item::NoticeSource;
 use cortex_protocol::{Item, Plan, TurnId};
-use cortex_session::entry::{Attempt, Outcome, PlanRecord};
+use cortex_session::entry::{Attempt, Epoch, InstructionMark, Outcome, PlanRecord, UsageRecord};
 use cortex_session::{BaseCapture, Body, Entry};
 use cortex_tools::{BoxFuture, PlanBoard};
 
@@ -65,8 +68,94 @@ pub(crate) struct Disk {
 pub(crate) struct Memory {
     items: Vec<Item>,
     plan: Option<Plan>,
+    epochs: Vec<(usize, EpochStart)>,
+    carried: Option<serde_json::Value>,
     last_turn: u64,
     last_item: u64,
+}
+
+/// An epoch as the log's entry holds it.
+fn epoch_body(epoch: EpochStart) -> Body {
+    let tools: Vec<serde_json::Value> = epoch
+        .tools
+        .iter()
+        .map(|tool| {
+            serde_json::json!({
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.schema,
+            })
+        })
+        .collect();
+    Body::Epoch(Epoch {
+        provider: epoch.provider,
+        protocol: epoch.protocol,
+        model: epoch.model,
+        effort: epoch.effort,
+        hash: Epoch::hash_of(&epoch.system, &tools),
+        system: epoch.system,
+        tools,
+        reason: epoch.reason.map(|reason| reason.as_str().to_owned()),
+        base: epoch.base,
+        instructions: epoch
+            .instructions
+            .into_iter()
+            .map(|(path, hash)| InstructionMark { path, hash })
+            .collect(),
+    })
+}
+
+/// An epoch as the loop is given it, from the log's entry.
+fn epoch_start(epoch: &Epoch) -> EpochStart {
+    let text = |value: &serde_json::Value, key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    EpochStart {
+        provider: epoch.provider.clone(),
+        protocol: epoch.protocol.clone(),
+        model: epoch.model.clone(),
+        effort: epoch.effort.clone(),
+        system: epoch.system.clone(),
+        tools: epoch
+            .tools
+            .iter()
+            .map(|tool| ToolDefinition {
+                name: text(tool, "name"),
+                description: text(tool, "description"),
+                schema: tool.get("parameters").cloned().unwrap_or_default(),
+            })
+            .collect(),
+        reason: epoch.reason.as_deref().and_then(EpochReason::from_name),
+        base: epoch.base,
+        instructions: epoch
+            .instructions
+            .iter()
+            .map(|mark| (mark.path.clone(), mark.hash))
+            .collect(),
+    }
+}
+
+/// The epochs of a branch's entries, each with the number of items before
+/// it, and what the last summary carried.
+fn epochs_of(entries: &[Entry]) -> (Vec<(usize, EpochStart)>, Option<serde_json::Value>) {
+    let mut epochs = Vec::new();
+    let mut carried = None;
+    let mut items = 0;
+    for entry in entries {
+        match &entry.body {
+            Body::Epoch(epoch) => epochs.push((items, epoch_start(epoch))),
+            Body::Summary { carried: value, .. } => carried = Some(value.clone()),
+            _ => {}
+        }
+        if entry.body.as_item().is_some() {
+            items += 1;
+        }
+    }
+    (epochs, carried)
 }
 
 /// Where a session is kept.
@@ -127,12 +216,15 @@ impl Kept {
                     .read_branch()
                     .map_err(|error| error.to_string())?;
                 let resumed = redact::resumed(&entries);
+                let (epochs, carried) = epochs_of(&entries);
                 let (last_turn, last_item) = disk.session.last_ids();
                 Ok((
                     Opened {
                         items: resumed.items,
                         last_turn,
                         last_item,
+                        epochs,
+                        carried,
                     },
                     resumed.projected,
                 ))
@@ -142,6 +234,8 @@ impl Kept {
                     items: memory.items.clone(),
                     last_turn: memory.last_turn,
                     last_item: memory.last_item,
+                    epochs: memory.epochs.clone(),
+                    carried: memory.carried.clone(),
                 },
                 0,
             )),
@@ -204,6 +298,27 @@ impl Kept {
                                 .map_err(|error| error.to_string())?;
                         }
                     },
+                    Record::Epoch(epoch) => {
+                        disk.session
+                            .append(Some(turn), epoch_body(epoch))
+                            .map_err(|error| error.to_string())?;
+                    }
+                    Record::Summary(summary) => {
+                        disk.session
+                            .append(
+                                Some(turn),
+                                Body::Summary {
+                                    item: summary.item,
+                                    carried: summary.carried,
+                                },
+                            )
+                            .map_err(|error| error.to_string())?;
+                    }
+                    Record::Usage { purpose, usage } => {
+                        disk.session
+                            .append(Some(turn), Body::Usage(UsageRecord { purpose, usage }))
+                            .map_err(|error| error.to_string())?;
+                    }
                     Record::Attempt(attempt) => {
                         let body = Body::Attempt(Attempt {
                             item: Some(attempt.item_id),
@@ -240,6 +355,15 @@ impl Kept {
                             .last_item
                             .max(number_after(attempt.item_id.as_str(), "i_"));
                     }
+                    Record::Epoch(epoch) => memory.epochs.push((memory.items.len(), epoch)),
+                    Record::Summary(summary) => {
+                        memory.last_item = memory
+                            .last_item
+                            .max(number_after(summary.item.id.as_str(), "i_"));
+                        memory.carried = Some(summary.carried);
+                        memory.items.push(Item::Summary(summary.item));
+                    }
+                    Record::Usage { .. } => {}
                     _ => return Err("a record of a kind this version does not know".to_owned()),
                 }
             }
@@ -304,12 +428,17 @@ impl Kept {
 /// result**, because the plan changed when the call ran: a branch that
 /// holds the result holds the plan it made, so a rewind or a fork at the
 /// result keeps it, and one at the response that made the call does not.
-/// A change by the user is written when it is made. Compaction (step 15)
-/// carries the plan in its summary; when it does, the summary's plan is
-/// read here too, as the plan of the point where the new epoch begins.
+/// A change by the user is written when it is made. **A compaction carries
+/// the plan in its `summary` entry** (`carried.plan`), which is read here
+/// as the plan of the point where the new epoch begins: a summary with no
+/// plan in it says nothing, and the search goes on before it.
 pub(crate) fn plan_of(entries: &[Entry]) -> Option<Plan> {
     entries.iter().rev().find_map(|entry| match &entry.body {
         Body::Plan(record) => Some(record.plan.clone()),
+        Body::Summary { carried, .. } => carried
+            .get("plan")
+            .filter(|plan| !plan.is_null())
+            .and_then(|plan| serde_json::from_value(plan.clone()).ok()),
         _ => None,
     })
 }

@@ -102,26 +102,6 @@ mod flags {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AnthropicMessages;
 
-impl AnthropicMessages {
-    /// The part of a request's body that later requests of the same context
-    /// epoch repeat byte for byte: everything up to the end of the last
-    /// message, without the closing brackets and without the one cache
-    /// marker that can be inside the messages.
-    ///
-    /// For two requests of one epoch, the earlier one's is the beginning of
-    /// the later one's. That is the property the provider's cache needs,
-    /// and its check of reasoning blocks: a harness can compare the two to
-    /// find where a prefix first differed.
-    pub fn stable_prefix(
-        &self,
-        request: &ModelRequest,
-        provider: &ProviderInfo,
-    ) -> Result<Vec<u8>, BuildError> {
-        let _ = self;
-        Ok(request::render(request, provider)?.prefix().into_bytes())
-    }
-}
-
 /// Anthropic's own API as a provider entry: the built-in one.
 #[must_use]
 pub fn provider() -> ProviderInfo {
@@ -142,6 +122,18 @@ pub fn api_key(key: Secret, source: impl Into<String>) -> ApiKeyAuth {
 impl Protocol for AnthropicMessages {
     fn name(&self) -> &str {
         NAME
+    }
+
+    /// Everything up to the end of the last message, without the closing
+    /// brackets and without the one cache marker that can be inside the
+    /// messages (the provider's cache and its check of reasoning blocks
+    /// both ignore markers).
+    fn stable_prefix(
+        &self,
+        request: &ModelRequest,
+        provider: &ProviderInfo,
+    ) -> Result<Vec<u8>, BuildError> {
+        Ok(request::render(request, provider)?.prefix().into_bytes())
     }
 
     fn build(

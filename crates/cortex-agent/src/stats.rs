@@ -11,8 +11,10 @@ use std::time::Duration;
 use cortex_base::UtcTime;
 use cortex_llm::Variants;
 use cortex_protocol::event::{TurnOutcome, Verification};
-use cortex_protocol::usage::RequestUsage;
+use cortex_protocol::usage::{RequestUsage, TokenUsage};
 use cortex_protocol::{ErrorData, ModelId, ProviderId, SessionId, StopReason, TurnId};
+
+pub use crate::context::PrefixDifference;
 
 /// One request to a model ended.
 #[derive(Debug, Clone, PartialEq)]
@@ -97,6 +99,53 @@ pub struct TurnStat {
     pub duration: Duration,
 }
 
+/// How many tokens of a request each part of it is estimated at.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContextSources {
+    /// The system prompt.
+    pub system: u64,
+    /// The tool definitions.
+    pub tools: u64,
+    /// The summary that began the epoch, when it began with one.
+    pub summary: u64,
+    /// What the user wrote.
+    pub user: u64,
+    /// What the model answered, by its text and its calls.
+    pub assistant: u64,
+    /// What tools returned.
+    pub tool_results: u64,
+    /// What the harness added: notices.
+    pub notices: u64,
+}
+
+/// What one request held, beside what it used: the per-request context
+/// record (`docs/architecture/07-sessions-and-context.md`, "Budgeting").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextStat {
+    /// The session.
+    pub session: SessionId,
+    /// The turn.
+    pub turn: TurnId,
+    /// The model the request went to.
+    pub model: ModelId,
+    /// The context epoch, counted on the branch from 1.
+    pub epoch: u64,
+    /// The estimate by source, in tokens.
+    pub sources: ContextSources,
+    /// The estimate of the whole request, in tokens.
+    pub estimate: u64,
+    /// The most the request may hold: the window less the room kept for
+    /// the answer and a margin.
+    pub limit: u64,
+    /// The model's context window.
+    pub window: u64,
+    /// Where the request first differs from the one before it in the
+    /// session: on a cache miss, what moved.
+    pub difference: PrefixDifference,
+    /// What the provider counted, when the request ended with a count.
+    pub usage: Option<TokenUsage>,
+}
+
 /// One statistics event.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -111,6 +160,8 @@ pub enum StatEvent {
     ToolCall(ToolCallStat),
     /// A turn ended.
     Turn(TurnStat),
+    /// What a request held, by source: sent with its request's `Request`.
+    Context(ContextStat),
 }
 
 /// Takes the loop's statistics events.

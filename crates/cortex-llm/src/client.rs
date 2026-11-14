@@ -50,6 +50,16 @@ pub trait ModelClient: Send + Sync {
     /// `cancel` ends it with an error of kind `Interrupted`; dropping the
     /// stream abandons the request.
     fn stream(&self, request: ModelRequest, cancel: CancelToken) -> ModelStream;
+
+    /// The bytes of `request` that the next request of its context epoch
+    /// must begin with ([`Protocol::stable_prefix`]), for the agent loop's
+    /// debug-build check. `None` when the client cannot say: it is not a
+    /// protocol, or the request cannot be built as it is (an image that is
+    /// only a reference until the client loads it).
+    fn stable_prefix(&self, request: &ModelRequest) -> Option<Vec<u8>> {
+        let _ = request;
+        None
+    }
 }
 
 /// How much of a failed response's body is read for its error message.
@@ -217,6 +227,13 @@ impl ModelClient for ProviderClient {
     fn stream(&self, request: ModelRequest, cancel: CancelToken) -> ModelStream {
         let inner = Arc::clone(&self.inner);
         ModelStream::generate(move |out| run(inner, request, cancel, out))
+    }
+
+    fn stable_prefix(&self, request: &ModelRequest) -> Option<Vec<u8>> {
+        self.inner
+            .protocol
+            .stable_prefix(request, &self.inner.provider)
+            .ok()
     }
 }
 

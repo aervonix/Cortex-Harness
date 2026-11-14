@@ -126,9 +126,49 @@ fn signal(code: &str) -> Signal {
     }
 }
 
+/// A request's content written out in a fixed order, without the closing
+/// brackets: the model, the system prompt, the tools and every message, each
+/// as its JSON. It is what the test protocol and the scripted provider give
+/// as their stable prefix, so that the agent loop's check of the prefix
+/// covers a test's requests as it covers a real protocol's.
+#[must_use]
+pub fn neutral_prefix(request: &ModelRequest) -> Vec<u8> {
+    let mut out = String::new();
+    out.push_str("{\"model\":");
+    out.push_str(&json!(request.model.info.id.as_str()).to_string());
+    out.push_str(",\"system\":");
+    out.push_str(&json!(request.system).to_string());
+    out.push_str(",\"tools\":[");
+    for (index, tool) in request.tools.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(
+            &json!({"name": tool.name, "description": tool.description, "schema": tool.schema})
+                .to_string(),
+        );
+    }
+    out.push_str("],\"messages\":[");
+    for (index, message) in request.messages.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&serde_json::to_string(message).unwrap_or_default());
+    }
+    out.into_bytes()
+}
+
 impl Protocol for TestProtocol {
     fn name(&self) -> &str {
         PROTOCOL
+    }
+
+    fn stable_prefix(
+        &self,
+        request: &ModelRequest,
+        _provider: &ProviderInfo,
+    ) -> Result<Vec<u8>, BuildError> {
+        Ok(neutral_prefix(request))
     }
 
     fn build(

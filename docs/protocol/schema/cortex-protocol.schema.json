@@ -616,10 +616,28 @@
     "CompactionNotice": {
       "description": "Notice: a compaction started, finished or failed.",
       "properties": {
+        "after_tokens": {
+          "description": "The estimated size of the new context epoch, in tokens, on a\ncompaction that finished.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "background": {
           "default": false,
           "description": "Whether it runs in the background while the turn carries on.",
           "type": "boolean"
+        },
+        "before_tokens": {
+          "description": "The estimated size of the conversation before, in tokens, on a\ncompaction that finished.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "message": {
           "description": "The notice in words.",

@@ -108,11 +108,12 @@ fn a_response_is_deltas_then_one_item_that_is_recorded_once() {
     assert_eq!(ends[0].verification, Some(Verification::Skipped));
     assert_eq!(rig.store.outcomes().len(), 1);
 
-    // The request had the system prompt, the tools and the prompt.
+    // The request had the system prompt, the tools and the prompt, which
+    // carries the date as the epoch's first user message.
     let request = last_request(&world.provider);
-    assert_eq!(request.system, "You are a test.");
+    assert!(request.system.starts_with(cortex_agent::CORE_INSTRUCTIONS));
     assert_eq!(request.tools.len(), 7);
-    assert_eq!(text_of(&request.messages[0]), "go");
+    assert_eq!(text_of(&request.messages[0]), format!("{}go", crate::DATE));
     assert!(request.cache.stable_prefix && request.cache.history);
 
     // And the session's usage has it.
@@ -536,18 +537,19 @@ fn every_record_of_a_turn_is_filed_under_the_turn() {
     );
     turn(&world, &rig, 1);
     let records = rig.store.records();
-    assert_eq!(records.len(), 4);
+    assert_eq!(records.len(), 5);
     assert!(records.iter().all(|(turn, _)| turn.as_str() == "t_1"));
     let kinds: Vec<&str> = records
         .iter()
         .map(|(_, record)| match record {
+            Record::Epoch(_) => "epoch",
             Record::Item(Item::UserMessage(_)) => "user",
             Record::Item(Item::AssistantMessage(_)) => "assistant",
             Record::Item(Item::ToolResult(_)) => "result",
             _ => "other",
         })
         .collect();
-    assert_eq!(kinds, ["user", "assistant", "result", "assistant"]);
+    assert_eq!(kinds, ["epoch", "user", "assistant", "result", "assistant"]);
 }
 
 #[test]

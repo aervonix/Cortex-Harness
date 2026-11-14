@@ -18,10 +18,14 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use cortex_base::{Classified, ErrorKind, IdCounter};
+use cortex_base::{Classified, ContentHash, ErrorKind, IdCounter};
+use cortex_llm::ToolDefinition;
 use cortex_protocol::event::TurnCompleted;
-use cortex_protocol::{ErrorData, Item, ItemId, Part, TurnId};
+use cortex_protocol::item::SummaryItem;
+use cortex_protocol::usage::RequestUsage;
+use cortex_protocol::{ErrorData, Item, ItemId, ModelId, Part, ProviderId, TurnId};
 use cortex_tools::BoxFuture;
+use serde_json::Value;
 
 /// The prefix of a turn's id: `t_1`, `t_2`.
 pub(crate) const TURN_PREFIX: &str = "t_";
@@ -69,6 +73,91 @@ pub struct Opened {
     /// The highest item number in the log, on any branch. 0 for a new
     /// session.
     pub last_item: u64,
+    /// The context epochs that began on the active branch, oldest first,
+    /// each with the number of items before it.
+    pub epochs: Vec<(usize, EpochStart)>,
+    /// The state the last compaction summary on the branch carried across.
+    pub carried: Option<Value>,
+}
+
+/// Why a context epoch began.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EpochReason {
+    /// The session's first request.
+    Start,
+    /// A session read again whose prompt or tools are no longer what its
+    /// epoch had: the harness changed them.
+    Resume,
+    /// The model, its provider or its reasoning level changed. The prompt
+    /// and the tools stay as they were.
+    Model,
+    /// A compaction: a summary begins the history.
+    Compaction,
+}
+
+impl EpochReason {
+    /// The name the log writes.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Resume => "resume",
+            Self::Model => "model",
+            Self::Compaction => "compaction",
+        }
+    }
+
+    /// The reason a log names, or `None` for a name this build does not
+    /// know.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "start" => Self::Start,
+            "resume" => Self::Resume,
+            "model" => Self::Model,
+            "compaction" => Self::Compaction,
+            _ => return None,
+        })
+    }
+}
+
+/// The start of a context epoch: what every request of the epoch begins
+/// with (`docs/architecture/07-sessions-and-context.md`, "Context
+/// epochs").
+#[derive(Debug, Clone, PartialEq)]
+pub struct EpochStart {
+    /// The provider of the main role's model.
+    pub provider: ProviderId,
+    /// Its wire dialect.
+    pub protocol: String,
+    /// The model.
+    pub model: ModelId,
+    /// The reasoning level as it was set, if one was.
+    pub effort: Option<String>,
+    /// The system prompt.
+    pub system: String,
+    /// The tools, in the order they are declared.
+    pub tools: Vec<ToolDefinition>,
+    /// Why it began. `None` in an epoch a later build wrote with a reason
+    /// this one does not know.
+    pub reason: Option<EpochReason>,
+    /// The hash of the system prompt without its instruction files. An
+    /// epoch read again goes on as it was when this is what the harness
+    /// would build now.
+    pub base: Option<ContentHash>,
+    /// The instruction files the prompt holds, by the name the model is
+    /// shown, with the hash of what was read of each.
+    pub instructions: Vec<(String, ContentHash)>,
+}
+
+/// A compaction summary, and the state carried across it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Summary {
+    /// The summary as the model is sent it, carried state included.
+    pub item: SummaryItem,
+    /// The carried state as data: `plan`, `files`, `last_user`,
+    /// `artifacts`.
+    pub carried: Value,
 }
 
 /// A request attempt that was given up: it failed and was sent again, or
@@ -98,6 +187,17 @@ pub enum Record {
     Item(Item),
     /// A request attempt that was given up.
     Attempt(Attempt),
+    /// A context epoch begins.
+    Epoch(EpochStart),
+    /// A compaction summary begins an epoch's history.
+    Summary(Summary),
+    /// What a request outside the conversation used: a summary's.
+    Usage {
+        /// What the request was for: `compaction`.
+        purpose: String,
+        /// What it used and cost.
+        usage: RequestUsage,
+    },
 }
 
 /// Where a session is kept, as far as the loop needs to know.
@@ -148,6 +248,13 @@ struct Inner {
     last_item: u64,
 }
 
+/// What [`Inner::read`] finds.
+struct Read {
+    items: Vec<Item>,
+    epochs: Vec<(usize, EpochStart)>,
+    carried: Option<Value>,
+}
+
 impl MemorySessionStore {
     /// An empty session.
     #[must_use]
@@ -191,7 +298,46 @@ impl MemorySessionStore {
             .iter()
             .filter_map(|(_, record)| match record {
                 Record::Attempt(attempt) => Some(attempt.clone()),
-                Record::Item(_) => None,
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The context epochs that began, in order.
+    #[must_use]
+    pub fn epochs(&self) -> Vec<EpochStart> {
+        self.lock()
+            .records
+            .iter()
+            .filter_map(|(_, record)| match record {
+                Record::Epoch(epoch) => Some(epoch.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The compaction summaries, in order.
+    #[must_use]
+    pub fn summaries(&self) -> Vec<Summary> {
+        self.lock()
+            .records
+            .iter()
+            .filter_map(|(_, record)| match record {
+                Record::Summary(summary) => Some(summary.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// What requests outside the conversation used, in order.
+    #[must_use]
+    pub fn out_of_band(&self) -> Vec<(String, RequestUsage)> {
+        self.lock()
+            .records
+            .iter()
+            .filter_map(|(_, record)| match record {
+                Record::Usage { purpose, usage } => Some((purpose.clone(), usage.clone())),
+                _ => None,
             })
             .collect()
     }
@@ -211,13 +357,27 @@ impl MemorySessionStore {
 
 impl Inner {
     fn items(&self) -> Vec<Item> {
-        self.records
-            .iter()
-            .filter_map(|(_, record)| match record {
-                Record::Item(item) => Some(item.clone()),
-                Record::Attempt(_) => None,
-            })
-            .collect()
+        self.read().items
+    }
+
+    fn read(&self) -> Read {
+        let mut read = Read {
+            items: Vec::new(),
+            epochs: Vec::new(),
+            carried: None,
+        };
+        for (_, record) in &self.records {
+            match record {
+                Record::Item(item) => read.items.push(item.clone()),
+                Record::Summary(summary) => {
+                    read.items.push(Item::Summary(summary.item.clone()));
+                    read.carried = Some(summary.carried.clone());
+                }
+                Record::Epoch(epoch) => read.epochs.push((read.items.len(), epoch.clone())),
+                _ => {}
+            }
+        }
+        read
     }
 
     fn note_turn(&mut self, turn: &TurnId) {
@@ -239,10 +399,13 @@ impl Inner {
 impl SessionStore for MemorySessionStore {
     fn open(&mut self) -> BoxFuture<'_, Result<Opened, StoreError>> {
         let inner = self.lock();
+        let read = inner.read();
         let opened = Opened {
-            items: inner.items(),
+            items: read.items,
             last_turn: inner.last_turn,
             last_item: inner.last_item,
+            epochs: read.epochs,
+            carried: read.carried,
         };
         Box::pin(std::future::ready(Ok(opened)))
     }
@@ -257,10 +420,12 @@ impl SessionStore for MemorySessionStore {
             inner.note_turn(turn);
             match &record {
                 Record::Item(item) => inner.note_item(item),
+                Record::Summary(summary) => inner.note_item(&Item::Summary(summary.item.clone())),
                 Record::Attempt(attempt) => {
                     let number = IdCounter::new(ITEM_PREFIX).number_of(attempt.item_id.as_str());
                     inner.last_item = inner.last_item.max(number.unwrap_or(0));
                 }
+                Record::Epoch(_) | Record::Usage { .. } => {}
             }
             inner.records.push((turn.clone(), record));
         }
@@ -333,6 +498,7 @@ mod tests {
 
         let opened = block_on(store.open()).unwrap();
         assert_eq!(opened.items, [notice("i_7")]);
+        assert!(opened.epochs.is_empty() && opened.carried.is_none());
         assert_eq!((opened.last_turn, opened.last_item), (3, 9));
         assert_eq!(reader.attempts(), [attempt]);
         assert_eq!(reader.outcomes(), [(turn, ended)]);

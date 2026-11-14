@@ -73,7 +73,7 @@ pub use contract::{
     Plan, Preview, Tool, ToolOutput, ToolSpec,
 };
 pub use edit::EditTool;
-pub use files::{FileSnapshot, FileTable, LineRanges, Shown, Staleness};
+pub use files::{FileSnapshot, FileTable, LineRanges, SeenFile, Shown, Staleness};
 pub use list::ListTool;
 pub use output::{Budget, Compression, Keep, OutputLimits, Shaped, Treatment};
 pub use plan::{PlanBoard, PlanChange, PlanEditError, PlanTool};

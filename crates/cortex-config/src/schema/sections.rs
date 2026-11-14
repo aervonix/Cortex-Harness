@@ -93,9 +93,10 @@ settings! {
         /// the environment variables it is not given.
         [nested]
         pub shell: ShellSettings,
-        /// The compaction trigger and settings, and instruction file names.
-        [reserved UserOnly]
-        pub context: Reserved,
+        /// When the conversation is compacted, and which instruction files
+        /// are read.
+        [nested]
+        pub context: ContextSettings,
         /// The verification mode, commands and time limits.
         [reserved RunsCode]
         pub verify: Reserved,
@@ -413,6 +414,48 @@ settings! {
 }
 
 settings! {
+    /// When the conversation is compacted, and which instruction files are
+    /// read (`docs/architecture/07-sessions-and-context.md`).
+    pub struct ContextSettings {
+        /// Whether the conversation is compacted by itself when a request
+        /// would pass `compact_at`. Off, the turn stops there and asks for
+        /// a compaction (`session/compact`) or a new session.
+        [Preference, Now]
+        pub auto_compact: bool = true,
+        /// Whether a summary is prepared in the background from
+        /// `prepare_at`, on the `fast` role's model (the main model when
+        /// there is none), so that the compaction need not wait for it.
+        [Preference, Now]
+        pub background: bool = true,
+        /// The trigger: the fraction of what a request may hold (the
+        /// model's context window less room for the answer and a margin)
+        /// past which the conversation is compacted before the request.
+        /// From a project, after trust: a compaction costs a request.
+        [RaisesCost, Now, 0..=1]
+        pub compact_at: f64 = 0.85,
+        /// The fraction past which a summary is prepared in the
+        /// background. From a project, after trust.
+        [RaisesCost, Now, 0..=1]
+        pub prepare_at: f64 = 0.7,
+        /// How much of the most recent conversation a compaction replays
+        /// after its summary, without its reasoning, in tokens. 0 replays
+        /// nothing. From a project, after trust.
+        [RaisesCost, NextEpoch, 0..=10_000_000]
+        pub keep_recent_tokens: u64 = 0,
+        /// More names of instruction files, read after `AGENTS.md` and
+        /// `CLAUDE.md` in each directory. From a project, after trust:
+        /// what they hold is sent with every request.
+        [RaisesCost, NextEpoch]
+        pub instruction_names: Vec<String>,
+        /// The most the instruction files may hold in all, in bytes. Past
+        /// it the innermost files are cut, and the user is warned. From a
+        /// project, after trust.
+        [RaisesCost, NextEpoch, 0..=100_000_000]
+        pub instructions_cap: u64 = 49_152,
+    }
+}
+
+settings! {
     /// Which files written for other tools are read. They are read and
     /// never changed.
     pub struct CompatSettings {
@@ -611,6 +654,12 @@ mod tests {
         assert_eq!(settings.credentials.store, StoreChoice::Auto);
         assert!(settings.limits.turn.is_empty() && settings.limits.day.is_empty());
         assert!(settings.compat.instructions && settings.compat.mcp && settings.compat.skills);
+        assert!(settings.context.auto_compact && settings.context.background);
+        assert!((settings.context.compact_at - 0.85).abs() < f64::EPSILON);
+        assert!((settings.context.prepare_at - 0.7).abs() < f64::EPSILON);
+        assert_eq!(settings.context.keep_recent_tokens, 0);
+        assert_eq!(settings.context.instructions_cap, 48 * 1024);
+        assert!(settings.context.instruction_names.is_empty());
 
         // Reading an empty file gives the same thing, and so does reading
         // the defaults written out.

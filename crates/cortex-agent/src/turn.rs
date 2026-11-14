@@ -11,6 +11,11 @@
 //! **Cancellation is an input.** Every wait that can take time is raced
 //! against the turn's token. What must not be cut short (an append to the
 //! log, recording the results of a round) is never raced.
+//!
+//! What the loop does for its context (epochs, instruction files, the
+//! budget, compaction) is in [`epochs`].
+
+mod epochs;
 
 use std::future::Future;
 use std::pin::pin;
@@ -22,9 +27,9 @@ use cortex_base::{AbsPath, CancelToken, Classified, IdCounter, SharedClock};
 use cortex_llm::error::ProviderError;
 use cortex_llm::{CooldownChange, ModelEvent, ModelRequest, SpeedCooldowns, SpeedMove, Usage};
 use cortex_protocol::event::{
-    CompactionNotice, CompactionState, Event, InfoNotice, ItemCompleted, ItemDelta, ItemKind,
-    ItemRef, ItemStarted, LimitNotice, Notice, RetryNotice, SessionIdle, TurnCompleted,
-    TurnOutcome, TurnStarted, UsageUpdated, Verification,
+    Event, InfoNotice, ItemCompleted, ItemDelta, ItemKind, ItemRef, ItemStarted, LimitNotice,
+    Notice, RetryNotice, SessionIdle, TurnCompleted, TurnOutcome, TurnStarted, UsageUpdated,
+    Verification,
 };
 use cortex_protocol::item::{
     AssistantMessageItem, Delivery, NoticeItem, NoticeSource, UserMessageItem,
@@ -39,7 +44,7 @@ use tokio::sync::Notify;
 
 use crate::assistant::{Applied, Calls, Draft};
 use crate::config::{LoopConfig, Models, RoleModel, SessionInfo, Workspace};
-use crate::context::Context;
+use crate::context::{Context, ContextParts, Pressure};
 use crate::events::{Emitter, EventSink};
 use crate::guard::{Repetition, RepetitionGuard};
 use crate::guarded::Guarded;
@@ -49,7 +54,7 @@ use crate::round::{Report, Round, RoundEnv, Stage};
 use crate::session::{Inbox, Pending, Prompt, Queued, Running, SessionHandle, Shared};
 use crate::speed::{Moves, SpeedSettings, cooldown_notice, fallback_notice};
 use crate::state::{Observer, TurnState};
-use crate::stats::{RequestStat, StatEvent, Stats, ToolCallStat, TurnStat};
+use crate::stats::{ContextStat, RequestStat, StatEvent, Stats, ToolCallStat, TurnStat};
 use crate::store::{Attempt, ITEM_PREFIX, Record, SessionStore, StoreError, TURN_PREFIX};
 use crate::toolset::ToolSet;
 use crate::usage::{UsageBook, add_request};
@@ -69,8 +74,9 @@ pub struct SessionParts {
     pub policy: Arc<dyn Policy>,
     /// Where the session is kept.
     pub store: Box<dyn SessionStore>,
-    /// What is sent to the model.
-    pub context: Box<dyn Context>,
+    /// What the session's context is made from: the system prompt's
+    /// facts, the instruction files, the thresholds.
+    pub context: ContextParts,
     /// Where the session's events go.
     pub events: Arc<dyn EventSink>,
     /// Where its statistics events go.
@@ -109,7 +115,7 @@ pub struct Session {
     shared: Arc<Shared>,
     env: Arc<RoundEnv>,
     store: Box<dyn SessionStore>,
-    context: Box<dyn Context>,
+    context: Context,
     stats: Arc<dyn Stats>,
     verifier: Arc<dyn Verifier>,
     clock: SharedClock,
@@ -138,6 +144,16 @@ pub struct Session {
     told_roles: Vec<RoleState>,
     /// When `usage.updated` was last sent, on the monotonic clock.
     usage_sent: Option<Duration>,
+    /// A summary taken in the background, running or ready.
+    background: Option<epochs::Background>,
+    /// The epoch in which a summary in the background failed: no other is
+    /// started in it.
+    background_failed: Option<u64>,
+    /// What a compaction the user asked for should keep in particular.
+    manual_focus: Option<String>,
+    /// The context record of the request in flight, sent with its
+    /// `Request` event.
+    pending_context: Option<ContextStat>,
 }
 
 impl std::fmt::Debug for Session {
@@ -183,6 +199,8 @@ struct Prep {
     /// The response was cut off inside a tool call, and the request is
     /// sent once more with the model's whole output limit.
     raised_output: bool,
+    /// The turn only compacts: `session/compact` on an idle session.
+    only: bool,
 }
 
 /// The response as far as it has arrived.
@@ -305,7 +323,7 @@ impl Session {
             tools,
             policy,
             mut store,
-            mut context,
+            context,
             events,
             stats,
             verifier,
@@ -318,7 +336,8 @@ impl Session {
             observer,
         } = parts;
         let opened = store.open().await?;
-        context.load(&opened.items);
+        let mut context = Context::new(context, &tools.specs());
+        context.load(&opened);
 
         let emitter = Arc::new(Emitter::new(info.id.clone(), events));
         let env = Arc::new(RoundEnv {
@@ -363,6 +382,7 @@ impl Session {
                 changing: false,
                 history_changed: false,
                 history: !opened.items.is_empty(),
+                windows: std::collections::BTreeMap::new(),
                 closed: false,
             }),
         });
@@ -388,6 +408,10 @@ impl Session {
             moves: Moves::default(),
             told_roles,
             usage_sent: None,
+            background: None,
+            background_failed: None,
+            manual_focus: None,
+            pending_context: None,
         };
         Ok((session, SessionHandle { shared }))
     }
@@ -496,12 +520,15 @@ impl Session {
     /// a session's state follows").
     async fn reload(&mut self) -> Result<(), StoreError> {
         let changed = std::mem::take(&mut self.shared.lock().history_changed);
-        self.env.workspace.files.begin_epoch();
+        self.new_file_epoch();
         if changed {
             self.env.workspace.files.forget_all();
         }
+        // A summary taken over the history as it was is not of the branch
+        // the loop reads now.
+        self.drop_background();
         let opened = self.store.open().await?;
-        self.context.load(&opened.items);
+        self.context.load(&opened);
         self.shared.lock().history = !opened.items.is_empty();
         let next = self.item_ids.peek().max(opened.last_item.saturating_add(1));
         self.item_ids = IdCounter::new(ITEM_PREFIX).after(next - 1);
@@ -541,18 +568,23 @@ impl Session {
         // again: no request goes out on a history that may have a hole.
         let reload = std::mem::take(&mut self.shared.lock().reload);
         let ready = if reload { self.reload().await } else { Ok(()) };
+        let only = prompt.compact.is_some();
         let begun = match ready {
             Ok(()) => self.begin(&turn, prompt).await,
             Err(error) => Err(error),
         };
         let mut phase = match begun {
+            Ok(()) if only => Phase::Compacting(Prep {
+                only: true,
+                ..Prep::default()
+            }),
             Ok(()) => Phase::Preparing(Prep::default()),
             Err(error) => Phase::Finishing(End::store(&error)),
         };
         loop {
             phase = match phase {
                 Phase::Preparing(prep) => self.prepare(&mut turn, prep).await,
-                Phase::Compacting(prep) => self.compact(&mut turn, prep).await,
+                Phase::Compacting(prep) => self.compacting(&mut turn, prep).await,
                 Phase::Requesting(request, prep) => self.respond(&mut turn, *request, prep).await,
                 Phase::Deciding(response) => self.decide(&mut turn, *response).await,
                 Phase::ToolRound(round) => self.tool_round(&mut turn, *round).await,
@@ -566,9 +598,12 @@ impl Session {
         }
     }
 
-    /// The first thing a turn records: the notices that were waiting for
-    /// it, then the prompt.
+    /// The first thing a turn records: what its context needs (the epoch,
+    /// changed instruction files, the date), the notices that were waiting
+    /// for it, then the prompt. A turn that only compacts records no
+    /// prompt.
     async fn begin(&mut self, turn: &Turn, prompt: Prompt) -> Result<(), StoreError> {
+        self.context_turn_start(turn).await?;
         let notices: Vec<Pending> = {
             let mut inbox = self.shared.lock();
             let (notices, steering): (Vec<Pending>, Vec<Pending>) =
@@ -582,6 +617,10 @@ impl Session {
             if let Pending::Notice { source, text } = notice {
                 self.record_notice(turn, source, text).await?;
             }
+        }
+        if let Some(focus) = prompt.compact {
+            self.manual_focus = focus;
+            return Ok(());
         }
         let item = Item::UserMessage(UserMessageItem {
             id: self.item_ids.next_id(),
@@ -619,14 +658,37 @@ impl Session {
                     self.record_shown(turn, item).await
                 }
                 Pending::Notice { source, text } => self.record_notice(turn, source, text).await,
+                Pending::Compact(focus) => {
+                    self.manual_focus = Some(focus.unwrap_or_default());
+                    Ok(())
+                }
             };
             if let Err(error) = recorded {
                 return Phase::Finishing(End::store(&error));
             }
         }
 
-        if !prep.compacted && self.context.needs_compaction() {
+        // The model of this request: what the role is set to now. A change
+        // of it starts a context epoch, before anything else is sent.
+        self.refresh_main();
+        if let Err(error) = self.context_before_request(turn).await {
+            return Phase::Finishing(End::store(&error));
+        }
+        if let Err(error) = self.collect_background(turn).await {
+            return Phase::Finishing(End::store(&error));
+        }
+        if self.manual_focus.is_some() {
             return Phase::Compacting(prep);
+        }
+        match self.pressure() {
+            Pressure::Compact if !prep.compacted => {
+                if !self.context.parts.settings.auto_compact {
+                    return Phase::Finishing(self.compaction_off());
+                }
+                return Phase::Compacting(prep);
+            }
+            Pressure::Compact | Pressure::Prepare => self.start_background(turn),
+            Pressure::Fine => {}
         }
 
         // Every request is charged to the ledger before it is sent.
@@ -652,15 +714,6 @@ impl Session {
             });
         }
 
-        // The model of this request: what the role is set to now.
-        {
-            let inbox = self.shared.lock();
-            self.model = inbox.models.main().clone();
-            inbox
-                .models
-                .catalog_version()
-                .clone_into(&mut self.catalog_version);
-        }
         self.tell_speed();
         let model = self.model.clone();
         let assembled = self.context.assemble();
@@ -679,47 +732,9 @@ impl Session {
         } else {
             model.max_output
         };
+        self.context_request(turn, &model, &request);
         turn.requests += 1;
         Phase::Requesting(Box::new(request), prep)
-    }
-
-    // ---------------------------------------------------------- compacting
-
-    async fn compact(&mut self, turn: &mut Turn, prep: Prep) -> Phase {
-        self.enter(TurnState::Compacting);
-        let notice = |state, message: &str| {
-            Notice::Compaction(CompactionNotice {
-                message: message.to_owned(),
-                state,
-                background: false,
-            })
-        };
-        self.notify(
-            turn,
-            notice(CompactionState::Started, "Compacting the conversation."),
-        );
-        let cancel = turn.cancel.child();
-        let outcome = turn.cancel.race(self.context.compact(&cancel)).await;
-        match outcome {
-            None => Phase::Interrupted(None),
-            Some(Ok(())) => {
-                self.notify(
-                    turn,
-                    notice(CompactionState::Finished, "The conversation was compacted."),
-                );
-                Phase::Preparing(Prep {
-                    compacted: true,
-                    ..prep
-                })
-            }
-            Some(Err(error)) => {
-                self.notify(turn, notice(CompactionState::Failed, &error.message));
-                if prep.overflowed {
-                    turn.stop = Some(StopReason::ContextOverflow);
-                }
-                Phase::Finishing(End::failed(error.to_error_data()))
-            }
-        }
     }
 
     // ------------------------------------- requesting, streaming, backoff
@@ -1048,6 +1063,7 @@ impl Session {
         let model = self.model.clone();
         live.usage = None;
         let usage = self.account(turn, &model, usage, &live);
+        let usage_counted = usage.clone();
         self.tell_usage(turn, &model, None, true);
         turn.stop = Some(stop.clone());
 
@@ -1151,6 +1167,9 @@ impl Session {
         if let Err(error) = self.record_shown(turn, item).await {
             return self.abandon(round, End::store(&error)).await;
         }
+        // The provider counted the request, and its answer is in the
+        // history: the next estimate goes on from here.
+        self.context_counted(&usage_counted);
         if let Some(error) = failure {
             return self.abandon(round, End::failed(error)).await;
         }
@@ -1390,8 +1409,10 @@ impl Session {
 
     async fn interrupted(&mut self, turn: &mut Turn, partial: Option<Box<(Live, Round)>>) {
         self.enter(TurnState::Interrupted);
-        // However the turn got here, everything below it stops.
+        // However the turn got here, everything below it stops, a summary
+        // in the background included.
         turn.cancel.cancel();
+        self.stop_background();
         if let Some(partial) = partial {
             let (mut live, mut round) = *partial;
             let model = self.model.clone();
@@ -1529,6 +1550,7 @@ impl Session {
             let prompt = Prompt {
                 input,
                 delivery: Some(Delivery::Steer),
+                compact: None,
             };
             (inbox.turn_ids.next_id(), prompt)
         } else {
@@ -1559,6 +1581,7 @@ impl Session {
                     prompt: Prompt {
                         input,
                         delivery: Some(Delivery::Steer),
+                        compact: None,
                     },
                 });
             }
@@ -1660,10 +1683,21 @@ impl Session {
         usage: Usage,
         timing: Option<(Duration, Option<Duration>)>,
     ) -> RequestUsage {
+        self.usage_record_as(model, ModelRole::Main, usage, timing)
+    }
+
+    /// [`usage_record`](Self::usage_record) for a request of any role.
+    fn usage_record_as(
+        &self,
+        model: &RoleModel,
+        role: ModelRole,
+        usage: Usage,
+        timing: Option<(Duration, Option<Duration>)>,
+    ) -> RequestUsage {
         let mut record = cortex_llm::usage::request_usage(
             usage,
             &model.entry.info,
-            ModelRole::Main,
+            role,
             model.billing.clone(),
             &self.catalog_version,
         );
@@ -1721,7 +1755,7 @@ impl Session {
     }
 
     fn request_stat(
-        &self,
+        &mut self,
         turn: &Turn,
         model: &RoleModel,
         usage: Option<RequestUsage>,
@@ -1729,6 +1763,7 @@ impl Session {
         error: Option<ErrorData>,
         live: &Live,
     ) {
+        let tokens = usage.as_ref().map(|usage| usage.tokens.clone());
         self.stats.record(StatEvent::Request(RequestStat {
             session: self.shared.info.id.clone(),
             turn: turn.id.clone(),
@@ -1741,6 +1776,10 @@ impl Session {
             error,
             retries: live.attempt.saturating_sub(1),
         }));
+        if let Some(mut context) = self.pending_context.take() {
+            context.usage = tokens;
+            self.stats.record(StatEvent::Context(context));
+        }
     }
 
     /// A request runs, or ran, at another speed than its role is set to.

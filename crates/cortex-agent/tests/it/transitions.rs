@@ -100,16 +100,23 @@ fn tool_round(name: &str) -> Vec<TurnState> {
     walk(&world, &rig)
 }
 
+/// A small window and a large notice: the first request is over the
+/// trigger before it is sent.
+fn over_budget(rig: &Rig) {
+    rig.window(4_000);
+    rig.bulk(6_000);
+}
+
 fn compaction_for_budget(name: &str) -> Vec<TurnState> {
-    let (world, rig) = Rig::one(name, [says("Hello.")]);
-    *lock(&rig.context.over_budget) = true;
-    lock(&rig.context.compactions).push_back(Ok(()));
+    let (world, rig) = Rig::one(name, [says("A summary."), says("Hello.")]);
+    over_budget(&rig);
     walk(&world, &rig)
 }
 
 fn compaction_fails(name: &str) -> Vec<TurnState> {
+    // The summary request finds no response.
     let (world, rig) = Rig::one(name, []);
-    *lock(&rig.context.over_budget) = true;
+    over_budget(&rig);
     walk(&world, &rig)
 }
 
@@ -136,9 +143,9 @@ fn interrupt_when(world: &World, rig: &Rig, state: TurnState) -> Vec<TurnState> 
 }
 
 fn interrupted_compacting(name: &str) -> Vec<TurnState> {
+    // Interrupted as it enters the state: the summary is never asked for.
     let (world, rig) = Rig::one(name, []);
-    *lock(&rig.context.over_budget) = true;
-    *lock(&rig.context.gate) = Some(Gate::new());
+    over_budget(&rig);
     interrupt_when(&world, &rig, Compacting)
 }
 
@@ -153,8 +160,7 @@ fn retry_before_the_start(name: &str) -> Vec<TurnState> {
 /// The provider says the request does not fit, at the point `first` makes
 /// it say so, and the compaction that answers it works.
 fn overflow_then_compaction(name: &str, first: Response) -> Vec<TurnState> {
-    let (world, rig) = Rig::one(name, [first, says("Hello.")]);
-    lock(&rig.context.compactions).push_back(Ok(()));
+    let (world, rig) = Rig::one(name, [first, says("A summary."), says("Hello.")]);
     walk(&world, &rig)
 }
 

@@ -201,6 +201,24 @@ pub trait Protocol: Send + Sync + std::fmt::Debug {
     fn read_headers(&self, headers: &Headers, now: UtcTime, out: &mut EventSink) {
         let _ = (headers, now, out);
     }
+
+    /// The part of a request's body that later requests of the same context
+    /// epoch repeat byte for byte: everything up to the end of the last
+    /// message, without the closing brackets, and without anything the
+    /// provider's cache and its check of reasoning blocks both ignore (a
+    /// cache marker that moves).
+    ///
+    /// For two requests of one epoch sent with the same settings (model,
+    /// reasoning, output limit, speed), the earlier one's is the beginning
+    /// of the later one's. The agent loop's debug-build check compares the
+    /// two, so every protocol says what its prefix is: a protocol whose
+    /// body does not grow at the end has to say where it does
+    /// (`docs/architecture/04-providers.md`, "Prompt caching").
+    fn stable_prefix(
+        &self,
+        request: &ModelRequest,
+        provider: &ProviderInfo,
+    ) -> Result<Vec<u8>, BuildError>;
 }
 
 /// An incremental decoder: the events of one response stream in, neutral
