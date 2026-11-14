@@ -81,3 +81,25 @@ The post-merge size check (`main` workflow), run on the branch at `2b75746` and 
 
 - **The size is the two backends' code** (`landlock`, `seccompiler` and `enumflags2`, Linux only) and this step's own; on Windows, the Job Object limits and the sandbox's state.
 - **Start-up is not this step's to move:** nothing it adds runs before the first request but the detection of Landlock (one system call, on Linux) and the state's computation. Both OSes moved by more than that between the two runs, in opposite directions, and on Windows `--version`, which runs none of it, moved as much as the headless run: the runners' speed.
+
+## After the third review, 2026-11-14
+
+The fixes of the third review and of the independent review of them, on the `worktree-step-26-fixes` branch. The pull request's `ci` run `43592969862` at `64bced7`, against `main`'s latest at `33bd19b` (run `43585492905`, which includes step 15).
+
+| Job | `main`, `33bd19b` | fixes, `64bced7` |
+|---|---|---|
+| `lint-linux` | 41 s | 37 s |
+| `test-linux` | 84 s | 69 s |
+| `lint-windows` | 82 s | 77 s |
+| `test-windows` | 145 s | 120 s |
+
+Test time above the start of the tests' processes, against each tier's budget (a test's process started in 3 ms on this Linux run and 4 ms on main's, 7 ms on this Windows run and 8 ms on main's: runners of about the same speed):
+
+| Tier | Linux, `33bd19b` | Linux, `64bced7` | Windows, `33bd19b` | Windows, `64bced7` |
+|---|---|---|---|---|
+| Tier 1, unit (20 s) | 7.0 s | 4.3 s | 8.2 s | 7.8 s |
+| Tier 2, integration (40 s) | 16.9 s | 10.8 s | 26.7 s | 22.7 s |
+| Tier 3, system (60 s / 90 s) | 15.0 s | 16.9 s | 60.2 s | 52.3 s |
+
+- **All four jobs passed and every tier is well inside its budget on both OSes.** The fixes' tiers come out a little below main's across the board; the runners were of about the same speed (the start costs above are within a millisecond), so this is run-to-run variance, not a saving. The fixes' new tests are mostly Linux-only system tests of the sandbox (the harness's git, the continuity check, the owner and extended-attribute refusals, a swapped root, a cancelled kill): Windows runs none of them, so the Windows tiers, the one the owner watched (tier 2, here 22.7 s of 40 s), did not move up.
+- **Two rounds failed first, both in this step's own tests, not its code:** the owner guard caught the owner's name, written into a doc and a commit message from a relay and since removed; and on Windows `find_outside` compared a verbatim (`\\?\`) real path with a plain avoid root and never matched, so a planted program was not passed over (the avoid roots are resolved the same way now).
