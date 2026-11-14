@@ -571,6 +571,7 @@ impl Core {
         // Everything the session's loop logs is inside its span.
         let span = tracing::info_span!("session", session = %handle.id());
         let task = tokio::spawn(tracing::Instrument::instrument(session.run(), span));
+        self.probe_context(&handle, &loaded);
         let live = Arc::new(Live {
             handle,
             task: Mutex::new(Some(task)),
@@ -590,6 +591,72 @@ impl Core {
         // was put together off this thread.
         self.still_wanted(client, &live).await?;
         Ok(live)
+    }
+
+    /// Asks a local server what context size it loaded the main role's
+    /// model with, where the provider's entry names a probe
+    /// (`docs/architecture/04-providers.md`, "A local server's loaded
+    /// context size"). In the background: nothing waits for it, and until
+    /// it answers the catalog's figure stands. An answer that cannot be
+    /// used leaves the catalog's figure, and is logged.
+    fn probe_context(&self, handle: &cortex_agent::SessionHandle, loaded: &Loaded) {
+        let Some(main) = handle.role_model(&cortex_protocol::model::ModelRole::Main) else {
+            return;
+        };
+        let info = &main.entry.info;
+        let Ok(provider) = crate::provider::provider_info(
+            &loaded.settings,
+            &self.inner.options.env,
+            info.provider.as_str(),
+        ) else {
+            return;
+        };
+        let request = match cortex_llm::openai_chat::context::request(&provider) {
+            Ok(Some(request)) => request,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(%error, "the context probe cannot be made");
+                return;
+            }
+        };
+        let transport = Arc::clone(&self.inner.providers.transport);
+        let handle = handle.clone();
+        let model = info.id.clone();
+        let cancel = self.inner.options.cancel.child();
+        tokio::spawn(async move {
+            /// The most of an answer that is read.
+            const LIMIT: usize = 4 * 1024 * 1024;
+            let Some(sent) = cancel.race(transport.send(request, cancel.clone())).await else {
+                return;
+            };
+            let response = match sent {
+                Ok(response) => response,
+                Err(error) => {
+                    tracing::warn!(%error, "the context probe was not answered");
+                    return;
+                }
+            };
+            let status = response.status;
+            let mut body = response.body;
+            let mut bytes = Vec::new();
+            while let Some(Some(chunk)) = cancel.race(body.next()).await {
+                let Ok(chunk) = chunk else {
+                    return;
+                };
+                bytes.extend_from_slice(&chunk);
+                if bytes.len() > LIMIT {
+                    tracing::warn!("the context probe's answer is too long to be read");
+                    return;
+                }
+            }
+            match cortex_llm::openai_chat::context::read(&provider, &model, status, &bytes) {
+                Ok(Some(tokens)) => {
+                    handle.set_context_window(provider.id.clone(), model, tokens);
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "the context probe's answer cannot be used"),
+            }
+        });
     }
 
     /// Ends a session: its turn is interrupted, its loop ends, and its log

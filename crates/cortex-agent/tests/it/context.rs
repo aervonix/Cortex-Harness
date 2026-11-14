@@ -9,16 +9,20 @@
 use std::sync::Arc;
 
 use cortex_agent::{
-    CORE_INSTRUCTIONS, ContextSettings, EpochReason, EpochStart, MemorySessionStore,
-    NOTICE_LEAD, RoleModel, SUMMARY_INSTRUCTIONS, check_prefix,
+    CORE_INSTRUCTIONS, ContextSettings, EpochReason, EpochStart, MemorySessionStore, NOTICE_LEAD,
+    RoleModel, SUMMARY_INSTRUCTIONS, check_prefix,
 };
 use cortex_base::{CancelToken, ContentHash};
-use cortex_llm::{Catalog, ModelClient, ModelEntry, ModelRequest, ModelStream, Protocol, ProviderInfo};
+use cortex_llm::{
+    Catalog, ModelClient, ModelEntry, ModelRequest, ModelStream, Protocol, ProviderInfo,
+};
 use cortex_protocol::event::{Notice, TurnOutcome};
 use cortex_protocol::item::{NoticeSource, PlanItem, PlanStatus, UserMessageItem};
 use cortex_protocol::model::ModelRole;
 use cortex_protocol::usage::TokenUsage;
-use cortex_protocol::{Item, ItemId, Message, ModelId, Part, Plan, ProviderId, Role, StopReason, TurnId};
+use cortex_protocol::{
+    Item, ItemId, Message, ModelId, Part, Plan, ProviderId, Role, StopReason, TurnId,
+};
 use cortex_testkit::{Gate, Response, ScriptedProvider, fixtures};
 use serde_json::json;
 
@@ -102,7 +106,10 @@ fn anthropic(inner: &ScriptedProvider) -> Rendered {
         provider: cortex_llm::anthropic::provider(),
         model: Arc::clone(
             catalog
-                .get(&ProviderId::new("anthropic"), &ModelId::new("claude-haiku-5-5"))
+                .get(
+                    &ProviderId::new("anthropic"),
+                    &ModelId::new("claude-haiku-5-5"),
+                )
                 .unwrap(),
         ),
     }
@@ -118,7 +125,10 @@ fn openai_chat(inner: &ScriptedProvider) -> Rendered {
             .info,
         model: Arc::clone(
             catalog
-                .get(&ProviderId::new("deepseek"), &ModelId::new("deepseek-flash"))
+                .get(
+                    &ProviderId::new("deepseek"),
+                    &ModelId::new("deepseek-flash"),
+                )
                 .unwrap(),
         ),
     }
@@ -133,7 +143,10 @@ fn the_prefix_holds_over_a_long_session_and_breaks_when_history_is_edited() {
                 ("c1", "read", json!({"path": "a", "gate": "g1"})),
                 ("c2", "peek", json!({"path": "b"})),
             ]),
-            Response::new().reasoning("Thinking.").text("Read both.").end(StopReason::End),
+            Response::new()
+                .reasoning("Thinking.")
+                .text("Read both.")
+                .end(StopReason::End),
             calls(&[("c3", "write", json!({"path": "c"}))]),
             Response::new()
                 .text("One more.")
@@ -148,7 +161,8 @@ fn the_prefix_holds_over_a_long_session_and_breaks_when_history_is_edited() {
     // sent it.
     setup.model = RoleModel::new(Arc::new(anthropic(&world.provider)), fixtures::model());
     let rig = setup.start(&world);
-    rig.instructions.set(&root_file(&rig, "AGENTS.md"), "Use tabs.");
+    rig.instructions
+        .set(&root_file(&rig, "AGENTS.md"), "Use tabs.");
     world.run(async {
         rig.prompt("go");
         // A steering message arrives while the round runs.
@@ -159,7 +173,8 @@ fn the_prefix_holds_over_a_long_session_and_breaks_when_history_is_edited() {
         // Between turns: a notice, and a changed instruction file.
         rig.handle
             .notice(NoticeSource::Plan, "The user added a task.");
-        rig.instructions.set(&root_file(&rig, "AGENTS.md"), "Use spaces.");
+        rig.instructions
+            .set(&root_file(&rig, "AGENTS.md"), "Use spaces.");
         rig.prompt("now write c");
         rig.events.turns(2).await;
         rig.prompt("and finish");
@@ -167,10 +182,19 @@ fn the_prefix_holds_over_a_long_session_and_breaks_when_history_is_edited() {
     });
     let requests = world.provider.requests();
     assert_eq!(requests.len(), 6);
-    assert!(rig.events.ends().iter().all(|end| end.outcome == TurnOutcome::Completed));
+    assert!(
+        rig.events
+            .ends()
+            .iter()
+            .all(|end| end.outcome == TurnOutcome::Completed)
+    );
     // One epoch throughout: the prompt and the tools never changed.
     assert_eq!(rig.store.epochs().len(), 1);
-    assert!(requests.windows(2).all(|pair| pair[0].system == pair[1].system));
+    assert!(
+        requests
+            .windows(2)
+            .all(|pair| pair[0].system == pair[1].system)
+    );
     // The notices are in the conversation, each saying whose it is.
     let last = requests.last().unwrap();
     let notes: Vec<&Message> = last
@@ -179,10 +203,17 @@ fn the_prefix_holds_over_a_long_session_and_breaks_when_history_is_edited() {
         .filter(|message| all_text(message).starts_with(NOTICE_LEAD))
         .collect();
     assert_eq!(notes.len(), 2, "the plan and the changed file");
-    assert!(notes.iter().any(|note| all_text(note).contains("Use spaces.")));
+    assert!(
+        notes
+            .iter()
+            .any(|note| all_text(note).contains("Use spaces."))
+    );
 
     for client in [anthropic(&world.provider), openai_chat(&world.provider)] {
-        let bytes: Vec<Vec<u8>> = requests.iter().map(|request| client.render(request)).collect();
+        let bytes: Vec<Vec<u8>> = requests
+            .iter()
+            .map(|request| client.render(request))
+            .collect();
         for (index, pair) in bytes.windows(2).enumerate() {
             assert_eq!(
                 check_prefix(&pair[0], &pair[1]),
@@ -223,9 +254,12 @@ fn the_system_prompt_has_its_sections_and_the_project_instructions() {
     let user = cortex_base::AbsPath::from_os(&world.dir.join("config")).unwrap();
     setup.user_dir = Some(user.clone());
     let rig = setup.start(&world);
-    rig.instructions.set(&user.join("AGENTS.md").unwrap(), "Be brief.");
-    rig.instructions.set(&root_file(&rig, "AGENTS.md"), "Use tabs.");
-    rig.instructions.set(&root_file(&rig, "CLAUDE.md"), "Write tests.");
+    rig.instructions
+        .set(&user.join("AGENTS.md").unwrap(), "Be brief.");
+    rig.instructions
+        .set(&root_file(&rig, "AGENTS.md"), "Use tabs.");
+    rig.instructions
+        .set(&root_file(&rig, "CLAUDE.md"), "Write tests.");
     world.run(async {
         rig.prompt("go");
         rig.events.turns(1).await;
@@ -233,7 +267,11 @@ fn the_system_prompt_has_its_sections_and_the_project_instructions() {
     let request = last_request(&world.provider);
     let system = &request.system;
     assert!(system.starts_with(CORE_INSTRUCTIONS));
-    let at = |text: &str| system.find(text).unwrap_or_else(|| panic!("{text} in {system}"));
+    let at = |text: &str| {
+        system
+            .find(text)
+            .unwrap_or_else(|| panic!("{text} in {system}"))
+    };
     assert!(at("Be brief.") < at("Use tabs.") && at("Use tabs.") < at("Write tests."));
     assert!(at("## AGENTS.md") < at("## CLAUDE.md"));
     assert_eq!(
@@ -271,7 +309,8 @@ fn changed_new_and_removed_instruction_files_are_told_as_notices() {
 
     rig.instructions.set(&agents, "Use spaces.");
     turn("second", 2);
-    rig.instructions.set(&root_file(&rig, "CLAUDE.md"), "Write tests.");
+    rig.instructions
+        .set(&root_file(&rig, "CLAUDE.md"), "Write tests.");
     turn("third", 3);
     rig.instructions.remove(&agents);
     turn("fourth", 4);
@@ -283,7 +322,13 @@ fn changed_new_and_removed_instruction_files_are_told_as_notices() {
     assert!(notices[1].starts_with("Instruction file `CLAUDE.md` is new."));
     assert!(notices[2].starts_with("Instruction file `AGENTS.md` was removed."));
     // The system prompt is not rewritten within the epoch.
-    assert!(world.provider.requests().iter().all(|request| request.system == system));
+    assert!(
+        world
+            .provider
+            .requests()
+            .iter()
+            .all(|request| request.system == system)
+    );
     assert!(system.contains("Use tabs.") && !system.contains("Use spaces."));
     assert_eq!(rig.store.epochs().len(), 1);
     // Front ends are told too.
@@ -301,13 +346,22 @@ fn a_nested_instruction_file_is_given_once_when_a_tool_first_touches_its_directo
     let world = World::new(
         "instructions_nested",
         [
-            calls(&[("c1", "read", json!({"path": "src/api/handler.rs", "record": true}))]),
-            calls(&[("c2", "read", json!({"path": "src/api/routes.rs", "record": true}))]),
+            calls(&[(
+                "c1",
+                "read",
+                json!({"path": "src/api/handler.rs", "record": true}),
+            )]),
+            calls(&[(
+                "c2",
+                "read",
+                json!({"path": "src/api/routes.rs", "record": true}),
+            )]),
             says("Done."),
         ],
     );
     let rig = Setup::new(&world).start(&world);
-    rig.instructions.set(&root_file(&rig, "src/api/AGENTS.md"), "Return JSON errors.");
+    rig.instructions
+        .set(&root_file(&rig, "src/api/AGENTS.md"), "Return JSON errors.");
     world.run(async {
         rig.prompt("go");
         rig.events.turns(1).await;
@@ -315,8 +369,16 @@ fn a_nested_instruction_file_is_given_once_when_a_tool_first_touches_its_directo
     let requests = world.provider.requests();
     assert!(!requests[0].system.contains("Return JSON errors."));
     let nested: Vec<String> = notice_texts(&rig);
-    assert_eq!(nested.len(), 1, "once, though two files of it were read: {nested:#?}");
-    assert!(nested[0].starts_with("Instruction file `src/api/AGENTS.md` applies to the files under `src/api/`"));
+    assert_eq!(
+        nested.len(),
+        1,
+        "once, though two files of it were read: {nested:#?}"
+    );
+    assert!(
+        nested[0].starts_with(
+            "Instruction file `src/api/AGENTS.md` applies to the files under `src/api/`"
+        )
+    );
     assert!(nested[0].ends_with("Return JSON errors."));
     // It comes after the round that touched the directory, before the
     // request that follows it.
@@ -335,8 +397,10 @@ fn instruction_files_over_the_cap_are_cut_and_the_user_is_told() {
         ..ContextSettings::default()
     };
     let rig = setup.start(&world);
-    rig.instructions.set(&root_file(&rig, "AGENTS.md"), "a".repeat(800));
-    rig.instructions.set(&root_file(&rig, "CLAUDE.md"), "c".repeat(800));
+    rig.instructions
+        .set(&root_file(&rig, "AGENTS.md"), "a".repeat(800));
+    rig.instructions
+        .set(&root_file(&rig, "CLAUDE.md"), "c".repeat(800));
     world.run(async {
         rig.prompt("go");
         rig.events.turns(1).await;
@@ -366,7 +430,10 @@ fn a_change_of_model_starts_an_epoch_that_keeps_the_prompt_and_tells_the_seen_fi
         "model_epoch",
         [
             calls(&[("c1", "read", json!({"path": "a", "record": true}))]),
-            Response::new().reasoning("Mine.").text("Read.").end(StopReason::End),
+            Response::new()
+                .reasoning("Mine.")
+                .text("Read.")
+                .end(StopReason::End),
             says("On the other model."),
         ],
     );
@@ -387,14 +454,20 @@ fn a_change_of_model_starts_an_epoch_that_keeps_the_prompt_and_tells_the_seen_fi
     assert_eq!(epochs.len(), 2);
     assert_eq!(epochs[1].reason, Some(EpochReason::Model));
     assert_eq!(epochs[1].model.as_str(), fixtures::PLAIN_MODEL);
-    assert_eq!((&epochs[0].system, &epochs[0].tools), (&epochs[1].system, &epochs[1].tools));
+    assert_eq!(
+        (&epochs[0].system, &epochs[0].tools),
+        (&epochs[1].system, &epochs[1].tools)
+    );
     // The history goes on as it was, reasoning and all: the provider says
     // what the new model may read.
     let request = last_request(&world.provider);
     assert!(has_reasoning(&request.messages));
     // The model no longer has what it was shown: the next read is whole.
     assert!(rig.workspace.files.shown(&file).is_none());
-    assert!(rig.workspace.files.snapshot(&file).is_some(), "the snapshot stays");
+    assert!(
+        rig.workspace.files.snapshot(&file).is_some(),
+        "the snapshot stays"
+    );
 }
 
 // ---------------------------------------------------------- the background
@@ -452,19 +525,30 @@ fn a_summary_prepared_in_the_background_is_used_and_the_newer_turns_follow_it_wi
     assert_eq!(summaries[0].role, ModelRole::Fast);
     assert!(all_text(summaries[0].messages.last().unwrap()).contains(SUMMARY_INSTRUCTIONS));
     let main = world.provider.requests();
-    assert_eq!(main.len(), 3, "the session went on: no request of its own for the summary");
+    assert_eq!(
+        main.len(),
+        3,
+        "the session went on: no request of its own for the summary"
+    );
 
     // The new epoch: the summary, then the turns after it was taken, with
     // their text, calls and results and without their reasoning.
     let third = &main[2];
     assert!(all_text(&third.messages[0]).contains("Goal: read a and b."));
-    assert!(all_text(&third.messages[0]).contains("read them"), "the last user message");
+    assert!(
+        all_text(&third.messages[0]).contains("read them"),
+        "the last user message"
+    );
     assert!(!has_reasoning(&third.messages));
     let texts: Vec<String> = third.messages.iter().map(all_text).collect();
     assert!(texts.iter().any(|text| text == "Reading b."), "{texts:#?}");
     assert_eq!(third.messages.last().unwrap().role, Role::Tool);
     assert_valid_history(&third.messages);
-    assert_eq!(third.messages.len(), 3, "the summary, and the round after it");
+    assert_eq!(
+        third.messages.len(),
+        3,
+        "the summary, and the round after it"
+    );
     // In the log: the summary, then the epoch; the summary's usage.
     let epochs = rig.store.epochs();
     assert_eq!(epochs.len(), 2);
@@ -557,7 +641,10 @@ fn a_summary_over_history_a_rewind_took_away_is_not_used() {
     let world = World::new("background_rewound", [says("First."), says("Second.")]);
     let gate = Gate::new();
     let fast = ScriptedProvider::new([
-        Response::new().wait(&gate).text("STALE").end(StopReason::End),
+        Response::new()
+            .wait(&gate)
+            .text("STALE")
+            .end(StopReason::End),
         says("FRESH"),
     ]);
     let rig = with_fast(&world, &fast);
@@ -576,11 +663,17 @@ fn a_summary_over_history_a_rewind_took_away_is_not_used() {
             .all()
             .into_iter()
             .filter_map(|event| match event {
-                cortex_agent::StatEvent::Context(context) => Some((context.estimate, context.limit)),
+                cortex_agent::StatEvent::Context(context) => {
+                    Some((context.estimate, context.limit))
+                }
                 _ => None,
             })
             .collect();
-        assert_eq!(fast.requests().len(), 1, "estimates and limits: {estimates:?}");
+        assert_eq!(
+            fast.requests().len(),
+            1,
+            "estimates and limits: {estimates:?}"
+        );
         // The history changes under the loop (a rewind), and only then is
         // the summary ready.
         let mut change = rig.handle.change_history().unwrap();
@@ -595,7 +688,10 @@ fn a_summary_over_history_a_rewind_took_away_is_not_used() {
     });
     let second = &world.provider.requests()[1];
     let first = all_text(&second.messages[0]);
-    assert!(first.contains("FRESH") && !first.contains("STALE"), "{first}");
+    assert!(
+        first.contains("FRESH") && !first.contains("STALE"),
+        "{first}"
+    );
     assert_eq!(fast.requests().len(), 2);
 }
 
@@ -604,7 +700,10 @@ fn an_interrupt_stops_a_summary_running_in_the_background() {
     let world = World::new(
         "background_interrupted",
         [
-            counted(calls(&[("c1", "read", json!({"path": "a", "gate": "g"}))]), 140_000),
+            counted(
+                calls(&[("c1", "read", json!({"path": "a", "gate": "g"}))]),
+                140_000,
+            ),
             // The next request is in flight when the interrupt comes.
             Response::events([]).stall(),
         ],
@@ -629,7 +728,10 @@ fn an_interrupt_stops_a_summary_running_in_the_background() {
         settle().await;
     });
     assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Interrupted);
-    assert!(rig.store.out_of_band().is_empty(), "nothing of it was counted as done");
+    assert!(
+        rig.store.out_of_band().is_empty(),
+        "nothing of it was counted as done"
+    );
 }
 
 // --------------------------------------------------- what is carried
@@ -671,8 +773,12 @@ fn a_compaction_carries_the_plan_the_files_and_the_last_message_exactly() {
         rig.events.turns(1).await;
     });
     // A changed file the write tool did not see: a command's.
-    rig.workspace.files.note_changed(&root_file(&rig, "build.log"));
-    rig.handle.compact(Some("the failing test".to_owned())).unwrap();
+    rig.workspace
+        .files
+        .note_changed(&root_file(&rig, "build.log"));
+    rig.handle
+        .compact(Some("the failing test".to_owned()))
+        .unwrap();
     world.run(async {
         rig.events.turns(2).await;
     });
@@ -680,7 +786,10 @@ fn a_compaction_carries_the_plan_the_files_and_the_last_message_exactly() {
     let summaries = rig.store.summaries();
     assert_eq!(summaries.len(), 1);
     let carried = &summaries[0].carried;
-    assert_eq!(serde_json::from_value::<Plan>(carried["plan"].clone()).unwrap(), plan);
+    assert_eq!(
+        serde_json::from_value::<Plan>(carried["plan"].clone()).unwrap(),
+        plan
+    );
     let files: Vec<(String, bool, bool)> = carried["files"]
         .as_array()
         .unwrap()
@@ -727,7 +836,9 @@ fn a_compaction_carries_the_plan_the_files_and_the_last_message_exactly() {
 fn a_summary_too_large_for_the_new_epoch_fails_the_compaction_and_records_nothing() {
     let world = World::new(
         "summary_too_large",
-        [Response::new().text(&"s".repeat(20_000)).end(StopReason::End)],
+        [Response::new()
+            .text(&"s".repeat(20_000))
+            .end(StopReason::End)],
     );
     let rig = Setup::new(&world).start(&world);
     rig.window(4_000);
@@ -738,7 +849,13 @@ fn a_summary_too_large_for_the_new_epoch_fails_the_compaction_and_records_nothin
     });
     let end = &rig.events.ends()[0];
     assert_eq!(end.outcome, TurnOutcome::Failed);
-    assert!(end.error.as_ref().unwrap().message.contains("more than a new context"));
+    assert!(
+        end.error
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("more than a new context")
+    );
     assert!(rig.store.summaries().is_empty());
     assert_eq!(rig.store.epochs().len(), 1);
 }
@@ -771,8 +888,14 @@ fn recent_turns_can_be_replayed_after_the_summary_without_their_reasoning() {
     let world = World::new(
         "keep_recent",
         [
-            Response::new().reasoning("Old.").text("Old answer.").end(StopReason::End),
-            Response::new().reasoning("New.").text("New answer.").end(StopReason::End),
+            Response::new()
+                .reasoning("Old.")
+                .text("Old answer.")
+                .end(StopReason::End),
+            Response::new()
+                .reasoning("New.")
+                .text("New answer.")
+                .end(StopReason::End),
             says("A summary."),
             says("After."),
         ],
@@ -799,7 +922,10 @@ fn recent_turns_can_be_replayed_after_the_summary_without_their_reasoning() {
     let request = last_request(&world.provider);
     let texts: Vec<String> = request.messages.iter().map(all_text).collect();
     assert!(texts.iter().any(|text| text == "New answer."), "{texts:#?}");
-    assert!(!texts.iter().any(|text| text == "Old answer."), "{texts:#?}");
+    assert!(
+        !texts.iter().any(|text| text == "Old answer."),
+        "{texts:#?}"
+    );
     assert!(!has_reasoning(&request.messages));
     // The summary request covered only what is not replayed.
     let summary_request = &world.provider.requests()[2];
@@ -858,6 +984,7 @@ fn resumed(world: &World, system: &str) -> (Rig, MemorySessionStore) {
                 reason: Some(EpochReason::Start),
                 base: None,
                 instructions: vec![("AGENTS.md".to_owned(), ContentHash::of(b"x"))],
+                altered: false,
             }),
         ),
     );
@@ -891,7 +1018,10 @@ fn a_resumed_session_whose_prompt_is_not_the_harnesss_now_begins_an_epoch_withou
     assert_eq!(epochs[1].reason, Some(EpochReason::Resume));
     let request = last_request(&world.provider);
     assert!(request.system.starts_with(CORE_INSTRUCTIONS));
-    assert!(!has_reasoning(&request.messages), "produced under the old prompt");
+    assert!(
+        !has_reasoning(&request.messages),
+        "produced under the old prompt"
+    );
     // The epoch's first user message carries the date it was written on.
     assert_eq!(
         text_of(&request.messages[0]),
@@ -948,7 +1078,225 @@ fn a_resumed_session_goes_on_in_its_epoch_when_the_prompt_is_the_same() {
         rig.prompt("after");
         rig.events.turns(1).await;
     });
-    assert_eq!(rebuilt.epochs().len(), 1, "no new epoch: the prompt is the same");
+    assert_eq!(
+        rebuilt.epochs().len(),
+        1,
+        "no new epoch: the prompt is the same"
+    );
     let request = last_request(&world.provider);
-    assert!(has_reasoning(&request.messages), "the old reasoning is valid still");
+    assert!(
+        has_reasoning(&request.messages),
+        "the old reasoning is valid still"
+    );
+}
+
+/// A client whose stable prefix is not the beginning of the one before
+/// it: the loop's debug-build check must stop the turn.
+struct Shifting {
+    inner: ScriptedProvider,
+    requests: std::sync::atomic::AtomicU64,
+}
+
+impl ModelClient for Shifting {
+    fn stream(&self, request: ModelRequest, cancel: CancelToken) -> ModelStream {
+        self.inner.stream(request, cancel)
+    }
+
+    fn stable_prefix(&self, _request: &ModelRequest) -> Option<Vec<u8>> {
+        let count = self
+            .requests
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(format!("{{\"request\":{count}").into_bytes())
+    }
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn the_loops_check_stops_a_request_that_does_not_begin_with_the_one_before() {
+    let world = World::new(
+        "prefix_check_fires",
+        [
+            calls(&[("c1", "read", json!({"path": "a"}))]),
+            says("Unreached."),
+        ],
+    );
+    let mut setup = Setup::new(&world);
+    setup.model = RoleModel::new(
+        Arc::new(Shifting {
+            inner: world.provider.clone(),
+            requests: std::sync::atomic::AtomicU64::new(0),
+        }),
+        fixtures::model(),
+    );
+    let rig = setup.start(&world);
+    rig.events
+        .loop_panic_expected
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    world.run(async {
+        rig.prompt("go");
+        rig.events.turns(1).await;
+    });
+    let end = &rig.events.ends()[0];
+    let error = end.error.as_ref().unwrap();
+    assert_eq!(error.code, "loop_panicked");
+    assert!(
+        error
+            .message
+            .contains("does not begin with the one before it"),
+        "{}",
+        error.message
+    );
+    assert_eq!(
+        world.provider.requests().len(),
+        1,
+        "the second was never sent"
+    );
+}
+
+#[test]
+fn a_history_read_again_is_the_one_built_live() {
+    // Tool rounds, notices, a compaction that replays recent turns, and a
+    // change of model, each followed by a reload that changes nothing. The
+    // loop's own check (a debug build's) holds each request after a reload
+    // to the one before it, byte for byte, and so does this test.
+    let world = World::new(
+        "reload_equal",
+        [
+            Response::new()
+                .reasoning("First.")
+                .text("Reading.")
+                .tool_call("c1", "read", &json!({"path": "a"}))
+                .end(StopReason::ToolCalls),
+            Response::new()
+                .reasoning("Then.")
+                .text("Read it.")
+                .end(StopReason::End),
+            says("Second answer."),
+            says("A summary."),
+            says("After the summary."),
+            says("On the other model."),
+            says("Last."),
+        ],
+    );
+    let mut setup = Setup::new(&world);
+    setup.context = ContextSettings {
+        keep_recent_tokens: 20,
+        ..ContextSettings::default()
+    };
+    let rig = setup.start(&world);
+    rig.instructions
+        .set(&root_file(&rig, "AGENTS.md"), "Use tabs.");
+    let reload = || {
+        let change = rig.handle.change_history().unwrap();
+        drop(change);
+    };
+    let turn = |text: &str, count: usize| {
+        world.run(async {
+            rig.prompt(text);
+            rig.events.turns(count).await;
+        });
+    };
+    rig.handle
+        .notice(NoticeSource::Plan, "The user added a task.");
+    turn("first", 1);
+    reload();
+    rig.instructions
+        .set(&root_file(&rig, "AGENTS.md"), "Use spaces.");
+    turn("second", 2);
+    reload();
+    rig.handle.compact(None).unwrap();
+    world.run(async {
+        rig.events.turns(3).await;
+    });
+    reload();
+    turn("third", 4);
+    rig.handle.set_role_model(
+        ModelRole::Main,
+        RoleModel::new(Arc::new(world.provider.clone()), fixtures::plain_model()),
+    );
+    turn("fourth", 5);
+    reload();
+    turn("fifth", 6);
+
+    assert!(
+        rig.events
+            .ends()
+            .iter()
+            .all(|end| end.outcome == TurnOutcome::Completed),
+        "{:#?}",
+        rig.events.ends()
+    );
+    let requests: Vec<ModelRequest> = world
+        .provider
+        .requests()
+        .into_iter()
+        .filter(|request| {
+            request.role == ModelRole::Main
+                && !all_text(request.messages.last().unwrap()).contains(SUMMARY_INSTRUCTIONS)
+        })
+        .collect();
+    // Within each epoch, each request's messages begin with the request
+    // before it's, a reload or not.
+    for pair in requests.windows(2) {
+        if pair[0].system == pair[1].system && pair[0].model.info.id == pair[1].model.info.id {
+            let before = &pair[0].messages;
+            if pair[1].messages.len() >= before.len()
+                && pair[1].messages[..before.len()] == before[..]
+            {
+                continue;
+            }
+            // The one place the history may start again: the compaction.
+            assert!(
+                all_text(&pair[1].messages[0]).contains("A summary."),
+                "a request after a reload does not begin with the one before it:\n{before:#?}\n{:#?}",
+                pair[1].messages
+            );
+        }
+    }
+    assert_eq!(rig.store.summaries().len(), 1);
+}
+
+#[test]
+fn an_epoch_whose_prompt_the_log_holds_masked_is_not_gone_on_with() {
+    let world = World::new("resume_altered", [says("Now.")]);
+    let probe = Setup::new(&world).start(&world);
+    world.run(async {
+        probe.prompt("probe");
+        probe.events.turns(1).await;
+    });
+    let epoch = probe.store.epochs().remove(0);
+    let rebuilt = MemorySessionStore::new();
+    {
+        let mut writer = rebuilt.clone();
+        let mut masked = epoch.clone();
+        masked.altered = true;
+        let turn = TurnId::new("t_1");
+        for record in [
+            cortex_agent::Record::Epoch(masked),
+            cortex_agent::Record::Item(Item::UserMessage(UserMessageItem {
+                id: ItemId::new("i_1"),
+                parts: vec![Part::text("before")],
+                delivery: None,
+                created_at: None,
+            })),
+        ] {
+            cortex_testkit::block_on(cortex_agent::SessionStore::append(
+                &mut writer,
+                &turn,
+                record,
+            ))
+            .unwrap();
+        }
+    }
+    let mut setup = Setup::new(&world);
+    setup.id = "s_2".to_owned();
+    setup.memory = rebuilt.clone();
+    let rig = setup.start(&world);
+    world.run(async {
+        rig.prompt("after");
+        rig.events.turns(1).await;
+    });
+    let epochs = rebuilt.epochs();
+    assert_eq!(epochs.len(), 2, "the same prompt, but the log's is masked");
+    assert_eq!(epochs[1].reason, Some(EpochReason::Resume));
 }

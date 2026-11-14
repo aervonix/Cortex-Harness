@@ -51,7 +51,7 @@ pub use compact::SUMMARY_INSTRUCTIONS;
 pub use history::{NOTICE_LEAD, append, project};
 pub use instructions::{
     DEFAULT_CAP, DEFAULT_NAMES, FileText, InstructionFiles, MemoryInstructionFiles,
-    NoInstructionFiles,
+    NoInstructionFiles, is_instruction_name,
 };
 pub use prefix::{PrefixDifference, check_prefix};
 pub use prompt::{CORE_INSTRUCTIONS, Environment};
@@ -60,8 +60,8 @@ pub(crate) use budget::{Budget, Pressure, pressure};
 pub(crate) use compact::{ARTIFACT_ROUNDS, Carried, instructions_message};
 pub(crate) use history::{History, Source};
 pub(crate) use instructions::{
-    Change, Discovered, Found, Given, Place, discover, nested_dirs, notice_text, places, read_one,
-    shown as shown_in,
+    Change, Discovered, Found, Given, Place, date_text, discover, nested_dirs, notice_text, places,
+    read_one, shown as shown_in, told_date,
 };
 pub(crate) use prefix::{Shape, difference, excerpt, hash_of};
 pub(crate) use prompt::{Built, Sections, build};
@@ -247,6 +247,8 @@ pub(crate) struct Context {
     /// known as such.
     pub(crate) generation: u64,
     pub(crate) budget: Budget,
+    /// The date the epoch's history tells the model.
+    pub(crate) date: Option<String>,
     /// The user's last message on the branch.
     pub(crate) last_user: Option<Vec<Part>>,
     /// The artifacts of the last rounds, newest last.
@@ -274,6 +276,7 @@ impl Context {
             given: Given::default(),
             generation: 0,
             budget: Budget::default(),
+            date: None,
             last_user: None,
             artifacts: VecDeque::new(),
             carried_before: None,
@@ -293,7 +296,6 @@ impl Context {
         // tokens is still the model's.
         self.budget.new_epoch();
         self.last_shape = None;
-        self.last_prefix = None;
         self.epoch = opened.epochs.last().map(|(_, epoch)| epoch.clone());
         self.epoch_number = opened.epochs.len() as u64;
         self.carried_before.clone_from(&opened.carried);
@@ -348,26 +350,41 @@ impl Context {
         }
 
         // What the model has of the instruction files: what the prompt
-        // gave when it was first sent (a change of model keeps it), then
-        // the notices since.
-        let first = match &current {
-            Some(now) => opened
-                .epochs
-                .iter()
-                .rposition(|(_, epoch)| !same_prefix(epoch, now))
-                .map_or(0, |before| before + 1),
-            None => opened.epochs.len(),
-        };
-        let (epoch_from, marks) = opened
+        // gave when the epoch began (a change of model goes on with it),
+        // then the notices since, and none from before the last summary,
+        // which the history no longer holds.
+        let first = opened
             .epochs
-            .get(first)
+            .iter()
+            .rposition(|(_, epoch)| epoch.reason != Some(EpochReason::Model));
+        let (epoch_from, marks) = first
+            .and_then(|first| opened.epochs.get(first))
             .map_or((0, &[][..]), |(at, epoch)| (*at, &epoch.instructions[..]));
         self.given = Given::from_marks(marks);
-        for item in items.iter().skip(epoch_from) {
+        let notices_from = epoch_from.max(summary.map_or(0, |at| at + 1));
+        for item in items.iter().skip(notices_from) {
             if let Item::Notice(notice) = item
                 && notice.source == NoticeSource::Instructions
             {
                 self.given.note(&notice.text);
+            }
+        }
+        // The date the history tells: its summary's, or its first user
+        // message's, or a later notice's.
+        self.date = None;
+        for item in items.iter().skip(summary.unwrap_or(0)) {
+            let told = match item {
+                Item::Summary(summary) => told_date(&summary.text).map(str::to_owned),
+                Item::Notice(notice) => told_date(&notice.text).map(str::to_owned),
+                Item::UserMessage(user) if self.date.is_none() => user
+                    .created_at
+                    .as_ref()
+                    .and_then(|at| at.as_str().get(..10))
+                    .map(str::to_owned),
+                _ => None,
+            };
+            if told.is_some() {
+                self.date = told;
             }
         }
         // Its user's last message, and the artifacts of the last rounds.

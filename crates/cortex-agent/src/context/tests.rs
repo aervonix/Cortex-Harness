@@ -83,6 +83,7 @@ fn epoch(system: &str) -> EpochStart {
         reason: Some(EpochReason::Start),
         base: None,
         instructions: vec![("AGENTS.md".to_owned(), ContentHash::of(b"Use tabs."))],
+        altered: false,
     }
 }
 
@@ -235,5 +236,148 @@ fn the_instruction_files_the_model_has_are_read_back_from_the_branch() {
     assert_eq!(
         context.given.files.get("src/AGENTS.md"),
         Some(&Some(found.hash()))
+    );
+}
+
+#[test]
+fn a_compaction_that_kept_the_prompt_forgets_the_nested_files_given_before_it() {
+    let mut context = context();
+    let nested = Item::Notice(NoticeItem {
+        id: ItemId::new("i_2"),
+        source: NoticeSource::Instructions,
+        text: notice_text(
+            &Change::Nested {
+                found: Found {
+                    place: Place {
+                        path: AbsPath::parse("/w/src/AGENTS.md", cortex_base::PathStyle::Posix)
+                            .unwrap(),
+                        shown: "src/AGENTS.md".to_owned(),
+                        user: false,
+                        dir: AbsPath::parse("/w/src", cortex_base::PathStyle::Posix).unwrap(),
+                    },
+                    text: "Nested.".to_owned(),
+                    cut: false,
+                },
+                dir: "src".to_owned(),
+            },
+            DEFAULT_CAP,
+        ),
+        created_at: None,
+    });
+    let summary = Item::Summary(SummaryItem {
+        id: ItemId::new("i_3"),
+        text: "The summary.".to_owned(),
+        covers_through: None,
+        usage: None,
+        created_at: None,
+    });
+    let mut compaction = epoch("one");
+    compaction.reason = Some(EpochReason::Compaction);
+    // The same prompt in both epochs: a compaction that kept it.
+    context.load(&Opened {
+        items: vec![user("i_1", "go"), nested, summary],
+        epochs: vec![(0, epoch("one")), (3, compaction)],
+        ..Opened::default()
+    });
+    assert!(!context.given.files.contains_key("src/AGENTS.md"));
+    assert!(context.given.files.contains_key("AGENTS.md"));
+}
+
+#[test]
+fn the_epochs_first_user_message_carries_its_own_date_live_and_read_again() {
+    let dated = |id: &str, text: &str, at: &str| {
+        Item::UserMessage(UserMessageItem {
+            id: ItemId::new(id),
+            parts: vec![Part::text(text)],
+            delivery: None,
+            created_at: Some(at.into()),
+        })
+    };
+    let items = [
+        dated("i_1", "go", "2026-11-12T09:00:00Z"),
+        thinking_answer("i_2", None),
+        dated("i_3", "again", "2026-11-13T09:00:00Z"),
+    ];
+    let mut live = context();
+    for item in &items {
+        live.push(item);
+    }
+    let mut read = context();
+    read.load(&Opened {
+        items: items.to_vec(),
+        epochs: vec![(0, epoch("one"))],
+        ..Opened::default()
+    });
+    read.epoch = None;
+    assert_eq!(live.history.messages(), read.history.messages());
+    let Part::Text(date) = &live.history.messages()[0].parts[0] else {
+        panic!("a date part");
+    };
+    assert_eq!(date.text, "Today's date is 2026-11-12 (UTC).");
+    assert_eq!(
+        live.history.messages()[2].parts.len(),
+        1,
+        "only the first is dated"
+    );
+    assert_eq!(read.date.as_deref(), Some("2026-11-12"));
+}
+
+#[test]
+fn turns_replayed_after_a_summary_are_the_same_live_and_read_again() {
+    // A notice came before the first prompt, so the dated message is
+    // among the turns the summary did not cover; and one answer held
+    // only reasoning.
+    let mut only_reasoning = thinking_answer("i_4", None);
+    if let Item::AssistantMessage(message) = &mut only_reasoning {
+        message.parts.truncate(1);
+    }
+    let items = vec![
+        Item::Notice(NoticeItem {
+            id: ItemId::new("i_1"),
+            source: NoticeSource::Plan,
+            text: "The plan.".to_owned(),
+            created_at: None,
+        }),
+        Item::UserMessage(UserMessageItem {
+            id: ItemId::new("i_2"),
+            parts: vec![Part::text("go")],
+            delivery: None,
+            created_at: Some("2026-11-12T09:00:00Z".into()),
+        }),
+        thinking_answer("i_3", None),
+        only_reasoning,
+        user("i_5", "more"),
+    ];
+    let mut live = context();
+    for item in &items {
+        live.push(item);
+    }
+    // Live: the summary covers the notice alone, and the rest is replayed.
+    let summary = Item::Summary(SummaryItem {
+        id: ItemId::new("i_6"),
+        text: "The summary.".to_owned(),
+        covers_through: Some(ItemId::new("i_1")),
+        usage: None,
+        created_at: None,
+    });
+    let mut replayed = History::default();
+    replayed.push(&summary);
+    replayed.extend_projected(&live.history, 1);
+
+    let mut read = context();
+    let mut logged = items.clone();
+    logged.push(summary);
+    read.load(&Opened {
+        items: logged,
+        epochs: vec![(0, epoch("one"))],
+        ..Opened::default()
+    });
+    assert_eq!(replayed.messages(), read.history.messages());
+    assert_eq!(replayed.fingerprints(), read.history.fingerprints());
+    assert!(
+        !replayed
+            .messages()
+            .iter()
+            .any(|message| message.parts.is_empty())
     );
 }

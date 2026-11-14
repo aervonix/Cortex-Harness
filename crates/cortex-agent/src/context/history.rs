@@ -52,6 +52,9 @@ struct Meta {
     source: Source,
     bytes: u64,
     fingerprint: u64,
+    /// The message begins with the date part of an epoch's first user
+    /// message.
+    dated: bool,
 }
 
 /// The messages of an epoch.
@@ -73,6 +76,13 @@ impl History {
     /// How many messages there are.
     pub(crate) fn len(&self) -> usize {
         self.messages.len()
+    }
+
+    /// Whether the epoch begins with a summary.
+    pub(crate) fn starts_with_summary(&self) -> bool {
+        self.meta
+            .first()
+            .is_some_and(|meta| meta.source == Source::Summary)
     }
 
     /// The fingerprint of each message, in order.
@@ -135,7 +145,11 @@ impl History {
                 {
                     let mut dated = user.clone();
                     dated.parts.insert(0, Part::text(date_text(date)));
-                    return self.push_shown(item, &Item::UserMessage(dated), before);
+                    self.push_shown(item, &Item::UserMessage(dated), before);
+                    if let Some(meta) = self.meta.last_mut() {
+                        meta.dated = true;
+                    }
+                    return;
                 }
             }
             _ => {}
@@ -161,6 +175,7 @@ impl History {
                 source,
                 bytes: message.0,
                 fingerprint: message.1,
+                dated: false,
             });
         } else if self.messages.len() == before
             && matches!(item, Item::ToolResult(_))
@@ -178,27 +193,49 @@ impl History {
     /// assistant message: the history goes on into an epoch whose prefix is
     /// not the one it was produced under. Nothing of it has been sent in
     /// that epoch yet.
+    ///
+    /// The result is what [`push_projected`](Self::push_projected) makes
+    /// of the same items, so that a history read again from the log is the
+    /// same bytes: a message that held only reasoning is left out.
     pub(crate) fn project_all(&mut self) {
-        for (message, meta) in self.messages.iter_mut().zip(&mut self.meta) {
-            if message.role == Role::Assistant {
-                *message = project(message);
-                let (bytes, fingerprint) = measure(message);
-                meta.bytes = bytes;
-                meta.fingerprint = fingerprint;
+        let messages = std::mem::take(&mut self.messages);
+        let meta = std::mem::take(&mut self.meta);
+        for (message, mut meta) in messages.into_iter().zip(meta) {
+            let message = if message.role == Role::Assistant {
+                project(&message)
+            } else {
+                message
+            };
+            if message.parts.is_empty() {
+                continue;
             }
+            (meta.bytes, meta.fingerprint) = measure(&message);
+            self.messages.push(message);
+            self.meta.push(meta);
         }
     }
 
     /// Adds the messages of `other` from `from` on, without the reasoning
     /// or the provider's own blocks of its assistant messages: the turns a
     /// summary did not cover, replayed after it.
+    ///
+    /// The result is what [`push_projected`](Self::push_projected) makes
+    /// of the same items after a summary: a message that held only
+    /// reasoning is left out, and a first user message loses the date it
+    /// carried, which the summary says now.
     pub(crate) fn extend_projected(&mut self, other: &Self, from: usize) {
         for (message, meta) in other.messages.iter().zip(&other.meta).skip(from) {
-            let message = if message.role == Role::Assistant {
+            let mut message = if message.role == Role::Assistant {
                 project(message)
             } else {
                 message.clone()
             };
+            if meta.dated && !message.parts.is_empty() {
+                message.parts.remove(0);
+            }
+            if message.parts.is_empty() {
+                continue;
+            }
             let (bytes, fingerprint) = measure(&message);
             self.messages.push(message);
             self.meta.push(Meta {
@@ -206,6 +243,7 @@ impl History {
                 source: meta.source,
                 bytes,
                 fingerprint,
+                dated: false,
             });
         }
         self.dated = true;

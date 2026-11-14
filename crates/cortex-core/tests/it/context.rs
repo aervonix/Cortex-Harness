@@ -137,7 +137,11 @@ fn a_compaction_asked_for_is_undone_by_a_rewind_to_before_it() {
 fn a_session_resumed_after_a_compaction_begins_from_its_summary() {
     let world = World::new(
         "resume_from_summary",
-        [says("First answer."), says("The summary."), says("Resumed.")],
+        [
+            says("First answer."),
+            says("The summary."),
+            says("Resumed."),
+        ],
     );
     let core = world.core();
     let session = world.run(async {

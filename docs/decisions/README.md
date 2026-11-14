@@ -40,6 +40,7 @@ One record per significant choice. Each says what the options were, what was cho
 | [0032](0032-what-the-linux-sandbox-needs.md) | The Linux sandbox enforces from Landlock 3; with the network off a command reaches no socket but its own; every failure to apply it fails the call | Accepted in step 26, on 2026-11-13 |
 | [0033](0033-tui-look.md) | The TUI's look is "Roomy 2": glyph-led blocks, answers apart, tool rounds in boxes that expand, mouse only in the viewer and full screen | Chosen by the owner on 2026-11-14 |
 | [0034](0034-notices-in-the-users-role.md) | A notice is a message in the user's role that says it is the harness's: no system role in the neutral model | Accepted by the owner in step 15, on 2026-11-14 |
+| [0035](0035-where-the-context-limit-comes-from.md) | A request's context limit comes from a local server's probe, or from the catalog, which every model has | Accepted in step 15, on 2026-11-14 |
 
 The owner's answers are dated 2026-11-12 unless a row says otherwise, and are recorded in the [build plan](../build-plan.md) and, from step 4 on, in each step's [records](../steps/README.md).
 

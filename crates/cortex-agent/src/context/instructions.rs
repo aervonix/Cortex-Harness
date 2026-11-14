@@ -127,11 +127,32 @@ pub(crate) struct Place {
     pub(crate) dir: AbsPath,
 }
 
+/// Whether a configured name can be an instruction file's: a plain file
+/// name ending in `.md`, with no separator and no `..`. Anything else is
+/// left out, so that no setting can make the harness read and send a file
+/// that is not a document of instructions.
+#[must_use]
+pub fn is_instruction_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains(['/', '\\', ':'])
+        && name != ".."
+        && !name.starts_with('.')
+        && name.to_ascii_lowercase().ends_with(".md")
+}
+
 /// The places looked at when an epoch starts, outermost first.
+///
+/// In the user's configuration directory only the default names are read:
+/// a name a project's configuration added must not reach the user's own
+/// files there.
 pub(crate) fn places(root: &AbsPath, user_dir: Option<&AbsPath>, names: &[String]) -> Vec<Place> {
+    let names: Vec<&String> = names
+        .iter()
+        .filter(|name| is_instruction_name(name))
+        .collect();
     let mut out = Vec::new();
     if let Some(dir) = user_dir {
-        for name in names {
+        for name in DEFAULT_NAMES {
             if let Ok(path) = dir.join(name) {
                 out.push(Place {
                     shown: path.to_native_string(),
@@ -153,6 +174,15 @@ pub(crate) fn places(root: &AbsPath, user_dir: Option<&AbsPath>, names: &[String
         }
     }
     out
+}
+
+/// The date a notice or a summary of ours told the model, if it told one.
+pub(crate) fn told_date(text: &str) -> Option<&str> {
+    let at = text.find("Today's date is ")? + "Today's date is ".len();
+    let date = text.get(at..at + 10)?;
+    date.bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'-')
+        .then_some(date)
 }
 
 /// How the model is shown a file in the workspace: relative, with `/`.
@@ -447,6 +477,42 @@ mod tests {
             .iter()
             .map(|name| (*name).to_owned())
             .collect()
+    }
+
+    #[test]
+    fn a_name_must_be_a_plain_document_and_the_user_dir_has_only_the_defaults() {
+        for bad in [
+            "credentials.toml",
+            "config.toml",
+            "../x.md",
+            "a/b.md",
+            ".hidden.md",
+            "",
+            "C:x.md",
+        ] {
+            assert!(!is_instruction_name(bad), "{bad}");
+        }
+        assert!(is_instruction_name("GUIDE.md") && is_instruction_name("notes.MD"));
+        let mut more = names();
+        more.extend(["GUIDE.md".to_owned(), "credentials.toml".to_owned()]);
+        let found = places(&path("/work/app"), Some(&path("/config/cx")), &more);
+        let shown: Vec<&str> = found.iter().map(|place| place.shown.as_str()).collect();
+        assert_eq!(
+            shown,
+            [
+                "/config/cx/AGENTS.md",
+                "/config/cx/CLAUDE.md",
+                "AGENTS.md",
+                "CLAUDE.md",
+                "GUIDE.md"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_date_is_read_back() {
+        assert_eq!(told_date(&date_text("2026-11-14")), Some("2026-11-14"));
+        assert_eq!(told_date("no date here"), None);
     }
 
     #[test]
