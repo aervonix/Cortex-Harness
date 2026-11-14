@@ -21,16 +21,22 @@
 //! back as they were, and from which commit ([`Changes::restorable`]).
 //!
 //! **Asking git runs nothing of the repository's that the user has not
-//! accepted.** A repository's own configuration can name programs for git
-//! to run when it is asked what has changed: a file-system monitor, which
-//! the harness turns off ([`GIT_HARDENING`]), and a filter for a kind of
-//! file, which nothing turns off. So git is asked only about a project the
-//! user trusts, and any other is looked at by modification times.
+//! accepted, and nothing outside the sandbox.** A repository's own
+//! configuration can name programs for git to run when it is asked what
+//! has changed: a file-system monitor, which the harness turns off
+//! ([`GIT_HARDENING`]), and a filter for a kind of file, which nothing
+//! turns off. So git is asked only about a project the user trusts, and
+//! any other is looked at by modification times. A confined command can
+//! still rewrite a trusted repository's configuration, so git is started
+//! through the session's [`Confinement`]: inside the sandbox, reading
+//! only, while commands are confined ([`ChangeDetector::with_git`]).
 //!
 //! Both are best-effort, and say so: [`Changes::complete`] is `false` when
-//! the look ran out of its time cap or of its room, and then the lists are
-//! what was seen and no more. Files that ignore rules leave out are left
-//! out here too: a build's output directory is not a change to report.
+//! the look ran out of its time cap or of its room, or git did not answer,
+//! and then the lists are what was seen and no more, and
+//! [`Changes::incomplete`] says why. Files that ignore rules leave out are
+//! left out here too: a build's output directory is not a change to
+//! report.
 //!
 //! Everything here blocks, and is called off the core thread.
 
@@ -41,9 +47,11 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use cortex_base::git::{AsItIs, Confinement, StartError};
 use cortex_base::{SharedClock, SystemClock, UtcTime};
 use ignore::WalkBuilder;
 
@@ -117,10 +125,66 @@ pub struct Changes {
     /// Whether the look finished. When it did not, the lists are what was
     /// seen, and there may be more.
     pub complete: bool,
+    /// Why the look did not finish: the first reason it met. `None` when
+    /// it did.
+    pub incomplete: Option<Incomplete>,
+}
+
+/// Why a look for what a command changed did not finish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Incomplete {
+    /// Git did not answer within the look's cap.
+    GitTooSlow,
+    /// Git's answer was larger than an answer may be.
+    GitTooMuch,
+    /// Git exited with a failure.
+    GitFailed,
+    /// Git exited with a failure inside the sandbox, where it may write
+    /// nothing: a program the repository's configuration names for it (a
+    /// filter, such as git-lfs's) may have needed to write.
+    GitFailedConfined,
+    /// Git could not be started inside the sandbox, so it was not asked.
+    GitNotConfined,
+    /// Git's answer could not be read.
+    GitUnreadable,
+    /// `HEAD` moved to or from a branch with no commit, so there were not
+    /// two commits to compare.
+    NoCommitToCompare,
+    /// There were more files than one look keeps track of.
+    TooManyFiles,
+    /// The walk of the workspace ran out of its time.
+    OutOfTime,
+}
+
+impl Incomplete {
+    /// What front ends and the model are told.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GitTooSlow => "git did not answer within the time one look may take",
+            Self::GitTooMuch => "git's answer was larger than one look keeps",
+            Self::GitFailed => "git exited with a failure",
+            Self::GitFailedConfined => {
+                "git exited with a failure inside the sandbox, where it may write nothing: a \
+                 program the repository's configuration names for it (a filter, such as \
+                 git-lfs's) may have needed to write"
+            }
+            Self::GitNotConfined => {
+                "git could not be started inside the sandbox, so it was not asked"
+            }
+            Self::GitUnreadable => "git's answer could not be read",
+            Self::NoCommitToCompare => {
+                "HEAD moved to or from a branch with no commit, so there were not two commits to \
+                 compare"
+            }
+            Self::TooManyFiles => "there were more files than one look keeps track of",
+            Self::OutOfTime => "the walk of the workspace ran out of its time",
+        }
+    }
 }
 
 impl Changes {
-    fn nothing(method: Method, complete: bool) -> Self {
+    fn nothing(method: Method, incomplete: Option<Incomplete>) -> Self {
         Self {
             method,
             modified: Vec::new(),
@@ -129,8 +193,15 @@ impl Changes {
             restorable: Vec::new(),
             base_commit: None,
             head_moved: false,
-            complete,
+            complete: incomplete.is_none(),
+            incomplete,
         }
+    }
+
+    /// Marks the look as one that did not finish, keeping the first reason.
+    fn stop_short(&mut self, why: Incomplete) {
+        self.complete = false;
+        self.incomplete.get_or_insert(why);
     }
 
     /// Whether no changed file was seen.
@@ -151,6 +222,7 @@ impl Changes {
             "base_commit": self.base_commit,
             "head_moved": self.head_moved,
             "complete": self.complete,
+            "incomplete": self.incomplete.map(Incomplete::as_str),
         })
     }
 }
@@ -161,8 +233,9 @@ impl Changes {
 pub struct Before {
     started: UtcTime,
     git: Option<GitLook>,
-    /// Whether git was asked and did not answer in time.
-    git_gave_up: bool,
+    /// Why git was asked and gave no answer: then the look after the
+    /// command is not made either.
+    git_gave_up: Option<Incomplete>,
 }
 
 /// One answer of `git status`.
@@ -215,6 +288,16 @@ pub struct ChangeDetector {
     /// Set when `git` could not be started at all, so that it is not tried
     /// before every command.
     no_git: AtomicBool,
+    /// Where git runs: inside the sandbox while commands are confined.
+    confinement: Arc<dyn Confinement>,
+}
+
+/// Why git gave no answer.
+enum NoAnswer {
+    /// There is no git to ask.
+    NoGit,
+    /// It was asked, and the look cannot finish.
+    Incomplete(Incomplete),
 }
 
 impl ChangeDetector {
@@ -226,9 +309,10 @@ impl ChangeDetector {
         Self {
             root: root.into(),
             cap: DEFAULT_CAP,
-            clock: std::sync::Arc::new(SystemClock::new()),
+            clock: Arc::new(SystemClock::new()),
             ask_git: false,
             no_git: AtomicBool::new(false),
+            confinement: Arc::new(AsItIs),
         }
     }
 
@@ -244,6 +328,17 @@ impl ChangeDetector {
     #[must_use]
     pub fn trusting_the_repository(mut self, trusted: bool) -> Self {
         self.ask_git = trusted;
+        self
+    }
+
+    /// Sets where git runs, in place of [`AsItIs`]: in a session that
+    /// confines commands, inside the sandbox, reading only. A confined
+    /// command can rewrite the repository's configuration, which trust was
+    /// given for, so that `git status` runs a program it names (found by
+    /// the third review of step 26).
+    #[must_use]
+    pub fn with_git(mut self, confinement: Arc<dyn Confinement>) -> Self {
+        self.confinement = confinement;
         self
     }
 
@@ -268,10 +363,11 @@ impl ChangeDetector {
         let started = self.clock.now();
         let (git, git_gave_up) = match self.repository() {
             Some(repository) => match self.git_look(&repository) {
-                Some(look) => (Some(look), false),
-                None => (None, !self.no_git.load(Ordering::Relaxed)),
+                Ok(look) => (Some(look), None),
+                Err(NoAnswer::NoGit) => (None, None),
+                Err(NoAnswer::Incomplete(why)) => (None, Some(why)),
             },
-            None => (None, false),
+            None => (None, None),
         };
         Before {
             started,
@@ -283,15 +379,18 @@ impl ChangeDetector {
     /// Looks again after the command, and says what changed.
     #[must_use]
     pub fn after(&self, before: &Before) -> Changes {
-        if before.git_gave_up {
-            // Git is there and was too slow. Walking the same tree would
-            // be slower still.
-            return Changes::nothing(Method::None, false);
+        if let Some(why) = before.git_gave_up {
+            // Git is there and gave no answer. Walking the same tree would
+            // be slower still, and would miss what git sees.
+            return Changes::nothing(Method::None, Some(why));
         }
         match (&before.git, self.repository()) {
             (Some(was), Some(repository)) => match self.git_look(&repository) {
-                Some(now) => self.compare(&repository, was, &now),
-                None => Changes::nothing(Method::Git, false),
+                Ok(now) => self.compare(&repository, was, &now),
+                Err(NoAnswer::Incomplete(why)) => Changes::nothing(Method::Git, Some(why)),
+                // Git answered before the command and cannot be started
+                // now: there is nothing to compare its answer with.
+                Err(NoAnswer::NoGit) => Changes::nothing(Method::Git, Some(Incomplete::GitFailed)),
             },
             // The command made the repository, or took it away: there is
             // nothing to compare an answer of git with.
@@ -320,33 +419,38 @@ impl ChangeDetector {
         Some(Repository { prefix })
     }
 
-    fn git(&self, arguments: &[&str]) -> Option<Vec<u8>> {
-        let mut hardened = GIT_HARDENING.to_vec();
-        hardened.extend_from_slice(arguments);
-        let arguments = &hardened[..];
-        // By the path found in an absolute directory of `PATH`: by its bare
-        // name, a relative entry would be searched from the workspace.
-        let Some(git) = cortex_base::program::git() else {
-            self.no_git.store(true, Ordering::Relaxed);
-            return None;
+    /// Asks git, through the session's confinement, in the one way the
+    /// harness starts it (`cortex_base::git::start`): found in an absolute
+    /// directory of `PATH`, with [`GIT_HARDENING`], and so that asking
+    /// changes nothing (no refreshed index written behind the user's own
+    /// git, no lock taken, no question put to a terminal).
+    fn git(&self, arguments: &[&str]) -> Result<Vec<u8>, NoAnswer> {
+        let child = match cortex_base::git::start(&*self.confinement, &self.root, arguments) {
+            Ok(child) => child,
+            Err(StartError::NotInstalled) => {
+                self.no_git.store(true, Ordering::Relaxed);
+                return Err(NoAnswer::NoGit);
+            }
+            Err(StartError::NotConfined(_)) => {
+                return Err(NoAnswer::Incomplete(Incomplete::GitNotConfined));
+            }
+            Err(StartError::Io(_)) => return Err(NoAnswer::Incomplete(Incomplete::GitFailed)),
         };
-        let answer = brief::run(
-            git,
-            arguments,
-            Some(&self.root),
-            // Asking must not change anything: no refreshed index written
-            // behind the user's own git, no lock taken, and no question
-            // put to a terminal.
-            &cortex_base::GIT_ENV,
-            self.cap,
-        );
-        if answer == Err(brief::Unanswered::NotStarted) {
-            self.no_git.store(true, Ordering::Relaxed);
-        }
-        answer.ok()
+        brief::answer(child, self.cap).map_err(|unanswered| {
+            NoAnswer::Incomplete(match unanswered {
+                brief::Unanswered::TooSlow => Incomplete::GitTooSlow,
+                brief::Unanswered::TooMuch => Incomplete::GitTooMuch,
+                brief::Unanswered::Failed | brief::Unanswered::NotStarted
+                    if self.confinement.confines() =>
+                {
+                    Incomplete::GitFailedConfined
+                }
+                brief::Unanswered::Failed | brief::Unanswered::NotStarted => Incomplete::GitFailed,
+            })
+        })
     }
 
-    fn git_look(&self, repository: &Repository) -> Option<GitLook> {
+    fn git_look(&self, repository: &Repository) -> Result<GitLook, NoAnswer> {
         let answer = self.git(&[
             "status",
             "--porcelain=v2",
@@ -357,7 +461,8 @@ impl ChangeDetector {
             "--",
             ".",
         ])?;
-        let status = parse_status(&answer)?;
+        let status =
+            parse_status(&answer).ok_or(NoAnswer::Incomplete(Incomplete::GitUnreadable))?;
         let mut files = BTreeMap::new();
         for (path, new_to_git) in status.paths {
             // Git names paths from the top of the repository.
@@ -365,7 +470,7 @@ impl ChangeDetector {
                 continue;
             };
             if files.len() >= MOST_FILES {
-                return None;
+                return Err(NoAnswer::Incomplete(Incomplete::TooManyFiles));
             }
             files.insert(
                 relative.to_owned(),
@@ -375,14 +480,14 @@ impl ChangeDetector {
                 },
             );
         }
-        Some(GitLook {
+        Ok(GitLook {
             head: status.head,
             files,
         })
     }
 
     fn compare(&self, repository: &Repository, was: &GitLook, now: &GitLook) -> Changes {
-        let mut changes = Changes::nothing(Method::Git, true);
+        let mut changes = Changes::nothing(Method::Git, None);
         // What git did not name before the command was as its commit has
         // it, so the commit still holds what the command replaced.
         changes.base_commit.clone_from(&was.head);
@@ -440,7 +545,7 @@ impl ChangeDetector {
                     "--",
                     ".",
                 ]) {
-                    Some(answer) => {
+                    Ok(answer) => {
                         for (status, path) in parse_name_status(&answer) {
                             let Some(relative) = path.strip_prefix(&repository.prefix) else {
                                 continue;
@@ -464,10 +569,11 @@ impl ChangeDetector {
                             }
                         }
                     }
-                    None => changes.complete = false,
+                    Err(NoAnswer::Incomplete(why)) => changes.stop_short(why),
+                    Err(NoAnswer::NoGit) => changes.stop_short(Incomplete::GitFailed),
                 }
             } else {
-                changes.complete = false;
+                changes.stop_short(Incomplete::NoCommitToCompare);
             }
         }
         for list in [
@@ -499,7 +605,7 @@ impl ChangeDetector {
     fn modified_since(&self, started: UtcTime) -> Changes {
         let since = started.checked_sub(CLOCK_SLACK).unwrap_or(started);
         let begun = self.clock.monotonic();
-        let mut changes = Changes::nothing(Method::ModificationTimes, true);
+        let mut changes = Changes::nothing(Method::ModificationTimes, None);
         let mut seen = 0usize;
         let walk = WalkBuilder::new(&self.root)
             .hidden(false)
@@ -513,11 +619,12 @@ impl ChangeDetector {
             let Ok(entry) = entry else { continue };
             seen += 1;
             // The clock is asked once in a while, not for every file.
-            if seen > MOST_FILES
-                || (seen.is_multiple_of(64)
-                    && self.clock.monotonic().saturating_sub(begun) > self.cap)
-            {
-                changes.complete = false;
+            if seen > MOST_FILES {
+                changes.stop_short(Incomplete::TooManyFiles);
+                break;
+            }
+            if seen.is_multiple_of(64) && self.clock.monotonic().saturating_sub(begun) > self.cap {
+                changes.stop_short(Incomplete::OutOfTime);
                 break;
             }
             if entry.file_type().is_none_or(|kind| kind.is_dir()) {
@@ -732,7 +839,7 @@ mod tests {
 
     #[test]
     fn changes_are_a_payload_for_front_ends() {
-        let mut changes = Changes::nothing(Method::Git, true);
+        let mut changes = Changes::nothing(Method::Git, None);
         assert!(changes.is_empty());
         changes.modified.push("src/a.rs".to_owned());
         changes.head_moved = true;
@@ -748,7 +855,18 @@ mod tests {
                 "base_commit": null,
                 "head_moved": true,
                 "complete": true,
+                "incomplete": null,
             })
+        );
+        // A look that did not finish says so, and why.
+        changes.stop_short(Incomplete::GitFailedConfined);
+        changes.stop_short(Incomplete::GitTooSlow);
+        let payload = changes.to_json();
+        assert_eq!(payload["complete"], false);
+        assert_eq!(
+            payload["incomplete"],
+            Incomplete::GitFailedConfined.as_str(),
+            "the first reason is kept"
         );
         assert_eq!(Method::ModificationTimes.as_str(), "mtime");
         assert_eq!(Method::None.as_str(), "none");

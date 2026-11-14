@@ -28,6 +28,7 @@ mod approvals;
 mod context;
 mod events;
 mod gates;
+mod harness_git;
 mod lifecycle;
 mod plan;
 mod provider;
@@ -71,11 +72,35 @@ pub const OTHER_MODEL: &str = "claude-haiku-5-5";
 /// harness's hidden subcommand makes the real one.
 pub const LAUNCH: &str = "cx-launch";
 
+/// The same for the harness's own git. This binary writes a line of its
+/// own before it becomes the launcher (the test runner's "running 1 test"),
+/// which the real binary does not: a command's output can carry it, and
+/// git's answer, which the harness reads, cannot.
+pub const LAUNCH_GIT: &str = "cx-launch-git";
+
 /// What the test runner runs as an ordinary test, which passes at once, and
 /// what the sandbox tests start as the launcher.
 #[test]
 fn launcher_entry() {
     let arguments: Vec<OsString> = std::env::args_os().collect();
+    if let Some(at) = arguments.iter().position(|argument| argument == LAUNCH_GIT) {
+        // The harness's own git, which `sandbox::launcher`'s wrapper
+        // started with its output on standard error and the test runner's
+        // first line on nowhere: a shell inside the sandbox gives git its
+        // output back, and its standard error to nowhere, as the harness
+        // does.
+        let mut rest = arguments[at + 1..].to_vec();
+        rest.splice(
+            1..1,
+            ["/bin/sh", "-c", "exec \"$0\" \"$@\" 1>&2 2>/dev/null"].map(OsString::from),
+        );
+        let code = cortex_sandbox::launch::run(rest);
+        #[expect(
+            clippy::exit,
+            reason = "the launcher ends as the hidden subcommand does"
+        )]
+        std::process::exit(code);
+    }
     if let Some(at) = arguments.iter().position(|argument| argument == LAUNCH) {
         let code = cortex_sandbox::launch::run(arguments[at + 1..].to_vec());
         #[expect(

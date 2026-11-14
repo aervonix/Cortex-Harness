@@ -35,13 +35,14 @@ mod kind;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use cortex_base::git::{AsItIs, Confinement};
 use cortex_base::{AbsPath, CancelToken, ResolvedPath};
 use cortex_protocol::item::ArtifactRef;
 use cortex_protocol::lease::RuleAction;
 use serde::Deserialize;
 use serde_json::json;
 
-pub use changes::{ChangeDetector, Changes};
+pub use changes::{ChangeDetector, Changes, Incomplete};
 pub use env::{ANALYSIS_REMOVED, DEFAULT_REMOVED};
 pub use kind::{Shell, ShellError, ShellKind, ShellSearch, Unquotable, Unrunnable};
 
@@ -130,6 +131,9 @@ pub struct ShellTool {
     /// The detector of the workspace the tool last ran in. It remembers,
     /// for one workspace, that git is not installed.
     detector: Mutex<Option<(AbsPath, Arc<ChangeDetector>)>>,
+    /// Where the harness's own git runs when it looks for what a command
+    /// changed.
+    git: Arc<dyn Confinement>,
 }
 
 impl ShellTool {
@@ -151,6 +155,7 @@ impl ShellTool {
             profile: None,
             inherited: None,
             detector: Mutex::new(None),
+            git: Arc::new(AsItIs),
         }
     }
 
@@ -166,6 +171,18 @@ impl ShellTool {
     #[must_use]
     pub fn with_launcher(mut self, launcher: Arc<dyn Launcher>) -> Self {
         self.launcher = launcher;
+        self
+    }
+
+    /// Sets where the harness's own git runs when it looks for what a
+    /// command changed, in place of [`AsItIs`]: the session's sandbox,
+    /// which confines it while commands are confined
+    /// ([`ChangeDetector::with_git`]). It is not the launcher's call: a
+    /// command the user let leave the sandbox is still looked at by a git
+    /// inside it.
+    #[must_use]
+    pub fn with_git(mut self, git: Arc<dyn Confinement>) -> Self {
+        self.git = git;
         self
     }
 
@@ -204,7 +221,8 @@ impl ShellTool {
             _ => {
                 let detector = Arc::new(
                     ChangeDetector::new(root.to_native_string())
-                        .trusting_the_repository(self.config.repository_trusted),
+                        .trusting_the_repository(self.config.repository_trusted)
+                        .with_git(Arc::clone(&self.git)),
                 );
                 *held = Some((root.clone(), Arc::clone(&detector)));
                 detector
@@ -481,12 +499,20 @@ impl Tool for ShellTool {
                 _ => Keep::HeadAndTail,
             };
             let payload = payload(&self.shell, &finished, changes.as_ref());
+            let incomplete = changes.as_ref().and_then(|changes| changes.incomplete);
             let limits = cx.limits;
             let store = Arc::clone(&cx.store);
             let explain = move |exit: Option<Exit>, output: &str| launcher.explain(exit, output);
             let fallback = finished.clone();
             let written = run_blocking(&free, move |_| {
-                write_result(&finished, &limits, keep, store.as_ref(), &explain)
+                write_result(
+                    &finished,
+                    &limits,
+                    keep,
+                    store.as_ref(),
+                    &explain,
+                    incomplete,
+                )
             })
             .await;
             let (text, artifact) = written.unwrap_or_else(|_| {
@@ -566,6 +592,7 @@ fn write_result(
     keep: Keep,
     store: &dyn ContentStore,
     explain: &dyn Fn(Option<Exit>, &str) -> Option<String>,
+    incomplete: Option<Incomplete>,
 ) -> (String, Option<ArtifactRef>) {
     let kept = finished.output.text();
     let mut closing = vec![status_line(finished)];
@@ -592,6 +619,13 @@ fn write_result(
     }
     if let Some(line) = explain(finished.exit, &kept.text) {
         closing.push(line);
+    }
+    if let Some(why) = incomplete {
+        closing.push(format!(
+            "[The list of files the command changed is incomplete: {}. Undoing this turn may not \
+             put back every file the command changed.]",
+            why.as_str()
+        ));
     }
 
     // The limits less the lines added here, and less the notice when the
@@ -749,8 +783,14 @@ mod tests {
         limits: &OutputLimits,
     ) -> (String, Option<ArtifactRef>, MemoryStore) {
         let store = MemoryStore::new();
-        let (text, artifact) =
-            write_result(finished, limits, Keep::HeadAndTail, &store, &|_, _| None);
+        let (text, artifact) = write_result(
+            finished,
+            limits,
+            Keep::HeadAndTail,
+            &store,
+            &|_, _| None,
+            None,
+        );
         (text, artifact, store)
     }
 
@@ -842,6 +882,37 @@ mod tests {
     }
 
     #[test]
+    fn a_list_of_changes_that_is_incomplete_is_said_with_why() {
+        let store = MemoryStore::new();
+        let ended = finished(b"done\n", Some(Exit::Code(0)), Ending::Exited);
+        let (text, _) = write_result(
+            &ended,
+            &OutputLimits::default(),
+            Keep::HeadAndTail,
+            &store,
+            &|_, _| None,
+            Some(Incomplete::GitFailedConfined),
+        );
+        assert!(
+            text.ends_with(&format!(
+                "[The list of files the command changed is incomplete: {}. Undoing this turn may \
+                 not put back every file the command changed.]",
+                Incomplete::GitFailedConfined.as_str()
+            )),
+            "{text}"
+        );
+        let (text, _) = write_result(
+            &ended,
+            &OutputLimits::default(),
+            Keep::HeadAndTail,
+            &store,
+            &|_, _| None,
+            None,
+        );
+        assert!(!text.contains("incomplete"), "{text}");
+    }
+
+    #[test]
     fn the_launcher_may_add_a_line_about_what_it_blocked() {
         let store = MemoryStore::new();
         let ended = finished(b"denied\n", Some(Exit::Code(1)), Ending::Exited);
@@ -855,6 +926,7 @@ mod tests {
                 assert_eq!(output, "denied\n");
                 Some("[The sandbox refused a write outside the workspace.]".to_owned())
             },
+            None,
         );
         assert!(
             text.ends_with("after 1.2 s]\n[The sandbox refused a write outside the workspace.]")
@@ -911,6 +983,7 @@ mod tests {
             Keep::HeadAndTail,
             &store,
             &|_, _| None,
+            None,
         );
         assert_eq!(artifact, Some(reference));
         assert_eq!(
@@ -935,6 +1008,7 @@ mod tests {
             Keep::HeadAndTail,
             &store,
             &|_, _| None,
+            None,
         );
         assert_eq!(artifact, None);
         assert!(

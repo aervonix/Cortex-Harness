@@ -50,7 +50,7 @@ use cortex_protocol::model::ModelRole;
 use cortex_protocol::session::{SandboxStatus, SessionSettings, SessionSummary};
 use cortex_protocol::{ErrorData, ErrorKind, Item, ItemId, LeaseId, SessionId};
 use cortex_session::entry::{LeaseEvent, LeaseRecord};
-use cortex_session::{Body, Git, Restore, SessionsRoot, SystemGit};
+use cortex_session::{Body, Git, Restore, SessionsRoot};
 use cortex_tools::PlanBoard;
 use cortex_tools::process::Runner;
 use tokio::task::JoinHandle;
@@ -165,8 +165,11 @@ pub struct CoreOptions {
     /// and asked its version: a test's, which starts no process to find
     /// out what the model's tool description says.
     pub shell: Option<cortex_tools::Shell>,
-    /// How git is run for the base state and for a file's earlier content.
-    pub git: Arc<dyn Git>,
+    /// How git is run for the base state and for a file's earlier content,
+    /// in place of the system's git: a test's. `None`: the system's git,
+    /// started inside the session's sandbox, reading only, while commands
+    /// are confined.
+    pub git: Option<Arc<dyn Git>>,
     /// Whether a new session records the workspace's starting state.
     pub base_capture: bool,
     /// Cancelled when the process is to stop: every session's token is a
@@ -217,7 +220,7 @@ impl CoreOptions {
             shell_env: None,
             runner: None,
             shell: None,
-            git: Arc::new(SystemGit),
+            git: None,
             base_capture: true,
             cancel: CancelToken::new(),
         }

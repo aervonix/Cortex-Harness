@@ -455,3 +455,83 @@ fn sys_the_tool_reports_what_its_command_changed() {
     assert_eq!(payload["changes"], json!(null));
     assert_eq!(payload["exit_code"], json!(0));
 }
+
+/// Where every git the look starts runs: as the confinement it was given
+/// says (`cortex_base::git::Confinement`), which in a session that confines
+/// commands is the sandbox. This one records what it is asked to start and
+/// starts it as it is, or refuses.
+#[derive(Debug, Default)]
+struct Recording {
+    asked: std::sync::Mutex<Vec<String>>,
+    refuse: bool,
+}
+
+impl cortex_base::git::Confinement for Recording {
+    fn confines(&self) -> bool {
+        true
+    }
+
+    fn start(
+        &self,
+        program: &Path,
+        arguments: Vec<std::ffi::OsString>,
+    ) -> Result<cortex_base::git::Started, String> {
+        if self.refuse {
+            return Err("refused".to_owned());
+        }
+        // The first argument after the hardening is the subcommand.
+        let subcommand = arguments[cortex_base::GIT_HARDENING.len()]
+            .to_string_lossy()
+            .into_owned();
+        self.asked.lock().unwrap().push(subcommand);
+        Ok(cortex_base::git::Started {
+            program: program.to_owned(),
+            arguments,
+            stdin: None,
+        })
+    }
+}
+
+#[test]
+fn sys_every_git_the_look_starts_goes_through_its_confinement() {
+    let ws = Workspace::new("changes_confined");
+    let root = repository(&ws, &[("a.txt", "one\n")]);
+    let recording = std::sync::Arc::new(Recording::default());
+    let detector = ChangeDetector::new(&root)
+        .trusting_the_repository(true)
+        .with_git(recording.clone());
+    let before = detector.before();
+    // A command that commits: the look after it compares the two commits.
+    ws.file("a.txt", "two\n");
+    git(
+        &root,
+        &["commit", "--quiet", "--all", "--message", "second"],
+    );
+    let changes = detector.after(&before);
+    assert!(changes.complete, "{changes:?}");
+    assert!(changes.head_moved);
+    assert_eq!(names(&changes.modified), ["a.txt"]);
+    assert_eq!(
+        *recording.asked.lock().unwrap(),
+        ["status", "status", "diff"]
+    );
+
+    // A confinement that refuses: git is not started, and the look says
+    // that it is incomplete, and why.
+    let refusing = std::sync::Arc::new(Recording {
+        refuse: true,
+        ..Recording::default()
+    });
+    let detector = ChangeDetector::new(&root)
+        .trusting_the_repository(true)
+        .with_git(refusing);
+    let before = detector.before();
+    ws.file("a.txt", "three\n");
+    let changes = detector.after(&before);
+    assert!(!changes.complete);
+    assert_eq!(
+        changes.incomplete,
+        Some(cortex_tools::shell::Incomplete::GitNotConfined)
+    );
+    assert!(changes.is_empty(), "{changes:?}");
+}

@@ -17,7 +17,7 @@
 use std::ffi::OsStr;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -59,7 +59,16 @@ pub(crate) fn run(
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
-    let mut child = command.spawn().map_err(|_| Unanswered::NotStarted)?;
+    let child = command.spawn().map_err(|_| Unanswered::NotStarted)?;
+    answer(child, limit)
+}
+
+/// What a program already started wrote to its standard output, which
+/// must be a pipe, if it exited with success within `limit`: for one its
+/// caller started its own way (the harness's git, which
+/// `cortex_base::git::start` starts). A program that runs over the limit,
+/// or prints too much, is killed.
+pub(crate) fn answer(mut child: Child, limit: Duration) -> Result<Vec<u8>, Unanswered> {
     let Some(stdout) = child.stdout.take() else {
         let _ = child.kill();
         let _ = child.wait();

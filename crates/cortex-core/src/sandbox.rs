@@ -15,6 +15,11 @@
 //! - **The temporary directory** is made, open to the user alone, when the
 //!   session starts, given to every confined command as `TMPDIR`, and
 //!   removed when the session ends.
+//! - **The harness's own git** runs inside the sandbox too while commands
+//!   are confined, with no write root and no network ([`SessionGit`]): a
+//!   confined command may write the repository's configuration, which
+//!   can name a program for git to run (found by the third review of step
+//!   26).
 
 #![allow(
     clippy::disallowed_methods,
@@ -25,6 +30,9 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
+
+use cortex_base::git::{Confinement, Started};
 
 use cortex_policy::{NoSandbox, SandboxState};
 use cortex_protocol::SessionId;
@@ -114,6 +122,11 @@ pub(crate) struct Temp {
 pub(crate) struct SessionSandbox {
     /// The launcher, when the sandbox enforces.
     launcher: Option<SandboxLauncher>,
+    /// The launcher the harness's own git is started through, when the
+    /// sandbox enforces: the session's reads, and no write root, no
+    /// network and no temporary directory, so that nothing git starts can
+    /// change anything.
+    reader: Option<SandboxLauncher>,
     /// Whether commands are confined now: the sandbox enforces and the
     /// level is not `unrestricted`.
     confine: AtomicBool,
@@ -142,15 +155,30 @@ impl SessionSandbox {
         workspace: &Path,
         limits: Limits,
     ) -> Self {
-        let launcher = match (state, landlock, &core.program) {
+        let (launcher, reader) = match (state, landlock, &core.program) {
             (SandboxState::Enforcing, Some(landlock), Some((program, prefix))) => {
-                Some(SandboxLauncher::new(
-                    program.clone(),
-                    prefix.clone(),
-                    policy_of(grant, &temp, landlock),
-                ))
+                let policy = policy_of(grant, &temp, landlock);
+                let reading = Policy {
+                    read: policy.read.clone(),
+                    write: Vec::new(),
+                    network: Network::Off,
+                    temp: None,
+                    landlock,
+                };
+                (
+                    Some(SandboxLauncher::new(
+                        program.clone(),
+                        prefix.clone(),
+                        policy,
+                    )),
+                    Some(SandboxLauncher::new(
+                        program.clone(),
+                        prefix.clone(),
+                        reading,
+                    )),
+                )
             }
-            _ => None,
+            _ => (None, None),
         };
         let watch = launcher.is_some().then(|| {
             Watch::new(
@@ -161,6 +189,7 @@ impl SessionSandbox {
         });
         let sandbox = Self {
             launcher,
+            reader,
             confine: AtomicBool::new(false),
             temp,
             watch,
@@ -185,6 +214,27 @@ impl SessionSandbox {
     /// protected paths, when the command is confined.
     pub(crate) fn watch(&self) -> Option<&Watch> {
         self.watch.as_ref().filter(|_| self.confines())
+    }
+
+    /// What to start in place of the harness's own `git` with `arguments`
+    /// now: the reading launcher while commands are confined, git as it is
+    /// otherwise.
+    fn start_git(&self, git: &Path, arguments: Vec<OsString>) -> Started {
+        match self.reader.as_ref().filter(|_| self.confines()) {
+            Some(reader) => {
+                let wrapped = reader.wrap(git.as_os_str(), &arguments);
+                Started {
+                    program: wrapped.program,
+                    arguments: wrapped.arguments,
+                    stdin: Some(wrapped.stdin),
+                }
+            }
+            None => Started {
+                program: git.to_owned(),
+                arguments,
+                stdin: None,
+            },
+        }
     }
 
     /// Removes the temporary directory and everything in it, if the
@@ -233,6 +283,39 @@ impl Launcher for SessionSandbox {
             _ => None,
         };
         launcher.explain(code, output)
+    }
+}
+
+/// Where a session's own git runs: inside its sandbox, reading only,
+/// while its commands are confined.
+///
+/// The session's checkpoints need their git before its sandbox can be
+/// made (the sandbox needs the lease), so this is made first and given the
+/// sandbox once it is ([`set`](Self::set)). Until then git is not started
+/// at all: no answer is better than one from an unconfined git.
+#[derive(Debug, Default)]
+pub(crate) struct SessionGit {
+    sandbox: OnceLock<Arc<SessionSandbox>>,
+}
+
+impl SessionGit {
+    /// Gives it the session's sandbox. Only the first call counts.
+    pub(crate) fn set(&self, sandbox: Arc<SessionSandbox>) {
+        let _ = self.sandbox.set(sandbox);
+    }
+}
+
+impl Confinement for SessionGit {
+    fn confines(&self) -> bool {
+        self.sandbox.get().is_some_and(|sandbox| sandbox.confines())
+    }
+
+    fn start(&self, git: &Path, arguments: Vec<OsString>) -> Result<Started, String> {
+        let sandbox = self
+            .sandbox
+            .get()
+            .ok_or_else(|| "the session's sandbox is not made yet".to_owned())?;
+        Ok(sandbox.start_git(git, arguments))
     }
 }
 
@@ -379,5 +462,79 @@ fn remove_temp(path: &Path) {
         && error.kind() != std::io::ErrorKind::NotFound
     {
         tracing::warn!(path = %path.display(), %error, "the session's temporary directory was not removed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cortex_sandbox::support::Support;
+
+    use super::*;
+
+    /// The harness's own git, while commands are confined, is started by the
+    /// launcher under a policy that writes nothing and reaches no network;
+    /// at `unrestricted` it is started as it is.
+    #[test]
+    fn the_harness_git_runs_inside_the_sandbox_reading_only() {
+        let workspace = std::env::temp_dir().join("cortex-core-git-policy");
+        let root = cortex_base::AbsPath::from_os(&workspace).unwrap();
+        let mut grant = cortex_policy::default_sandbox(&root, &[], &[]);
+        grant.network = NetworkAccess::Full;
+        let core = CoreSandbox::new(
+            Support::Landlock(8),
+            Some((
+                PathBuf::from("/opt/cortex"),
+                vec![OsString::from("__sandbox")],
+            )),
+        );
+        let (state, enforcing) = core.state(true);
+        let sandbox = Arc::new(SessionSandbox::new(
+            &core,
+            state,
+            enforcing.map(|(landlock, _)| landlock),
+            &Level::Autonomous,
+            &grant,
+            Temp {
+                path: workspace.join("tmp"),
+                made: true,
+            },
+            &workspace,
+            Limits::default(),
+        ));
+        let git = SessionGit::default();
+        let arguments = vec![OsString::from("status")];
+        // Before it is given the sandbox, it starts nothing.
+        assert!(
+            git.start(Path::new("/usr/bin/git"), arguments.clone())
+                .is_err()
+        );
+        git.set(Arc::clone(&sandbox));
+        assert!(git.confines());
+
+        let started = git
+            .start(Path::new("/usr/bin/git"), arguments.clone())
+            .unwrap();
+        assert_eq!(started.program, PathBuf::from("/opt/cortex"));
+        assert_eq!(
+            started.arguments,
+            ["__sandbox", "--", "/usr/bin/git", "status"].map(OsString::from)
+        );
+        let policy = Policy::decode(&started.stdin.expect("the policy")).unwrap();
+        assert_eq!(
+            policy,
+            Policy {
+                read: Reach::All,
+                write: Vec::new(),
+                network: Network::Off,
+                temp: None,
+                landlock: 8,
+            }
+        );
+
+        sandbox.set_level(&Level::Unrestricted);
+        assert!(!git.confines());
+        let started = git.start(Path::new("/usr/bin/git"), arguments).unwrap();
+        assert_eq!(started.program, PathBuf::from("/usr/bin/git"));
+        assert_eq!(started.stdin, None);
     }
 }
