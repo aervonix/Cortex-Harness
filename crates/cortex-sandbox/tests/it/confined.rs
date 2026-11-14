@@ -422,6 +422,50 @@ fn sys_the_calls_that_would_undo_or_get_round_the_sandbox_are_refused() {
     assert_eq!(call(&place, landlock, "setpgid", true), "new");
 }
 
+/// Landlock does not govern a change of a file's owner or extended
+/// attributes, and seccomp cannot check their path argument, so the sandbox
+/// refuses them outright, inside the workspace too; a change of mode, which
+/// builds need, stays allowed (found by the third review of step 26, after
+/// measuring what cargo, git, npm, pip and make need). A change of mode or
+/// time outside the write roots is a stated limit (decision 0032).
+#[test]
+fn sys_the_owner_and_extended_attributes_cannot_be_changed() {
+    let Some(landlock) = enforcing() else { return };
+    let place = Place::new("metadata");
+    // A mode change is allowed, inside the sandbox as out: cargo, git
+    // checkouts and installers set modes.
+    assert_eq!(call(&place, landlock, "chmod", true), "ok");
+    // An owner change (to one's own id, which succeeds for a normal user
+    // outside the sandbox) is refused inside it.
+    assert_eq!(call(&place, landlock, "chown", true), "EPERM");
+    assert_ne!(
+        call(&place, landlock, "chown", false),
+        "EPERM",
+        "a normal user can chown a file to themselves: the refusal is the filter's"
+    );
+    // An extended-attribute change is refused inside the sandbox. Outside
+    // it the call is not refused that way (it succeeds, or the file system
+    // does not support the attribute, which is not `EPERM`).
+    assert_eq!(call(&place, landlock, "setxattr", true), "EPERM");
+    assert_ne!(call(&place, landlock, "setxattr", false), "EPERM");
+
+    // `cp -a`, which preserves modes, times, owner and extended attributes,
+    // still copies inside the workspace: it carries the mode and time, and
+    // passes over the owner it may not set (a normal user's `cp` does not
+    // fail on that).
+    let ran = sh(
+        &place,
+        place.policy(Network::Off, landlock),
+        "mkdir -p a/sub && echo hi > a/sub/f && chmod 0640 a/sub/f && cp -a a b && cat b/sub/f && \
+         stat -c %a b/sub/f",
+    );
+    assert!(ran.ok(), "{ran:?}");
+    assert!(
+        ran.output.contains("hi") && ran.output.contains("640"),
+        "{ran:?}"
+    );
+}
+
 #[test]
 fn sys_a_signal_to_a_process_outside_the_sandbox_is_refused() {
     let Some(landlock) = enforcing() else { return };

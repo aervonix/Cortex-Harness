@@ -469,13 +469,16 @@ fn a_repository_cannot_grant_itself_anything() {
 
 /// The paths that always go to the user: whoever can write one can run
 /// code later, or reach a secret.
-const SENSITIVE: [&str; 30] = [
+const SENSITIVE: [&str; 31] = [
     // Git's hooks and configuration, in the workspace's repository and in
     // any other.
     "/work/app/.git/hooks/pre-commit",
     "/work/app/.git/hooks/post-checkout",
     "/work/app/.git/config",
     "/work/app/.git/config.worktree",
+    // Where git takes its configuration and hooks from, if it points them
+    // elsewhere (found by the third review of step 26).
+    "/work/app/.git/commondir",
     "/work/app/.git/info/attributes",
     "/work/app/.git/modules/lib/config",
     "/work/app/.git/worktrees/w/config.worktree",

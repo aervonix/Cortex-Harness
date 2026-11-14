@@ -241,6 +241,44 @@ pub(crate) fn call(name: &str) -> ! {
                     "same".to_owned()
                 }
             }
+            // Metadata of a file in the temporary directory (a write root
+            // inside the sandbox): a mode change is allowed, an owner or an
+            // extended-attribute change is refused.
+            "chmod" | "chown" | "setxattr" => {
+                use std::os::unix::ffi::OsStrExt;
+                let path = std::env::temp_dir().join(format!("cortex-meta-{}", libc::getpid()));
+                let mut bytes = path.as_os_str().as_bytes().to_vec();
+                bytes.push(0);
+                let fd = libc::creat(bytes.as_ptr().cast(), 0o644);
+                if fd >= 0 {
+                    libc::close(fd);
+                }
+                let verdict = match name {
+                    "chmod" => said(libc::c_long::from(libc::chmod(
+                        bytes.as_ptr().cast(),
+                        0o600,
+                    ))),
+                    "chown" => said(libc::c_long::from(libc::chown(
+                        bytes.as_ptr().cast(),
+                        libc::getuid(),
+                        libc::getgid(),
+                    ))),
+                    _ => {
+                        let name = c"user.cortex";
+                        let value = b"x";
+                        said(libc::syscall(
+                            libc::SYS_setxattr,
+                            bytes.as_ptr(),
+                            name.as_ptr(),
+                            value.as_ptr(),
+                            value.len(),
+                            0,
+                        ))
+                    }
+                };
+                libc::unlink(bytes.as_ptr().cast());
+                verdict
+            }
             other => panic!("no such call: {other}"),
         }
     };
