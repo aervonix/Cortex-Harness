@@ -182,6 +182,8 @@ pub struct Flaky {
     /// The append, counted from 0, that fails.
     pub fail_append: Arc<Mutex<Option<usize>>>,
     fail_end: Arc<Mutex<bool>>,
+    /// The epochs of this reason fail to be appended.
+    pub fail_epoch: Arc<Mutex<Option<cortex_agent::EpochReason>>>,
     /// Whether opening the session fails. The first open, when the session
     /// starts, is before a test can set it.
     fail_open: Arc<Mutex<bool>>,
@@ -210,6 +212,12 @@ impl SessionStore for Flaky {
         if *lock(&self.fail_append) == Some(index) {
             return Box::pin(std::future::ready(Err(StoreError::new("the disk is full"))));
         }
+        if let Record::Epoch(epoch) = &record
+            && epoch.reason.is_some()
+            && *lock(&self.fail_epoch) == epoch.reason
+        {
+            return Box::pin(std::future::ready(Err(StoreError::new("the disk is full"))));
+        }
         self.inner.append(turn, record)
     }
 
@@ -231,6 +239,53 @@ fn flaky(world: &World) -> (Flaky, Rig) {
     setup.memory = store.inner.clone();
     setup.store = Some(Box::new(store.clone()));
     (store, setup.start(world))
+}
+
+#[test]
+fn a_compaction_whose_epoch_was_not_recorded_goes_on_from_what_the_log_holds() {
+    let world = World::new(
+        "compaction_epoch_lost",
+        [says("First."), says("A summary."), says("Second.")],
+    );
+    let (store, rig) = flaky(&world);
+    rig.window(4_000);
+    world.run(async {
+        rig.prompt("one");
+        rig.events.turns(1).await;
+    });
+    // The summary is recorded, and the epoch after it is not.
+    *lock(&store.fail_epoch) = Some(cortex_agent::EpochReason::Compaction);
+    world.run(async {
+        rig.bulk(9_000);
+        rig.prompt("two");
+        rig.events.turns(2).await;
+    });
+    *lock(&store.fail_epoch) = None;
+    world.run(async {
+        rig.prompt("three");
+        rig.events.turns(3).await;
+    });
+    let ends = rig.events.ends();
+    assert_eq!(ends[1].error.as_ref().unwrap().code, "store_failed");
+    assert_eq!(
+        ends[2].outcome,
+        TurnOutcome::Completed,
+        "{:?}",
+        ends[2].error
+    );
+    let first = all_text_of(&world.provider.requests()[2].messages[0]);
+    assert!(first.contains("A summary."), "{first}");
+}
+
+fn all_text_of(message: &cortex_protocol::Message) -> String {
+    message
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            cortex_protocol::Part::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]

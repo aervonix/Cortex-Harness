@@ -1599,3 +1599,152 @@ fn the_context_record_compares_with_the_request_before_across_a_reload() {
         ]
     );
 }
+
+fn calls_of(message: &Message) -> Vec<String> {
+    message
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            Part::ToolCall(call) => Some(call.id.as_str().to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn after_an_overflow_in_one_long_turn_the_summary_request_keeps_its_last_round() {
+    let too_long =
+        Response::events([cortex_llm::ModelEvent::Error(crate::transitions::overflow())]);
+    let world = World::new(
+        "overflow_long_turn",
+        [
+            calls(&[("c1", "read", json!({"path": "a"}))]),
+            calls(&[("c2", "read", json!({"path": "b"}))]),
+            calls(&[("c3", "read", json!({"path": "c"}))]),
+            calls(&[("c4", "read", json!({"path": "d"}))]),
+            too_long,
+            says("A summary."),
+            says("Done."),
+        ],
+    );
+    let rig = Setup::new(&world).start(&world);
+    // A small window: what the summary request holds besides the messages
+    // (the prompt, the tools, the instructions) takes all the room the
+    // cut leaves, so only the last round is kept.
+    rig.window(4_000);
+    world.run(async {
+        rig.bulk(3_000);
+        rig.prompt("go");
+        rig.events.turns(1).await;
+    });
+    let requests = world.provider.requests();
+    let shapes: Vec<(usize, Vec<String>)> = requests
+        .iter()
+        .map(|request| {
+            (
+                request.messages.len(),
+                request.messages.iter().flat_map(calls_of).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        requests.len(),
+        7,
+        "no summary before the overflow: {shapes:?} {:?}",
+        rig.events.ends()
+    );
+    let summary = &requests[5].messages;
+    let called: Vec<String> = summary.iter().flat_map(calls_of).collect();
+    assert_eq!(called, ["c4"], "the last round, whole: {summary:#?}");
+    assert!(summary.iter().any(|message| message.role == Role::Tool));
+    assert!(
+        summary
+            .iter()
+            .any(|message| all_text(message).contains("is left out here"))
+    );
+    assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Completed);
+}
+
+#[test]
+fn an_interrupt_keeps_a_summary_whose_request_had_finished() {
+    let world = World::new(
+        "background_finished_interrupted",
+        [
+            counted(
+                calls(&[("c1", "read", json!({"path": "a", "gate": "g"}))]),
+                140_000,
+            ),
+            // The next request is in flight when the interrupt comes.
+            Response::events([]).stall(),
+            says("After."),
+        ],
+    );
+    let gate = Gate::new();
+    let fast = ScriptedProvider::new([Response::new()
+        .wait(&gate)
+        .text("PREPARED")
+        .end(StopReason::End)]);
+    let rig = with_fast(&world, &fast);
+    world.run(async {
+        rig.prompt("go");
+        world.log.has("start read a").await;
+        world.gates.open("g");
+        while fast.requests().is_empty() {
+            settle().await;
+        }
+        // The summary finishes, and only then is the turn interrupted.
+        gate.open();
+        for _ in 0..8 {
+            settle().await;
+        }
+        let _ = rig.handle.interrupt();
+        rig.events.turns(1).await;
+        // Past the trigger: the summary prepared is used.
+        rig.bulk(30_000);
+        rig.prompt("again");
+        rig.events.turns(2).await;
+    });
+    assert_eq!(fast.requests().len(), 1, "no second summary");
+    let first = all_text(&world.provider.requests()[2].messages[0]);
+    assert!(first.contains("PREPARED"), "{first}");
+    assert_eq!(rig.events.ends()[1].outcome, TurnOutcome::Completed);
+}
+
+#[test]
+fn a_summary_the_ledger_refuses_closes_the_compaction_it_began() {
+    let world = World::new("summary_refused", [says("Unreached.")]);
+    let mut setup = Setup::new(&world);
+    setup.ledger = Some(
+        cortex_agent::Ledger::new(world.shared_clock()).with_turn_budget(
+            cortex_protocol::lease::Budget {
+                requests: Some(0),
+                ..cortex_protocol::lease::Budget::default()
+            },
+        ),
+    );
+    let rig = setup.start(&world);
+    rig.window(4_000);
+    rig.bulk(9_000);
+    world.run(async {
+        rig.prompt("go");
+        rig.events.turns(1).await;
+    });
+    assert!(world.provider.requests().is_empty());
+    let states: Vec<cortex_protocol::event::CompactionState> = rig
+        .events
+        .notices()
+        .into_iter()
+        .filter_map(|notice| match notice {
+            Notice::Compaction(compaction) => Some(compaction.state),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        states,
+        [
+            cortex_protocol::event::CompactionState::Started,
+            cortex_protocol::event::CompactionState::Failed
+        ]
+    );
+    assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Limit);
+}
