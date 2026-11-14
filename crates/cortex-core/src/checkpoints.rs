@@ -434,11 +434,8 @@ impl Tool for RecordingShell {
             // before and after it, one the engine marked as only reading
             // too: the program it runs may do otherwise. One the user let
             // leave the sandbox is not looked at.
-            let watch = self
-                .sandbox
-                .watch()
-                .filter(|_| !plan.effects.contains(&Effect::Unconfined))
-                .cloned();
+            let unconfined = plan.effects.contains(&Effect::Unconfined);
+            let watch = self.sandbox.watch().filter(|_| !unconfined).cloned();
             let before = match &watch {
                 Some(watch) => {
                     let watch = watch.clone();
@@ -476,6 +473,17 @@ impl Tool for RecordingShell {
             // is forgotten: the after-look already holds their new state.
             if let Some((_, _, after)) = &found {
                 self.sandbox.remember_after(after.clone());
+                if let Some(rounds) = &self.rounds {
+                    rounds.clear_touched();
+                }
+            } else if unconfined && self.sandbox.watch().is_some() {
+                // A command the user let leave the sandbox is not looked at,
+                // so its own approved changes to a protected path are not
+                // recorded. The next confined command's continuity check must
+                // not compare across it and report those as a change from
+                // outside, so the baseline is dropped and the next command
+                // starts fresh (found by the independent review of the fixes).
+                self.sandbox.forget_after();
                 if let Some(rounds) = &self.rounds {
                     rounds.clear_touched();
                 }

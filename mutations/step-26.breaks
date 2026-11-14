@@ -243,7 +243,7 @@ caught-by:
 rule: Every confined command has its protected paths looked at before and after it.
 file: crates/cortex-core/src/checkpoints.rs
 in: RecordingShell::run
-find: .filter(|_| !plan.effects.contains(&Effect::Unconfined))
+find: .filter(|_| !unconfined)
 replace: .filter(|_| false)
 caught-by:
     cortex-core::it sandbox::sys_a_protected_path_a_command_changes_stops_the_turn_and_undo_puts_it_back

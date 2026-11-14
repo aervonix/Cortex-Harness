@@ -490,3 +490,75 @@ fn a_cargo_made_as_a_link_is_found() {
         "the link was looked through: {shown:?}"
     );
 }
+
+/// A `commondir` a confined command wrote to point outside the workspace is
+/// recorded as a pointer, but not followed: the look must never read or name
+/// a file outside the workspace (finding 1 of the independent review of the
+/// step 26 fixes).
+#[test]
+fn a_commondir_pointing_outside_the_workspace_is_not_followed() {
+    let scratch = workspace("commondir_outside");
+    // A sibling of the workspace, reached by `..` from inside `.git`.
+    fs::create_dir_all(scratch.join("common-outside/hooks")).unwrap();
+    fs::write(scratch.join("common-outside/config"), "[core]\n").unwrap();
+    fs::write(
+        scratch.join("common-outside/hooks/pre-commit"),
+        "#!/bin/sh\n",
+    )
+    .unwrap();
+    let ws = scratch.join("ws");
+    let watch = Watch::new(&ws, fixed(&ws));
+    let before = watch.take();
+    assert!(before.is_complete());
+    fs::write(ws.join(".git/commondir"), "../../common-outside\n").unwrap();
+    let (changed, _after) = watch.changes_since(&before);
+    let paths: Vec<String> = changed
+        .iter()
+        .map(|one| one.path.display().to_string().replace('\\', "/"))
+        .collect();
+    assert!(
+        paths.iter().any(|path| path.ends_with(".git/commondir")),
+        "the pointer was not recorded: {paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|path| path.contains("common-outside")),
+        "the look followed the pointer outside the workspace: {paths:?}"
+    );
+}
+
+/// A `.cargo` made as a link to somewhere outside the workspace is recorded
+/// as the link, but not looked through: a confined command cannot change a
+/// file outside the write roots, and the look must not read or name one
+/// (finding 1 of the independent review of the step 26 fixes).
+#[cfg(unix)]
+#[test]
+fn a_cargo_link_leading_outside_is_not_followed() {
+    let scratch = workspace("cargo_outside");
+    fs::create_dir_all(scratch.join("cargo-outside")).unwrap();
+    fs::write(
+        scratch.join("cargo-outside/config.toml"),
+        "[build]\nrustc-wrapper = \"/tmp/run.sh\"\n",
+    )
+    .unwrap();
+    let ws = scratch.join("ws");
+    let watch = Watch::new(&ws, fixed(&ws));
+    let before = watch.take();
+    assert!(before.is_complete());
+    std::os::unix::fs::symlink(scratch.join("cargo-outside"), ws.join(".cargo")).unwrap();
+    let (changed, _after) = watch.changes_since(&before);
+    let paths: Vec<String> = changed
+        .iter()
+        .map(|one| one.path.display().to_string().replace('\\', "/"))
+        .collect();
+    assert!(
+        paths.iter().any(|path| path.ends_with("/.cargo")),
+        "the link was not recorded: {paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|path| path.contains("cargo-outside"))
+            && !paths
+                .iter()
+                .any(|path| path.ends_with(".cargo/config.toml")),
+        "the look followed the link outside the workspace: {paths:?}"
+    );
+}

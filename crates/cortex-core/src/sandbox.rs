@@ -215,6 +215,19 @@ impl SessionSandbox {
             .unwrap_or_else(PoisonError::into_inner) = Some(after);
     }
 
+    /// Forgets the look after the last confined command, so the next one
+    /// does not compare across what happened in between. Used when a command
+    /// ran unconfined (the user let it leave the sandbox): its own approved
+    /// changes to a protected path must not look like a change from outside
+    /// to the next command (found by the independent review of the step 26
+    /// fixes).
+    pub(crate) fn forget_after(&self) {
+        *self
+            .last_after
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
     /// What changed among the protected paths between the look after the
     /// last confined command and `now` — whatever made it, which the caller
     /// tells apart. `None` when there is no earlier look to compare with.

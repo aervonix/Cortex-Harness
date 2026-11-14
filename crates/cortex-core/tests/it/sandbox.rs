@@ -1058,3 +1058,73 @@ fn sys_a_harness_edit_between_commands_is_not_reported() {
         front.close().await;
     });
 }
+
+/// A command the user let leave the sandbox changes a protected path, with
+/// approval. The next confined command must not report that approved change
+/// as one from outside: the continuity baseline is dropped across an
+/// unconfined command (found by the independent review of the step 26
+/// fixes).
+#[cfg(target_os = "linux")]
+#[test]
+fn sys_an_unconfined_command_does_not_trip_the_next_command() {
+    if !enforcing_here() {
+        return;
+    }
+    let world = World::new("unconfined_between", []);
+    world.put(".git/config", "[core]\n");
+    world.provider.push(says("Ready."));
+    world.provider.push(calls(&[(
+        "c1",
+        "shell",
+        json!({"command": "echo one > one.txt"}),
+    )]));
+    world.provider.push(says("First done."));
+    // Approved, and run outside the sandbox: it changes a protected path.
+    world.provider.push(calls(&[(
+        "u1",
+        "shell",
+        json!({"command": "printf 'x\\n' >> .git/config", "sandbox": false}),
+    )]));
+    world.provider.push(says("Changed."));
+    world.provider.push(calls(&[(
+        "c2",
+        "shell",
+        json!({"command": "echo after > after.txt"}),
+    )]));
+    world.provider.push(says("Done."));
+    let core = world.core_with(|options| options.launcher = Some(launcher()));
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            cortex_core::ClientInfo::user(),
+            at(Level::Autonomous),
+        )
+        .await
+        .expect("the session starts");
+        front.turn("get ready").await;
+        front.turn("first command").await;
+        front.turn_allowing("run outside the sandbox").await;
+        assert!(
+            world.read(".git/config").unwrap().contains('x'),
+            "the unconfined command did not change the config"
+        );
+        let ended = front.turn("next command").await;
+        let shown = front
+            .results()
+            .last()
+            .map(|one| one.2.clone())
+            .unwrap_or_default();
+        assert!(
+            !shown.contains("changed since the last command")
+                && !shown.contains("none of the harness's own tools changed it"),
+            "the approved unconfined change was reported from outside: {shown:?}"
+        );
+        assert_eq!(
+            ended.outcome,
+            cortex_protocol::event::TurnOutcome::Completed
+        );
+        assert_eq!(world.read("after.txt").as_deref(), Some("after\n"));
+        front.close().await;
+    });
+}

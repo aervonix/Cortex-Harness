@@ -553,14 +553,20 @@ impl Look {
                 }
                 ".cargo" => {
                     // A `.cargo` directory, or a link to one: the entry
-                    // itself, and its configuration by name through it, so a
-                    // change to the real file is seen under the name
-                    // `.cargo` leads to. The `.cargo` that is a link was
-                    // passed over before (found by the third review of
-                    // step 26).
+                    // itself always, and its configuration by name through
+                    // it when it leads inside the workspace, so a change to
+                    // the real file is seen under the name `.cargo` leads
+                    // to. The `.cargo` that is a link was passed over before
+                    // (found by the third review of step 26). A link that
+                    // leads outside is recorded as the link, not looked
+                    // through: a confined command cannot change a file
+                    // outside the write roots, and the look must not read or
+                    // name one.
                     self.record(child);
-                    for file in CARGO_FILES {
-                        self.record(&child.join(file));
+                    if self.leads_inside(child) {
+                        for file in CARGO_FILES {
+                            self.record(&child.join(file));
+                        }
                     }
                 }
                 name if BUILD_FILES.contains(&name) => {
@@ -632,12 +638,40 @@ impl Look {
             return;
         }
         let common = lexically_resolved(&git.join(target));
-        // Follow it without following a link.
-        if self.through_a_link(&common) {
+        // Follow it only when it stays under the workspace and no link lies
+        // on the way: a `commondir` a confined command wrote to point
+        // outside the workspace must not send the look to read and name a
+        // file there (found by the third review of step 26). The pointer is
+        // already recorded above, so the redirect itself is still seen.
+        if !common.starts_with(&self.root) || self.through_a_link(&common) {
             return;
         }
         for part in GIT_PARTS {
             self.record_tree(&common.join(part));
+        }
+    }
+
+    /// Whether the walk may look through `path` into the files it names: a
+    /// real directory stays where it is, and a link is followed only when
+    /// its target is under the workspace. A link that leads outside is
+    /// recorded as the link it is (the redirect is seen), but not looked
+    /// through, so the look never reads or names a file outside the
+    /// workspace (found by the third review of step 26).
+    fn leads_inside(&self, path: &Path) -> bool {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let Ok(target) = fs::read_link(path) else {
+                    return false;
+                };
+                let joined = if target.is_absolute() {
+                    target
+                } else {
+                    path.parent().unwrap_or(path).join(target)
+                };
+                lexically_resolved(&joined).starts_with(&self.root)
+            }
+            Ok(_) => true,
+            Err(_) => true,
         }
     }
 }
