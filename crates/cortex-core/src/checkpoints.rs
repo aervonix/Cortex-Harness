@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use cortex_base::{AbsPath, ContentHash};
 use cortex_protocol::Part;
-use cortex_sandbox::protect::{Before as Was, Changed};
+use cortex_sandbox::protect::{Before as Was, Changed, Snapshot};
 use cortex_session::entry::FileVersion;
 use cortex_session::{Before, Body, DiskStore, Git, RoundCheckpoint, SessionError};
 use cortex_tools::{
@@ -60,6 +60,13 @@ pub(crate) struct Rounds {
     limit: u64,
     git: Arc<dyn Git>,
     round: Mutex<RoundCheckpoint>,
+    /// The paths the harness's own tools have changed since the last look
+    /// after a confined command, by [`AbsPath::key`]: so that a change the
+    /// continuity check finds that one of them made is not reported as a
+    /// change made from outside (found by the third review of step 26). It
+    /// spans rounds — an `edit` in one turn and a confined command in the
+    /// next — and is cleared when the next after-look is taken.
+    touched: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl std::fmt::Debug for Rounds {
@@ -77,6 +84,7 @@ impl Rounds {
     pub(crate) fn new(store: Arc<DiskStore>, root: AbsPath, limit: u64, git: Arc<dyn Git>) -> Self {
         Self {
             round: Mutex::new(RoundCheckpoint::with_limit(root.clone(), limit)),
+            touched: Mutex::new(std::collections::BTreeSet::new()),
             store,
             root,
             limit,
@@ -87,6 +95,32 @@ impl Rounds {
     fn lock(&self) -> MutexGuard<'_, RoundCheckpoint> {
         // A round is changed one whole record at a time.
         self.round.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Notes that one of the harness's tools changed `file`, so the
+    /// continuity check does not report it as a change from outside.
+    fn note_touched(&self, file: &AbsPath) {
+        self.touched
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(file.key().to_owned());
+    }
+
+    /// The paths the harness's tools have changed since the last after-look.
+    pub(crate) fn touched(&self) -> std::collections::BTreeSet<String> {
+        self.touched
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Forgets the touched paths: called when the look after a confined
+    /// command is taken, which already holds their new state.
+    pub(crate) fn clear_touched(&self) {
+        self.touched
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
     }
 
     /// The largest file whose content is kept.
@@ -255,6 +289,7 @@ impl Checkpoints for Rounds {
             }
         };
         // Only the first record of a file in a round counts.
+        self.note_touched(file);
         self.lock().record_before(file, before);
         Ok(())
     }
@@ -262,6 +297,7 @@ impl Checkpoints for Rounds {
     fn after(&self, file: &AbsPath, left: Option<&FileSnapshot>) {
         // `None`: there is no file, which is what a round records for one
         // it removed, or could not create.
+        self.note_touched(file);
         self.lock().after(
             file,
             left.map(|left| FileVersion {
@@ -394,13 +430,6 @@ impl Tool for RecordingShell {
             // A turn a command of it stopped runs no more of its calls:
             // [`StopsWithTurn`], around every tool, sees to that.
             //
-            // A command that outran its kill may have changed a protected
-            // path after its turn ended: the change is found now, before
-            // this command runs, and stops the turn if there was one
-            // (found by the third review of step 26).
-            if let Some(stop) = self.recheck_escape(cx).await {
-                return stop;
-            }
             // Every confined command has its protected paths looked at
             // before and after it, one the engine marked as only reading
             // too: the program it runs may do otherwise. One the user let
@@ -417,21 +446,40 @@ impl Tool for RecordingShell {
                 }
                 None => None,
             };
-            // Kept so that, if this command outruns its kill, the look
-            // before it can be compared again later.
-            let before_escape = before.clone();
+            // Before the command runs, the look before it is compared with
+            // the look after the last confined command: a protected path
+            // that changed in between, and that none of the harness's own
+            // tools changed, was changed from outside — a process an earlier
+            // command left running, or the user's own hand — and stops the
+            // turn, whether or not the kill reported an escape (found by the
+            // third review of step 26).
+            if let Some(before) = &before
+                && let Some(stop) = self.continuity(before, cx).await
+            {
+                return stop;
+            }
             // The command itself runs on this thread, the core's: the
             // kernel's death signal is tied to the thread that started it.
             let mut result = self.tool.run(plan, cx, out).await;
             let found = match (watch, before) {
                 (Some(watch), Some(before)) => tokio::task::spawn_blocking(move || {
                     let (changed, after) = watch.changes_since(&before);
-                    (changed, (before.is_complete(), after.is_complete()))
+                    let complete = (before.is_complete(), after.is_complete());
+                    (changed, complete, after)
                 })
                 .await
                 .ok(),
                 _ => None,
             };
+            // The look after this command is kept for the next command's
+            // and the close's continuity check, and the harness-touched set
+            // is forgotten: the after-look already holds their new state.
+            if let Some((_, _, after)) = &found {
+                self.sandbox.remember_after(after.clone());
+                if let Some(rounds) = &self.rounds {
+                    rounds.clear_touched();
+                }
+            }
             let changes = result
                 .payload()
                 .and_then(|payload| payload.get("changes"))
@@ -442,11 +490,11 @@ impl Tool for RecordingShell {
             }
             let mut by_hand = found
                 .as_ref()
-                .map(|(changed, _)| changed.iter().map(|one| one.path.clone()).collect())
+                .map(|(changed, _, _)| changed.iter().map(|one| one.path.clone()).collect())
                 .unwrap_or_default();
             if let Some(rounds) = &self.rounds {
                 let rounds = Arc::clone(rounds);
-                let protected = found.as_ref().map(|(changed, _)| changed.clone());
+                let protected = found.as_ref().map(|(changed, _, _)| changed.clone());
                 // Not cancelled: the command ran, and what it changed is
                 // recorded whether or not the turn goes on.
                 let recorded = tokio::task::spawn_blocking(move || {
@@ -463,7 +511,7 @@ impl Tool for RecordingShell {
                     Err(_) => tracing::warn!("what a shell command changed could not be recorded"),
                 }
             }
-            if let Some((changed, complete)) = found {
+            if let Some((changed, complete, _)) = found {
                 let root = cx.paths.root().to_fs_path();
                 if let Some(note) = protected_note(&changed, complete, &root, &by_hand) {
                     result = result.with_part(Part::text(note.clone()));
@@ -494,11 +542,6 @@ impl Tool for RecordingShell {
                             protected paths are looked at again before the next command and at \
                             the session's close.]";
                 self.policy.stop_turn(cx.turn, note.to_owned());
-                // Remember the look before this command, so that a protected
-                // path it changes after the turn is found later.
-                if let Some(before) = before_escape {
-                    self.sandbox.remember_escape(before);
-                }
             }
             result
         })
@@ -521,17 +564,30 @@ fn note_changed(changes: &Json, cx: &RunCx) {
 }
 
 impl RecordingShell {
-    /// Looks at the protected paths again when a command outran its kill,
-    /// and if one changed since the look before that command, records it,
-    /// stops the turn, and returns the result that says so — so this
-    /// command does not run on a workspace an escaped process has changed.
-    /// `None` when none escaped or nothing changed.
-    async fn recheck_escape(&self, cx: &RunCx) -> Option<ToolResult> {
-        let sandbox = Arc::clone(&self.sandbox);
-        let changed = tokio::task::spawn_blocking(move || sandbox.recheck_escape())
-            .await
-            .ok()
-            .flatten()?;
+    /// Compares the look before this command with the look after the last
+    /// confined command, and if a protected path changed in between that
+    /// none of the harness's own tools changed, records it, stops the turn,
+    /// and returns the result that says so — so this command does not run on
+    /// a workspace something outside the harness has changed. `None` when
+    /// nothing changed from outside.
+    async fn continuity(&self, before: &Snapshot, cx: &RunCx) -> Option<ToolResult> {
+        let changed = self.sandbox.continuity(before)?;
+        // What the harness's own tools changed since the last after-look is
+        // not a change from outside.
+        let touched = self.rounds.as_ref().map(|rounds| rounds.touched());
+        let changed: Vec<Changed> = changed
+            .into_iter()
+            .filter(|one| {
+                touched.as_ref().is_none_or(|touched| {
+                    AbsPath::from_os(&one.path)
+                        .ok()
+                        .is_none_or(|path| !touched.contains(path.key()))
+                })
+            })
+            .collect();
+        if changed.is_empty() {
+            return None;
+        }
         let root = cx.paths.root().to_fs_path();
         let by_hand = match &self.rounds {
             Some(rounds) => {
@@ -543,13 +599,41 @@ impl RecordingShell {
             }
             None => changed.iter().map(|one| one.path.clone()).collect(),
         };
-        let note = protected_note(&changed, (true, true), &root, &by_hand)?;
+        let note = continuity_note(&changed, &root, &by_hand);
         self.policy.stop_turn(cx.turn, note.clone());
         Some(ToolResult::denied(format!(
-            "The command was not run: a process an earlier command left running changed a \
-             protected path after its turn. {note}"
+            "The command was not run. {note}"
         )))
     }
+}
+
+/// What the model and the user are told when a protected path changed
+/// between two confined commands, from outside the harness.
+fn continuity_note(
+    changed: &[Changed],
+    root: &std::path::Path,
+    by_hand: &[std::path::PathBuf],
+) -> String {
+    let shown: Vec<String> = changed
+        .iter()
+        .map(|one| {
+            let path = one.path.strip_prefix(root).unwrap_or(&one.path);
+            format!("`{}` ({})", path.display(), one.change.as_str())
+        })
+        .collect();
+    let undo = if by_hand.len() == changed.len() {
+        "Undoing this turn does not put them back: what they were is not kept, so they must be \
+         put back by hand."
+    } else {
+        "Undoing this turn puts them back."
+    };
+    format!(
+        "[A protected path changed since the last command, and none of the harness's own tools \
+         changed it: a process an earlier command left running inside the sandbox, or a change \
+         made by hand between turns. These decide what runs later outside the sandbox: {}. The \
+         turn stops here, so that the user can look. {undo}]",
+        shown.join(", ")
+    )
 }
 
 #[cfg(test)]

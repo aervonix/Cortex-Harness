@@ -114,11 +114,11 @@ packages: cortex-base
 caught-by:
     cortex-base program::tests::find_outside_passes_over_a_program_inside_a_root
 
-[break] an-escape-is-not-re-checked
-rule: After a command outran its kill, the protected paths are looked at again against the look before it, so a path it changes after the turn is found.
+[break] a-change-between-commands-is-not-found
+rule: The look before a command is compared with the look after the last confined command, so a protected path changed in between — by a process left running, or by hand — is found.
 file: crates/cortex-core/src/sandbox.rs
-in: SessionSandbox::remember_escape
-find: Some(before)
+in: SessionSandbox::remember_after
+find: Some(after)
 replace: None::<Snapshot>
 packages: cortex-core
 caught-by:
