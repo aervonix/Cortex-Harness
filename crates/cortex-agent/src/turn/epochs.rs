@@ -552,12 +552,16 @@ impl Session {
     /// A summary request over the first `covered` messages of the epoch:
     /// the epoch's own prefix, so that a summary on the same model reads
     /// the epoch's cache, then the instructions.
+    ///
+    /// After the provider said a request does not fit, the estimate is
+    /// known to be low, so the request is always cut, to half the limit.
     fn summary_request(
         &self,
         model: &RoleModel,
         role: &ModelRole,
         covered: usize,
         focus: Option<&str>,
+        overflowed: bool,
     ) -> ModelRequest {
         let assembled = self.context.assemble();
         let mut request = ModelRequest::new(Arc::clone(&model.entry), role.clone());
@@ -572,22 +576,23 @@ impl Session {
         let (_, limit) = self.limit(model);
         let budget = &self.context.budget;
         let whole = budget.tokens(self.context.content_bytes());
-        request.messages = if whole <= limit {
+        request.messages = if overflowed {
+            self.trimmed(messages, limit / 2)
+        } else if whole <= limit {
             messages.to_vec()
         } else {
-            self.trimmed(messages, limit)
+            self.trimmed(messages, limit.saturating_mul(9) / 10)
         };
         request.messages.push(instructions_message(focus));
         request
     }
 
-    /// The newest messages of `messages` that fit `limit`, whole turns at a
+    /// The newest messages of `messages` that fit `room`, whole turns at a
     /// time and without their reasoning, after the epoch's summary if it
     /// begins with one: for a summary request the summarising model could
     /// not take whole (the provider said the epoch does not fit).
-    fn trimmed(&self, messages: &[Message], limit: u64) -> Vec<Message> {
+    fn trimmed(&self, messages: &[Message], room: u64) -> Vec<Message> {
         let budget = &self.context.budget;
-        let room = limit.saturating_mul(9) / 10;
         let starts_with_summary = self.context.history.starts_with_summary();
         let first = usize::from(starts_with_summary);
         let mut from = messages.len();
@@ -630,9 +635,14 @@ impl Session {
         {
             return;
         }
+        // A summary is a request, and one prepared ahead of need is not
+        // worth stopping the session for: with no request left, none.
+        if self.ledger.take_request().is_err() {
+            return;
+        }
         let covered = self.context.history.len();
         let (role, model) = self.summary_model();
-        let request = self.summary_request(&model, &role, covered, None);
+        let request = self.summary_request(&model, &role, covered, None, false);
         let cancel = self.shared.cancel.child();
         let token = cancel.clone();
         let client = Arc::clone(&model.client);
@@ -668,6 +678,15 @@ impl Session {
     /// A summary that finished in the background has its usage counted
     /// now, and waits as ready.
     pub(super) async fn collect_background(&mut self, turn: &mut Turn) -> Result<(), StoreError> {
+        // A summary that finished before it was given up was paid for.
+        for handle in std::mem::take(&mut self.given_up) {
+            if let Ok(summarized) = handle.await
+                && let Some(usage) = summarized.usage
+            {
+                self.out_of_band(turn, &summarized.model, &summarized.role, usage)
+                    .await?;
+            }
+        }
         let finished =
             matches!(&self.background, Some(Background::Running(job)) if job.handle.is_finished());
         if !finished {
@@ -742,10 +761,20 @@ impl Session {
     /// more.
     pub(super) fn drop_background(&mut self) {
         if let Some(Background::Running(job)) = self.background.take() {
+            self.give_up(job);
+        }
+        self.background_failed = None;
+    }
+
+    /// Stops a summary's request. One that already finished is kept, to be
+    /// counted at the next boundary: what it used was spent.
+    fn give_up(&mut self, job: Job) {
+        if job.handle.is_finished() {
+            self.given_up.push(job.handle);
+        } else {
             job.cancel.cancel();
             job.handle.abort();
         }
-        self.background_failed = None;
     }
 
     /// Stops a summary that runs in the background: the turn was
@@ -811,6 +840,12 @@ impl Session {
                 message,
             )));
         }
+        if prep.overflowed {
+            let (window, _) = self.limit(&self.model);
+            self.context
+                .budget
+                .overflowed(self.context.sent_bytes, window);
+        }
         let before = self.estimate();
         self.notify(
             turn,
@@ -848,8 +883,7 @@ impl Session {
                 }
             }
             Some(Background::Running(job)) => {
-                job.cancel.cancel();
-                job.handle.abort();
+                self.give_up(job);
                 None
             }
             _ => None,
@@ -865,7 +899,17 @@ impl Session {
                         through: self.context.history.end_of(messages),
                     };
                     let (role, model) = self.summary_model();
-                    let request = self.summary_request(&model, &role, messages, focus.as_deref());
+                    // A summary is a request: the ledger is asked first.
+                    if let Err(reached) = self.ledger.take_request() {
+                        return self.limit_reached(turn, &reached).await;
+                    }
+                    let request = self.summary_request(
+                        &model,
+                        &role,
+                        messages,
+                        focus.as_deref(),
+                        prep.overflowed,
+                    );
                     let client = Arc::clone(&model.client);
                     let Some((outcome, usage)) = turn
                         .cancel
@@ -963,6 +1007,7 @@ impl Session {
             files: Carried::files_from(
                 &root,
                 &self.env.workspace.files.carried(),
+                &self.context.touched,
                 self.context.carried_before.as_ref(),
             ),
             last_user: self.context.last_user.clone(),
@@ -1016,6 +1061,7 @@ impl Session {
             .await
             .map_err(Unfinished::Store)?;
         self.context.carried_before = Some(carried_value);
+        self.context.touched = crate::context::Touched::default();
         self.shared.lock().history = true;
         self.emit(
             turn,

@@ -1,0 +1,3 @@
+| Item | Who | When |
+|---|---|---|
+| **A request the provider refused as too long leaves no context record.** The record of each request (`StatEvent::Context`) is sent with the request's statistics when it ends ([07-sessions-and-context.md](../architecture/07-sessions-and-context.md), "Budgeting", as built in step 15). A request that overflows is voided and the loop compacts, and the next request's record replaces the one kept for it, so the estimate that was wrong, which is what explains the overflow, is not stored. To settle: send the refused request's record before the compaction, with the provider's answer. | Step 16 (statistics) or step 44 (cache-miss explanations) | When the records are stored |

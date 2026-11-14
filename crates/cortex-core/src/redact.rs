@@ -188,28 +188,45 @@ pub(crate) struct Resumed {
 pub(crate) fn resumed(entries: &[Entry]) -> Resumed {
     let mut resumed = Resumed::default();
     let mut altered = false;
-    // The item entries so far: their ids, and whether each is marked.
-    let mut seen: Vec<(String, bool)> = Vec::new();
+    // The items of the history the last summary left, the summary first:
+    // their ids, whether each is marked, and whether it is a summary. A
+    // summary's history is the summary, then what the history before it
+    // held after the item it covers through, as the loop replays it.
+    let mut held: Vec<(String, bool, bool)> = Vec::new();
     for entry in entries {
         match &entry.body {
             Body::Summary { item, .. } => {
-                let replayed_marked = item.covers_through.as_ref().is_some_and(|through| {
-                    seen.iter()
-                        .rposition(|(id, _)| id == through.as_str())
-                        .is_some_and(|at| seen[at + 1..].iter().any(|(_, marked)| *marked))
+                let after = item
+                    .covers_through
+                    .as_ref()
+                    .and_then(|through| held.iter().position(|(id, _, _)| id == through.as_str()));
+                let kept: Vec<(String, bool, bool)> = after.map_or_else(Vec::new, |after| {
+                    held[after + 1..]
+                        .iter()
+                        .filter(|(_, _, summary)| !summary)
+                        .cloned()
+                        .collect()
                 });
+                let replayed_marked = kept.iter().any(|(_, marked, _)| *marked);
                 altered = entry.redacted || replayed_marked;
+                held = std::iter::once((item.id.as_str().to_owned(), entry.redacted, true))
+                    .chain(kept)
+                    .collect();
             }
             Body::Epoch(epoch) if matches!(epoch.reason.as_deref(), Some("start" | "resume")) => {
                 altered = false;
             }
             _ => {}
         }
-        if let Some(item) = entry.body.as_item() {
-            if !matches!(entry.body, Body::Summary { .. }) {
-                altered |= entry.redacted;
-            }
-            seen.push((item.id().unwrap_or_default().to_owned(), entry.redacted));
+        if let Some(item) = entry.body.as_item()
+            && !matches!(entry.body, Body::Summary { .. })
+        {
+            altered |= entry.redacted;
+            held.push((
+                item.id().unwrap_or_default().to_owned(),
+                entry.redacted,
+                false,
+            ));
         }
         let Some(item) = entry.body.as_item() else {
             continue;
@@ -534,6 +551,38 @@ mod tests {
                 },
                 redacted,
             )
+        }
+
+        #[test]
+        fn a_second_summary_holds_what_the_first_replayed_and_not_the_first() {
+            // The first summary was masked; the second covers the turn it
+            // replayed, so its history holds neither, and nothing marks it.
+            let entries = [
+                user(1, false),
+                answer(2),
+                user(3, false),
+                answer(4),
+                summary_entry(5, Some("i_2"), true),
+                epoch(6, "compaction"),
+                summary_entry(7, Some("i_4"), false),
+                epoch(8, "compaction"),
+                answer(9),
+            ];
+            assert_eq!(raw(&entries), [true, true, true]);
+            // A masked turn the first replayed, which the second replays
+            // again because it covers only the first summary: it marks.
+            let entries = [
+                user(1, false),
+                answer(2),
+                user(3, true),
+                answer(4),
+                summary_entry(5, Some("i_2"), false),
+                epoch(6, "compaction"),
+                summary_entry(7, Some("i_5"), false),
+                epoch(8, "compaction"),
+                answer(9),
+            ];
+            assert_eq!(raw(&entries), [true, false, false]);
         }
 
         #[test]

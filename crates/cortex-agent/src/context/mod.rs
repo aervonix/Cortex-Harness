@@ -57,7 +57,7 @@ pub use prefix::{PrefixDifference, check_prefix};
 pub use prompt::{CORE_INSTRUCTIONS, Environment};
 
 pub(crate) use budget::{Budget, Pressure, pressure};
-pub(crate) use compact::{ARTIFACT_ROUNDS, Carried, instructions_message};
+pub(crate) use compact::{ARTIFACT_ROUNDS, Carried, Touched, instructions_message};
 pub(crate) use history::{History, Source};
 pub(crate) use instructions::{
     Change, Discovered, Found, Given, Place, date_text, discover, nested_dirs, notice_text, places,
@@ -228,6 +228,33 @@ pub(crate) fn same_prefix(one: &EpochStart, other: &EpochStart) -> bool {
     one.system == other.system && one.tools == other.tools
 }
 
+/// The log positions of the items of the history the last summary left,
+/// the summary first: what the history before each summary held after the
+/// item it covers through, as the live session replayed it. With no
+/// summary, every item.
+fn held_after_summaries(items: &[Item]) -> Vec<usize> {
+    let mut held: Vec<usize> = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        if let Item::Summary(summary) = item {
+            let after = summary.covers_through.as_ref().and_then(|through| {
+                held.iter()
+                    .position(|&at| items[at].id() == Some(through.as_str()))
+            });
+            let kept: Vec<usize> = after.map_or_else(Vec::new, |after| {
+                held[after + 1..]
+                    .iter()
+                    .copied()
+                    .filter(|&at| !matches!(items[at], Item::Summary(_)))
+                    .collect()
+            });
+            held = std::iter::once(index).chain(kept).collect();
+        } else {
+            held.push(index);
+        }
+    }
+    held
+}
+
 /// A session's context, as the loop holds it.
 pub(crate) struct Context {
     pub(crate) parts: ContextParts,
@@ -251,6 +278,9 @@ pub(crate) struct Context {
     pub(crate) artifacts: VecDeque<Vec<ArtifactRef>>,
     /// The state the last summary on the branch carried.
     pub(crate) carried_before: Option<Value>,
+    /// The files the tools' results say were read or changed since the
+    /// last summary: what the next one carries with `carried_before`.
+    pub(crate) touched: Touched,
     /// The request before this one, for where the next first differs.
     pub(crate) last_shape: Option<Shape>,
     /// The size of the request in flight, for the ratio of bytes to tokens.
@@ -275,6 +305,7 @@ impl Context {
             last_user: None,
             artifacts: VecDeque::new(),
             carried_before: None,
+            touched: Touched::default(),
             last_shape: None,
             sent_bytes: 0,
             last_prefix: None,
@@ -289,7 +320,6 @@ impl Context {
         // The count was of the history as it was; the ratio of bytes to
         // tokens is still the model's.
         self.budget.new_epoch();
-        self.last_shape = None;
         self.epoch = opened.epochs.last().map(|(_, epoch)| epoch.clone());
         self.epoch_number = opened.epochs.len() as u64;
         self.carried_before.clone_from(&opened.carried);
@@ -299,47 +329,39 @@ impl Context {
         let summary = items
             .iter()
             .rposition(|item| matches!(item, Item::Summary(_)));
-        // The epoch each item was recorded under.
-        let epoch_at = |index: usize| {
-            opened
-                .epochs
-                .iter()
-                .rev()
-                .find(|(at, _)| *at <= index)
-                .map(|(_, epoch)| epoch)
-        };
+        // What was produced since the prompt and tools were last other than
+        // the epoch's is replayed with its reasoning; anything older, as the
+        // live session did when that epoch began, without it.
         let current = self.epoch.clone();
-        let produced_here = |index: usize| match (epoch_at(index), &current) {
-            (Some(then), Some(now)) => same_prefix(then, now),
-            _ => false,
-        };
-        let from = match summary {
-            Some(at) => {
-                self.history.push(&items[at]);
-                let covered = match &items[at] {
-                    Item::Summary(summary) => summary.covers_through.as_ref().and_then(|id| {
-                        items[..at]
-                            .iter()
-                            .position(|item| item.id() == Some(id.as_str()))
-                    }),
-                    _ => None,
-                };
-                // The turns the summary did not cover are replayed after
-                // it, without their reasoning.
-                if let Some(covered) = covered {
-                    for item in &items[covered + 1..at] {
-                        self.history.push_projected(item);
-                    }
+        let since = current.as_ref().map_or(usize::MAX, |now| {
+            let mut since = usize::MAX;
+            for (at, epoch) in opened.epochs.iter().rev() {
+                if !same_prefix(epoch, now) {
+                    break;
                 }
-                at + 1
+                since = *at;
             }
-            None => 0,
-        };
-        for (index, item) in items.iter().enumerate().skip(from) {
-            if produced_here(index) {
-                self.history.push(item);
-            } else {
-                self.history.push_projected(item);
+            since
+        });
+        let held = held_after_summaries(items);
+        if let (Some(at), Some((first, rest))) = (summary, held.split_first()) {
+            self.history.push(&items[*first]);
+            for &index in rest {
+                // The turns the summary did not cover are replayed after it,
+                // without their reasoning.
+                if index > at && index >= since {
+                    self.history.push(&items[index]);
+                } else {
+                    self.history.push_projected(&items[index]);
+                }
+            }
+        } else {
+            for (index, item) in items.iter().enumerate() {
+                if index >= since {
+                    self.history.push(item);
+                } else {
+                    self.history.push_projected(item);
+                }
             }
         }
 
@@ -387,6 +409,12 @@ impl Context {
         for item in items {
             self.note(item);
         }
+        // The files the tools touched since the last summary, which carried
+        // those before it.
+        self.touched = Touched::default();
+        for item in items.iter().skip(summary.map_or(0, |at| at + 1)) {
+            self.touched.note(item);
+        }
     }
 
     /// Keeps what a compaction carries from an item: the user's last
@@ -416,6 +444,7 @@ impl Context {
     pub(crate) fn push(&mut self, item: &Item) {
         self.history.push(item);
         self.note(item);
+        self.touched.note(item);
     }
 
     /// The size of the next request's content, in bytes.

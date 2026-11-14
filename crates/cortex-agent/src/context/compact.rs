@@ -8,12 +8,12 @@
 //! in the `summary` entry twice: as data (`carried`, which the core reads
 //! the plan back from) and as text in the summary the model is sent.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use cortex_base::AbsPath;
-use cortex_protocol::item::ArtifactRef;
-use cortex_protocol::item::PlanStatus;
-use cortex_protocol::{Message, Part, Plan, Role};
+use cortex_protocol::item::{ArtifactRef, PlanStatus, ToolOutcome};
+use cortex_protocol::{Item, Message, Part, Plan, Role};
 use cortex_tools::SeenFile;
 use serde_json::{Value, json};
 
@@ -74,6 +74,56 @@ pub(crate) struct CarriedFile {
     pub(crate) hash: Option<String>,
 }
 
+/// The kinds of a file tool's payload that say its file was written.
+const WRITTEN: &[&str] = &["create", "write", "edit"];
+
+/// The files the tools' results on the branch say were read or changed,
+/// by the path each payload names: `path` with the kinds the file tools
+/// give it, and the shell's `changes`, read as the headless report reads
+/// them (`cortex-cli`'s `report`). What the table of seen files knows is
+/// this process's, and is forgotten at a rewind; this is the branch's.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Touched {
+    /// Each path as its payload names it: whether it was read, changed.
+    files: BTreeMap<String, (bool, bool)>,
+}
+
+impl Touched {
+    /// Notes what a recorded item says of files.
+    pub(crate) fn note(&mut self, item: &Item) {
+        let Item::ToolResult(result) = item else {
+            return;
+        };
+        let Some(payload) = &result.payload else {
+            return;
+        };
+        if result.outcome == ToolOutcome::Success
+            && let Some(path) = payload.get("path").and_then(Value::as_str)
+        {
+            let kind = payload.get("kind").and_then(Value::as_str);
+            if kind.is_some_and(|kind| WRITTEN.contains(&kind)) {
+                self.files.entry(path.to_owned()).or_default().1 = true;
+            } else if result.tool == "read" {
+                self.files.entry(path.to_owned()).or_default().0 = true;
+            }
+        }
+        // A command's changes count whatever it exited with.
+        if let Some(changes) = payload.get("changes") {
+            for list in ["created", "modified", "deleted"] {
+                for path in changes
+                    .get(list)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                {
+                    self.files.entry(path.to_owned()).or_default().1 = true;
+                }
+            }
+        }
+    }
+}
+
 /// The state carried across a compaction.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Carried {
@@ -90,6 +140,7 @@ impl Carried {
     pub(crate) fn files_from(
         root: &AbsPath,
         table: &[SeenFile],
+        touched: &Touched,
         earlier: Option<&Value>,
     ) -> Vec<CarriedFile> {
         let mut files: Vec<CarriedFile> = earlier
@@ -111,6 +162,27 @@ impl Carried {
                     .collect()
             })
             .unwrap_or_default();
+        // What the branch says since: a hash from before is not the file's
+        // any more, and this process's table gives it back if it has one.
+        for (named, &(read, changed)) in &touched.files {
+            let path = root
+                .join(named)
+                .or_else(|_| AbsPath::parse(named, root.style()))
+                .map_or_else(|_| named.clone(), |abs| shown(root, &abs));
+            match files.iter_mut().find(|known| known.path == path) {
+                Some(known) => {
+                    known.read |= read;
+                    known.changed |= changed;
+                    known.hash = None;
+                }
+                None => files.push(CarriedFile {
+                    path,
+                    read,
+                    changed,
+                    hash: None,
+                }),
+            }
+        }
         for seen in table {
             let path = shown(root, &seen.path);
             let file = CarriedFile {

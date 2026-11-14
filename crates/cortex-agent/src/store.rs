@@ -78,6 +78,11 @@ pub struct Opened {
     pub epochs: Vec<(usize, EpochStart)>,
     /// The state the last compaction summary on the branch carried across.
     pub carried: Option<Value>,
+    /// Whether an entry on the branch is held otherwise than it was sent:
+    /// the secret filter masked it, or it was stored as its projection
+    /// (`docs/architecture/07-sessions-and-context.md`, "Secrets in the
+    /// log").
+    pub masked: bool,
 }
 
 /// Why a context epoch began.
@@ -251,6 +256,8 @@ struct Inner {
     outcomes: Vec<(TurnId, TurnCompleted)>,
     last_turn: u64,
     last_item: u64,
+    /// An item is held otherwise than it was sent ([`MemorySessionStore::mask`]).
+    masked: bool,
 }
 
 /// What [`Inner::read`] finds.
@@ -281,6 +288,21 @@ impl MemorySessionStore {
             }
         }
         store
+    }
+
+    /// Stands for the secret filter: the item with `item`'s id is held from
+    /// now on as `item`, otherwise than it was sent, and the store says so
+    /// when the session is opened ([`Opened::masked`]).
+    pub fn mask(&self, item: Item) {
+        let mut inner = self.lock();
+        for (_, record) in &mut inner.records {
+            if let Record::Item(held) = record
+                && held.id() == item.id()
+            {
+                *held = item.clone();
+            }
+        }
+        inner.masked = true;
     }
 
     /// Every record appended so far, with its turn, in order.
@@ -411,6 +433,7 @@ impl SessionStore for MemorySessionStore {
             last_item: inner.last_item,
             epochs: read.epochs,
             carried: read.carried,
+            masked: inner.masked,
         };
         Box::pin(std::future::ready(Ok(opened)))
     }

@@ -381,3 +381,198 @@ fn turns_replayed_after_a_summary_are_the_same_live_and_read_again() {
             .any(|message| message.parts.is_empty())
     );
 }
+
+fn summary_item(id: &str, covers_through: &str) -> Item {
+    Item::Summary(SummaryItem {
+        id: ItemId::new(id),
+        text: format!("The summary {id}."),
+        covers_through: Some(ItemId::new(covers_through)),
+        usage: None,
+        created_at: None,
+    })
+}
+
+#[test]
+fn a_second_summary_replays_what_the_first_left_and_never_the_first_live_and_read_again() {
+    let turns = [
+        user("i_1", "go"),
+        thinking_answer("i_2", None),
+        user("i_3", "more"),
+        thinking_answer("i_4", None),
+    ];
+    let mut live = context();
+    for item in &turns {
+        live.push(item);
+    }
+    // The first summary covers the first turn; the second turn is replayed.
+    let first = summary_item("i_5", "i_2");
+    let mut after_first = History::default();
+    after_first.push(&first);
+    after_first.extend_projected(&live.history, 2);
+    // The second follows at once, its cover ending inside what the first
+    // replayed, or at the first itself.
+    for (through, covered) in [("i_3", 2), ("i_5", 1)] {
+        let second = summary_item("i_6", through);
+        let next = user("i_7", "and then");
+        let mut after_second = History::default();
+        after_second.push(&second);
+        after_second.extend_projected(&after_first, covered);
+        after_second.push(&next);
+
+        let mut compaction = epoch("one");
+        compaction.reason = Some(EpochReason::Compaction);
+        let mut read = context();
+        let mut logged = turns.to_vec();
+        logged.extend([first.clone(), second, next]);
+        read.load(&Opened {
+            items: logged,
+            epochs: vec![(0, epoch("one")), (4, compaction.clone()), (5, compaction)],
+            ..Opened::default()
+        });
+        assert_eq!(
+            after_second.messages(),
+            read.history.messages(),
+            "covered through {through}"
+        );
+    }
+}
+
+#[test]
+fn reasoning_dropped_when_the_prompt_changed_stays_dropped_when_it_changes_back() {
+    let resume = |system: &str| {
+        let mut epoch = epoch(system);
+        epoch.reason = Some(EpochReason::Resume);
+        epoch
+    };
+    let items = [
+        user("i_1", "go"),
+        thinking_answer("i_2", None),
+        user("i_3", "again"),
+        thinking_answer("i_4", None),
+        user("i_5", "once more"),
+    ];
+    // Live: each change of prompt drops the reasoning of what came before.
+    let mut live = context();
+    live.begin(epoch("one"), None);
+    live.push(&items[0]);
+    live.push(&items[1]);
+    live.begin(resume("two"), None);
+    live.push(&items[2]);
+    live.push(&items[3]);
+    live.begin(resume("one"), None);
+    live.push(&items[4]);
+    assert!(!live.history.messages().iter().any(has_reasoning));
+
+    let mut read = context();
+    read.load(&Opened {
+        items: items.to_vec(),
+        epochs: vec![(0, epoch("one")), (2, resume("two")), (4, resume("one"))],
+        ..Opened::default()
+    });
+    assert_eq!(live.history.messages(), read.history.messages());
+}
+
+fn payload_result(id: &str, tool: &str, outcome: ToolOutcome, payload: serde_json::Value) -> Item {
+    Item::ToolResult(ToolResultItem {
+        id: ItemId::new(id),
+        call_id: CallId::new(format!("c_{id}")),
+        tool: tool.to_owned(),
+        outcome,
+        content: vec![Part::text("done")],
+        payload: Some(payload),
+        artifacts: Vec::new(),
+        duration_ms: None,
+        created_at: None,
+    })
+}
+
+#[test]
+fn the_files_the_branch_touched_since_its_summary_are_carried_when_the_table_never_saw_them() {
+    let root = AbsPath::parse("/work/app", cortex_base::PathStyle::Posix).unwrap();
+    let before = summary_item("i_2", "i_1");
+    let items = vec![
+        // Before the summary: what it carried says.
+        payload_result(
+            "i_1",
+            "read",
+            ToolOutcome::Success,
+            json!({"path": "src/old.rs", "kind": "content"}),
+        ),
+        before,
+        payload_result(
+            "i_3",
+            "read",
+            ToolOutcome::Success,
+            json!({"path": "src/a.rs", "kind": "outline"}),
+        ),
+        payload_result(
+            "i_4",
+            "edit",
+            ToolOutcome::Success,
+            json!({"path": "src/b.rs", "kind": "edit"}),
+        ),
+        payload_result(
+            "i_5",
+            "write",
+            ToolOutcome::Success,
+            json!({"path": "src/same.rs", "kind": "unchanged"}),
+        ),
+        payload_result(
+            "i_6",
+            "read",
+            ToolOutcome::Error,
+            json!({"path": "src/missing.rs", "kind": "content"}),
+        ),
+        payload_result(
+            "i_7",
+            "read",
+            ToolOutcome::Success,
+            json!({"artifact": "a_1", "kind": "content"}),
+        ),
+        payload_result(
+            "i_8",
+            "shell",
+            ToolOutcome::Error,
+            json!({"changes": {"created": ["out/c.txt"], "modified": [], "deleted": ["src/gone.rs"]}}),
+        ),
+        payload_result(
+            "i_9",
+            "read",
+            ToolOutcome::Success,
+            json!({"path": "/etc/hosts", "kind": "content"}),
+        ),
+    ];
+    let carried =
+        json!({"files": [{"path": "src/old.rs", "read": true, "changed": false, "hash": "abc"}]});
+    let mut read = context();
+    read.load(&Opened {
+        items,
+        epochs: vec![(0, epoch("one"))],
+        carried: Some(carried.clone()),
+        ..Opened::default()
+    });
+    // A process that has just resumed: its table has seen nothing.
+    let files = Carried::files_from(&root, &[], &read.touched, Some(&carried));
+    let listed: Vec<(&str, bool, bool, Option<&str>)> = files
+        .iter()
+        .map(|file| {
+            (
+                file.path.as_str(),
+                file.read,
+                file.changed,
+                file.hash.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("/etc/hosts", true, false, None),
+            ("out/c.txt", false, true, None),
+            ("src/a.rs", true, false, None),
+            ("src/b.rs", false, true, None),
+            ("src/gone.rs", false, true, None),
+            ("src/old.rs", true, false, Some("abc")),
+        ]
+    );
+}

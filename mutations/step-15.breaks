@@ -86,8 +86,8 @@ caught-by:
 rule: Only an item entry sets the redaction mark: a record the model is never sent does not.
 file: crates/cortex-core/src/redact.rs
 in: resumed
-find: if let Some(item) = entry.body.as_item() {
-replace: altered |= entry.redacted; if let Some(item) = entry.body.as_item() {
+find: if let Some(item) = entry.body.as_item() && !matches!(entry.body, Body::Summary { .. }) {
+replace: altered |= entry.redacted; if let Some(item) = entry.body.as_item() && !matches!(entry.body, Body::Summary { .. }) {
 caught-by:
     cortex-core redact::tests::resumed_marks::only_an_item_marks
 
@@ -229,4 +229,94 @@ find: || !self.gate.may_keep(resolved.abs())
 replace:
 caught-by:
     cortex-core::it context::an_instruction_file_a_rule_denies_is_not_read
+
+[break] a-second-summary-replays-from-the-log
+rule: What a summary replays is what the history before it held after its cover, never the earlier summary and never less than it replayed.
+file: crates/cortex-agent/src/context/mod.rs
+in: held_after_summaries
+find: held[after + 1..] .iter() .copied() .filter(|&at| !matches!(items[at], Item::Summary(_)))
+replace: (held[after] + 1..index)
+caught-by:
+    cortex-agent context::tests::a_second_summary_replays_what_the_first_left_and_never_the_first_live_and_read_again
+
+[break] reasoning-back-under-a-returning-prompt
+rule: An item keeps its reasoning only if every epoch since its own kept the prompt and the tools.
+file: crates/cortex-agent/src/context/mod.rs
+in: Context::load
+find: if !same_prefix(epoch, now) { break; }
+replace: if !same_prefix(epoch, now) { continue; }
+caught-by:
+    cortex-agent context::tests::reasoning_dropped_when_the_prompt_changed_stays_dropped_when_it_changes_back
+
+[break] files-of-the-branch-not-carried
+rule: A compaction carries the files the branch's tool results touched since the last summary, whatever this process's table saw.
+file: crates/cortex-agent/src/context/mod.rs
+in: Context::load
+find: self.touched.note(item);
+replace:
+caught-by:
+    cortex-agent context::tests::the_files_the_branch_touched_since_its_summary_are_carried_when_the_table_never_saw_them
+
+[break] overflow-not-told-to-the-budget
+rule: After the provider says a request does not fit, the summary request is cut by what that showed of the ratio.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::compacting
+find: self.context .budget .overflowed(self.context.sent_bytes, window);
+replace: let _ = window;
+caught-by:
+    cortex-agent::it context::after_an_overflow_the_summary_request_is_cut_to_fit_what_the_provider_showed
+
+[break] background-summary-past-the-ledger
+rule: A summary in the background is a request of the ledger, started only when one is left after the turn's own.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::start_background
+find: if self.ledger.take_request().is_err() { return; }
+replace:
+caught-by:
+    cortex-agent::it context::a_background_summary_is_not_started_when_the_ledger_has_no_request_for_it
+
+[break] foreground-summary-past-the-ledger
+rule: A summary at the trigger is a request of the ledger.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::compacting
+find: if let Err(reached) = self.ledger.take_request() { return self.limit_reached(turn, &reached).await; }
+replace:
+caught-by:
+    cortex-agent::it context::a_summary_at_the_trigger_is_a_request_the_ledger_counts
+
+[break] given-up-summary-not-counted
+rule: A summary given up after its request finished is counted: what it used was spent.
+file: crates/cortex-agent/src/turn/epochs.rs
+in: Session::give_up
+find: self.given_up.push(job.handle);
+replace: job.handle.abort();
+caught-by:
+    cortex-agent::it context::a_summary_given_up_after_it_finished_is_still_counted
+
+[break] masked-reload-keeps-the-request-before
+rule: A session read again whose log holds an entry otherwise than it was sent is not held to the request before.
+file: crates/cortex-agent/src/turn.rs
+in: Session::reload
+find: if changed || opened.masked {
+replace: if changed {
+caught-by:
+    cortex-agent::it context::a_session_read_again_whose_log_holds_an_entry_masked_goes_on
+
+[break] context-record-forgets-the-request-before-at-a-reload
+rule: The context record compares each request with the one before it in this process, across a reload.
+file: crates/cortex-agent/src/context/mod.rs
+in: Context::load
+find: self.budget.new_epoch(); self.epoch = opened.epochs.last()
+replace: self.budget.new_epoch(); self.last_shape = None; self.epoch = opened.epochs.last()
+caught-by:
+    cortex-agent::it context::the_context_record_compares_with_the_request_before_across_a_reload
+
+[break] redaction-mark-history-not-rebuilt-at-a-summary
+rule: The redaction mark after a summary follows the history it left: what the history before held after its cover.
+file: crates/cortex-core/src/redact.rs
+in: resumed
+find: held = std::iter::once((item.id.as_str().to_owned(), entry.redacted, true)) .chain(kept) .collect();
+replace: held.push((item.id.as_str().to_owned(), entry.redacted, true));
+caught-by:
+    cortex-core redact::tests::resumed_marks::a_second_summary_holds_what_the_first_replayed_and_not_the_first
 
