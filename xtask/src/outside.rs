@@ -35,6 +35,7 @@ use crate::Result;
 use crate::workspace;
 
 /// A provider the live commands can talk to.
+#[derive(Debug)]
 struct LiveProvider {
     /// The name the commands take.
     name: &'static str,
@@ -43,9 +44,10 @@ struct LiveProvider {
     /// Its smoke test and its recorder: ignored tests of `cortex-llm`.
     smoke: &'static str,
     record: &'static str,
-    /// A headless run of the real binary against it: an ignored test of
-    /// `cortex-cli`'s system tests, run by `live` after the smoke test.
-    headless: Option<&'static str>,
+    /// Headless runs of the real binary against it: ignored tests of
+    /// `cortex-cli`'s system tests (`tests/system/live.rs`). `live` runs
+    /// the first after the smoke test; `live --headless` runs them all.
+    headless: &'static [&'static str],
 }
 
 /// The providers the live commands can talk to. The first is the one a
@@ -56,28 +58,28 @@ const PROVIDERS: &[LiveProvider] = &[
         key_file: "CORTEX_LIVE_ANTHROPIC_KEY_FILE",
         smoke: "anthropic::live::live_smoke",
         record: "anthropic::live::live_record",
-        headless: Some("live::live_headless_run"),
+        headless: &["live::live_headless_run", "live::live_headless_compaction"],
     },
     LiveProvider {
         name: "openrouter",
         key_file: "CORTEX_LIVE_OPENROUTER_KEY_FILE",
         smoke: "openai_chat::live::live_smoke_openrouter",
         record: "openai_chat::live::live_record_openrouter",
-        headless: None,
+        headless: &[],
     },
     LiveProvider {
         name: "deepseek",
         key_file: "CORTEX_LIVE_DEEPSEEK_KEY_FILE",
         smoke: "openai_chat::live::live_smoke_deepseek",
         record: "openai_chat::live::live_record_deepseek",
-        headless: Some("live::live_headless_run_deepseek"),
+        headless: &["live::live_headless_run_deepseek"],
     },
     LiveProvider {
         name: "venice",
         key_file: "CORTEX_LIVE_VENICE_KEY_FILE",
         smoke: "openai_chat::live::live_smoke_venice",
         record: "openai_chat::live::live_record_venice",
-        headless: None,
+        headless: &[],
     },
 ];
 
@@ -233,8 +235,16 @@ const FUZZ_TARGETS: &[(&str, &str)] = &[
 const FUZZ_SECONDS: u64 = 60;
 
 fn require_key_file(provider: &LiveProvider) -> Result<()> {
+    require_key_file_in(provider, |name| std::env::var_os(name))
+}
+
+/// [`require_key_file`], with the environment `var` reads.
+fn require_key_file_in(
+    provider: &LiveProvider,
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<()> {
     let variable = provider.key_file;
-    match std::env::var_os(variable) {
+    match var(variable) {
         Some(path) if !path.is_empty() => Ok(()),
         _ => Err(format!(
             "{variable} is not set. Set it to the path of a file that holds the API key of \
@@ -385,6 +395,23 @@ pub(crate) fn live(arguments: &[String]) -> Result<()> {
         print!("{}", spent(&text, since));
         return Ok(());
     }
+    if arguments.first().is_some_and(|first| first == "--headless") {
+        let (provider, tests) = headless_tests(&arguments[1..], |name| std::env::var_os(name))?;
+        let (name, path) = ledger_variable()?;
+        println!(
+            "{} headless run(s) of the real binary against {}, with cargo test: no time limit",
+            tests.len(),
+            provider.name
+        );
+        for test in tests {
+            run_ignored(
+                &["--package", "cortex-cli", "--test", "system"],
+                test,
+                &[(name, &path)],
+            )?;
+        }
+        return Ok(());
+    }
     let provider = match arguments {
         [] => &PROVIDERS[0],
         [name] => live_provider(name)?,
@@ -398,7 +425,7 @@ pub(crate) fn live(arguments: &[String]) -> Result<()> {
     let (name, path) = ledger_variable()?;
     ignored_test(provider.smoke, &[(name, &path)])?;
     // The headless run of the binary adds its spend to the same ledger.
-    match provider.headless {
+    match provider.headless.first() {
         Some(test) => run_ignored(
             &["--package", "cortex-cli", "--test", "system"],
             test,
@@ -406,6 +433,40 @@ pub(crate) fn live(arguments: &[String]) -> Result<()> {
         ),
         None => Ok(()),
     }
+}
+
+/// What `live --headless [PROVIDER]` runs: every headless live test of
+/// the provider (Anthropic's when none is named). They run under `cargo
+/// test`, not nextest, so a long session is not stopped at a system
+/// test's limit. Without the provider's key file it stops before anything
+/// is built or sent.
+fn headless_tests(
+    arguments: &[String],
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<(&'static LiveProvider, &'static [&'static str])> {
+    let provider = match arguments {
+        [] => &PROVIDERS[0],
+        [name] => live_provider(name)?,
+        [_, extra, ..] => {
+            return Err(format!(
+                "`live --headless` takes one provider at most, and was also given `{extra}`"
+            ));
+        }
+    };
+    if provider.headless.is_empty() {
+        let with: Vec<&str> = PROVIDERS
+            .iter()
+            .filter(|provider| !provider.headless.is_empty())
+            .map(|provider| provider.name)
+            .collect();
+        return Err(format!(
+            "there is no headless live test against `{}`: there are against {}",
+            provider.name,
+            with.join(" and ")
+        ));
+    }
+    require_key_file_in(provider, var)?;
+    Ok((provider, provider.headless))
 }
 
 /// `cargo xtask record [--provider PROVIDER] [SCENARIO…]`: record fixtures
@@ -766,6 +827,72 @@ not a line of the ledger
         assert_eq!(host_of(report).as_deref(), Some("x86_64-unknown-linux-gnu"));
         assert_eq!(host_of("rustc 1.99.1\n"), None);
         assert_eq!(host_of("host: \n"), None);
+    }
+
+    #[test]
+    fn a_headless_run_without_its_key_says_so_and_stops() {
+        let strings = |arguments: &[&str]| -> Vec<String> {
+            arguments
+                .iter()
+                .map(|argument| (*argument).to_owned())
+                .collect()
+        };
+        // No key file named: an error that names the variable, before
+        // anything is built or sent.
+        let none = |_: &str| None;
+        let error = super::headless_tests(&[], none).unwrap_err();
+        assert!(
+            error.contains("CORTEX_LIVE_ANTHROPIC_KEY_FILE is not set"),
+            "{error}"
+        );
+        assert!(error.contains("Nothing was sent"), "{error}");
+        let error = super::headless_tests(&strings(&["deepseek"]), none).unwrap_err();
+        assert!(error.contains("CORTEX_LIVE_DEEPSEEK_KEY_FILE"), "{error}");
+        let error = super::headless_tests(&strings(&["venice"]), none).unwrap_err();
+        assert!(
+            error.contains("no headless live test against `venice`"),
+            "{error}"
+        );
+        assert!(super::headless_tests(&strings(&["a", "b"]), none).is_err());
+
+        // With one, every headless test of the provider.
+        let named = |name: &str| {
+            (name == "CORTEX_LIVE_ANTHROPIC_KEY_FILE").then(|| std::ffi::OsString::from("k"))
+        };
+        let (provider, tests) = super::headless_tests(&[], named).unwrap();
+        assert_eq!(provider.name, "anthropic");
+        assert_eq!(
+            tests,
+            ["live::live_headless_run", "live::live_headless_compaction"]
+        );
+    }
+
+    /// Every ignored test of `cortex-cli`'s `tests/system/live.rs` is one
+    /// that `live --headless` runs: a new one is not left to be run by hand.
+    #[test]
+    fn every_headless_live_test_has_a_command() {
+        let source = std::fs::read_to_string(
+            crate::workspace::root().join("crates/cortex-cli/tests/system/live.rs"),
+        )
+        .unwrap();
+        let mut in_file: Vec<String> = Vec::new();
+        let mut ignored = false;
+        for line in source.lines() {
+            let line = line.trim();
+            if line.starts_with("#[ignore") {
+                ignored = true;
+            } else if let Some(rest) = line.strip_prefix("fn ").filter(|_| ignored) {
+                in_file.push(format!("live::{}", rest.split('(').next().unwrap()));
+                ignored = false;
+            }
+        }
+        let mut known: Vec<String> = super::PROVIDERS
+            .iter()
+            .flat_map(|provider| provider.headless.iter().map(|test| (*test).to_owned()))
+            .collect();
+        in_file.sort();
+        known.sort();
+        assert_eq!(in_file, known);
     }
 
     #[test]

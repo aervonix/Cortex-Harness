@@ -82,6 +82,11 @@ Checks and tests
                     Fail when the change adds one of the owner's personal
                     details: the terms of OWNER_TERMS, which CI fills from a
                     secret. Without terms it passes with a warning.
+  owner-guard --pre-push REMOTE [URL] | --unpushed [REMOTE]
+                    The same check before a push, of each commit it sends,
+                    with the terms from ~/.config/cortex-harness/owner-terms
+                    or CORTEX_OWNER_TERMS_FILE: the git hook in
+                    xtask/hooks/pre-push runs the first.
 
 Showing that the tests bite
   stress -p CRATE... [--count N] [--first-seed S] [--load N] [--cores K] [ARGS...]
@@ -128,6 +133,7 @@ Not blocking (the `main` and `nightly` workflows run these)
   unused            Look for dependencies that no code uses (cargo-machete).
   partial-landlock  The sandbox's tests on a kernel whose Landlock is older
                     than 6, failing unless the run showed that partial case.
+                    `try` runs it, and advisories and unused, as named jobs.
   advisories        Check the lockfile against the advisory database.
   fuzz [--seconds N] [TARGET...]
                     Fuzz the stream decoders, each target for N seconds
@@ -138,6 +144,10 @@ By hand only, against a real provider (never in CI)
   live [PROVIDER]   The live smoke test, against anthropic (when no provider
                     is named), openrouter, deepseek or venice. For anthropic
                     and deepseek, then one headless run of the real binary.
+  live --headless [PROVIDER]
+                    Every headless run of the real binary against the provider
+                    (anthropic when none is named, or deepseek): cortex-cli's
+                    tests/system/live.rs, under cargo test, with no time limit.
   live --spent [--since YYYY-MM-DD]
                     Total the spend ledger: every live call's provider, model,
                     tokens and cost, kept outside the repository.
@@ -161,6 +171,7 @@ Working on the code
                     Replace Rust code found by its tokens, so the match holds
                     however rustfmt laid it out. It must be there once.
                     --from-file and --to-file read the code from files.
+                    --text: exact text, for Markdown and other files.
   schema [--check]  Regenerate the protocol's JSON Schema and TypeScript
                     declarations in docs/protocol/. --check only compares.
   gen               Regenerate every checked-in generated file: what `schema`
