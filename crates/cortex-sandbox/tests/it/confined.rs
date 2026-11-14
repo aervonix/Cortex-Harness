@@ -450,16 +450,22 @@ fn sys_the_owner_and_extended_attributes_cannot_be_changed() {
     assert_ne!(call(&place, landlock, "setxattr", false), "EPERM");
 
     // `cp -a`, which preserves modes, times, owner and extended attributes,
-    // still copies inside the workspace: it carries the mode and time, and
-    // passes over the owner it may not set (a normal user's `cp` does not
-    // fail on that).
+    // still copies the content and the mode inside the workspace: it carries
+    // the mode and time, and passes over the owner it may not set (a normal
+    // user's `cp` does not fail on that). Where a file carries an extended
+    // attribute — a POSIX ACL, which a default ACL on the directory gives
+    // every file under it on some systems, is one — `cp -a` reports that it
+    // could not preserve it and exits non-zero, but the content, mode and
+    // time are copied all the same. The reads run under `;`, so they run
+    // whatever `cp` returned, and the test asks only that the copy carried
+    // the content and the mode (found on `ubuntu-22.04`, whose runner's
+    // workspace has a default ACL, by the branch's try run).
     let ran = sh(
         &place,
         place.policy(Network::Off, landlock),
-        "mkdir -p a/sub && echo hi > a/sub/f && chmod 0640 a/sub/f && cp -a a b && cat b/sub/f && \
+        "mkdir -p a/sub && echo hi > a/sub/f && chmod 0640 a/sub/f && cp -a a b; cat b/sub/f; \
          stat -c %a b/sub/f",
     );
-    assert!(ran.ok(), "{ran:?}");
     assert!(
         ran.output.contains("hi") && ran.output.contains("640"),
         "{ran:?}"
