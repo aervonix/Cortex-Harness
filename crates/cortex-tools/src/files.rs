@@ -19,7 +19,7 @@
     reason = "taking a snapshot reads the file; async callers run it on the blocking pool"
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::{self, Read};
 use std::path::Path;
@@ -227,6 +227,9 @@ pub struct FileTable {
 struct Inner {
     epoch: u64,
     files: BTreeMap<AbsPath, Record>,
+    /// Files a command changed that no tool has a snapshot of: what they
+    /// hold now was not read.
+    changed: BTreeSet<AbsPath>,
 }
 
 #[derive(Debug)]
@@ -234,6 +237,25 @@ struct Record {
     snapshot: FileSnapshot,
     /// What the model was shown, and in which epoch.
     shown: Option<(u64, Shown)>,
+    /// A tool read it in this session.
+    read: bool,
+    /// A tool, or a command, changed it in this session.
+    changed: bool,
+}
+
+/// A file the session's tools have read or changed, as compaction carries
+/// it across (`docs/architecture/07-sessions-and-context.md`, "Compaction").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeenFile {
+    /// The file.
+    pub path: AbsPath,
+    /// What a tool last found or left it as. `None` for a file a command
+    /// changed and no tool has read since.
+    pub snapshot: Option<FileSnapshot>,
+    /// A tool read it.
+    pub read: bool,
+    /// A tool or a command changed it.
+    pub changed: bool,
 }
 
 impl FileTable {
@@ -261,11 +283,15 @@ impl FileTable {
     pub fn record_read(&self, path: &AbsPath, snapshot: FileSnapshot, shown: Shown) {
         let mut inner = self.lock();
         let epoch = inner.epoch;
+        let changed = inner.changed.remove(path)
+            || inner.files.get(path).is_some_and(|record| record.changed);
         inner.files.insert(
             path.clone(),
             Record {
                 snapshot,
                 shown: Some((epoch, shown)),
+                read: true,
+                changed,
             },
         );
     }
@@ -274,16 +300,36 @@ impl FileTable {
     /// model was shown of the old content no longer describes the file, and
     /// is dropped.
     pub fn record_write(&self, path: &AbsPath, snapshot: FileSnapshot) {
-        self.lock().files.insert(
+        let mut inner = self.lock();
+        inner.changed.remove(path);
+        let read = inner.files.get(path).is_some_and(|record| record.read);
+        inner.files.insert(
             path.clone(),
             Record {
                 snapshot,
                 shown: None,
+                read,
+                changed: true,
             },
         );
     }
 
-    /// Forgets a file: one a tool deleted.
+    /// Notes that a command changed `path` (created, modified or deleted
+    /// it). Nothing is known of what it holds now, so the snapshot a tool
+    /// took of it stays as it was, and the staleness guard sees the change
+    /// for itself when the file is next edited.
+    pub fn note_changed(&self, path: &AbsPath) {
+        let mut inner = self.lock();
+        match inner.files.get_mut(path) {
+            Some(record) => record.changed = true,
+            None => {
+                inner.changed.insert(path.clone());
+            }
+        }
+    }
+
+    /// Forgets what a tool recorded of a file: the loop calls it for the
+    /// reads of a run it discarded, which the model was never shown.
     pub fn forget(&self, path: &AbsPath) {
         self.lock().files.remove(path);
     }
@@ -297,6 +343,7 @@ impl FileTable {
     pub fn forget_all(&self) {
         let mut inner = self.lock();
         inner.files.clear();
+        inner.changed.clear();
         inner.epoch += 1;
     }
 
@@ -329,7 +376,7 @@ impl FileTable {
     }
 
     /// Every file the session's tools have read or written, with its last
-    /// snapshot, in path order. Compaction carries this list across.
+    /// snapshot, in path order.
     #[must_use]
     pub fn seen(&self) -> Vec<(AbsPath, FileSnapshot)> {
         self.lock()
@@ -337,6 +384,32 @@ impl FileTable {
             .iter()
             .map(|(path, record)| (path.clone(), record.snapshot.clone()))
             .collect()
+    }
+
+    /// Every file the session's tools have read, or its tools or commands
+    /// have changed, in path order, with what is known of each. Compaction
+    /// carries this list across.
+    #[must_use]
+    pub fn carried(&self) -> Vec<SeenFile> {
+        let inner = self.lock();
+        let mut files: Vec<SeenFile> = inner
+            .files
+            .iter()
+            .map(|(path, record)| SeenFile {
+                path: path.clone(),
+                snapshot: Some(record.snapshot.clone()),
+                read: record.read,
+                changed: record.changed,
+            })
+            .chain(inner.changed.iter().map(|path| SeenFile {
+                path: path.clone(),
+                snapshot: None,
+                read: false,
+                changed: true,
+            }))
+            .collect();
+        files.sort_by(|one, other| one.path.cmp(&other.path));
+        files
     }
 }
 
@@ -441,6 +514,55 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn what_compaction_carries_says_what_was_read_and_what_changed() {
+        let table = FileTable::new();
+        let (read, written, both, by_command, deleted) = (
+            path("/work/a.rs"),
+            path("/work/b.rs"),
+            path("/work/c.rs"),
+            path("/work/d.rs"),
+            path("/work/e.rs"),
+        );
+        let snapshot = FileSnapshot::of_content(b"one\n", None);
+        table.record_read(&read, snapshot.clone(), shown(b"one\n", 1, 1));
+        table.record_write(&written, snapshot.clone());
+        table.record_read(&both, snapshot.clone(), shown(b"one\n", 1, 1));
+        table.record_write(&both, snapshot.clone());
+        table.note_changed(&by_command);
+        // A read the loop discarded is not carried.
+        table.record_read(&deleted, snapshot.clone(), shown(b"one\n", 1, 1));
+        table.forget(&deleted);
+        // A read after a command changed a file keeps it changed.
+        table.note_changed(&read);
+
+        let carried: Vec<(String, bool, bool, bool)> = table
+            .carried()
+            .into_iter()
+            .map(|file| {
+                (
+                    file.path.to_string(),
+                    file.read,
+                    file.changed,
+                    file.snapshot.is_some(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            carried,
+            [
+                ("/work/a.rs".to_owned(), true, true, true),
+                ("/work/b.rs".to_owned(), false, true, true),
+                ("/work/c.rs".to_owned(), true, true, true),
+                ("/work/d.rs".to_owned(), false, true, false),
+            ]
+        );
+        table.begin_epoch();
+        assert_eq!(table.carried().len(), 4, "an epoch keeps the list");
+        table.forget_all();
+        assert!(table.carried().is_empty(), "a change of history does not");
     }
 
     #[test]

@@ -167,19 +167,33 @@ pub(crate) struct Resumed {
     pub(crate) projected: usize,
 }
 
-/// Reads the items out of a branch's entries. From the first entry that is
-/// marked as altered to the end of its context epoch, an assistant message
-/// is given as its neutral projection.
+/// Reads the items out of a branch's entries. From the first item entry
+/// that is marked as altered to the end of its context epoch, an assistant
+/// message is given as its neutral projection.
+///
+/// - **Only an item counts.** A record the model is never sent (`plan`,
+///   `lease`, `outcome`, `base`) can be marked when the filter masked
+///   something in it, and changes nothing the model was sent.
+/// - **The mark ends where the reasoning after it is tied to another
+///   history:** at a `summary` entry, after which nothing of the earlier
+///   history is replayed with its reasoning, and at an `epoch` entry that
+///   was not a change of model. An epoch begun by a change of model keeps
+///   the history and its prefix, so the mark goes on through it.
 pub(crate) fn resumed(entries: &[Entry]) -> Resumed {
     let mut resumed = Resumed::default();
     let mut altered = false;
     for entry in entries {
-        // A new epoch starts from a summary, and carries no reasoning from
-        // before it.
-        if matches!(entry.body, Body::Epoch(_) | Body::Summary { .. }) {
+        let ends = match &entry.body {
+            Body::Summary { .. } => true,
+            Body::Epoch(epoch) => epoch.reason.as_deref() != Some("model"),
+            _ => false,
+        };
+        if ends {
             altered = false;
         }
-        altered |= entry.redacted;
+        if entry.body.as_item().is_some() {
+            altered |= entry.redacted;
+        }
         let Some(item) = entry.body.as_item() else {
             continue;
         };

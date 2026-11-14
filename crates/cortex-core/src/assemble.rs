@@ -38,8 +38,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use cortex_agent::{
-    Account, Ledger, LoopConfig, Models, NoStats, NoVerifier, SessionInfo, SessionParts,
-    SpeedSettings, StubContext, Workspace,
+    Account, ContextParts, ContextSettings, Environment, Ledger, LoopConfig, Models,
+    NoInstructionFiles, NoStats, NoVerifier, SessionInfo, SessionParts, SpeedSettings, Workspace,
 };
 use cortex_base::{AbsPath, CancelToken, PathOptions, PathResolver};
 use cortex_config::{LayerKind, LoadOptions, Loaded, Override, Settings, StateDir};
@@ -69,6 +69,7 @@ use crate::checkpoints::{RecordingShell, Rounds, StopsWithTurn};
 use crate::content::{DiskContent, StoredImages};
 use crate::core::Inner;
 use crate::events::SessionSink;
+use crate::instructions::DiskInstructions;
 use crate::policy::{EnginePolicy, PolicyParts};
 use crate::provider;
 use crate::redact::LogRedactor;
@@ -77,10 +78,37 @@ use crate::shell_cache;
 use crate::store::{Disk, Hooks, Kept, LogStore, SharedLog};
 use cortex_tools::shell::ShellKind;
 
-/// The system prompt until context management writes the real one
-/// (step 15): enough for a model to know where it is.
-const SYSTEM_STUB: &str = "You are Cortex-Harness, a coding agent working in the user's \
-                           workspace through the tools you are given.";
+/// Whether the workspace is in a git repository: a `.git` in it or in a
+/// directory above it. Looked at, not asked of git, which starts nothing.
+fn in_git(root: &AbsPath) -> bool {
+    root.to_fs_path()
+        .ancestors()
+        .any(|dir| std::fs::symlink_metadata(dir.join(".git")).is_ok())
+}
+
+/// The context's settings, from `[context]` and `compat.instructions`.
+fn context_settings(settings: &Settings) -> ContextSettings {
+    let context = &settings.context;
+    let mut names: Vec<String> = cortex_agent::context::DEFAULT_NAMES
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    for name in &context.instruction_names {
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
+    ContextSettings {
+        auto_compact: context.auto_compact,
+        background: context.background,
+        compact_at: context.compact_at,
+        prepare_at: context.prepare_at,
+        keep_recent_tokens: context.keep_recent_tokens,
+        instruction_names: names,
+        instructions_cap: usize::try_from(context.instructions_cap).unwrap_or(usize::MAX),
+        ..ContextSettings::default()
+    }
+}
 
 fn error(kind: ErrorKind, code: &str, message: impl Into<String>) -> Box<ErrorData> {
     Box::new(ErrorData::new(kind, code, message))
@@ -972,7 +1000,7 @@ pub(crate) fn assemble(
     let sink = Arc::new(SessionSink::default());
 
     // ------------------------------------------------- the shell, if any
-    let shell = match find_shell(inner, settings) {
+    let shell_found = match find_shell(inner, settings) {
         Ok(shell) => Some(shell),
         Err(failure) if settings.shell.program.is_some() => {
             return Err(error(
@@ -988,6 +1016,12 @@ pub(crate) fn assemble(
             None
         }
     };
+    let shell = shell_found;
+    // The shell as the system prompt names it.
+    let shell_named = shell.as_ref().map(|shell| match shell.version() {
+        Some(version) => format!("{} {version}", shell.name()),
+        None => shell.name(),
+    });
     let syntax = shell.as_ref().map_or(ShellSyntax::Unknown, |shell| {
         ShellSyntax::of_program(&shell.program().to_string_lossy())
     });
@@ -1199,12 +1233,33 @@ pub(crate) fn assemble(
             toolbox.insert(Arc::new(StopsWithTurn::new(tool, Arc::clone(&policy))));
         }
     }
-    let specs = toolbox.specs();
-    let system = match &inner.options.system_append {
-        Some(text) => format!("{SYSTEM_STUB}\n\n{text}"),
-        None => SYSTEM_STUB.to_owned(),
+    // What the session's context is made from. The instruction files are
+    // read through the resolver and the engine's gate, and not at all when
+    // `compat.instructions` is off.
+    let user_dir = load.dirs.config.as_deref().and_then(resolve_dir);
+    let instructions: Arc<dyn cortex_agent::InstructionFiles> = if settings.compat.instructions {
+        Arc::new(DiskInstructions {
+            resolver: Arc::clone(&resolver),
+            user_dir: user_dir.clone(),
+            gate: policy.keep_gate(),
+        })
+    } else {
+        Arc::new(NoInstructionFiles)
     };
-    let context = StubContext::new(system, &specs);
+    let context = ContextParts {
+        environment: Environment {
+            os: if cfg!(windows) { "Windows" } else { "Linux" }.to_owned(),
+            shell: shell_named,
+            workspace: root.to_native_string(),
+            git: in_git(&root),
+        },
+        append: inner.options.system_append.clone(),
+        instructions,
+        user_dir,
+        settings: context_settings(settings),
+        plan: Some(Arc::clone(&board)),
+        cache_key: Some(id.to_string()),
+    };
     let parts = SessionParts {
         info,
         models,
@@ -1212,7 +1267,7 @@ pub(crate) fn assemble(
         tools: Arc::new(toolbox),
         policy: Arc::clone(&policy) as Arc<dyn cortex_agent::Policy>,
         store: Box::new(LogStore::new(Arc::clone(&log), Arc::clone(&hooks))),
-        context: Box::new(context),
+        context,
         events: Arc::clone(&sink) as Arc<dyn cortex_agent::EventSink>,
         stats: Arc::new(NoStats),
         verifier: Arc::new(NoVerifier),

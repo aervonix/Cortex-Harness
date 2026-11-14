@@ -403,5 +403,11 @@ fn an_edit_to_the_plan_reaches_the_model_as_a_notice_at_the_next_boundary() {
         .iter()
         .map(text_of)
         .collect();
-    assert_eq!(tail, ["The user added item 5.", "carry on"]);
+    assert_eq!(
+        tail,
+        [
+            format!("{}The user added item 5.", cortex_agent::NOTICE_LEAD),
+            "carry on".to_owned()
+        ]
+    );
 }

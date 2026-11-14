@@ -30,6 +30,7 @@ mod clients;
 mod content;
 pub mod core;
 pub mod events;
+mod instructions;
 mod manage;
 mod policy;
 mod provider;

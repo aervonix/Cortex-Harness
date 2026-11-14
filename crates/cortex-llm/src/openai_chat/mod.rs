@@ -350,24 +350,6 @@ mod flags {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OpenAiChat;
 
-impl OpenAiChat {
-    /// The part of a request's body that later requests of the same context
-    /// epoch repeat byte for byte: everything up to the end of the last
-    /// message, without the closing brackets.
-    ///
-    /// For two requests of one epoch, the earlier one's is the beginning of
-    /// the later one's. The servers' caches reuse the longest beginning
-    /// they have seen, so this is the property that keeps a cache.
-    pub fn stable_prefix(
-        &self,
-        request: &ModelRequest,
-        provider: &ProviderInfo,
-    ) -> Result<Vec<u8>, BuildError> {
-        let _ = self;
-        Ok(request::render(request, provider)?.prefix().into_bytes())
-    }
-}
-
 /// An API key, sent the way this protocol wants it: as a bearer token.
 /// `source` says in words where the key came from, for `cortex auth
 /// status`.
@@ -379,6 +361,17 @@ pub fn api_key(key: Secret, source: impl Into<String>) -> ApiKeyAuth {
 impl Protocol for OpenAiChat {
     fn name(&self) -> &str {
         NAME
+    }
+
+    /// Everything up to the end of the last message, without the closing
+    /// brackets. The servers' caches reuse the longest beginning they have
+    /// seen, so this is the property that keeps a cache.
+    fn stable_prefix(
+        &self,
+        request: &ModelRequest,
+        provider: &ProviderInfo,
+    ) -> Result<Vec<u8>, BuildError> {
+        Ok(request::render(request, provider)?.prefix().into_bytes())
     }
 
     fn build(

@@ -97,13 +97,15 @@ fn a_turn_runs_the_models_tool_calls_and_records_everything() {
         front.close().await;
     });
 
-    // The log: the session, its lease, the prompt, the response, the
-    // round's checkpoint before its results, the answer and the outcome.
+    // The log: the session, its lease, the context epoch, the prompt, the
+    // response, the round's checkpoint before its results, the answer and
+    // the outcome.
     assert_eq!(
         kinds(&world),
         [
             "session",
             "lease",
+            "epoch",
             "user",
             "assistant",
             "checkpoint",
@@ -114,15 +116,27 @@ fn a_turn_runs_the_models_tool_calls_and_records_everything() {
         ]
     );
     let lines = log_lines(&world);
-    let checkpoint = &lines[4];
+    let checkpoint = &lines[5];
     assert_eq!(checkpoint["files"][0]["path"], "notes/todo.md");
     assert_eq!(
         checkpoint["files"][0]["before"],
         Value::Null,
         "it did not exist"
     );
-    assert_eq!(lines[8]["ended"], "completed");
+    assert_eq!(lines[9]["ended"], "completed");
     assert_eq!(lines[1]["lease"]["grant"]["level"], "supervised");
+    // The epoch: the model, the system prompt and the tools every request
+    // of it begins with, and why it began.
+    let epoch = &lines[2];
+    assert_eq!(epoch["reason"], "start");
+    assert!(
+        epoch["system"]
+            .as_str()
+            .unwrap()
+            .starts_with(cortex_agent::CORE_INSTRUCTIONS)
+    );
+    assert!(!epoch["tools"].as_array().unwrap().is_empty());
+    assert!(epoch["hash"].is_string() && epoch["base"].is_string());
 }
 
 #[test]

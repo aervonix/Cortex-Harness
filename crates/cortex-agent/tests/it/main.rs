@@ -55,9 +55,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use cortex_agent::{
-    Assembled, Context, ContextError, Decision, EventSink, Ledger, LoopConfig, MemorySessionStore,
-    Models, Observer, PlannedCall, Policy, RoleModel, Session, SessionHandle, SessionInfo,
-    SessionParts, SessionStore, SpeedSettings, StatEvent, Stats, StubContext, TurnState, Verdict,
+    ContextParts, ContextSettings, Decision, EventSink, Ledger, LoopConfig, MemoryInstructionFiles,
+    MemorySessionStore, Models, Observer, PlannedCall, Policy, RoleModel, Session, SessionHandle,
+    SessionInfo, SessionParts, SessionStore, SpeedSettings, StatEvent, Stats, TurnState, Verdict,
     Verifier, VerifyCx, VerifyOutcome, Workspace,
 };
 use cortex_base::{CancelToken, FakeClock, PathOptions, PathResolver, SharedClock};
@@ -735,70 +735,6 @@ impl Policy for ScriptedPolicy {
     }
 }
 
-// ----------------------------------------------------------------- context
-
-/// What a test tells the context to do.
-#[derive(Default)]
-pub struct ContextScript {
-    /// Whether the context says it is over its budget. A compaction that
-    /// succeeds clears it.
-    pub over_budget: Mutex<bool>,
-    /// What the next compactions return. Empty: they fail, as the stub's
-    /// do.
-    pub compactions: Mutex<VecDeque<Result<(), ContextError>>>,
-    /// A gate each compaction waits at.
-    pub gate: Mutex<Option<Gate>>,
-    pub compacted: Mutex<u32>,
-}
-
-/// The stub context, with compaction a test can script.
-pub struct ScriptedContext {
-    inner: StubContext,
-    script: Arc<ContextScript>,
-}
-
-impl Context for ScriptedContext {
-    fn load(&mut self, items: &[Item]) {
-        self.inner.load(items);
-    }
-
-    fn push(&mut self, item: &Item) {
-        self.inner.push(item);
-    }
-
-    fn assemble(&self) -> Assembled {
-        self.inner.assemble()
-    }
-
-    fn needs_compaction(&self) -> bool {
-        *lock(&self.script.over_budget)
-    }
-
-    fn compact<'a>(
-        &'a mut self,
-        cancel: &'a CancelToken,
-    ) -> BoxFuture<'a, Result<(), ContextError>> {
-        Box::pin(async move {
-            let gate = lock(&self.script.gate).clone();
-            if let Some(gate) = gate
-                && cancel.race(gate.opened()).await.is_none()
-            {
-                return Err(ContextError::new("cancelled"));
-            }
-            *lock(&self.script.compacted) += 1;
-            let outcome = lock(&self.script.compactions)
-                .pop_front()
-                .unwrap_or_else(|| {
-                    Err(ContextError::new("The conversation cannot be made to fit."))
-                });
-            if outcome.is_ok() {
-                *lock(&self.script.over_budget) = false;
-            }
-            outcome
-        })
-    }
-}
-
 // ---------------------------------------------------------------- verifier
 
 /// A verifier that returns what a test scripted, round by round.
@@ -962,7 +898,15 @@ pub struct Setup {
     pub store: Option<Box<dyn SessionStore>>,
     pub memory: MemorySessionStore,
     pub toolbox: Option<Toolbox>,
-    pub context: Arc<ContextScript>,
+    /// The context's settings: the thresholds, the names of instruction
+    /// files.
+    pub context: ContextSettings,
+    /// The instruction files the session can read.
+    pub instructions: Arc<MemoryInstructionFiles>,
+    /// The user's own instruction directory.
+    pub user_dir: Option<cortex_base::AbsPath>,
+    /// The plan a compaction carries.
+    pub plan: Option<Arc<cortex_tools::PlanBoard>>,
     /// A verifier in place of the scripted one.
     pub verifier: Option<Arc<dyn Verifier>>,
 }
@@ -975,7 +919,7 @@ pub struct Rig {
     pub stats: Arc<StatLog>,
     pub policy: Arc<ScriptedPolicy>,
     pub verifier: Arc<ScriptedVerifier>,
-    pub context: Arc<ContextScript>,
+    pub instructions: Arc<MemoryInstructionFiles>,
     pub store: MemorySessionStore,
     pub workspace: Workspace,
 }
@@ -992,7 +936,10 @@ impl Setup {
             store: None,
             memory: MemorySessionStore::new(),
             toolbox: None,
-            context: Arc::default(),
+            context: ContextSettings::default(),
+            instructions: Arc::default(),
+            user_dir: None,
+            plan: None,
             verifier: None,
         }
     }
@@ -1010,9 +957,12 @@ impl Setup {
         let stats = Arc::new(StatLog::default());
         let policy = Arc::new(ScriptedPolicy::default());
         let verifier = Arc::new(ScriptedVerifier::default());
-        let context = ScriptedContext {
-            inner: StubContext::new("You are a test.", &toolbox.specs()),
-            script: Arc::clone(&self.context),
+        let context = ContextParts {
+            settings: self.context,
+            instructions: Arc::clone(&self.instructions) as Arc<dyn cortex_agent::InstructionFiles>,
+            user_dir: self.user_dir,
+            plan: self.plan,
+            ..ContextParts::new()
         };
         let parts = SessionParts {
             info: SessionInfo::new(SessionId::new(self.id), "/work/test", &clock),
@@ -1025,7 +975,7 @@ impl Setup {
             tools: Arc::new(toolbox),
             policy: Arc::clone(&policy) as Arc<dyn Policy>,
             store: self.store.unwrap_or_else(|| Box::new(self.memory.clone())),
-            context: Box::new(context),
+            context,
             events: Arc::clone(&events) as Arc<dyn EventSink>,
             stats: Arc::clone(&stats) as Arc<dyn Stats>,
             verifier: self
@@ -1053,7 +1003,7 @@ impl Setup {
             stats,
             policy,
             verifier,
-            context: self.context,
+            instructions: self.instructions,
             store: self.memory,
             workspace,
         }
@@ -1093,6 +1043,25 @@ impl Rig {
             .expect("a turn is running")
     }
 
+    /// Holds the model's requests to a context window of `tokens`, as a
+    /// local server's report would.
+    pub fn window(&self, tokens: u64) {
+        self.handle.set_context_window(
+            cortex_protocol::ProviderId::new(fixtures::PROVIDER),
+            cortex_protocol::ModelId::new(fixtures::MODEL),
+            tokens,
+        );
+    }
+
+    /// Gives the next turn a notice of `bytes` bytes: bulk that fills the
+    /// context and is not carried across a compaction.
+    pub fn bulk(&self, bytes: usize) {
+        self.handle.notice(
+            cortex_protocol::item::NoticeSource::Harness,
+            "x".repeat(bytes),
+        );
+    }
+
     pub fn queue(&self, text: &str) -> TurnStartResult {
         self.handle
             .prompt(vec![Part::text(text)], Some(Delivery::Queue))
@@ -1102,6 +1071,10 @@ impl Rig {
 }
 
 // ----------------------------------------------------------------- history
+
+/// What the first user message of a test's first epoch begins with: the
+/// date of the world's clock.
+pub const DATE: &str = "Today's date is 2026-11-13 (UTC).";
 
 /// The text of a message's text parts.
 pub fn text_of(message: &Message) -> String {

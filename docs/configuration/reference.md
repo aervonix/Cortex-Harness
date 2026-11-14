@@ -137,6 +137,18 @@ Every key a Cortex-Harness configuration file may hold. The design is in [archit
 | `shell.max_timeout` | length of time | `"30m"` | tighten only: a lower limit is a preference, a higher one user only | next epoch | The longest time limit a command may ask for. A project's file may lower it and may not raise it. |
 | `shell.env_remove` | list of text, joined | `[]` | preference | next epoch | Environment variables that commands are not given, besides the key variables of the providers, which are always removed. A name may end with `*` for every variable that starts so. Every layer adds to the list. |
 
+## `[context]`
+
+| Key | Type | Default | From a project | Takes effect | What it is |
+|---|---|---|---|---|---|
+| `context.auto_compact` | `true` or `false` | `true` | preference | at once | Whether the conversation is compacted by itself when a request would pass `compact_at`. Off, the turn stops there and asks for a compaction (`session/compact`) or a new session. |
+| `context.background` | `true` or `false` | `true` | preference | at once | Whether a summary is prepared in the background from `prepare_at`, on the `fast` role's model (the main model when there is none), so that the compaction need not wait for it. |
+| `context.compact_at` | number, 0 to 1 | `0.85` | raises cost | at once | The trigger: the fraction of what a request may hold (the model's context window less room for the answer and a margin) past which the conversation is compacted before the request. From a project, after trust: a compaction costs a request. |
+| `context.prepare_at` | number, 0 to 1 | `0.7` | raises cost | at once | The fraction past which a summary is prepared in the background. From a project, after trust. |
+| `context.keep_recent_tokens` | whole number, 0 to 10000000 | `0` | raises cost | next epoch | How much of the most recent conversation a compaction replays after its summary, without its reasoning, in tokens. 0 replays nothing. From a project, after trust. |
+| `context.instruction_names` | list of text | `[]` | raises cost | next epoch | More names of instruction files, read after `AGENTS.md` and `CLAUDE.md` in each directory. From a project, after trust: what they hold is sent with every request. |
+| `context.instructions_cap` | whole number, 0 to 100000000 | `49152` | raises cost | next epoch | The most the instruction files may hold in all, in bytes. Past it the innermost files are cut, and the user is warned. From a project, after trust. |
+
 ## Reserved sections
 
 These sections belong to parts of the harness that are not built yet. A file may already hold them: what is in them is kept and not checked. The build step that owns a section declares its keys, and they then move into the tables above. Until then a project's file cannot set anything in a section marked *user only*, and a section marked *runs code* waits for trust.
@@ -147,7 +159,6 @@ These sections belong to parts of the harness that are not built yet. A file may
 | `[models]` | user only | Catalog overrides and additions: limits, prices, reasoning control, capability flags. Each `[models.<name>]` table is one whole catalog entry, with the keys of a `[[model]]` table of the built-in catalog, and replaces the built-in entry for the same provider and model. The entries are read by the model catalog itself when the program starts, which refuses one it does not understand: nothing is started then, and the error names the file, the entry and what is wrong. |
 | `[http]` | user only | The HTTP client: the connect timeout, a proxy, and extra certificate authorities. |
 | `[tools]` | user only | Enabled tools, output limits and per-tool settings. |
-| `[context]` | user only | The compaction trigger and settings, and instruction file names. |
 | `[verify]` | runs code | The verification mode, commands and time limits. |
 | `[adapt]` | user only | Variant overrides per model, and the map and profile budgets. |
 | `[stats]` | user only | Whether local statistics are recorded, and for how long. |

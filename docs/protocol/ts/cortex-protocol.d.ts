@@ -250,8 +250,12 @@ export type CommandPurpose = "build" | "test" | "check" | "format" | "run" | (st
 
 /** Notice: a compaction started, finished or failed. */
 export interface CompactionNotice {
+  /** The estimated size of the new context epoch, in tokens, on a compaction that finished. */
+  after_tokens?: number | null;
   /** Whether it runs in the background while the turn carries on. */
   background?: boolean;
+  /** The estimated size of the conversation before, in tokens, on a compaction that finished. */
+  before_tokens?: number | null;
   /** The notice in words. */
   message: string;
   /** Where it stands. */

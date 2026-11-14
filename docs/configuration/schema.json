@@ -47,10 +47,71 @@
       "x-cortex-trust": "preference"
     },
     "context": {
-      "description": "The compaction trigger and settings, and instruction file names.",
-      "type": "object",
-      "x-cortex-reserved": true,
-      "x-cortex-trust": "user only"
+      "additionalProperties": true,
+      "description": "When the conversation is compacted, and which instruction files are read.",
+      "properties": {
+        "auto_compact": {
+          "default": true,
+          "description": "Whether the conversation is compacted by itself when a request would pass `compact_at`. Off, the turn stops there and asks for a compaction (`session/compact`) or a new session.",
+          "type": "boolean",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "preference"
+        },
+        "background": {
+          "default": true,
+          "description": "Whether a summary is prepared in the background from `prepare_at`, on the `fast` role's model (the main model when there is none), so that the compaction need not wait for it.",
+          "type": "boolean",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "preference"
+        },
+        "compact_at": {
+          "default": 0.85,
+          "description": "The trigger: the fraction of what a request may hold (the model's context window less room for the answer and a margin) past which the conversation is compacted before the request. From a project, after trust: a compaction costs a request.",
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "raises cost"
+        },
+        "instruction_names": {
+          "default": [],
+          "description": "More names of instruction files, read after `AGENTS.md` and `CLAUDE.md` in each directory. From a project, after trust: what they hold is sent with every request.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "raises cost"
+        },
+        "instructions_cap": {
+          "default": 49152,
+          "description": "The most the instruction files may hold in all, in bytes. Past it the innermost files are cut, and the user is warned. From a project, after trust.",
+          "maximum": 100000000,
+          "minimum": 0,
+          "type": "integer",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "raises cost"
+        },
+        "keep_recent_tokens": {
+          "default": 0,
+          "description": "How much of the most recent conversation a compaction replays after its summary, without its reasoning, in tokens. 0 replays nothing. From a project, after trust.",
+          "maximum": 10000000,
+          "minimum": 0,
+          "type": "integer",
+          "x-cortex-effect": "next epoch",
+          "x-cortex-trust": "raises cost"
+        },
+        "prepare_at": {
+          "default": 0.7,
+          "description": "The fraction past which a summary is prepared in the background. From a project, after trust.",
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number",
+          "x-cortex-effect": "at once",
+          "x-cortex-trust": "raises cost"
+        }
+      },
+      "type": "object"
     },
     "credentials": {
       "additionalProperties": true,

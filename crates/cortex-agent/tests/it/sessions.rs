@@ -5,8 +5,8 @@
 use std::sync::{Arc, Mutex};
 
 use cortex_agent::{
-    MemorySessionStore, Opened, Record, SessionStore, StatEvent, StoreError, ToolStatOutcome,
-    VerifyOutcome,
+    ContextStat, MemorySessionStore, NOTICE_LEAD, Opened, PrefixDifference, Record, SessionStore,
+    StatEvent, StoreError, ToolStatOutcome, VerifyOutcome,
 };
 use cortex_llm::ModelEvent;
 use cortex_protocol::error::code;
@@ -21,7 +21,9 @@ use cortex_tools::BoxFuture;
 use serde_json::json;
 
 use crate::transitions::overflow;
-use crate::{Rig, Setup, World, assert_valid_history, calls, last_request, lock, says, text_of};
+use crate::{
+    DATE, Rig, Setup, World, assert_valid_history, calls, last_request, lock, says, text_of,
+};
 
 fn turn(world: &World, rig: &Rig, turns: usize) {
     world.run(async {
@@ -235,8 +237,8 @@ fn flaky(world: &World) -> (Flaky, Rig) {
 fn an_append_that_fails_fails_the_turn_and_the_item_is_not_in_the_context() {
     let world = World::new("store_fails", [says("Lost."), says("Back.")]);
     let (store, rig) = flaky(&world);
-    // The prompt is appended; the assistant message is not.
-    *lock(&store.fail_append) = Some(1);
+    // The epoch and the prompt are appended; the assistant message is not.
+    *lock(&store.fail_append) = Some(2);
     turn(&world, &rig, 1);
 
     let end = &rig.events.ends()[0];
@@ -266,7 +268,11 @@ fn an_append_that_fails_fails_the_turn_and_the_item_is_not_in_the_context() {
     assert_eq!(*lock(&store.opens), 2);
     let request = last_request(&world.provider);
     let said: Vec<String> = request.messages.iter().map(text_of).collect();
-    assert_eq!(said, ["go", "again"], "the lost message is not sent");
+    assert_eq!(
+        said,
+        [format!("{DATE}go"), "again".to_owned()],
+        "the lost message is not sent"
+    );
     assert_eq!(rig.events.ends()[1].outcome, TurnOutcome::Completed);
 }
 
@@ -283,9 +289,9 @@ fn a_tool_result_that_cannot_be_appended_fails_the_turn_and_the_session_is_read_
         ],
     );
     let (store, rig) = flaky(&world);
-    // The prompt, the message and the first result are appended. The second
-    // result is not: the round is half recorded.
-    *lock(&store.fail_append) = Some(3);
+    // The epoch, the prompt, the message and the first result are
+    // appended. The second result is not: the round is half recorded.
+    *lock(&store.fail_append) = Some(4);
     turn(&world, &rig, 1);
     assert_eq!(rig.store.items().len(), 3);
     assert_eq!(
@@ -315,7 +321,7 @@ fn a_tool_result_that_cannot_be_appended_fails_the_turn_and_the_session_is_read_
 fn a_session_that_cannot_be_read_again_fails_its_turns_until_it_can() {
     let world = World::new("reload_fails", [says("Lost."), says("Back.")]);
     let (store, rig) = flaky(&world);
-    *lock(&store.fail_append) = Some(1);
+    *lock(&store.fail_append) = Some(2);
     turn(&world, &rig, 1);
     assert_eq!(
         rig.events.ends()[0].error.as_ref().unwrap().code,
@@ -356,7 +362,7 @@ fn a_session_that_cannot_be_read_again_fails_its_turns_until_it_can() {
         .collect();
     assert_eq!(
         said,
-        ["go", "and again"],
+        [format!("{DATE}go"), "and again".to_owned()],
         "what the log holds, and the new prompt"
     );
 }
@@ -509,10 +515,16 @@ fn each_request_tool_call_and_turn_ends_with_a_statistics_event() {
             StatEvent::Request(_) => "request",
             StatEvent::ToolCall(_) => "tool",
             StatEvent::Turn(_) => "turn",
+            StatEvent::Context(_) => "context",
             _ => "?",
         })
         .collect();
-    assert_eq!(kinds, ["request", "tool", "tool", "request", "turn"]);
+    assert_eq!(
+        kinds,
+        [
+            "request", "context", "tool", "tool", "request", "context", "turn"
+        ]
+    );
     let StatEvent::Request(first) = &events[0] else {
         panic!("a request");
     };
@@ -535,10 +547,33 @@ fn each_request_tool_call_and_turn_ends_with_a_statistics_event() {
             ("read", ToolStatOutcome::Failed)
         ]
     );
-    let StatEvent::Turn(turn) = &events[4] else {
+    let StatEvent::Turn(turn) = &events[6] else {
         panic!("a turn");
     };
     assert_eq!((turn.requests, turn.tool_calls), (2, 2));
+
+    // Each request's context record: its estimate by source, its limit,
+    // and where it first differs from the request before it.
+    let contexts: Vec<&ContextStat> = events
+        .iter()
+        .filter_map(|event| match event {
+            StatEvent::Context(context) => Some(context),
+            _ => None,
+        })
+        .collect();
+    let (first, second) = (contexts[0], contexts[1]);
+    assert_eq!(first.difference, PrefixDifference::First);
+    assert_eq!(second.difference, PrefixDifference::Extends);
+    assert!(first.sources.system > 0 && first.sources.tools > 0 && first.sources.user > 0);
+    assert_eq!(first.sources.tool_results, 0);
+    assert!(second.sources.tool_results > 0 && second.sources.assistant > 0);
+    assert!(second.estimate > first.estimate);
+    assert_eq!((first.window, first.epoch), (200_000, 1));
+    assert!(first.limit < first.window);
+    assert!(
+        first.usage.is_some(),
+        "what the provider counted, when it ended"
+    );
     assert_eq!(turn.outcome, TurnOutcome::Completed);
     assert_eq!(turn.verification, Some(Verification::Skipped));
 }
@@ -596,7 +631,7 @@ fn a_failed_check_is_told_to_the_model_which_gets_to_fix_it() {
     assert_eq!(requests.len(), 4);
     assert_eq!(
         text_of(requests[2].messages.last().unwrap()),
-        "test_parse failed: expected 2, got 3"
+        format!("{NOTICE_LEAD}test_parse failed: expected 2, got 3")
     );
     let notes: Vec<_> = rig
         .store
@@ -680,20 +715,33 @@ fn compaction_notices(rig: &Rig) -> Vec<String> {
 
 #[test]
 fn a_compaction_is_shown_as_it_starts_and_ends() {
-    let (world, rig) = Rig::one("compaction_notices", [says("Done.")]);
-    *lock(&rig.context.over_budget) = true;
-    lock(&rig.context.compactions).push_back(Ok(()));
+    let (world, rig) = Rig::one("compaction_notices", [says("A summary."), says("Done.")]);
+    rig.window(4_000);
+    rig.bulk(6_000);
     turn(&world, &rig, 1);
     assert_eq!(
         compaction_notices(&rig),
         ["notice:compaction:started", "notice:compaction:finished"]
     );
     assert_eq!(
-        *lock(&rig.context.compacted),
+        rig.store.summaries().len(),
         1,
         "once, though the turn prepared twice"
     );
     assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Completed);
+    let notices = rig.events.notices();
+    let Some(Notice::Compaction(finished)) = notices
+        .iter()
+        .rev()
+        .find(|notice| matches!(notice, Notice::Compaction(_)))
+    else {
+        panic!("{notices:#?}");
+    };
+    let (before, after) = (
+        finished.before_tokens.unwrap(),
+        finished.after_tokens.unwrap(),
+    );
+    assert!(before > after, "{before} tokens became {after}");
 }
 
 #[test]
@@ -701,25 +749,35 @@ fn a_request_that_still_does_not_fit_after_one_compaction_ends_the_turn() {
     let too_long = || Response::events([ModelEvent::Error(overflow())]);
     let (world, rig) = Rig::one(
         "overflow_twice",
-        [too_long(), too_long(), says("Unreached.")],
+        [
+            too_long(),
+            says("A summary."),
+            too_long(),
+            says("Unreached."),
+        ],
     );
-    lock(&rig.context.compactions).extend([Ok(()), Ok(())]);
     turn(&world, &rig, 1);
 
     let end = &rig.events.ends()[0];
     assert_eq!(end.outcome, TurnOutcome::Failed);
     assert_eq!(end.error.as_ref().unwrap().kind, ErrorKind::ContextOverflow);
     assert_eq!(
-        *lock(&rig.context.compacted),
+        rig.store.summaries().len(),
         1,
         "compacted once, not again and again"
     );
-    assert_eq!(world.provider.requests().len(), 2);
+    assert_eq!(
+        world.provider.requests().len(),
+        3,
+        "the request, the summary, the request"
+    );
 
     // The same when the provider says it as a stop reason.
     let stops = || Response::new().end(StopReason::ContextOverflow);
-    let (world, rig) = Rig::one("overflow_twice_stop", [stops(), stops()]);
-    lock(&rig.context.compactions).push_back(Ok(()));
+    let (world, rig) = Rig::one(
+        "overflow_twice_stop",
+        [stops(), says("A summary."), stops()],
+    );
     turn(&world, &rig, 1);
     let end = &rig.events.ends()[0];
     assert_eq!(end.stop_reason, Some(StopReason::ContextOverflow));
@@ -727,8 +785,9 @@ fn a_request_that_still_does_not_fit_after_one_compaction_ends_the_turn() {
 }
 
 #[test]
-fn with_no_way_to_compact_a_request_that_does_not_fit_ends_the_turn() {
-    // What the stand-in context of this build does.
+fn a_compaction_that_fails_ends_a_turn_whose_request_does_not_fit() {
+    // The provider says the request does not fit, and the summary request
+    // finds no answer.
     let (world, rig) = Rig::one(
         "overflow_no_compaction",
         [Response::events([ModelEvent::Error(overflow())])],

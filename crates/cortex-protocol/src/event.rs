@@ -207,6 +207,14 @@ pub struct CompactionNotice {
     /// Whether it runs in the background while the turn carries on.
     #[serde(default)]
     pub background: bool,
+    /// The estimated size of the conversation before, in tokens, on a
+    /// compaction that finished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_tokens: Option<u64>,
+    /// The estimated size of the new context epoch, in tokens, on a
+    /// compaction that finished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_tokens: Option<u64>,
 }
 
 open_enum! {

@@ -2,6 +2,13 @@ compat.instructions = true                  # default
 compat.mcp = true                           # default
 compat.skills = true                        # default
 config_version = 1                          # default
+context.auto_compact = true                 # default
+context.background = true                   # default
+context.compact_at = 0.85                   # default
+context.instruction_names = []              # default
+context.instructions_cap = 49152            # default
+context.keep_recent_tokens = 0              # default
+context.prepare_at = 0.7                    # default
 credentials.store = "auto"                  # default
 limits.day.cost = 20.0                      # user: ~/cortex/config.toml:29
 log.level = "info,cortex_llm=debug"         # environment: CORTEX_LOG

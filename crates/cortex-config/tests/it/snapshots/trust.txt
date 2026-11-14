@@ -66,7 +66,13 @@ shell.args                         user only
 shell.timeout                      preference
 shell.max_timeout                  tighten only: a lower limit is a preference, a higher one user only
 shell.env_remove                   preference
-context.*                          user only
+context.auto_compact               preference
+context.background                 preference
+context.compact_at                 raises cost
+context.prepare_at                 raises cost
+context.keep_recent_tokens         raises cost
+context.instruction_names          raises cost
+context.instructions_cap           raises cost
 verify.*                           runs code
 adapt.*                            user only
 stats.*                            user only

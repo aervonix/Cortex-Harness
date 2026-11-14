@@ -13,7 +13,7 @@
 //! step, so two prompts can never both find the session idle, and the
 //! answer a caller gets (started, steering, queued) is what happens.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use cortex_base::{CancelToken, IdCounter};
@@ -26,7 +26,9 @@ use cortex_protocol::methods::{Disposition, TurnInterruptResult, TurnStartResult
 use cortex_protocol::model::ModelRole;
 use cortex_protocol::session::SessionState;
 use cortex_protocol::usage::SessionUsage;
-use cortex_protocol::{ErrorData, ErrorKind, LeaseId, Part, SessionId, Speed, TurnId};
+use cortex_protocol::{
+    ErrorData, ErrorKind, LeaseId, ModelId, Part, ProviderId, SessionId, Speed, TurnId,
+};
 use tokio::sync::Notify;
 
 use crate::config::{Models, RoleModel, SessionInfo};
@@ -101,6 +103,9 @@ pub(crate) struct Prompt {
     pub(crate) input: Vec<Part>,
     /// How the prompt was sent, when it was sent during a running turn.
     pub(crate) delivery: Option<Delivery>,
+    /// A turn that only compacts the conversation, with what the summary
+    /// should keep in particular: `session/compact` on an idle session.
+    pub(crate) compact: Option<Option<String>>,
 }
 
 /// A prompt waiting to become a turn, with the id that turn will have.
@@ -117,6 +122,9 @@ pub(crate) enum Pending {
     Steer(Vec<Part>),
     /// A notice for the model: an edit to the plan, changed instructions.
     Notice { source: NoticeSource, text: String },
+    /// A compaction the user asked for, with what the summary should keep
+    /// in particular.
+    Compact(Option<String>),
 }
 
 /// What a handle and the loop share.
@@ -159,6 +167,9 @@ pub(crate) struct Inbox {
     /// Whether the conversation has anything in it, from this process or
     /// from the log it was opened from ([`SessionHandle::has_history`]).
     pub(crate) history: bool,
+    /// Context windows that a local server reported for the models it has
+    /// loaded, which stand in for the catalog's.
+    pub(crate) windows: BTreeMap<(ProviderId, ModelId), u64>,
     pub(crate) closed: bool,
 }
 
@@ -298,6 +309,7 @@ impl SessionHandle {
             inbox.starting = Some(Prompt {
                 input,
                 delivery: None,
+                compact: None,
             });
             // What was held follows this prompt, ahead of anything queued
             // from here on.
@@ -326,6 +338,7 @@ impl SessionHandle {
                     prompt: Prompt {
                         input,
                         delivery: Some(Delivery::Queue),
+                        compact: None,
                     },
                 });
                 shared.emit_updated(&inbox);
@@ -369,6 +382,9 @@ impl SessionHandle {
                 undelivered.push(input.clone());
                 false
             }
+            // An interrupt means stop: a compaction that was asked for
+            // during the turn is dropped with it.
+            Pending::Compact(_) => false,
             Pending::Notice { .. } => true,
         });
         drop(inbox);
@@ -414,6 +430,66 @@ impl SessionHandle {
             source,
             text: text.into(),
         });
+    }
+
+    /// Compacts the conversation now (`session/compact`): a new context
+    /// epoch that begins with a summary of this one. `focus` says what the
+    /// summary should keep in particular.
+    ///
+    /// - **The session is idle:** a turn starts that only compacts. It ends
+    ///   with `turn.completed`, and sends the model nothing else.
+    /// - **A turn is running:** the compaction is made at the turn's next
+    ///   safe boundary, before its next request.
+    ///
+    /// # Errors
+    ///
+    /// `session_not_open` after [`close`](Self::close); `history_changing`
+    /// while the history is being changed.
+    pub fn compact(&self, focus: Option<String>) -> Result<TurnStartResult, Box<ErrorData>> {
+        let shared = &self.shared;
+        let mut inbox = shared.lock();
+        if inbox.closed {
+            return Err(Box::new(ErrorData::new(
+                ErrorKind::Usage,
+                code::SESSION_NOT_OPEN,
+                "The session has been closed.",
+            )));
+        }
+        if inbox.changing {
+            return Err(history_changing());
+        }
+        if let Some(running) = inbox.running.clone() {
+            inbox.pending.push_back(Pending::Compact(focus));
+            return Ok(TurnStartResult {
+                turn_id: running.id,
+                disposition: Disposition::Steering,
+            });
+        }
+        let turn: TurnId = inbox.turn_ids.next_id();
+        inbox.running = Some(Running {
+            id: turn.clone(),
+            cancel: shared.cancel.child(),
+            kill: CancelToken::new(),
+        });
+        inbox.starting = Some(Prompt {
+            input: Vec::new(),
+            delivery: None,
+            compact: Some(focus),
+        });
+        drop(inbox);
+        shared.wake.notify_one();
+        Ok(TurnStartResult {
+            turn_id: turn,
+            disposition: Disposition::Started,
+        })
+    }
+
+    /// Records the context window a local server loaded a model with: the
+    /// session holds that model's requests to it in place of the catalog's
+    /// figure (`docs/architecture/04-providers.md`, "A local server's
+    /// loaded context size").
+    pub fn set_context_window(&self, provider: ProviderId, model: ModelId, tokens: u64) {
+        self.shared.lock().windows.insert((provider, model), tokens);
     }
 
     /// Sets the session's speed: what the `main` role runs at unless it has

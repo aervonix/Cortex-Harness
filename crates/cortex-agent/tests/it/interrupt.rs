@@ -94,12 +94,18 @@ fn interrupted_while_preparing_after_a_tool_round() {
 
 #[test]
 fn interrupted_while_compacting() {
+    // Interrupted as it enters the state: the summary is never asked for.
     let (world, rig) = Rig::one("int_compacting", []);
-    *lock(&rig.context.over_budget) = true;
-    *lock(&rig.context.gate) = Some(Gate::new());
+    rig.window(4_000);
+    rig.bulk(6_000);
     interrupt_in(&world, &rig, TurnState::Compacting, 0);
     assert_interrupted(&rig);
-    *lock(&rig.context.over_budget) = false;
+    assert!(
+        rig.store.summaries().is_empty() && rig.store.epochs().len() == 1,
+        "nothing of the compaction was recorded"
+    );
+    // The history is whole: with room, the next request goes as it is.
+    rig.window(200_000);
     assert_the_next_request_is_accepted(&world, &rig);
 }
 

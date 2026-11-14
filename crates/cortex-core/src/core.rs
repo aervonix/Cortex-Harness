@@ -1012,7 +1012,12 @@ impl Core {
                 };
                 Ok(OpResult::TurnInterrupt(result))
             }
-            Op::SessionCompact(_) => not_built("Compaction", "context management (step 15)"),
+            Op::SessionCompact(params) => {
+                let live = self.open_for(client, &params.session_id)?;
+                self.may_drive(client)?;
+                live.handle.compact(params.focus)?;
+                Ok(OpResult::SessionCompact(Empty {}))
+            }
             Op::SessionSet(params) => {
                 let live = self.open_for(client, &params.session_id)?;
                 self.may_drive(client)?;

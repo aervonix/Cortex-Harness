@@ -307,6 +307,10 @@ impl ScriptedProvider {
 }
 
 impl ModelClient for ScriptedProvider {
+    fn stable_prefix(&self, request: &ModelRequest) -> Option<Vec<u8>> {
+        Some(crate::protocol::neutral_prefix(request))
+    }
+
     fn stream(&self, request: ModelRequest, cancel: CancelToken) -> ModelStream {
         let provider = self.clone();
         ModelStream::generate(move |out| async move {

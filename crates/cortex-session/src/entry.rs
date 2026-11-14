@@ -474,6 +474,32 @@ pub struct Epoch {
     pub tools: Vec<Value>,
     /// A hash of the system prompt and the tool definitions together.
     pub hash: ContentHash,
+    /// Why the epoch began: `start` (a new session), `resume` (a session
+    /// opened again whose prompt or tools are not what its last epoch had),
+    /// `model` (the model or its reasoning level changed, and the prompt
+    /// and tools stayed) or `compaction`. Added in step 15; absent before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// A hash of the system prompt without its instruction files: an epoch
+    /// read again goes on as it was when the harness would build the same
+    /// prompt but for them. Added in step 15.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<ContentHash>,
+    /// The project instruction files the system prompt holds, in its order,
+    /// each with the hash of what was read of it. A later change to one is
+    /// told the model as a notice, measured against this. Added in step 15.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instructions: Vec<InstructionMark>,
+}
+
+/// An instruction file as an epoch's system prompt holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstructionMark {
+    /// Where it is: relative to the workspace with `/`, or absolute for the
+    /// user's own file.
+    pub path: String,
+    /// The hash of what was read of it.
+    pub hash: ContentHash,
 }
 
 impl Epoch {
@@ -1290,6 +1316,12 @@ mod tests {
             system: "be brief".into(),
             tools: vec![json!({"name": "read"})],
             hash: Epoch::hash_of("be brief", &[json!({"name": "read"})]),
+            reason: Some("compaction".into()),
+            base: Some(ContentHash::of(b"base")),
+            instructions: vec![InstructionMark {
+                path: "AGENTS.md".into(),
+                hash: ContentHash::of(b"be brief"),
+            }],
         }));
         round_trip(Body::Session(Header {
             session: "s_1".into(),
