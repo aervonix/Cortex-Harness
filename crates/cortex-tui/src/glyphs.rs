@@ -212,8 +212,10 @@ mod tests {
                 "{glyph:?} is not printable ASCII"
             );
         }
-        // The layout never depends on a glyph being narrow where a terminal
-        // may draw it wide; each Unicode glyph is one column as counted.
+        // Each Unicode glyph is one column as counted. Fourteen of them are
+        // of East Asian ambiguous width (the box's edges among them), which a
+        // terminal in a CJK locale may draw wide: the ASCII set is the answer
+        // there (09-tui, "Colour and glyphs").
         for glyph in Glyphs::UNICODE.all() {
             assert_eq!(cortex_base::text::width(glyph), 1, "{glyph:?}");
         }

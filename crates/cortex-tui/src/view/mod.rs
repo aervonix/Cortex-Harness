@@ -45,6 +45,9 @@ pub struct Look {
     pub turn_summary: bool,
     /// A still mark in place of the spinner (`tui.reduced_motion`, off).
     pub reduced_motion: bool,
+    /// The terminal shows links (`Capabilities::hyperlinks`), so a link's
+    /// address is not written out after its text.
+    pub hyperlinks: bool,
 }
 
 impl Look {
@@ -61,6 +64,7 @@ impl Look {
             reasoning: Reasoning::Summary,
             turn_summary: false,
             reduced_motion: false,
+            hyperlinks: false,
         }
     }
 

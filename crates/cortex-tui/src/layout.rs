@@ -4,7 +4,9 @@
 //! Everything here works on grapheme clusters and terminal columns, through
 //! `cortex_base::text`, so a cluster (an accented letter, a flag, a family
 //! emoji) is never split, and a line is never wider than it was given room
-//! for. Views lay out with these and nothing else, which is what keeps every
+//! for, except where one cluster alone is wider than a whole line (a wide
+//! character on a line of one column), which then has a line to itself.
+//! Views lay out with these and nothing else, which is what keeps every
 //! row out of the terminal's last column: the width a view is given is
 //! already one less than the window's (`Inline::width`).
 //!
@@ -20,7 +22,9 @@ use cortex_term::{Line, Span, Style};
 /// The rules are `cortex_base::text::wrap_ranges`'s, on the spans' text read
 /// as one: a line breaks at white space, which is dropped at the break; a
 /// line break in the text always ends a line; a word wider than a line is
-/// broken between grapheme clusters. Empty text is one empty line.
+/// broken between grapheme clusters. Empty text is one empty line. A
+/// `width` of 0 is taken as 1, and a cluster wider than `width` has a line
+/// to itself.
 #[must_use]
 pub fn wrap(spans: &[Span], width: usize) -> Vec<Line> {
     let mut text = String::new();

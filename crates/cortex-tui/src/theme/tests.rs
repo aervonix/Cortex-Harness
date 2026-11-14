@@ -177,10 +177,28 @@ fn the_accents_text_tint_reaches_its_target_on_every_sample_background() {
     );
     assert_eq!(unknown.background(), Background::Dark);
     // At 256 colours on a light background the purple's nearest, index 99,
-    // is under the target, so a darker one is chosen.
+    // is under the target, so another is chosen, and it keeps the hue: the
+    // nearest that reaches the target would be index 62, which is blue.
     assert!(contrast((0x87, 0x5f, 0xff), ONE_HALF_LIGHT.bg) < TEXT_CONTRAST);
     let light_256 = Theme::new(ColorDepth::Indexed256, Some(ONE_HALF_LIGHT.bg));
-    assert_ne!(light_256.style(Token::AccentText).fg, Color::Indexed(99));
+    assert_eq!(light_256.style(Token::AccentText).fg, Color::Indexed(93));
+    let dark_256 = Theme::new(ColorDepth::Indexed256, Some(CAMPBELL.bg));
+    assert_eq!(dark_256.style(Token::AccentText).fg, Color::Indexed(99));
+}
+
+#[test]
+fn the_accents_text_keeps_its_hue_at_256_colours() {
+    let (accent_hue, _) = hue_and_saturation(ACCENT);
+    for (name, background) in BACKGROUNDS {
+        let theme = Theme::new(ColorDepth::Indexed256, Some(background));
+        let (hue, saturation) = hue_and_saturation(shown(&theme));
+        let turn = (hue - accent_hue).abs();
+        assert!(
+            turn.min(360.0 - turn) <= 15.0 && saturation >= 0.4,
+            "{name}: {:?} is {hue:.0} degrees, the accent {accent_hue:.0}",
+            theme.style(Token::AccentText).fg
+        );
+    }
 }
 
 #[test]
@@ -200,6 +218,43 @@ fn a_tint_is_the_least_mix_that_reaches_the_target() {
     };
     let given = Theme::with_palette(&palette, ColorDepth::TrueColor, None);
     assert_eq!(given.style(Token::AccentText).fg, Color::Rgb(1, 2, 3));
+}
+
+#[test]
+fn without_a_reported_background_there_is_no_tint() {
+    // Mixed into an assumed dark background, the tints would be dark bars
+    // under a light terminal's dark text.
+    let unknown = Theme::new(ColorDepth::TrueColor, None);
+    assert_eq!(
+        unknown.style(Token::DiffAddLine),
+        Style::PLAIN.fg(Color::Ansi(10))
+    );
+    assert_eq!(
+        unknown.style(Token::DiffDelSign),
+        Style::PLAIN.fg(Color::Ansi(9)).bold()
+    );
+    assert_eq!(unknown.style(Token::DiffAddBg), Style::PLAIN);
+    let reported = Theme::new(ColorDepth::TrueColor, Some(CAMPBELL.bg));
+    assert_eq!(
+        reported.style(Token::DiffAddSign),
+        Style::PLAIN.fg(Color::Ansi(10)).bg(Color::Rgb(19, 42, 23))
+    );
+}
+
+#[test]
+fn snapshot() {
+    // Every token in every variant the views are snapshotted in.
+    let mut parts = Vec::new();
+    for variant in crate::testing::variants() {
+        let lines: Vec<cortex_term::Line> = Token::ALL
+            .iter()
+            .map(|token| {
+                cortex_term::Line::styled(format!("{token:?}"), variant.theme.style(*token))
+            })
+            .collect();
+        parts.push((variant.title(), lines));
+    }
+    crate::testing::assert_snapshot("theme", &crate::testing::sections(&parts));
 }
 
 #[test]
