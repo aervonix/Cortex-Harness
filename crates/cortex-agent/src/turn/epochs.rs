@@ -61,16 +61,19 @@ pub(super) struct Ready {
     outcome: Result<String, ErrorData>,
 }
 
-/// What a summary was taken over.
+/// What a summary was taken over: the first `messages` of the epoch's
+/// history, which end with the item `through`. A summary is used only over
+/// a history that still begins so.
 #[derive(Debug, Clone)]
 struct Cover {
-    /// The context's generation: a summary over a history that was read
-    /// again since (a rewind) is not used.
-    generation: u64,
-    /// How many messages of the epoch it covers.
     messages: usize,
-    /// The last item it covers.
     through: Option<ItemId>,
+}
+
+impl Cover {
+    fn holds_for(&self, history: &History) -> bool {
+        self.messages <= history.len() && history.end_of(self.messages) == self.through
+    }
 }
 
 /// What a summary request came to.
@@ -643,8 +646,7 @@ impl Session {
             }
         });
         self.background = Some(Background::Running(Job {
-            covered: Cover {
-                generation: self.context.generation,
+                        covered: Cover {
                 messages: covered,
                 through: self.context.history.end_of(covered),
             },
@@ -824,10 +826,7 @@ impl Session {
         }
         // A summary prepared in the background is used when it is of the
         // history the session has now, and the user asked for no focus.
-        let generation = self.context.generation;
-        let usable = |cover: &Cover| {
-            cover.generation == generation && cover.messages <= self.context.history.len()
-        };
+                let usable = |cover: &Cover| cover.holds_for(&self.context.history);
         let background = match self.background.take() {
             Some(Background::Ready(ready)) if focus.is_none() && usable(&ready.covered) => {
                 Some((ready.covered, ready.outcome))
@@ -861,8 +860,7 @@ impl Session {
                 Some(taken) => taken,
                 None => {
                     let messages = self.covered_now();
-                    let cover = Cover {
-                        generation,
+                                        let cover = Cover {
                         messages,
                         through: self.context.history.end_of(messages),
                     };
