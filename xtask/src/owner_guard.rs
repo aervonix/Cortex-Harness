@@ -26,6 +26,8 @@ use std::process::Command;
 use crate::Result;
 use crate::steps;
 
+pub(crate) mod local;
+
 /// The environment variable the workflow fills from the secret.
 const TERMS: &str = "OWNER_TERMS";
 
@@ -34,13 +36,20 @@ const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 const USAGE: &str = "\
 usage: cargo xtask owner-guard --base REV --head REV
+       cargo xtask owner-guard --pre-push REMOTE [URL]   (the git hook)
+       cargo xtask owner-guard --unpushed [REMOTE]
 
 Fails when the change from REV to REV adds a term of OWNER_TERMS: in an
 added line, a file's path, a commit message, or a commit's author or
 committer. A base of forty zeros, as a first push has, checks the head
 commit alone. OWNER_TERMS holds one term a line: a plain word or phrase is
 matched as a whole word, and a term with `@` or `/` in it anywhere in the
-text; case is ignored. A term is never printed.";
+text; case is ignored. A term is never printed.
+
+--pre-push and --unpushed are the same check before a push, with the
+terms from ~/.config/cortex-harness/owner-terms or the file that
+CORTEX_OWNER_TERMS_FILE names: each commit the push sends that the
+remote does not have. Without the file they pass with a warning.";
 
 /// The terms, ready to match: lowered, and each with its kind.
 #[derive(Debug)]
@@ -126,7 +135,7 @@ fn is_word(character: char) -> bool {
 }
 
 /// Where a term was found. Its text is never kept.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Finding {
     /// A line the diff adds: the file's path, unless the path itself
     /// matches, and the line's number in the new file.
@@ -219,7 +228,7 @@ fn new_start(hunk: &str) -> Option<usize> {
 }
 
 /// The fields of the commits that `git log` printed with [`LOG_FORMAT`].
-const LOG_FORMAT: &str = "%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e";
+pub(crate) const LOG_FORMAT: &str = "%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e";
 
 /// What in a list of commits matches.
 pub(crate) fn scan_commits(terms: &Terms, log: &str) -> Vec<Finding> {
@@ -304,6 +313,12 @@ impl Range {
 
 /// `cargo xtask owner-guard`
 pub(crate) fn run(arguments: &[String]) -> Result<()> {
+    if arguments
+        .first()
+        .is_some_and(|first| first == "--pre-push" || first == "--unpushed")
+    {
+        return local::run(arguments);
+    }
     let range = Range::parse(arguments)?;
     let terms = Terms::parse(&env::var(TERMS).unwrap_or_default());
     if terms.is_empty() {
@@ -420,7 +435,7 @@ fn look(dir: &Path, range: &Range, terms: &Terms) -> Result<(Vec<Finding>, usize
 /// not UTF-8 replaced: a binary file's diff is text that matches no term.
 /// Its error output is passed on: git prints revisions and paths there,
 /// never the terms. A repository named by the environment is not used.
-fn git(dir: &Path, arguments: &[&str]) -> Result<String> {
+pub(crate) fn git(dir: &Path, arguments: &[&str]) -> Result<String> {
     let mut command = Command::new("git");
     for variable in GIT_LOCATION {
         command.env_remove(variable);
@@ -442,7 +457,7 @@ fn git(dir: &Path, arguments: &[&str]) -> Result<String> {
 
 /// The variables that point git at another repository than the directory's:
 /// a hook exports them.
-const GIT_LOCATION: [&str; 5] = [
+pub(crate) const GIT_LOCATION: [&str; 5] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",

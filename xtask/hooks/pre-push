@@ -1,0 +1,34 @@
+#!/bin/sh
+# The owner guard before a push (docs/testing-and-ci.md, "The owner guard").
+#
+# git runs this from the top of the worktree that pushes, with the remote's
+# name and URL as arguments and one line a ref on standard input. It runs
+# `cargo xtask owner-guard --pre-push`, which reads the owner's terms from
+# ~/.config/cortex-harness/owner-terms (or the file CORTEX_OWNER_TERMS_FILE
+# names), checks every commit the push sends, and refuses the push when one
+# carries a term. Without the file it warns and lets the push go.
+#
+# Install it once for every worktree of the repository, outside any branch:
+#   cp xtask/hooks/pre-push "$(git rev-parse --git-common-dir)/hooks/pre-push"
+# Never push with --no-verify: that skips it.
+
+# cargo: the one that started this push, the one on PATH, or rustup's.
+cargo=
+if [ -n "${CARGO:-}" ] && [ -x "$CARGO" ]; then
+    cargo=$CARGO
+elif command -v cargo >/dev/null 2>&1; then
+    cargo=cargo
+else
+    for candidate in "${CARGO_HOME:-$HOME/.cargo}/bin/cargo" "${CARGO_HOME:-$HOME/.cargo}/bin/cargo.exe"; do
+        if [ -x "$candidate" ]; then
+            cargo=$candidate
+            break
+        fi
+    done
+fi
+if [ -z "$cargo" ]; then
+    echo "pre-push: cargo was not found (not in CARGO, on PATH, or in CARGO_HOME/bin), so the owner guard cannot run. The push is refused." >&2
+    exit 1
+fi
+
+exec "$cargo" xtask owner-guard --pre-push "$@"
