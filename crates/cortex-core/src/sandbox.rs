@@ -287,18 +287,32 @@ impl Launcher for SessionSandbox {
 }
 
 /// Where a session's own git runs: inside its sandbox, reading only,
-/// while its commands are confined.
+/// while its commands are confined, and never a git a confined command
+/// could have planted inside a write root.
 ///
 /// The session's checkpoints need their git before its sandbox can be
 /// made (the sandbox needs the lease), so this is made first and given the
 /// sandbox once it is ([`set`](Self::set)). Until then git is not started
 /// at all: no answer is better than one from an unconfined git.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct SessionGit {
     sandbox: OnceLock<Arc<SessionSandbox>>,
+    /// The resolved write roots to keep the git program out of; empty when
+    /// the session would not confine.
+    confine_roots: Vec<PathBuf>,
 }
 
 impl SessionGit {
+    /// A git for a session whose confined commands could write
+    /// `confine_roots`: the git the harness starts is never found inside
+    /// one of them.
+    pub(crate) fn new(confine_roots: Vec<PathBuf>) -> Self {
+        Self {
+            sandbox: OnceLock::new(),
+            confine_roots,
+        }
+    }
+
     /// Gives it the session's sandbox. Only the first call counts.
     pub(crate) fn set(&self, sandbox: Arc<SessionSandbox>) {
         let _ = self.sandbox.set(sandbox);
@@ -308,6 +322,18 @@ impl SessionGit {
 impl Confinement for SessionGit {
     fn confines(&self) -> bool {
         self.sandbox.get().is_some_and(|sandbox| sandbox.confines())
+    }
+
+    fn git_program(&self) -> Option<PathBuf> {
+        if self.confine_roots.is_empty() {
+            return cortex_base::program::git().map(Path::to_path_buf);
+        }
+        cortex_base::program::find_outside(
+            &cortex_base::program::path_directories(),
+            "git",
+            cfg!(windows),
+            &self.confine_roots,
+        )
     }
 
     fn start(&self, git: &Path, arguments: Vec<OsString>) -> Result<Started, String> {
@@ -378,13 +404,30 @@ pub(crate) fn protected_note(
 }
 
 /// The launcher's policy, from the lease's grant.
+///
+/// Each root is resolved to its real path here, once, when the session's
+/// policy is made: a link the user set up on purpose (a `sandbox.write`
+/// through a symlinked home) is followed now, so that the launcher can
+/// open the real path with no link followed and refuse one a confined
+/// command plants later (finding 6 of the third review of step 26;
+/// [`crate::confine`]'s `grant`). A root that does not resolve (it is not
+/// there yet) is kept as it is: the launcher skips a root that is not
+/// there, and reaches the no-link rule for one that appears.
 fn policy_of(grant: &SandboxPolicy, temp: &Temp, landlock: u8) -> Policy {
-    let roots = |roots: &[String]| roots.iter().map(PathBuf::from).collect::<Vec<_>>();
+    let roots = |roots: &[String]| {
+        roots
+            .iter()
+            .map(|root| resolve_root(Path::new(root)))
+            .collect::<Vec<_>>()
+    };
     let mut write = roots(&grant.write.roots);
+    // The temporary directory is the session's own, made with no link on
+    // the way (`make_temp`): its real path is itself.
+    let temp_path = resolve_root(&temp.path);
     // A temporary directory that was not made, or is not the session's own,
     // is not written to: someone else could read it, or it leads elsewhere.
     if !temp.made {
-        write.retain(|root| *root != temp.path);
+        write.retain(|root| *root != temp_path);
     }
     Policy {
         read: if grant.read.all {
@@ -397,9 +440,20 @@ fn policy_of(grant: &SandboxPolicy, temp: &Temp, landlock: u8) -> Policy {
             NetworkAccess::Off => Network::Off,
             NetworkAccess::Full => Network::Full,
         },
-        temp: temp.made.then(|| temp.path.clone()),
+        temp: temp.made.then(|| temp_path),
         landlock,
     }
+}
+
+/// A root's real path, with every symbolic link on the way to it resolved,
+/// or the path as it is when it cannot be resolved (it is not there). It
+/// blocks.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "resolving the roots is part of making the session's sandbox, on the blocking pool"
+)]
+fn resolve_root(root: &Path) -> PathBuf {
+    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
 }
 
 /// Makes the session's temporary directory, open to the user alone. It
@@ -501,7 +555,7 @@ mod tests {
             &workspace,
             Limits::default(),
         ));
-        let git = SessionGit::default();
+        let git = SessionGit::new(Vec::new());
         let arguments = vec![OsString::from("status")];
         // Before it is given the sandbox, it starts nothing.
         assert!(

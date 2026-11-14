@@ -236,6 +236,12 @@ pub struct Before {
     /// Why git was asked and gave no answer: then the look after the
     /// command is not made either.
     git_gave_up: Option<Incomplete>,
+    /// Whether git ran confined for the look before the command. If it did,
+    /// the look after it must too: a command that ran confined may have
+    /// planted a program in the repository's configuration, and the session
+    /// turning to `unrestricted` between the two looks must not let the
+    /// after-look's git run it (found by the third review of step 26).
+    confined: bool,
 }
 
 /// One answer of `git status`.
@@ -373,6 +379,7 @@ impl ChangeDetector {
             started,
             git,
             git_gave_up,
+            confined: self.confinement.confines(),
         }
     }
 
@@ -383,6 +390,14 @@ impl ChangeDetector {
             // Git is there and gave no answer. Walking the same tree would
             // be slower still, and would miss what git sees.
             return Changes::nothing(Method::None, Some(why));
+        }
+        // The look before the command ran git confined, and the session is
+        // not confining now: a command the session was confining ran in
+        // between, and its repository configuration cannot be trusted to a
+        // git that is no longer confined. The list is left incomplete
+        // rather than run that git (found by the third review of step 26).
+        if before.confined && !self.confinement.confines() {
+            return Changes::nothing(Method::None, Some(Incomplete::GitNotConfined));
         }
         match (&before.git, self.repository()) {
             (Some(was), Some(repository)) => match self.git_look(&repository) {

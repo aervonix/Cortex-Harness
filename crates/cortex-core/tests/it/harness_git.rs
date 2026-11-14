@@ -149,6 +149,57 @@ fn sys_a_filter_a_confined_command_plants_runs_inside_the_sandbox() {
     });
 }
 
+/// The control for the shell path: at `unrestricted`, where the after-look
+/// git is not confined, the same planted filter does run and writes
+/// outside. That is what shows the filter is one the harness's own git
+/// runs, so that its absence in the confined test means the sandbox stopped
+/// it, not that the filter never ran.
+#[test]
+fn sys_at_unrestricted_the_after_look_git_runs_the_planted_filter() {
+    if !enforcing_here() {
+        return;
+    }
+    let world = World::new("planted_filter_unconfined", []);
+    repository(&world);
+    let outside = world.dir.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    world.put(
+        "fix.sh",
+        format!(
+            "printf '[filter \"x\"]\\n\\tclean = touch {o}/planted; cat\\n' >> .git/config\n\
+             echo '* filter=x' > .gitattributes\n\
+             touch -d @0 tracked.txt\n",
+            o = outside.display()
+        ),
+    );
+    world
+        .provider
+        .push(calls(&[("c1", "shell", json!({"command": "sh fix.sh"}))]));
+    world.provider.push(says("Done."));
+    let core = world.core_with(|options| {
+        options.launcher = Some(launcher());
+        options.trust_project = true;
+    });
+    world.run(async {
+        let front = Front::start_as(
+            &world,
+            &core,
+            cortex_core::ClientInfo::user(),
+            at(Level::Unrestricted),
+        )
+        .await
+        .expect("the session starts");
+        front.turn("go").await;
+        assert_eq!(shell_payload(&front)["changes"]["method"], "git");
+        assert!(
+            outside.join("planted").exists(),
+            "the after-look git did not run the filter even unconfined: {:?}",
+            front.results()
+        );
+        front.close().await;
+    });
+}
+
 /// The same filter, already in the configuration when the session starts:
 /// the base state asks git about every changed file, and its git is the
 /// sandbox's too. At `unrestricted`, where nothing is confined, the same
@@ -189,6 +240,11 @@ fn sys_the_base_state_is_taken_by_a_git_inside_the_sandbox() {
                 .find(|line| line["kind"] == "base")
                 .expect("the base state was recorded");
             assert_eq!(base["trusted"], true, "{base}");
+            // The base state was taken, not given up: git answered inside
+            // the sandbox (the filter failed to write but `cat` passed the
+            // content, so `git status` and the patch still answered). A
+            // reading launcher that always failed would leave it incomplete.
+            assert_eq!(base["complete"], true, "{base}");
         });
         marker.exists()
     };

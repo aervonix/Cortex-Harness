@@ -69,12 +69,21 @@ impl Place {
     fn policy(&self, network: Network, landlock: u8) -> Policy {
         Policy {
             read: Reach::All,
-            write: vec![self.ws(), self.tmp()],
+            write: vec![resolved(&self.ws()), resolved(&self.tmp())],
             network,
-            temp: Some(self.tmp()),
+            temp: Some(resolved(&self.tmp())),
             landlock,
         }
     }
+}
+
+/// A root resolved to its real path, as the harness resolves the roots
+/// when it makes the session's policy (`cortex-core`'s `policy_of`): the
+/// launcher then opens them with no link followed. A test that passes a
+/// system directory (`/lib`, a symbolic link to `/usr/lib` on a merged-usr
+/// system) must resolve it the same way, or the launcher refuses it.
+fn resolved(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// What a confined command did.
@@ -210,9 +219,9 @@ fn sys_a_read_policy_keeps_reads_to_its_roots() {
     // The system's directories, so that the shell itself can run.
     let mut roots: Vec<PathBuf> = ["/usr", "/bin", "/lib", "/lib64", "/etc", "/proc"]
         .iter()
-        .map(PathBuf::from)
+        .map(|dir| resolved(Path::new(dir)))
         .collect();
-    roots.push(place.ws());
+    roots.push(resolved(&place.ws()));
     policy.read = Reach::Only(roots);
     let script = format!(
         "cat README; cat {}/keep || echo refused",
@@ -544,4 +553,74 @@ fn sys_a_command_that_cannot_be_found_is_said_so() {
     let ran = run_with(&launcher, &stdin, &[], &place.ws(), "/nowhere/sh", &[]);
     assert_eq!(ran.code, Some(127), "{ran:?}");
     assert!(ran.output.contains("could not be started"), "{ran:?}");
+}
+
+/// Finding 6 of the third review of step 26: a write root that lies inside
+/// another write root (the session's temporary directory inside a
+/// `sandbox.write` root) can be replaced with a link by one confined
+/// command. The next command's launcher opened the root by its path,
+/// followed the link, and granted writes wherever it led. Now the launcher
+/// opens each root with no link followed, so a root that became a link is
+/// refused and the command does not run.
+#[test]
+fn sys_a_write_root_swapped_for_a_link_refuses_the_next_command() {
+    let Some(landlock) = enforcing() else { return };
+    let scratch = Scratch::outside("cortex-sandbox-confined", "swapped_root");
+    scratch.file("ws/README", "workspace\n");
+    scratch.dir("shared");
+    scratch.dir("shared/cortex-harness-s1");
+    scratch.file("home/keep", "the user's\n");
+    let ws = resolved(&scratch.join("ws"));
+    let shared = resolved(&scratch.join("shared"));
+    let temp = shared.join("cortex-harness-s1");
+    let home = resolved(&scratch.join("home"));
+    let policy = Policy {
+        read: Reach::All,
+        // The temporary directory lies inside a `sandbox.write` root, so a
+        // command may rename it: its parent is writable.
+        write: vec![ws.clone(), temp.clone(), shared.clone()],
+        network: Network::Off,
+        temp: Some(temp.clone()),
+        landlock,
+    };
+    // Control: the home is not writable.
+    let before = sh_in(
+        policy.clone(),
+        &ws,
+        &format!("echo x > '{}/before'", home.display()),
+    );
+    assert!(!home.join("before").exists(), "{before:?}");
+
+    // One command swaps its temporary directory for a link to the home.
+    let swapped = sh_in(
+        policy.clone(),
+        &ws,
+        &format!(
+            "mv \"$TMPDIR\" \"$TMPDIR.old\" && ln -s '{}' \"$TMPDIR\" && echo swapped",
+            home.display()
+        ),
+    );
+    assert!(swapped.ok(), "{swapped:?}");
+
+    // The next command's launcher opens the root with no link followed: a
+    // root that is a link now is refused, and the command does not run.
+    let next = sh_in(
+        policy,
+        &ws,
+        &format!("echo pwned > '{}/after'", home.display()),
+    );
+    assert_eq!(next.code, Some(FAILED), "{next:?}");
+    assert!(next.output.contains(MARK), "{next:?}");
+    assert!(
+        !home.join("after").exists(),
+        "the next command wrote outside every write root: {next:?}"
+    );
+}
+
+/// Runs `script` with `/bin/sh -c` through the launcher under `policy`, in
+/// `cwd`.
+fn sh_in(policy: Policy, cwd: &Path, script: &str) -> Ran {
+    let launcher = launcher(policy);
+    let stdin = launcher.policy().encode();
+    run_with(&launcher, &stdin, &[], cwd, "/bin/sh", &["-c", script])
 }

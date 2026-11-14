@@ -68,9 +68,17 @@ pub const GIT_HARDENING: [&str; 11] = [
 ];
 
 /// The environment every git command the harness starts is given: git
-/// never asks for a password, and takes no optional lock even where an
-/// alias or a wrapper drops the flag.
-pub const GIT_ENV: [(&str, &str); 2] = [("GIT_TERMINAL_PROMPT", "0"), ("GIT_OPTIONAL_LOCKS", "0")];
+/// never asks for a password, takes no optional lock even where an alias
+/// or a wrapper drops the flag, and never fetches a missing object of a
+/// partial clone on its own (a lazy fetch would start the clone's
+/// transport, which the repository's configuration names; the network is
+/// off inside the sandbox, but this refuses it outright, before the
+/// socket).
+pub const GIT_ENV: [(&str, &str); 3] = [
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("GIT_OPTIONAL_LOCKS", "0"),
+    ("GIT_NO_LAZY_FETCH", "1"),
+];
 
 /// The setting that turns git's file-system monitor off, as a name and a
 /// value: for a command the harness does not start itself and so cannot
@@ -85,6 +93,15 @@ pub trait Confinement: Send + Sync + std::fmt::Debug {
     /// Whether git started now runs inside the sandbox, so that a caller
     /// can say why git failed.
     fn confines(&self) -> bool;
+
+    /// The git program the harness starts: the one found on `PATH`
+    /// ([`crate::program::git`]), or, for a session that confines, one
+    /// outside its write roots, so that a git a confined command planted
+    /// inside a write root is never the one the harness runs (found by the
+    /// third review of step 26). `None` when there is no git to run.
+    fn git_program(&self) -> Option<PathBuf> {
+        crate::program::git().map(Path::to_path_buf)
+    }
 
     /// What to start in place of `git` with `arguments`.
     ///
@@ -159,14 +176,14 @@ pub fn start(
     dir: &Path,
     arguments: &[&str],
 ) -> Result<Child, StartError> {
-    let git = crate::program::git().ok_or(StartError::NotInstalled)?;
+    let git = confinement.git_program().ok_or(StartError::NotInstalled)?;
     let all: Vec<OsString> = GIT_HARDENING
         .iter()
         .chain(arguments)
         .map(OsString::from)
         .collect();
     let started = confinement
-        .start(git, all)
+        .start(&git, all)
         .map_err(StartError::NotConfined)?;
     let mut command = Command::new(&started.program);
     command

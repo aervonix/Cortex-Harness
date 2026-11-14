@@ -53,6 +53,41 @@ pub fn find(directories: &[PathBuf], name: &str, windows: bool) -> Option<PathBu
         .find(|candidate| candidate.is_absolute() && is_program(candidate, windows))
 }
 
+/// The first `name` in the absolute directories of `directories` whose
+/// real path is not inside any of `avoid`: a session's write roots, where a
+/// confined command could have planted a program the harness starts (found
+/// by the third review of step 26). `avoid` holds real paths; a candidate
+/// is compared by its real path, so a link into a root is caught. With no
+/// `avoid` roots this is [`find`].
+#[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "resolving a candidate's path is part of choosing it; callers run it off the core \
+              thread"
+)]
+pub fn find_outside(
+    directories: &[PathBuf],
+    name: &str,
+    windows: bool,
+    avoid: &[PathBuf],
+) -> Option<PathBuf> {
+    let mut names = vec![OsString::from(name)];
+    if windows && Path::new(name).extension().is_none() {
+        names.insert(0, OsString::from(format!("{name}.exe")));
+    }
+    directories
+        .iter()
+        .filter(|directory| directory.is_absolute())
+        .flat_map(|directory| names.iter().map(move |name| directory.join(name)))
+        .find(|candidate| {
+            if !candidate.is_absolute() || !is_program(candidate, windows) {
+                return false;
+            }
+            let real = std::fs::canonicalize(candidate).unwrap_or_else(|_| candidate.clone());
+            !avoid.iter().any(|root| real.starts_with(root))
+        })
+}
+
 /// Whether `path` is a file that can be run: a regular file, and on Linux
 /// one with a permission to run it. On Windows any file counts.
 #[must_use]
@@ -186,5 +221,45 @@ mod tests {
         // Every system these tests run on has git, on an absolute entry.
         let git = git().expect("git on PATH");
         assert!(git.is_absolute(), "{}", git.display());
+    }
+
+    /// A program inside a write root (where a confined command could have
+    /// planted it) is passed over, and the next one on the path is taken;
+    /// when nothing is left outside the roots, there is none.
+    #[test]
+    fn find_outside_passes_over_a_program_inside_a_root() {
+        let dir = scratch("outside");
+        let root = dir.join("ws").join("bin");
+        let clean = dir.join("usr").join("bin");
+        for windows in [false, true] {
+            let name = if windows { "git.exe" } else { "git" };
+            let planted = program(&root, name);
+            let real = program(&clean, name);
+            let path = [root.clone(), clean.clone()];
+            // With the root avoided, the planted one is passed over.
+            assert_eq!(
+                find_outside(&path, "git", windows, &[dir.join("ws")]),
+                Some(real.clone()),
+                "{name}"
+            );
+            // With nothing avoided, the first is taken: that is `find`.
+            assert_eq!(
+                find_outside(&path, "git", windows, &[]),
+                Some(planted.clone())
+            );
+            assert_eq!(
+                find(&path, "git", windows),
+                find_outside(&path, "git", windows, &[])
+            );
+            // With only the planted one, and the root avoided, there is
+            // none.
+            assert_eq!(
+                find_outside(&[root.clone()], "git", windows, &[dir.join("ws")]),
+                None
+            );
+            let _ = std::fs::remove_file(&real);
+            let _ = std::fs::remove_file(&planted);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

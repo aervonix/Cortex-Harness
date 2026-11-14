@@ -673,6 +673,8 @@ fn speeds(settings: &Settings) -> SpeedSettings {
 fn find_shell(
     inner: &Inner,
     settings: &Settings,
+    confine_roots: &[PathBuf],
+    told: &mut Vec<String>,
 ) -> Result<Shell, cortex_tools::shell::ShellError> {
     if let Some(shell) = &inner.options.shell {
         return Ok(shell.clone());
@@ -687,7 +689,28 @@ fn find_shell(
     if let Some(shell) = known {
         return Ok(shell);
     }
-    let mut shell = ShellSearch::from_env().find(key.0.as_deref(), key.1.as_deref())?;
+    // When the session would confine commands, a shell whose real path is
+    // inside a write root is passed over: a confined command could have
+    // planted it there, and starting it to ask its version, or to run a
+    // command the user let leave the sandbox, would run that unconfined
+    // (found by the third review of step 26). The search goes on down
+    // `PATH`, so a system shell behind a project's `.venv/bin` is still
+    // found; the shell tool is unavailable only when nothing outside the
+    // write roots is left.
+    let (shell, skipped) = shell_outside_roots(
+        ShellSearch::from_env(),
+        key.0.as_deref(),
+        key.1.as_deref(),
+        confine_roots,
+    )?;
+    for passed in skipped {
+        told.push(format!(
+            "sandbox: the shell `{}` was passed over: it is inside a writable root, where a \
+             confined command could have planted it; the search went on.",
+            passed.display()
+        ));
+    }
+    let mut shell = shell;
     // The description the model is given names the shell and its version.
     // Asking for it starts the shell, which for PowerShell is most of a
     // headless run's start-up on Windows (step 13b). So the answer is kept
@@ -736,6 +759,74 @@ fn find_shell(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(key, shell.clone());
     Ok(shell)
+}
+
+/// The shell found by `search` whose real path is outside every root in
+/// `roots`, and the paths of those passed over for being inside one. The
+/// search goes on down `PATH` past a candidate inside a root; a configured
+/// absolute shell inside a root cannot be searched past, and is an error.
+fn shell_outside_roots(
+    mut search: ShellSearch,
+    program: Option<&str>,
+    arguments: Option<&[String]>,
+    roots: &[PathBuf],
+) -> Result<(Shell, Vec<PathBuf>), cortex_tools::shell::ShellError> {
+    let mut skipped = Vec::new();
+    loop {
+        let candidate = search.find(program, arguments)?;
+        if under_a_write_root(candidate.program(), roots).is_none() {
+            return Ok((candidate, skipped));
+        }
+        let program_path = candidate.program().to_path_buf();
+        match program_path.parent() {
+            Some(dir) if search.path.iter().any(|entry| entry == dir) => {
+                search.path.retain(|entry| entry != dir);
+            }
+            _ => {
+                return Err(cortex_tools::shell::ShellError::NoneFound(
+                    "every shell found was inside a writable root".to_owned(),
+                ));
+            }
+        }
+        skipped.push(program_path);
+    }
+}
+
+/// The resolved write root `path` is inside, or `None` when it is under
+/// none of them: a program there is one a confined command could have
+/// planted, so the harness does not start it. `path` and `roots` are
+/// compared by their real paths, so a link into a root is caught.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "resolving a program's path is part of choosing it, on the blocking pool"
+)]
+fn under_a_write_root(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    roots
+        .iter()
+        .find(|root| real.starts_with(root))
+        .map(PathBuf::clone)
+}
+
+/// The write roots a session would confine commands to, resolved, when it
+/// would confine at all; empty otherwise. A program the harness starts
+/// (the shell, git) that lies inside one of these is passed over: a
+/// confined command could have planted it (found by the third review of
+/// step 26).
+fn confine_roots(inner: &Inner, loaded: &Loaded, root: &AbsPath) -> Vec<PathBuf> {
+    if inner.sandbox.state(loaded.settings.sandbox.enabled).0 != SandboxState::Enforcing {
+        return Vec::new();
+    }
+    let resolve = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut roots = vec![resolve(&root.to_fs_path())];
+    for entry in &loaded.settings.sandbox.write {
+        if let Some(resolved) = resolve_dir(Path::new(entry)) {
+            roots.push(resolve(&resolved.to_fs_path()));
+        } else {
+            roots.push(resolve(Path::new(entry)));
+        }
+    }
+    roots
 }
 
 /// The shell tool's process runner.
@@ -881,10 +972,15 @@ pub(crate) fn assemble(
         } => (id.clone(), title.clone(), *ephemeral, false),
         Which::Resume { id } => (id.clone(), None, false, true),
     };
+    // The write roots a confined command of this session could write: a
+    // shell or a git found inside one is passed over, so the harness never
+    // starts a program a confined command planted.
+    let confine_roots = confine_roots(inner, &loaded, &root);
     // The harness's own git, for the base state and a file's earlier
     // content: inside the session's sandbox, once it is made, while
-    // commands are confined.
-    let session_git = Arc::new(SessionGit::default());
+    // commands are confined, and never a git a confined command could have
+    // planted inside a write root.
+    let session_git = Arc::new(SessionGit::new(confine_roots.clone()));
     let git: Arc<dyn Git> = options.git.clone().unwrap_or_else(|| {
         Arc::new(SystemGit::within(
             Arc::clone(&session_git) as Arc<dyn cortex_base::git::Confinement>
@@ -1011,7 +1107,7 @@ pub(crate) fn assemble(
     let sink = Arc::new(SessionSink::default());
 
     // ------------------------------------------------- the shell, if any
-    let shell_found = match find_shell(inner, settings) {
+    let shell_found = match find_shell(inner, settings, &confine_roots, &mut told) {
         Ok(shell) => Some(shell),
         Err(failure) if settings.shell.program.is_some() => {
             return Err(error(
@@ -1319,4 +1415,64 @@ pub(crate) fn assemble(
         notices,
         lease_count: lease_count + 1,
     })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use cortex_base::Rng;
+    use cortex_tools::shell::ShellSearch;
+
+    use super::shell_outside_roots;
+
+    /// Writes an executable file named `name` in `dir`.
+    fn program(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// A shell inside a write root is passed over and the next on `PATH` is
+    /// used; when nothing else is left, there is none.
+    #[test]
+    fn a_shell_inside_a_write_root_is_passed_over() {
+        let dir = std::env::temp_dir().join(format!(
+            "cortex-core-shell-skip-{:016x}",
+            cortex_base::rng::SystemRng::new().next_u64()
+        ));
+        let planted = dir.join("ws").join("bin");
+        let clean = dir.join("usr").join("bin");
+        program(&planted, "bash");
+        let real = program(&clean, "bash");
+        let search = ShellSearch {
+            windows: false,
+            path: vec![planted.clone(), clean.clone()],
+            system_root: None,
+            comspec: None,
+        };
+        let roots = vec![dir.join("ws")];
+
+        // The planted shell is passed over; the real one is used.
+        let (shell, skipped) = shell_outside_roots(search.clone(), None, None, &roots).unwrap();
+        assert_eq!(shell.program(), real);
+        assert_eq!(skipped, vec![planted.join("bash")]);
+
+        // With no roots avoided, the first is taken.
+        let (first, skipped) = shell_outside_roots(search, None, None, &[]).unwrap();
+        assert_eq!(first.program(), planted.join("bash"));
+        assert!(skipped.is_empty());
+
+        // With only the planted shell, and its root avoided, there is none.
+        let only = ShellSearch {
+            windows: false,
+            path: vec![planted.clone()],
+            system_root: None,
+            comspec: None,
+        };
+        assert!(shell_outside_roots(only, None, None, &roots).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
