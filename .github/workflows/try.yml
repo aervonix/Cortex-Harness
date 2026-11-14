@@ -139,7 +139,7 @@ jobs:
         if: contains(format(' {0} ', inputs.command), ' ci ') || contains(format(' {0} ', inputs.command), ' advisories ')
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
-          tool: cargo-deny@0.20.2,actionlint@1.7.7
+          tool: cargo-deny@0.20.2,actionlint@1
       - name: Install cargo-machete
         if: contains(format(' {0} ', inputs.command), ' unused ')
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
