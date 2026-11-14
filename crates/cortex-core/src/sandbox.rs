@@ -466,7 +466,7 @@ fn policy_of(grant: &SandboxPolicy, temp: &Temp, landlock: u8) -> Policy {
             NetworkAccess::Off => Network::Off,
             NetworkAccess::Full => Network::Full,
         },
-        temp: temp.made.then(|| temp_path),
+        temp: temp.made.then_some(temp_path),
         landlock,
     }
 }

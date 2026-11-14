@@ -254,7 +254,12 @@ mod tests {
             // With only the planted one, and the root avoided, there is
             // none.
             assert_eq!(
-                find_outside(&[root.clone()], "git", windows, &[dir.join("ws")]),
+                find_outside(
+                    std::slice::from_ref(&root),
+                    "git",
+                    windows,
+                    &[dir.join("ws")]
+                ),
                 None
             );
             let _ = std::fs::remove_file(&real);

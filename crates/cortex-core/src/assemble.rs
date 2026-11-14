@@ -802,10 +802,7 @@ fn shell_outside_roots(
 )]
 fn under_a_write_root(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
     let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    roots
-        .iter()
-        .find(|root| real.starts_with(root))
-        .map(PathBuf::clone)
+    roots.iter().find(|root| real.starts_with(root)).cloned()
 }
 
 /// The write roots a session would confine commands to, resolved, when it
@@ -1418,6 +1415,12 @@ pub(crate) fn assemble(
 }
 
 #[cfg(all(test, unix))]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::unwrap_used,
+    reason = "the unit test writes planted shells to a scratch directory (its cfg is not the \
+              plain `test` one clippy reads for the in-test allowances)"
+)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 

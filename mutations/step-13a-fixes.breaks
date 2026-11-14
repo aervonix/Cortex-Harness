@@ -331,7 +331,6 @@ caught-by:
 [break] harness-starts-git-by-name
 rule: The harness starts git by the path found in an absolute directory of PATH, never by its bare name. Since the fixes of step 26 the session store and the shell tool start git through one function, `cortex_base::git::start`. The test kit's rerun helper gives a child a PATH with a relative entry, which is the one thing a test cannot give its own process (Linux only: the planted git is a shell script).
 file: crates/cortex-base/src/git.rs
-in: start
 find: let mut command = Command::new(&started.program);
 replace: let _ = &started.program; let mut command = Command::new("git");
 caught-by:
