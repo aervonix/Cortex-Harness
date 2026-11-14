@@ -18,8 +18,8 @@ caught-by:
 rule: The harness's own git runs under a reading policy with no write root, so a planted filter can change nothing.
 file: crates/cortex-core/src/sandbox.rs
 in: SessionSandbox::new
-find: write: Vec::new(),
-replace: write: policy.write.clone(),
+find: write: Vec::new()
+replace: write: policy.write.clone()
 packages: cortex-core
 caught-by:
     cortex-core sandbox::tests::the_harness_git_runs_inside_the_sandbox_reading_only
@@ -79,8 +79,8 @@ caught-by:
 rule: The sandbox refuses the extended-attribute setters, so a confined command cannot change a file's access-control list outside the write roots.
 file: crates/cortex-sandbox/src/confine.rs
 in: seccomp
-find: libc::SYS_setxattr,
-replace:
+find: libc::SYS_setxattr
+replace: libc::SYS_fsetxattr
 packages: cortex-sandbox, cortex-core
 caught-by:
     cortex-sandbox::it confined::sys_the_owner_and_extended_attributes_cannot_be_changed
@@ -89,8 +89,8 @@ caught-by:
 rule: The sandbox refuses the owner-change calls.
 file: crates/cortex-sandbox/src/confine.rs
 in: seccomp
-find: libc::SYS_chown,
-replace:
+find: libc::SYS_chown
+replace: libc::SYS_fchown
 packages: cortex-sandbox, cortex-core
 caught-by:
     cortex-sandbox::it confined::sys_the_owner_and_extended_attributes_cannot_be_changed
