@@ -676,3 +676,96 @@ impl SessionStore for LogStore {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use cortex_protocol::Timestamp;
+    use cortex_protocol::item::{PlanItem, PlanStatus, SummaryItem};
+    use cortex_protocol::{ItemId, PlanItemId};
+    use cortex_session::EntryId;
+
+    use super::*;
+
+    fn entry(body: Body) -> Entry {
+        Entry {
+            id: EntryId::new("e_0001"),
+            parent: None,
+            ts: Timestamp::from("2026-11-14T00:00:00Z"),
+            turn: None,
+            redacted: false,
+            body,
+        }
+    }
+
+    fn plan(text: &str) -> Plan {
+        Plan {
+            items: vec![PlanItem {
+                id: PlanItemId::new("p1"),
+                text: text.to_owned(),
+                status: PlanStatus::Active,
+            }],
+            revision: 1,
+        }
+    }
+
+    fn summary(carried: serde_json::Value) -> Entry {
+        entry(Body::Summary {
+            item: SummaryItem {
+                id: ItemId::new("i_9"),
+                text: "The summary.".to_owned(),
+                covers_through: None,
+                usage: None,
+                created_at: None,
+            },
+            carried,
+        })
+    }
+
+    #[test]
+    fn the_plan_a_summary_carries_is_the_plan_where_its_epoch_begins() {
+        let before = entry(Body::Plan(PlanRecord {
+            plan: plan("before"),
+        }));
+        let carried = summary(serde_json::json!({"plan": plan("carried")}));
+        assert_eq!(
+            plan_of(&[before.clone(), carried.clone()]),
+            Some(plan("carried"))
+        );
+        // A later change of the plan is the plan.
+        let after = entry(Body::Plan(PlanRecord {
+            plan: plan("after"),
+        }));
+        assert_eq!(plan_of(&[before.clone(), carried, after]), Some(plan("after")));
+        // A summary that carries no plan says nothing about it.
+        let none = summary(serde_json::json!({"plan": null}));
+        assert_eq!(plan_of(&[before, none]), Some(plan("before")));
+    }
+
+    #[test]
+    fn the_epochs_of_a_branch_are_placed_among_its_items() {
+        let epoch = EpochStart {
+            provider: cortex_protocol::ProviderId::new("p"),
+            protocol: "test".to_owned(),
+            model: cortex_protocol::ModelId::new("m"),
+            effort: Some("high".to_owned()),
+            system: "be brief".to_owned(),
+            tools: vec![ToolDefinition {
+                name: "read".to_owned(),
+                description: "Reads.".to_owned(),
+                schema: serde_json::json!({"type": "object"}),
+            }],
+            reason: Some(EpochReason::Compaction),
+            base: Some(cortex_base::ContentHash::of(b"base")),
+            instructions: vec![("AGENTS.md".to_owned(), cortex_base::ContentHash::of(b"x"))],
+        };
+        let entries = [
+            entry(epoch_body(epoch.clone())),
+            summary(serde_json::json!({"files": []})),
+            entry(epoch_body(epoch.clone())),
+        ];
+        let (epochs, carried) = epochs_of(&entries);
+        assert_eq!(epochs, [(0, epoch.clone()), (1, epoch)]);
+        assert_eq!(carried, Some(serde_json::json!({"files": []})));
+    }
+}
+

@@ -25,6 +25,7 @@
 )]
 
 mod approvals;
+mod context;
 mod events;
 mod gates;
 mod lifecycle;
@@ -676,6 +677,18 @@ pub fn calls(calls: &[(&str, &str, Value)]) -> Response {
 }
 
 /// A response that says something and ends the turn.
+/// The text of a message's text parts, joined.
+pub fn texts(message: &cortex_protocol::Message) -> String {
+    message
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            Part::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn says(text: &str) -> Response {
     Response::new().text(text).end(StopReason::End)
 }
