@@ -100,6 +100,12 @@ pub enum Verdict {
 }
 
 /// Decides whether a planned call may run.
+///
+/// **No method has a default body**, as for `cortex_tools::Tool`: a policy
+/// may wrap another, and a method added later with a default would be
+/// silently not forwarded by a wrapper that predates it. Every
+/// implementation writes every method; `cargo xtask rules` keeps default
+/// bodies out of this trait.
 pub trait Policy: Send + Sync {
     /// Decides a call from its plan, without asking anybody. It is called
     /// off the session's task, once per call, as soon as the call is
@@ -130,16 +136,12 @@ pub trait Policy: Send + Sync {
     /// that gains a way to stop the turn from a question (the terminal
     /// application, step 23; an approval answered over RPC, step 27), and a
     /// policy that answers `Stop` when nobody can be asked
-    /// (`--fail-on-denial`), returns `true`. The default is `true`: slower,
+    /// (`--fail-on-denial`), returns `true`. When in doubt, `true`: slower,
     /// and never wrong.
-    fn answers_may_stop(&self) -> bool {
-        true
-    }
+    fn answers_may_stop(&self) -> bool;
 
     /// What a directory walk may read, entry by entry.
-    fn read_gate(&self) -> Arc<dyn ReadGate> {
-        Arc::new(OpenGate)
-    }
+    fn read_gate(&self) -> Arc<dyn ReadGate>;
 }
 
 /// The policy that allows every call: the stand-in until `cortex-policy`
@@ -154,5 +156,13 @@ impl Policy for AllowAll {
 
     fn ask<'a>(&'a self, _call: PlannedCall<'a>) -> BoxFuture<'a, Verdict> {
         Box::pin(std::future::ready(Verdict::Allow))
+    }
+
+    fn answers_may_stop(&self) -> bool {
+        true
+    }
+
+    fn read_gate(&self) -> Arc<dyn ReadGate> {
+        Arc::new(OpenGate)
     }
 }

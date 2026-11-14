@@ -18,6 +18,7 @@ mod dependency_list;
 mod home_paths;
 mod layout;
 mod links;
+mod rust_source;
 mod workflows;
 
 /// One broken rule, at a place in the repository.
@@ -54,6 +55,7 @@ pub(crate) fn check_repository(root: &Path) -> Result<Vec<Violation>> {
     let mut violations = Vec::new();
 
     let files = workspace::repository_files(root)?;
+    let mut sources = BTreeMap::new();
     for file in &files {
         let path = root.join(file);
         let bytes = fs::read(&path).map_err(|error| format!("could not read {file}: {error}"))?;
@@ -61,7 +63,11 @@ pub(crate) fn check_repository(root: &Path) -> Result<Vec<Violation>> {
         if file.starts_with(".github/workflows/") {
             violations.extend(workflows::check(file, &String::from_utf8_lossy(&bytes)));
         }
+        if rust_source::is_read(file) {
+            sources.insert(file.clone(), String::from_utf8_lossy(&bytes).into_owned());
+        }
     }
+    violations.extend(rust_source::check(&sources));
     violations.extend(check_docs(root, &files)?);
 
     let metadata = workspace::metadata(root)?;

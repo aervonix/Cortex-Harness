@@ -27,6 +27,13 @@ pub type Json = serde_json::Value;
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// One tool: built in, from an extension, or from an MCP server.
+///
+/// **No method has a default body.** A tool is wrapped (the core's
+/// checkpointing wrappers, `tool_call`), and a method added later with a
+/// default would be silently not forwarded by a wrapper that predates it:
+/// the default would run in its place. So every implementation writes every
+/// method, and adding one fails to build until each wrapper forwards it.
+/// `cargo xtask rules` keeps default bodies out of this trait.
 pub trait Tool: Send + Sync {
     /// The tool's name, description, argument schema, default permission
     /// and concurrency class. It never changes while the tool exists.
@@ -66,17 +73,14 @@ pub trait Tool: Send + Sync {
     /// What a planned call would change in a file, for a question put to
     /// the user about it: the work that finds out, worked out the way
     /// [`run`](Self::run) would make the change, and changing nothing.
-    /// `None`, the default, for a tool that changes no file.
+    /// `None` for a tool that changes no file. A wrapper forwards it.
     ///
     /// The work reads the file, so a caller on an async thread runs it
     /// through [`run_blocking`](crate::run_blocking). Calling this method
     /// does no work itself. A file the read gate in `cx` keeps from the
     /// agent is not shown: the question is put to a person, and is no way
     /// round the read rules.
-    fn preview(&self, plan: &Plan, cx: &RunCx) -> Option<Preview> {
-        let _ = (plan, cx);
-        None
-    }
+    fn preview(&self, plan: &Plan, cx: &RunCx) -> Option<Preview>;
 }
 
 /// The work that makes a [`ChangePreview`] ([`Tool::preview`]). It reads

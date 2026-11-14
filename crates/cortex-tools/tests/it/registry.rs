@@ -32,6 +32,8 @@ enum Reply {
     Lines(usize),
     /// Reads the path in `path`, and says so in its plan.
     Reads,
+    /// Echoes, and previews a change to `preview.txt`.
+    Previews,
 }
 
 impl Remote {
@@ -77,8 +79,20 @@ impl Tool for Remote {
             }
             // The scheduling is left at a plan's default, as an author who
             // did not think about it would leave it.
-            Reply::Echo | Reply::Lines(_) => plan,
+            Reply::Echo | Reply::Lines(_) | Reply::Previews => plan,
         })
+    }
+
+    fn preview(&self, plan: &Plan, _cx: &RunCx) -> Option<cortex_tools::Preview> {
+        if !matches!(self.reply, Reply::Previews) {
+            return None;
+        }
+        let args = plan.args::<Json>()?.to_string();
+        Some(Box::new(move || cortex_tools::ChangePreview {
+            path: "preview.txt".to_owned(),
+            diff: format!("+{args}\n"),
+            omitted: None,
+        }))
     }
 
     fn run<'a>(
@@ -100,7 +114,9 @@ impl Tool for Remote {
                         .map(|n| format!("{} result {n}\n", ["first", "second", "third"][n % 3]))
                         .collect::<String>(),
                 ),
-                Reply::Echo | Reply::Reads => ToolResult::success(format!("called with {args}")),
+                Reply::Echo | Reply::Reads | Reply::Previews => {
+                    ToolResult::success(format!("called with {args}"))
+                }
             }
         })
     }
@@ -427,6 +443,49 @@ fn tool_call_runs_the_tool_and_returns_its_result() {
     );
 }
 
+/// `tool_call` wraps the plan of the tool it calls, so a question put to
+/// the user about the call shows what that tool would change: the wrapper
+/// forwards `preview`, which has no default to fall back on.
+#[test]
+fn tool_call_previews_what_the_tool_it_calls_would_change() {
+    let ws = Workspace::new("tool_call_previews");
+    let registry = Arc::new(ToolRegistry::new());
+    registry
+        .set_source(
+            "files",
+            "",
+            vec![
+                Arc::new(
+                    Remote::new("touch", "Changes a file.", json!({"type": "object"}))
+                        .replying(Reply::Previews),
+                ),
+                Arc::new(Remote::new(
+                    "look",
+                    "Changes nothing.",
+                    json!({"type": "object"}),
+                )),
+            ],
+        )
+        .unwrap();
+    let tool = ToolCall::new(registry);
+    let cx = ws.cx();
+
+    let plan = ws
+        .plan(&tool, json!({"tool": "files/touch", "arguments": {"n": 1}}))
+        .unwrap();
+    let preview = tool.preview(&plan, &cx).expect("the called tool's preview");
+    assert_eq!(
+        preview(),
+        cortex_tools::ChangePreview {
+            path: "preview.txt".to_owned(),
+            diff: "+{\"n\":1}\n".to_owned(),
+            omitted: None,
+        }
+    );
+    let plan = ws.plan(&tool, json!({"tool": "files/look"})).unwrap();
+    assert!(tool.preview(&plan, &cx).is_none());
+}
+
 #[test]
 fn arguments_are_validated_before_the_call_and_a_mismatch_includes_the_schema() {
     let ws = Workspace::new("tool_call_validates");
@@ -648,6 +707,11 @@ fn a_dynamic_tools_output_is_compressed_even_when_it_fits() {
     /// a progress line redrawn, and repeating itself.
     struct Noisy(ToolSpec);
     impl Tool for Noisy {
+        fn preview(&self, _plan: &Plan, _cx: &RunCx) -> Option<cortex_tools::Preview> {
+            // It changes no file.
+            None
+        }
+
         fn spec(&self) -> &ToolSpec {
             &self.0
         }

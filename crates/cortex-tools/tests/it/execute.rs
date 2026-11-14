@@ -30,6 +30,11 @@ impl Says {
 }
 
 impl Tool for Says {
+    fn preview(&self, _plan: &Plan, _cx: &RunCx) -> Option<cortex_tools::Preview> {
+        // It changes no file.
+        None
+    }
+
     fn spec(&self) -> &ToolSpec {
         &self.spec
     }
@@ -58,6 +63,11 @@ struct Waits {
 }
 
 impl Tool for Waits {
+    fn preview(&self, _plan: &Plan, _cx: &RunCx) -> Option<cortex_tools::Preview> {
+        // It changes no file.
+        None
+    }
+
     fn spec(&self) -> &ToolSpec {
         &self.spec
     }

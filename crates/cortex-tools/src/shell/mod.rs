@@ -307,6 +307,11 @@ struct Call {
 }
 
 impl Tool for ShellTool {
+    fn preview(&self, _plan: &Plan, _cx: &RunCx) -> Option<crate::Preview> {
+        // It changes no file.
+        None
+    }
+
     fn spec(&self) -> &ToolSpec {
         &self.spec
     }
