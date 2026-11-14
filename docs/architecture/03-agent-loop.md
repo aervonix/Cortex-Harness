@@ -8,7 +8,7 @@ The loop lives in `cortex-agent`. It owns no I/O: everything it touches it reach
 | `ToolSet` | The definitions to declare, and the tool a call names. | Implemented for `Toolbox` of `cortex-tools`. |
 | `Policy` | Allow, deny or ask for a planned call, and put the question. It can also say that a call changes nothing, and that the turn stops here ("Approve", below). | `AllowAll`. The engine is `cortex-policy` (step 12), which the core adapts to this trait in step 13. |
 | `SessionStore` | Read the session once, append records, end a turn. | `MemorySessionStore`. The log is `cortex-session` (step 8), adapted in step 13. |
-| `Context` | What a request contains, whether to compact first, and the compaction. | `StubContext`: everything, never compacted. Step 15 builds the real one. |
+| `Context` | What a request contains, whether to compact first, and the compaction. | Built in step 15: not a trait any more, but the loop's own `Context`, made from `ContextParts` (the prompt's facts, the instruction files through the `InstructionFiles` seam, the thresholds, the plan). The loop does its I/O and records for it (`turn::epochs`). See [07-sessions-and-context.md](07-sessions-and-context.md). |
 | `Verifier` | One round of the project's checks. | `NoVerifier`: skipped. Step 19 builds the real one. |
 | `EventSink` | Takes the session's events, without blocking. | The core's channel (step 13). |
 | `Stats` | Takes the statistics events. | `NoStats`. `cortex-stats` (step 16). |
@@ -42,7 +42,7 @@ The picture leaves out three kinds of arrow that the table has: `Compacting` is 
 |---|---|---|
 | `Idle` | Nothing. No timers. | A prompt arrives. |
 | `Preparing` | Take steering messages from the queue. Assemble the request. Estimate tokens. | Ready → `Requesting`. Over budget → `Compacting`. Request or cost limit reached → `Finishing` with a `Limit` notice. |
-| `Compacting` | Summarise and start a new context epoch (see [07-sessions-and-context.md](07-sessions-and-context.md)). | Done → `Preparing`. |
+| `Compacting` | Summarise and start a new context epoch (see [07-sessions-and-context.md](07-sessions-and-context.md)): with a summary prepared in the background if it is good, waited for if it is still running, or one asked for now. | Done → `Preparing`; for a turn that only compacts (`session/compact` on an idle session), → `Finishing`. The summary does not fit, or fails → `Finishing`. |
 | `Requesting` | Send the request. Wait for the response to start. | Response starts → `Streaming`. Retryable failure → `Backoff`. The provider says the request does not fit → `Compacting`, once. Other failure → `Finishing`. |
 | `Streaming` | Decode events, emit deltas, build the assistant message. Plan each tool call as its block ends, and start the ones with no side effects. | Stream ends → `Deciding`. Retryable failure → `Backoff`. A speed tier refuses part-way and the request is sent again at standard speed → `Requesting`. The request does not fit → `Compacting`, once. Failure for good → `Finishing`, with what arrived kept on the item and the error attached. |
 | `Backoff` | The client waits before the next attempt. The retry notice is emitted on the way in. | The next event of the stream → `Requesting`: whatever it is, the wait is over and the request was sent again. (If that event is the final error, the turn then goes from `Requesting` to `Finishing`.) |

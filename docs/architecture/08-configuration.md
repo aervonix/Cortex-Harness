@@ -233,7 +233,7 @@ The schema, in outline. The full list, generated from the declarations, is the [
 | `[log]` | Level, targets, rotation. | `level` declared. |
 | `[tools]` | Enabled tools, output limits, per-tool settings. | Reserved. |
 | `[shell]` | Program and arguments, default and maximum timeout, environment variables to remove. | Reserved. |
-| `[context]` | Compaction trigger and settings, instruction file names and size cap. | Reserved. |
+| `[context]` | `auto_compact`, `background`, `compact_at` (0.85), `prepare_at` (0.70), `keep_recent_tokens`, `instruction_names` (more names, plain `.md` files only) and `instructions_cap` (48 KiB) ([07-sessions-and-context.md](07-sessions-and-context.md)). The thresholds and the names raise what is spent, so a project's value waits for trust; turning compaction or the background summary off is a preference. | Declared in step 15. |
 | `[verify]` | Verification mode, commands, time limits, rounds. See [15-efficiency.md](15-efficiency.md). | Reserved. |
 | `[adapt]` | Variant overrides per model, whether to explore, the map and profile token budgets. | Reserved. |
 | `[stats]` | Recording on or off, retention. | Reserved. |
