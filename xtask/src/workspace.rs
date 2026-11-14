@@ -17,6 +17,55 @@ pub(crate) fn root() -> PathBuf {
     xtask.parent().unwrap_or(xtask).to_path_buf()
 }
 
+/// The features a build of `packages` alone must turn on, or it builds a
+/// crate's tests without what they test.
+///
+/// `cortex-sandbox`'s confinement tests are compiled only with its
+/// `backends` feature, on Linux. A build of the whole workspace turns it on
+/// (through `cortex-core`); a build of the crate alone does not, and its
+/// tests then pass having confined nothing. Two sessions were misled by
+/// such a green run, so `test`, `stress` and `ci --tiers` of the crate turn
+/// it on themselves, and say so.
+pub(crate) fn implied_features(packages: &[String]) -> Vec<String> {
+    if cfg!(target_os = "linux") && packages.iter().any(|package| package == "cortex-sandbox") {
+        vec!["--features".to_owned(), SANDBOX_BACKENDS.to_owned()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// What [`implied_features`] turns on.
+pub(crate) const SANDBOX_BACKENDS: &str = "cortex-sandbox/backends";
+
+/// Says that a feature was turned on for the packages named.
+pub(crate) fn say_implied(features: &[String]) {
+    if !features.is_empty() {
+        println!(
+            "note: {SANDBOX_BACKENDS} is on: a build of cortex-sandbox alone compiles its \
+             confinement tests out without it"
+        );
+    }
+}
+
+/// The packages `-p`, `--package`, `-pNAME` and `--package=NAME` name in
+/// arguments for cargo, before a `--`.
+pub(crate) fn packages_named(arguments: &[String]) -> Vec<String> {
+    let mut packages = Vec::new();
+    let mut words = arguments.iter().take_while(|word| *word != "--");
+    while let Some(word) = words.next() {
+        if word == "-p" || word == "--package" {
+            if let Some(package) = words.next() {
+                packages.push(package.clone());
+            }
+        } else if let Some(package) = word.strip_prefix("--package=") {
+            packages.push(package.to_owned());
+        } else if let Some(package) = word.strip_prefix("-p").filter(|_| !word.starts_with("--")) {
+            packages.push(package.to_owned());
+        }
+    }
+    packages
+}
+
 /// Where a run of nextest in `profile` leaves its JUnit report, for the
 /// workspace at `root`.
 ///

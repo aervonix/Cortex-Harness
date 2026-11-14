@@ -113,7 +113,11 @@ pub(crate) fn fmt() -> Result<()> {
 /// cortex-agent` builds and runs that crate's tests and no other's.
 pub(crate) fn test(arguments: &[String]) -> Result<()> {
     require_nextest()?;
-    steps::cargo(&test_command(arguments))
+    let command = test_command(arguments);
+    workspace::say_implied(&workspace::implied_features(&workspace::packages_named(
+        arguments,
+    )));
+    steps::cargo(&command)
 }
 
 /// The arguments of `cargo` for `cargo xtask test <arguments>`.
@@ -122,6 +126,9 @@ fn test_command(arguments: &[String]) -> Vec<String> {
     if !selects_packages(arguments) {
         command.push("--workspace".to_owned());
     }
+    command.extend(workspace::implied_features(&workspace::packages_named(
+        arguments,
+    )));
     command.extend(arguments.iter().cloned());
     command
 }
@@ -195,6 +202,7 @@ pub(crate) fn ci_run(packages: &[String]) -> Vec<String> {
     for package in packages {
         run.extend(["-p".to_owned(), package.clone()]);
     }
+    run.extend(workspace::implied_features(packages));
     run.extend(["--locked", "--cargo-profile", "ci", "--profile", "ci"].map(str::to_owned));
     run
 }
@@ -388,7 +396,9 @@ fn ci_tiers(arguments: &[String]) -> Result<()> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{CHECK_STEPS, TiersRequest, check, check_step, ci, ci_run, selects_packages};
+    use super::{
+        CHECK_STEPS, TiersRequest, check, check_step, ci, ci_run, selects_packages, test_command,
+    };
     use crate::runs::Source;
     use crate::tiers::Os;
 
@@ -457,6 +467,32 @@ mod tests {
         ] {
             assert!(!selects_packages(&strings(open)), "{open:?}");
         }
+    }
+
+    /// The `backends` trap: a build of cortex-sandbox alone that tests
+    /// nothing it confines.
+    #[test]
+    fn the_sandbox_alone_is_built_with_its_backends_on_linux() {
+        let test = test_command(&strings(&["-p", "cortex-sandbox", "confined::"])).join(" ");
+        let ci = ci_run(&strings(&["cortex-sandbox"])).join(" ");
+        let other = test_command(&strings(&["-p", "cortex-agent"])).join(" ");
+        let spelled = test_command(&strings(&["--package=cortex-sandbox"])).join(" ");
+        if cfg!(target_os = "linux") {
+            assert_eq!(
+                test,
+                "nextest run --features cortex-sandbox/backends -p cortex-sandbox confined::"
+            );
+            assert!(ci.contains("--features cortex-sandbox/backends"), "{ci}");
+            assert!(
+                spelled.contains("--features cortex-sandbox/backends"),
+                "{spelled}"
+            );
+        } else {
+            assert!(!test.contains("--features"), "{test}");
+        }
+        assert!(!other.contains("--features"), "{other}");
+        // The whole workspace turns it on through cortex-core.
+        assert!(!test_command(&[]).join(" ").contains("--features"));
     }
 
     #[test]

@@ -139,6 +139,7 @@ impl Request {
         for package in &self.packages {
             command.extend(["-p".to_owned(), package.clone()]);
         }
+        command.extend(crate::workspace::implied_features(&self.packages));
         command.extend(self.rest.iter().take_while(|word| *word != "--").cloned());
         command
     }
@@ -151,6 +152,7 @@ impl Request {
         for package in &self.packages {
             command.extend(["-p".to_owned(), package.clone()]);
         }
+        command.extend(crate::workspace::implied_features(&self.packages));
         command.extend(self.rest.iter().cloned());
         command
     }
