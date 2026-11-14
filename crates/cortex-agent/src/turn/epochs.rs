@@ -646,7 +646,7 @@ impl Session {
             }
         });
         self.background = Some(Background::Running(Job {
-                        covered: Cover {
+            covered: Cover {
                 messages: covered,
                 through: self.context.history.end_of(covered),
             },
@@ -826,7 +826,7 @@ impl Session {
         }
         // A summary prepared in the background is used when it is of the
         // history the session has now, and the user asked for no focus.
-                let usable = |cover: &Cover| cover.holds_for(&self.context.history);
+        let usable = |cover: &Cover| cover.holds_for(&self.context.history);
         let background = match self.background.take() {
             Some(Background::Ready(ready)) if focus.is_none() && usable(&ready.covered) => {
                 Some((ready.covered, ready.outcome))
@@ -860,7 +860,7 @@ impl Session {
                 Some(taken) => taken,
                 None => {
                     let messages = self.covered_now();
-                                        let cover = Cover {
+                    let cover = Cover {
                         messages,
                         through: self.context.history.end_of(messages),
                     };

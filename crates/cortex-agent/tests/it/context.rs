@@ -1337,7 +1337,10 @@ fn a_compaction_that_keeps_recent_turns_never_splits_a_round() {
     let request = last_request(&world.provider);
     assert_valid_history(&request.messages);
     assert!(
-        request.messages.iter().all(|message| message.role != Role::Tool)
+        request
+            .messages
+            .iter()
+            .all(|message| message.role != Role::Tool)
             || request.messages.iter().any(|message| message
                 .parts
                 .iter()
@@ -1352,9 +1355,17 @@ fn a_nested_instruction_file_is_not_given_again_after_the_session_is_read_again(
     let world = World::new(
         "instructions_nested_reload",
         [
-            calls(&[("c1", "read", json!({"path": "src/api/handler.rs", "record": true}))]),
+            calls(&[(
+                "c1",
+                "read",
+                json!({"path": "src/api/handler.rs", "record": true}),
+            )]),
             says("Done."),
-            calls(&[("c2", "read", json!({"path": "src/api/routes.rs", "record": true}))]),
+            calls(&[(
+                "c2",
+                "read",
+                json!({"path": "src/api/routes.rs", "record": true}),
+            )]),
             says("Done again."),
         ],
     );
@@ -1375,4 +1386,3 @@ fn a_nested_instruction_file_is_not_given_again_after_the_session_is_read_again(
     let nested = notice_texts(&rig);
     assert_eq!(nested.len(), 1, "{nested:#?}");
 }
-
