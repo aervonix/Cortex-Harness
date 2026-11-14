@@ -24,6 +24,14 @@ COMMAND is one of:
                                    (release or dist), --count runs
   perf [ARGS]...                   the performance budgets (step 20)
   ci [ARGS]...                     any form of `cargo xtask ci`
+  partial-landlock                 the nightly's job: cortex-sandbox's tests on
+                                   a kernel with the partial Landlock (on
+                                   os=linux-22.04, the one runner that has it)
+  advisories                       the nightly's advisory check
+  unused                           the nightly's unused-dependency check
+
+The nightly's jobs take no words, no --filter, --count, --load, --cores or
+--against, and run in the ci profile.
 
 A word of `test` or `stress` that is not `-p CRATE` goes to nextest: a test's
 name, or an option such as `--run-ignored only`. --filter takes nextest filter
@@ -39,7 +47,20 @@ and test.
 An empty value is the same as leaving the flag out.";
 
 /// The commands a `try` run may run.
-const COMMANDS: [&str; 5] = ["test", "stress", "startup", "perf", "ci"];
+const COMMANDS: [&str; 8] = [
+    "test",
+    "stress",
+    "startup",
+    "perf",
+    "ci",
+    "partial-landlock",
+    "advisories",
+    "unused",
+];
+
+/// The nightly workflow's jobs a `try` run may run, as they are: the job's
+/// own `cargo xtask` command, with nothing added.
+const NIGHTLY_JOBS: [&str; 3] = ["partial-landlock", "advisories", "unused"];
 
 /// The workflow's inputs.
 #[derive(Debug, Default, PartialEq)]
@@ -176,6 +197,9 @@ impl Inputs {
         if !self.filters.is_empty() && !matches!(verb.as_str(), "test" | "stress") {
             return Err("`--filter` chooses tests: it goes with `test` or `stress`".to_owned());
         }
+        if NIGHTLY_JOBS.contains(&verb.as_str()) {
+            return self.nightly_job(verb, rest);
+        }
         if let Some(against) = &self.against {
             return self.ab(verb, rest, against);
         }
@@ -258,6 +282,23 @@ impl Inputs {
 }
 
 impl Inputs {
+    /// One of the nightly's jobs, as the nightly runs it.
+    fn nightly_job(&self, verb: &str, rest: &[String]) -> Result<Vec<String>> {
+        let added = !rest.is_empty()
+            || self.count.is_some()
+            || self.load.is_some()
+            || self.cores.is_some()
+            || self.against.is_some()
+            || self.profile != "ci";
+        if added {
+            return Err(format!(
+                "`{verb}` is a job of the nightly workflow and runs as it does there: no words \
+                 after it, no --count, --load, --cores or --against, and the ci profile"
+            ));
+        }
+        Ok(vec![verb.to_owned()])
+    }
+
     /// `-E EXPR` for each filter.
     fn filter_arguments(&self) -> Vec<String> {
         self.filters
@@ -573,6 +614,29 @@ mod tests {
             try_command(&["--command", "ci --tiers -p cortex-llm"]),
             Ok("ci --tiers -p cortex-llm".to_owned())
         );
+    }
+
+    #[test]
+    fn the_nightlys_jobs_run_as_the_nightly_runs_them() {
+        for job in ["partial-landlock", "advisories", "unused"] {
+            assert_eq!(try_command(&["--command", job]), Ok(job.to_owned()));
+            for (arguments, expected) in [
+                (&["--command", job, "--count", "3"][..], "as it does there"),
+                (&["--command", &format!("{job} --x")], "as it does there"),
+                (
+                    &["--command", job, "--profile", "release"],
+                    "as it does there",
+                ),
+                (&["--command", job, "--against", "main"], "as it does there"),
+                (
+                    &["--command", job, "--filter", "test(x)"],
+                    "goes with `test`",
+                ),
+            ] {
+                let error = try_command(arguments).unwrap_err();
+                assert!(error.contains(expected), "{arguments:?}: {error}");
+            }
+        }
     }
 
     #[test]

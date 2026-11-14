@@ -9,6 +9,8 @@
 #   gh workflow run try --ref <branch> -f command="test -p cortex-agent" -f filter="test(/denials/); test(=x)"
 #   gh workflow run try --ref <branch> -f os=windows -f command=test -f against=main -f count=5
 #   gh workflow run try --ref <branch> -f os=linux-22.04 -f command="test -p cortex-sandbox"
+#   gh workflow run try --ref <branch> -f os=linux-22.04 -f command=partial-landlock
+#   gh workflow run try --ref <branch> -f os=linux -f command=ci
 #   ci-wait --workflow try                    (from the branch, for its head commit)
 #
 # The inputs reach `cargo xtask try` as arguments, through the environment,
@@ -29,7 +31,7 @@ on:
         options: [both, linux, windows, linux-22.04]
         default: both
       command:
-        description: "test [-p CRATE] [FILTER], stress -p CRATE [ARGS], startup, perf [ARGS] or ci [ARGS]."
+        description: "test [-p CRATE] [FILTER], stress -p CRATE [ARGS], startup, perf [ARGS], ci [ARGS], or a nightly job: partial-landlock, advisories, unused."
         required: true
         default: "test"
       profile:
@@ -127,6 +129,22 @@ jobs:
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-nextest@0.9.151
+      # `ci` runs `check`, whose last step is cargo-deny, and the nightly's
+      # `advisories` is cargo-deny too; its `unused` is cargo-machete. Both
+      # are prebuilt binaries the action checks against its checksums, at
+      # the versions the other workflows pin. The condition reads the
+      # command's first word with spaces around it, so `test -p x-ci` does
+      # not match; `cargo xtask try` decides what runs.
+      - name: Install cargo-deny
+        if: contains(format(' {0} ', inputs.command), ' ci ') || contains(format(' {0} ', inputs.command), ' advisories ')
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Install cargo-machete
+        if: contains(format(' {0} ', inputs.command), ' unused ')
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-machete@0.9.2
       # The log is kept in the runner's temporary folder, and nothing is made
       # under `target` before cargo makes it. On Windows the command runs in
       # PowerShell, as the blocking test job's does: run from Git Bash, with
