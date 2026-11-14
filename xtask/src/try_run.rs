@@ -55,8 +55,10 @@ struct Inputs {
     against: Option<String>,
 }
 
-/// Where the workflow checks out the ref of an A/B run, beside the branch.
-pub(crate) const AB_BASE: &str = "ab-base";
+/// Where the workflow puts the ref of an A/B run: beside the branch's
+/// checkout, not in it, so that the branch's `.cargo/config.toml` does not
+/// apply to its build.
+pub(crate) const AB_BASE: &str = "../ab-base";
 
 /// Whether `expression` may be passed to nextest as a filter: what
 /// [`plain`] allows, and the spaces, brackets and marks of a filter or a
@@ -199,18 +201,17 @@ impl Inputs {
                     command.extend(owned(&["--count", &self.count.unwrap_or(100).to_string()]));
                 }
                 command.extend(owned(&["--cargo-profile", &self.profile]));
-                command.extend(rest.iter().cloned());
-                command.extend(self.filter_arguments());
+                command.extend(self.with_filters(rest.to_vec()));
             }
             "test" if self.profile == "ci" => {
                 // The blocking job's build and run, and the tier report:
                 // packages before `--`, the rest for nextest after it.
                 command.extend(owned(&["ci", "--tiers", "--top", "20"]));
-                let (packages, mut others) = packages_and_others(rest)?;
+                let (packages, others) = packages_and_others(rest)?;
                 for package in packages {
                     command.extend(["-p".to_owned(), package]);
                 }
-                others.extend(self.filter_arguments());
+                let others = self.with_filters(others);
                 if !others.is_empty() {
                     command.push("--".to_owned());
                     command.extend(others);
@@ -224,8 +225,7 @@ impl Inputs {
                     "--profile",
                     "ci",
                 ]));
-                command.extend(rest.iter().cloned());
-                command.extend(self.filter_arguments());
+                command.extend(self.with_filters(rest.to_vec()));
             }
             "startup" => {
                 if self.profile == "ci" {
@@ -266,6 +266,18 @@ impl Inputs {
             .collect()
     }
 
+    /// `words` for nextest, with `-E EXPR` for each filter where nextest
+    /// reads it: before a `--` of the words' own, after which the words go
+    /// to the test binary.
+    fn with_filters(&self, mut words: Vec<String>) -> Vec<String> {
+        let at = words
+            .iter()
+            .position(|word| word == "--")
+            .unwrap_or(words.len());
+        words.splice(at..at, self.filter_arguments());
+        words
+    }
+
     /// The A/B run: `ab` against the tree the workflow checked out.
     fn ab(&self, verb: &str, rest: &[String], against: &str) -> Result<Vec<String>> {
         if verb != "test" || self.profile != "ci" {
@@ -284,11 +296,11 @@ impl Inputs {
         if let Some(count) = self.count {
             command.extend(["--count".to_owned(), count.max(2).to_string()]);
         }
-        let (packages, mut others) = packages_and_others(rest)?;
+        let (packages, others) = packages_and_others(rest)?;
         for package in packages {
             command.extend(["-p".to_owned(), package]);
         }
-        others.extend(self.filter_arguments());
+        let others = self.with_filters(others);
         if !others.is_empty() {
             command.push("--".to_owned());
             command.extend(others);
@@ -455,6 +467,26 @@ mod tests {
             ]),
             Ok("test --cargo-profile release --profile ci -E test(=a)".to_owned())
         );
+        // Before a `--` of the command's own, which sends what follows to the
+        // test binary.
+        assert_eq!(
+            try_command(&[
+                "--command",
+                "stress -p x -- --exact",
+                "--filter",
+                "test(=a)"
+            ]),
+            Ok("stress --count 100 --cargo-profile ci -p x -E test(=a) -- --exact".to_owned())
+        );
+        assert_eq!(
+            try_command(&[
+                "--command",
+                "test -p x shell:: -- --exact",
+                "--filter",
+                "test(=a)"
+            ]),
+            Ok("ci --tiers --top 20 -p x -- shell:: -E test(=a) -- --exact".to_owned())
+        );
         for (arguments, expected) in [
             (
                 &["--command", "test", "--filter", "test(x); rm -rf /'"][..],
@@ -487,12 +519,12 @@ mod tests {
                 "--filter",
                 "test(/slow/)"
             ]),
-            Ok("ab --base ab-base --label main --top 20 --count 6 -p cortex-core -- -E test(/slow/)"
+            Ok("ab --base ../ab-base --label main --top 20 --count 6 -p cortex-core -- -E test(/slow/)"
                 .to_owned())
         );
         assert_eq!(
             try_command(&["--command", "test", "--against", "origin/main"]),
-            Ok("ab --base ab-base --label origin/main --top 20".to_owned())
+            Ok("ab --base ../ab-base --label origin/main --top 20".to_owned())
         );
         for (arguments, expected) in [
             (

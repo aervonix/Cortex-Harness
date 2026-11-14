@@ -260,6 +260,14 @@ fn sys_a_relative_path_entry_does_not_make_a_file_there_the_shell() {
                 &format!("{name} only relative"),
                 &shown(only_relative.find(None, None)),
             );
+            // The relative entry does lead to the planted file, from here.
+            rerun::say(
+                &format!("{name} planted here"),
+                &Path::new("node_modules/.bin")
+                    .join(name)
+                    .is_file()
+                    .to_string(),
+            );
         }
         return;
     }
@@ -268,10 +276,7 @@ fn sys_a_relative_path_entry_does_not_make_a_file_there_the_shell() {
     let real = ws.dir.join("real");
     let mut wanted = Vec::new();
     for name in ["bash", "pwsh.exe"] {
-        let there = program(&planted, name);
-        // The relative entry does lead to the planted file, from the
-        // child's working directory.
-        assert!(there.is_file());
+        assert!(program(&planted, name).is_file());
         wanted.push((name, program(&real, name)));
     }
     let mut path: Vec<PathBuf> = RELATIVE.iter().map(PathBuf::from).collect();
@@ -289,6 +294,11 @@ fn sys_a_relative_path_entry_does_not_make_a_file_there_the_shell() {
         assert_eq!(
             ran.said(&format!("{name} named")).as_deref(),
             Some(wanted.as_str())
+        );
+        assert_eq!(
+            ran.said(&format!("{name} planted here")).as_deref(),
+            Some("true"),
+            "the child is not where the relative entry leads to the planted file"
         );
         // With nothing but relative entries there is no shell.
         let only = ran
@@ -377,6 +387,11 @@ fn sys_a_relative_comspec_or_system_root_is_not_believed() {
             "with a relative comspec",
             &shell.program().display().to_string(),
         );
+        // The relative one does lead to the planted file, from here.
+        rerun::say(
+            "the relative comspec leads to a file",
+            &Path::new("planted/System32/cmd.exe").is_file().to_string(),
+        );
         found.comspec = None;
         found.system_root = Some(PathBuf::from("planted"));
         rerun::say(
@@ -403,6 +418,11 @@ fn sys_a_relative_comspec_or_system_root_is_not_believed() {
     assert_eq!(
         ran.said("with a relative comspec"),
         Some(real_cmd.display().to_string())
+    );
+    assert_eq!(
+        ran.said("the relative comspec leads to a file").as_deref(),
+        Some("true"),
+        "the child is not where the relative paths lead to the planted files"
     );
     let relative_root = ran.said("with a relative system root").unwrap_or_default();
     assert!(

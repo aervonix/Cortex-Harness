@@ -18,6 +18,10 @@ fn found(git: &std::path::Path) {
     // program by name: the user's own editor, as they named it in $EDITOR
     let _ = Command::new("editor");
     let _ = Command::new("pager"); // program by name: the user's pager, by its name
+    let _ = brief::run(git, &["status"], None, &[], limit);
+    let _ = Command::new(PathBuf::from("/bin/true"));
+    let _ = Command::new(format!("{}", "git"));
+    let _ = Pty::spawn(&program_path, &[], &[], 80, 24);
 }
 
 #[cfg(test)]

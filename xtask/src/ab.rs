@@ -229,6 +229,13 @@ pub(crate) fn run(arguments: &[String]) -> Result<()> {
     if base == head {
         return Err("the base is this tree: give another checkout".to_owned());
     }
+    if base.starts_with(&head) {
+        return Err(format!(
+            "{} is inside this tree, whose .cargo/config.toml would apply to its build too: \
+             put it beside this tree",
+            base.display()
+        ));
+    }
     let label = request
         .label
         .clone()

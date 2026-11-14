@@ -389,9 +389,20 @@ pub(crate) fn items_of(
     Ok(scopes)
 }
 
-/// Whether the item that begins at token `start` has a `#[cfg(…)]` among
-/// the attributes before it: one of two items of a name, one for each
-/// system, of which a build has only one.
+/// The words of a `cfg` that is about the system a build is for.
+const SYSTEM_CFG: [&str; 5] = [
+    "unix",
+    "windows",
+    "target_os",
+    "target_family",
+    "target_arch",
+];
+
+/// Whether the item that begins at token `start` has a `#[cfg(…)]` about
+/// the system among the attributes before it: one of two items of a name,
+/// one for each system, of which a build has only one. A `cfg` of a test
+/// or a feature does not count: both of two such items can be built at
+/// once.
 pub(crate) fn under_cfg(source: &str, all: &[Token], start: usize) -> bool {
     let text = |index: usize| all[index].text(source);
     let mut at = start;
@@ -424,7 +435,10 @@ pub(crate) fn under_cfg(source: &str, all: &[Token], start: usize) -> bool {
         let Some(open) = open.filter(|open| *open > 0 && text(open - 1) == "#") else {
             return false;
         };
-        if open + 1 < at && text(open + 1) == "cfg" {
+        if open + 1 < at
+            && text(open + 1) == "cfg"
+            && (open + 2..at).any(|index| SYSTEM_CFG.contains(&text(index)))
+        {
             return true;
         }
         at = open - 1;

@@ -196,10 +196,11 @@ impl Rerun {
             ran.stdout,
             ran.stderr
         );
-        // A name that matches no test runs nothing, and passes.
+        // A name that matches no test runs nothing, and passes; so does an
+        // ignored test, which is listed and not run.
         assert!(
-            ran.stdout.contains("running 1 test"),
-            "the rerun of {} ran no test: is that its whole name?\n{}",
+            ran.stdout.contains("running 1 test") && ran.stdout.contains(" 1 passed;"),
+            "the rerun of {} ran no test: is that its whole name, and is it not ignored?\n{}",
             self.test,
             ran.stdout
         );
@@ -268,18 +269,28 @@ mod tests {
     }
 
     /// A name that is not a test's whole name runs nothing, which would
-    /// pass: it is refused.
+    /// pass, and so does an ignored test: both are refused.
     #[test]
-    fn sys_a_rerun_of_a_test_that_is_not_there_fails() {
+    fn sys_a_rerun_of_a_test_that_is_not_there_or_is_ignored_fails() {
         if is_child() {
             return;
         }
-        let failed = std::panic::catch_unwind(|| Rerun::test("rerun::tests::no_such_test").run());
-        let message = failed.expect_err("a rerun that ran nothing passed");
-        let text = message
-            .downcast_ref::<String>()
-            .cloned()
-            .unwrap_or_default();
-        assert!(text.contains("ran no test"), "{text}");
+        for name in [
+            "rerun::tests::no_such_test",
+            "rerun::tests::ignored_on_purpose",
+        ] {
+            let failed = std::panic::catch_unwind(|| Rerun::test(name).run());
+            let message = failed.expect_err("a rerun that ran nothing passed");
+            let text = message
+                .downcast_ref::<String>()
+                .cloned()
+                .unwrap_or_default();
+            assert!(text.contains("ran no test"), "{name}: {text}");
+        }
     }
+
+    /// Listed by the harness, and never run: what a rerun of it must refuse.
+    #[test]
+    #[ignore = "a test that is ignored on purpose, for the rerun helper's own test"]
+    fn ignored_on_purpose() {}
 }

@@ -579,6 +579,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "starts git about forty times, seconds on a Windows runner: the nightly runs it"
+    )]
     fn sys_two_pull_requests_that_agree_combine_and_the_check_sees_all_three() {
         let fixture = Fixture::new("agree", "one\ntwo\nthree\nfour\n");
         // The second adds a line after the one the first changed: no conflict.
@@ -616,6 +620,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "starts git about forty times, seconds on a Windows runner: the nightly runs it"
+    )]
     fn sys_two_pull_requests_that_conflict_name_the_layer_the_commit_and_the_file() {
         let fixture = Fixture::new("conflict", "one\nzwei\nthree\n");
         let before = fixture.session_state();
@@ -657,7 +665,82 @@ mod tests {
         );
     }
 
+    /// The real case: the session works in a linked worktree, whose `.git`
+    /// is a file, and the clone is made from it. The worktree's branch,
+    /// head, refs and status, and the repository's list of worktrees, are
+    /// the same after as before.
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "starts git about forty times, seconds on a Windows runner: the nightly runs it"
+    )]
+    fn sys_a_session_in_a_linked_worktree_is_combined_and_left_as_it_was() {
+        let fixture = Fixture::new("worktree", "one\ntwo\nthree\nfour\n");
+        let linked = fixture.root.join("linked");
+        git(
+            &fixture.session,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "linked",
+                &linked.to_string_lossy(),
+            ],
+        )
+        .unwrap();
+        write(&linked, "d.txt", "linked\n");
+        commit(&linked, "Add d.txt in the linked worktree");
+        assert!(
+            linked.join(".git").is_file(),
+            "a linked worktree's .git is a file"
+        );
+        let state = |at: &Path| {
+            [
+                git(at, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap(),
+                git(at, &["rev-parse", "HEAD"]).unwrap(),
+                git(at, &["for-each-ref"]).unwrap(),
+                git(at, &["worktree", "list", "--porcelain"]).unwrap(),
+                git(at, &["status", "--porcelain"]).unwrap(),
+                git(at, &["stash", "list"]).unwrap(),
+            ]
+            .join("\n")
+        };
+        let before = state(&linked);
+        let head = git(&linked, &["rev-parse", "HEAD"]).unwrap();
+        let places = Places {
+            source: linked.to_string_lossy().into_owned(),
+            ..fixture.places()
+        };
+        let mut seen = String::new();
+        let mut check = |tree: &Path| -> crate::Result<bool> {
+            seen = fs::read_to_string(tree.join("d.txt")).unwrap_or_default();
+            Ok(true)
+        };
+        let outcome = combine(&places, &layers(&[2], &head), Some(&mut check)).unwrap();
+        assert_eq!(
+            outcome,
+            Outcome::Checked {
+                passed: true,
+                applied: vec![
+                    "#2 (1 commit(s))".to_owned(),
+                    "this branch (2 commit(s))".to_owned()
+                ]
+            }
+        );
+        assert_eq!(seen.replace("\r\n", "\n"), "linked\n");
+        assert_eq!(
+            state(&linked),
+            before,
+            "the linked worktree's repository changed"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "starts git about forty times, seconds on a Windows runner: the nightly runs it"
+    )]
     fn sys_a_run_from_a_pushed_branch_takes_it_from_the_remote() {
         let fixture = Fixture::new("pushed", "one\ntwo\nthree\nfour\n");
         git(&fixture.session, &["push", "--quiet", "origin", "mine"]).unwrap();

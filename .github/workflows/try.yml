@@ -85,7 +85,11 @@ jobs:
         # linux-22.04: Landlock ABI 4, the partial case no other runner has.
         include: ${{ fromJSON(inputs.os == 'linux' && '[{"name":"linux","os":"ubuntu-latest"}]' || inputs.os == 'windows' && '[{"name":"windows","os":"windows-latest"}]' || inputs.os == 'linux-22.04' && '[{"name":"linux-22.04","os":"ubuntu-22.04"}]' || '[{"name":"linux","os":"ubuntu-latest"},{"name":"windows","os":"windows-latest"}]') }}
     steps:
+      # No token is kept in the checkout: what an A/B run builds may be any
+      # ref's code, and nothing here pushes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Keep cargo's and rustup's files off the system disk (Windows)
         if: runner.os == 'Windows'
         run: |
@@ -104,8 +108,10 @@ jobs:
         with:
           save-if: "false"
           cache-bin: "false"
-      # An A/B run's other tree, beside the branch, built in a directory of
-      # its own (`cargo xtask ab`).
+      # An A/B run's other tree, built in a directory of its own (`cargo
+      # xtask ab`). The checkout can only be made inside the workspace, so it
+      # is moved beside it: inside, the branch's .cargo/config.toml would
+      # apply to its build too.
       - name: Check out the ref to compare with
         if: inputs.against != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -113,6 +119,10 @@ jobs:
           ref: ${{ inputs.against }}
           path: ab-base
           persist-credentials: false
+      - name: Put it beside the branch's checkout
+        if: inputs.against != ''
+        shell: bash
+        run: mv ab-base ../ab-base
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
@@ -157,6 +167,6 @@ jobs:
             target/try/output.log
             target/nextest/ci/junit.xml
             target/nextest/stress/junit.xml
-            ab-base/target/nextest/ci/junit.xml
+            target/try/ab-base-junit.xml
           if-no-files-found: ignore
           retention-days: 14
