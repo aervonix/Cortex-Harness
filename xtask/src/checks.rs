@@ -186,7 +186,7 @@ fn ci_test_steps() -> Vec<Step> {
 
 /// `cargo nextest run` as the blocking test job runs it, for the whole
 /// workspace or for the packages named.
-fn ci_run(packages: &[String]) -> Vec<String> {
+pub(crate) fn ci_run(packages: &[String]) -> Vec<String> {
     let mut run = vec!["nextest".to_owned(), "run".to_owned()];
     if packages.is_empty() {
         run.push("--workspace".to_owned());

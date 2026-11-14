@@ -446,37 +446,47 @@ ci-wait --workflow try
 
 | Input | What it is |
 |---|---|
-| `os` | `both` (the default), `linux` or `windows`. |
-| `command` | `test [-p CRATE]… [FILTER]…`, `stress -p CRATE… [ARGS]`, `startup`, `perf [ARGS]` (step 20's) or `ci [ARGS]`. Words are separated by spaces and may hold letters, digits and `_-:./=,()\|&!~*+@#`; nothing else is passed on. |
+| `os` | `both` (the default), `linux`, `windows`, or `linux-22.04`: Ubuntu 22.04, whose kernel has Landlock ABI 4, the partial case of the sandbox ([architecture/06-permissions-and-sandbox.md](architecture/06-permissions-and-sandbox.md)). It builds without the cache: the cache's key names the OS and not its version, and build scripts built on the newer image do not run on the older one. |
+| `command` | `test [-p CRATE]… [WORD]…`, `stress -p CRATE… [ARGS]`, `startup`, `perf [ARGS]` (step 20's) or `ci [ARGS]`. Words are separated by spaces and may hold letters, digits and `_-:./=,()\|&!~*+@#`; nothing else is passed on. A crate is `-p x`, `--package x`, `-px` or `--package=x`; every other word of `test` goes to nextest, a test's name or an option (`--run-ignored only`). |
 | `profile` | `ci` (the default: the blocking jobs' build), `release` or `dist`. |
 | `count` | For `test` or `stress`, the repeats of a stress run (`test` becomes `stress`); for `startup`, its runs. |
 | `load`, `cores` | For a stress run: busy loops beside it, and the cores to pin it to ("Running the tests many times over"). |
+| `filter` | For `test` or `stress`: nextest filter expressions, separated by `;`, each passed to nextest as one `-E` argument, spaces and all. A test any of them matches is run: `-f filter="test(/shell::/) & !test(=slow); package(cortex-agent)"`. |
+| `against` | For `test` in the `ci` profile: a ref to compare the branch with, on the same runner ("Two trees on one runner", below). `count` is then the number of rounds, 5 when not given. |
 
 - **What each command becomes** is decided by `cargo xtask try`, under unit tests, not by the workflow's script: `test` is the blocking job's build and run with the tier report (`ci --tiers --top 20`) in the `ci` profile, and `test --cargo-profile P --profile ci` in another; `startup` builds `cortex` in the profile (release or dist, refused for `ci`) and measures it (`startup --profile P`); `perf` and `ci` take their words as they are.
 - **The inputs reach the command as arguments, through the environment, never as text in the script.** `cargo xtask rules` refuses any workflow whose `run:` script has an input or a part of the event pasted into it.
 - **The output** goes to the log, its last 80 lines to the run's summary page, and the log and any JUnit report are kept as the artifact `try-linux` or `try-windows`, for 14 days.
 - **The cache.** The job's id and environment are the blocking test job's, so a run in the `ci` profile restores the main branch's cache and builds only what the branch changed. It writes no cache. A release or dist build builds from scratch: up to 40 minutes on Windows, which is the job's limit.
 - **A dispatched workflow must be on the main branch** before it can be started on another; a branch made before it was merged has to be rebased first.
+- **It replaced `windows-try`** in the third tooling step, which deleted that workflow: `-f os=windows -f command="test -p CRATE FILTER"` is what it ran, and `-f count=N` its repeats. **A test that passes every repeat of one crate may still fail in the blocking job:** the repeats do not have the rest of the workspace's tests running beside them.
 
-### A Windows run without a pull request
+### Two trees on one runner
 
-The `windows-try` workflow is the older form of `try`, kept, with its inputs, until the sessions using it have moved over.
+Hosted Windows runners differ in speed by a factor of two, so a branch's run and the main branch's land on runners that cannot be compared, and a change's cost to a tier is lost in the difference. `cargo xtask ab --base DIR [--label NAME] [--count N] [-p CRATE]… [-- NEXTEST ARGS]` takes the runner out of it:
 
-Code behind `#[cfg(windows)]` is built and run only on a Windows runner, and the blocking checks reach one only through a pull request. The `windows-try` workflow (`.github/workflows/windows-try.yml`) runs a crate's tests on a hosted Windows runner for any branch that has been pushed:
+- **Both trees are built once,** this one and the one at `DIR`, as the blocking test job builds them, each in a build directory of its own (`<tree>/target`), so that building one never rebuilds the other.
+- **Then they are run in turn on the same machine,** `N` rounds (5 when not given), the first round base then head, the next head then base, so that whatever drifts during the job falls on both alike.
+- **Each test's time is the median of its runs,** and the two sides are compared exactly as `ci --tiers --compare` compares two CI runs: by tier above the start of the processes, by crate, and the tests that moved most. Each round's tier totals are printed first: their spread on one side is the noise a difference has to stand out of.
+- **On a hosted runner,** `try` runs it with `-f against=REF`: the workflow checks `REF` out beside the branch, in `ab-base`, and `cargo xtask try` turns `test` into `ab --base ab-base`. The base builds without the cache, which takes a few minutes more on Windows.
 
 ```text
-git push origin <branch>
-gh workflow run windows-try --ref <branch> -f crate=cortex-tools -f filter=shell::
-ci-wait --workflow windows-try
+gh workflow run try --ref <branch> -f os=windows -f command=test -f against=main -f count=5
 ```
 
-- `crate` is one crate, or several separated by spaces or commas; empty is the whole workspace. `filter` is part of a test's name, as nextest takes it; empty is every test.
-- **`count` repeats the tests:** `-f count=100` runs `cargo xtask stress --count 100` for the crates, in the blocking job's build, and reports each test that failed on some repeat. It needs a crate. That is how to learn how often a test fails on a Windows runner, before a fix and after it. **A test that passes every repeat there may still fail in the blocking job:** the repeats of one crate do not have the rest of the workspace's tests running beside them.
-- It runs `cargo xtask ci --tiers` for them: the build and the run of the blocking `test-windows` job, then the tier report with the twenty slowest tests, and the JUnit report kept as `junit-windows-try`.
-- It restores the build cache the main branch wrote for `test-windows` (its job has the same id and environment on purpose) and writes none. It has 20 minutes, not 5: it blocks nothing.
-- `ci-wait`, or `gh run watch`, waits for it: it is a run on the branch's head commit like any other. `gh run list --workflow windows-try --branch <branch>` finds it.
-- **A workflow can be started by hand only once it is on the main branch.** A branch made before this workflow was merged has to be rebased first.
-- Code that needs no run can be checked at a desk without it: `cargo clippy -p <crate> --all-targets --target x86_64-pc-windows-msvc` lints Windows-only code on Linux, for a crate with no C code.
+What it showed when it was built is in [steps/tooling-3/ci.md](steps/tooling-3/ci.md).
+
+### This branch on top of others
+
+A clean rebase can hide a conflict of meaning: in wave 6 a pull request added a trait method with a default body, a parallel one wrapped the trait without forwarding it, and each passed alone. `cargo xtask combine PR…` checks a branch on top of the pull requests that will merge before it, before either merges:
+
+- **It makes a clone** of the repository under the build directory (`target/combine/tree`) with `git clone --shared`, which reads the repository's objects and writes nothing to it: no branch, no ref, no worktree entry, no `FETCH_HEAD`. The session's worktree, its branch and its repository are not touched, and a test holds that, reading the repository's branch, head, refs, worktrees and status before and after.
+- **It puts together** the main branch as GitHub has it now, then each pull request's commits since it left the main branch, in the order named, then this branch's commits since it left the main branch: what a rebase merge of each would make. Uncommitted changes are not in it, and it says so.
+- **A commit that does not apply stops it,** naming the pull request, the commit and the files in conflict. Otherwise it runs `cargo xtask ci` in the clone, with a build directory of its own (`target/combine/target`), kept between runs so that the next builds only what changed.
+- **It cleans up after itself:** the clone is removed when the run ends, pass or fail, and any clone a killed run left is removed when the next one starts. `--keep` leaves it to be looked at; `--no-ci` combines and runs nothing.
+- **It runs git from inside `xtask`,** so the worktree shell guard does not see it ([shell-guard.md](shell-guard.md)). It asks `gh` whether each pull request is open, and says so when `gh` cannot answer.
+- **Through `rx`,** whose copy of the tree has no `.git`, the branch is taken from GitHub: push it, then `rx -- cargo xtask combine --repo https://github.com/<owner>/<repo> --head <branch> 41 42`.
+- **How it is tested:** against a small repository a test makes, standing for GitHub, with two pull requests as `refs/pull/N/head`: two that change different lines combine, and the check sees all three layers; two that change the same line stop at the second, naming it, its commit and the file, and the check is not run; and a pushed branch is taken from the remote.
 
 ### Where the five minutes go
 
@@ -710,6 +720,8 @@ The commands, all through `cargo xtask` (or `./x`):
 | `ci --tiers --compare` | Two runs' tiers side by side ("A CI run's test times"). |
 | `ci-times` | A run's job and tier tables, for a step's `ci.md`. |
 | `try` | What the `try` workflow runs ("A run on the runners without a pull request"). |
+| `ab` | Two trees' tests run in turn on one machine and compared ("Two trees on one runner"). |
+| `combine` | This branch on top of open pull requests, checked by `ci` in a clone ("This branch on top of others"). |
 | `stress` | The tests of the crates named, many times over, each time under the next seed, optionally squeezed onto a few cores beside busy loops ("Running the tests many times over"). |
 | `mutate` | The breaks of `mutations/*.breaks`, on copies of the tree, one or `--jobs N` at a time ("Breaking the code on purpose"). |
 | `replace` | An edit of Rust code found by its tokens ([CONTRIBUTING.md](../CONTRIBUTING.md), "Editing from a script"). |
