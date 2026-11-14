@@ -1,6 +1,6 @@
 [package]
 name = "cortex-tui"
-description = "The interactive UI: transcript, editor, dialogs, status line, slash commands and themes."
+description = "The interactive UI: transcript, editor, dialogs, hint row, slash commands and themes."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,6 +13,9 @@ doctest = false
 cortex-protocol.workspace = true
 cortex-base.workspace = true
 cortex-term.workspace = true
+
+[dev-dependencies]
+cortex-testkit.workspace = true
 
 [lints]
 workspace = true

@@ -367,6 +367,7 @@ dependencies = [
  "cortex-base",
  "cortex-protocol",
  "cortex-term",
+ "cortex-testkit",
 ]
 
 [[package]]

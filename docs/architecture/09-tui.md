@@ -360,16 +360,18 @@ It costs an SGR mouse decoder in `cortex-term`, about 150 lines with its tests. 
 | `title` | bold default foreground | A tool call's imperative, a dialog's question. |
 | `code` | bright cyan on a dark background; cyan and bold on a light one | Inline code. Bright cyan is 11.3 to 1 on Campbell. Cyan is 3.3 to 1 on One Half Light, under the target for text, so it is bold there. |
 | `heading` | bold default foreground | Headings. |
-| `success` | green | `✓`, an edit's `+` count. |
-| `warning` | yellow | `?`, warnings, the context from 70%. |
-| `error` | red | `✗`, errors, a failure's measure, the context from 90%. |
-| `diff.add`, `diff.del` | green and red | The sign of an added or removed line, and the whole line where there is no background colour. |
+| `success` | green; bright green on a dark background | `✓`, an edit's `+` count. |
+| `warning` | yellow; bright yellow on a dark background | `?`, warnings, the context from 70%. |
+| `error` | red; bright red on a dark background | `✗`, errors, a failure's measure, the context from 90%. |
+| `diff.add`, `diff.del` | green and red; bright on a dark background | The sign of an added or removed line, and the whole line where there is no background colour. |
 | `diff.add.bg`, `diff.del.bg` | in true colour, 20% of green (`#2EA043`) or red (`#E03E3E`) mixed into the background on a dark one, 13% on a light one; none otherwise | The tint of an added or removed line. The text on it keeps the default foreground: 9.1 to 10.2 to 1 on the two sample schemes. |
 | `diff.emph` | bold | Changed words inside a changed line. |
 
+- **The bright colours on a dark background.** The default theme takes success, warnings, errors and the diff signs from the bright half of the terminal's palette on a dark background, and from the normal half on a light one: Campbell's red is 3.2 to 1 on its background, and its bright red 5.1.
+- **Elements are tokens too.** Each element is drawn in one of the tokens above, or in one with an attribute: a box's border is `muted`, a key in a dialog is `accent.text` and bold, an added line's sign is `diff.add` on `diff.add.bg`. `cortex_tui::theme::Token` lists them, and the theme alone decides how each looks at each depth and on each background, so no view holds a rule for 16 colours or for none.
 - **Blue on a dark background.** Plain blue is not used for text there: Campbell's blue (`#0037DA`) is 2.4 to 1 on its background, and its bright blue 5.0 to 1. A theme that wants blue on a dark background uses bright blue.
 - **Themes** are TOML tables that assign a colour to each token: an ANSI colour name, a 256-colour index or a hex value. `tui.theme` selects a built-in or user theme.
-- **Without colour.** `NO_COLOR` and `--no-color` turn colour off. Meaning is never carried by colour alone: every state has a glyph or a word, diff lines keep their sign, removed lines are dim, and your `◆`, the answer keys and the selection are bold.
+- **Without colour.** `NO_COLOR` and `--no-color` turn colour off. Meaning is never carried by colour alone: every state has a glyph or a word, diff lines keep their sign, removed lines are dim, and your `◆`, the answer's `◇`, the answer keys and the selection are bold.
 - **Colour depth** is detected, and hex values are reduced when the terminal cannot show them.
 
 **Glyphs.** `tui.glyphs = "auto"` uses the Unicode set when the locale is UTF-8, and the ASCII set otherwise (and on the old console host).
@@ -385,6 +387,10 @@ It costs an SGR mouse decoder in `cortex-term`, about 150 lines with its tests. 
 | Box corners and edges | `╭ ╮ ╰ ╯ ─ │` | `+ + + + - \|` |
 | Plan items | `☐ ◧ ☑ ⊘` | `[ ] [>] [x] [-]` |
 | A removed line's sign, an ellipsis, an arrow | `−` `…` `→` | `-` `...` `->` |
+| Between the parts of a measure or a hint (`exit 101 · 3.4s`) | `·` | `\|` |
+| A range of numbers (`lines 120–178`) | `–` | `-` |
+| An unordered list item | `–` | `-` |
+| The spinner under `tui.reduced_motion` | its first frame, still | its first frame, still |
 
 Width is computed per grapheme, and the layout never depends on an ambiguous-width character being narrow. Whether each Unicode glyph is in Windows Terminal's default font is checked by eye with the reference screens in [tui-look/](tui-look/README.md).
 

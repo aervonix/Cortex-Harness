@@ -1,0 +1,79 @@
+# Step 22, transcript rendering: its rules broken one at a time, with the
+# tests that must fail. Written with the code, from the foundation (the
+# theme, the glyph sets, text layout and the rounded box) on.
+
+[break] the-16-colour-accent-from-the-reduction
+rule: At 16 colours the accent is the one the theme names (magenta), never the automatic reduction, which is bright blue.
+file: crates/cortex-tui/src/theme.rs
+in: resolve
+find: ColorDepth::Ansi16 => palette.accent_16,
+replace: ColorDepth::Ansi16 => palette.accent.for_depth(depth),
+caught-by:
+    theme::tests::the_accent_at_16_colours_is_the_one_the_theme_names_not_the_reduction
+
+[break] accent-text-under-its-target
+rule: Text in the accent reaches 4.5 to 1 against the background, in true colour and in 256 colours.
+file: crates/cortex-tui/src/theme.rs
+in: tint_for
+find: contrast(rgb, background) >= target
+replace: contrast(rgb, background) >= target - 1.5
+caught-by:
+    theme::tests::the_accents_text_tint_reaches_its_target_on_every_sample_background
+    theme::tests::a_tint_is_the_least_mix_that_reaches_the_target
+
+[break] accent-text-in-magenta-on-a-dark-16-colour-terminal
+rule: On a dark background at 16 colours no magenta reaches the target, so accent-coloured text is bold in the default colour.
+file: crates/cortex-tui/src/theme.rs
+in: resolve
+find: (ColorDepth::Mono, _) | (ColorDepth::Ansi16, Background::Dark) => plain.bold(),
+replace: (ColorDepth::Mono, _) => plain.bold(),
+caught-by:
+    theme::tests::on_a_dark_background_at_16_colours_accent_text_is_bold_in_the_default_colour
+
+[break] muted-is-not-dim-without-colour
+rule: Without colour, a token that was only a colour gets an attribute, so meaning is never carried by colour alone.
+file: crates/cortex-tui/src/theme.rs
+in: resolve
+find: let muted = if mono { plain.dim() } else { fg(palette.muted) };
+replace: let muted = if mono { plain } else { fg(palette.muted) };
+caught-by:
+    theme::tests::without_colour_nothing_is_coloured_and_meaning_keeps_an_attribute
+
+[break] a-cut-splits-a-cluster
+rule: Cutting with an ellipsis is between grapheme clusters, and the result is never wider than its room.
+file: crates/cortex-tui/src/layout.rs
+in: prefix
+find: for (offset, _, columns) in graphemes(text) {
+replace: for (offset, columns) in text.char_indices().map(|(offset, _)| (offset, 1)) {
+caught-by:
+    layout::tests::a_cut_never_splits_a_cluster_or_passes_the_width
+
+[break] wrapping-splits-a-cluster
+rule: Wrapping breaks lines between grapheme clusters, never inside one.
+file: crates/cortex-tui/src/layout.rs
+in: wrap
+find: wrap_ranges(&text, width)
+replace: text.char_indices().map(|(at, c)| at..at + c.len_utf8()).collect::<Vec<_>>()
+caught-by:
+    layout::tests::wrapping_never_splits_a_cluster_or_passes_the_width
+    layout::tests::wrapping_keeps_each_spans_style_across_lines
+
+[break] a-box-row-reaches-past-its-width
+rule: A box is exactly as wide as it is told, so a box drawn at a view's width leaves the terminal's last column empty.
+file: crates/cortex-tui/src/rounded.rs
+in: RoundedBox::inner
+find: self.width.saturating_sub(4)
+replace: self.width.saturating_sub(3)
+caught-by:
+    rounded::tests::a_box_is_exactly_as_wide_as_it_is_told
+    rounded::tests::no_row_of_any_box_passes_its_width
+
+[break] a-labelled-bottom-border-a-column-short
+rule: A bottom border with a label is as wide as the box, its corner under the right border (the reference screens had it one column short).
+file: crates/cortex-tui/src/rounded.rs
+in: RoundedBox::bottom
+find: let rule = self.width - 5 - label.width();
+replace: let rule = self.width - 6 - label.width();
+caught-by:
+    rounded::tests::a_box_is_exactly_as_wide_as_it_is_told
+    rounded::tests::a_label_too_long_is_cut_and_one_with_no_room_is_left_out
