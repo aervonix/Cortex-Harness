@@ -8,6 +8,10 @@
 //! before a closing bracket are not tokens. The match must be there exactly
 //! once (inside an item, with `--in`), or the command refuses and changes
 //! nothing. It prints the lines it changed.
+//!
+//! `--text` is the same edit for Markdown and any other file that is not
+//! Rust: the match is the exact text, which must be in the file exactly
+//! once.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,6 +23,8 @@ const USAGE: &str = "\
 usage: cargo xtask replace FILE (--from CODE | --from-file PATH)
                                 (--to CODE | --to-file PATH)
                                 [--in ITEM] [--occurrence N] [--dry-run]
+       cargo xtask replace FILE --text (--from TEXT | --from-file PATH)
+                                       (--to TEXT | --to-file PATH) [--dry-run]
 
 Replaces the code that --from matches, by its tokens, with --to, as text.
 White space and comments do not count in the match, so it holds however
@@ -26,7 +32,11 @@ rustfmt has laid the code out. The match must be in FILE exactly once, or
 inside the item --in names (`Round::spawn`; an impl block answers to every
 name in its header); --occurrence N picks one of several, counted from 1.
 --dry-run prints what would change and writes nothing. Run `cargo xtask fmt`
-afterwards: the new code is put in as it was given.";
+afterwards: the new code is put in as it was given.
+
+With --text, for Markdown and other files that are not Rust, --from is
+matched as exact text, white space and all, and must be in FILE exactly once:
+none, or more than one (overlapping ones included), changes nothing.";
 
 /// What `replace` was asked to do.
 #[derive(Debug, Default, PartialEq)]
@@ -37,6 +47,8 @@ struct Request {
     within: Option<String>,
     occurrence: Option<usize>,
     dry_run: bool,
+    /// Exact text, not Rust tokens.
+    text: bool,
 }
 
 impl Request {
@@ -66,6 +78,7 @@ impl Request {
                     );
                 }
                 "--dry-run" => request.dry_run = true,
+                "--text" => request.text = true,
                 "--help" | "-h" => return Err(USAGE.to_owned()),
                 flag if flag.starts_with('-') => {
                     return Err(format!("unknown flag `{flag}`\n\n{USAGE}"));
@@ -77,6 +90,12 @@ impl Request {
         request.file = file.ok_or_else(|| format!("which file?\n\n{USAGE}"))?;
         request.from = from.ok_or_else(|| format!("say what to replace with --from\n\n{USAGE}"))?;
         request.to = to.ok_or_else(|| format!("say what to put there with --to\n\n{USAGE}"))?;
+        if request.text && (request.within.is_some() || request.occurrence.is_some()) {
+            return Err(format!(
+                "--text matches the text once in the whole file: --in and --occurrence are for \
+                 Rust code\n\n{USAGE}"
+            ));
+        }
         Ok(request)
     }
 }
@@ -89,8 +108,79 @@ fn read(path: &str) -> Result<String> {
     Ok(text.strip_suffix('\n').unwrap_or(&text).to_owned())
 }
 
+/// The edited text, and what to print about it, for `--text`: `from` must
+/// be in `source` exactly once, overlapping occurrences counted.
+fn edit_text(source: &str, request: &Request, shown_as: &str) -> Result<(String, String)> {
+    if request.from.is_empty() {
+        return Err("--from is empty".to_owned());
+    }
+    let starts: Vec<usize> = source
+        .char_indices()
+        .map(|(at, _)| at)
+        .filter(|at| source[*at..].starts_with(&request.from))
+        .collect();
+    let range = match starts.as_slice() {
+        [] => {
+            return Err(format!(
+                "--from is not in {shown_as} as text. Nothing changed."
+            ));
+        }
+        [at] => *at..*at + request.from.len(),
+        several => {
+            return Err(format!(
+                "--from is in {shown_as} {} times, at lines {}. Nothing changed. Make it longer.",
+                several.len(),
+                several
+                    .iter()
+                    .map(|at| lex::line_of(source, *at).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    };
+    if request.from == request.to {
+        return Err("--to is the same text as --from. Nothing changed.".to_owned());
+    }
+    Ok(replaced(source, range, &request.to, shown_as))
+}
+
+/// `source` with `range` replaced by `to`, and the lines that changed.
+fn replaced(
+    source: &str,
+    range: std::ops::Range<usize>,
+    to: &str,
+    shown_as: &str,
+) -> (String, String) {
+    let mut edited = String::with_capacity(source.len() + to.len());
+    edited.push_str(&source[..range.start]);
+    edited.push_str(to);
+    edited.push_str(&source[range.end..]);
+
+    // The whole lines the change touches, before and after.
+    let first = lex::line_of(source, range.start);
+    let last_before = lex::line_of(source, range.end);
+    let last_after = lex::line_of(&edited, range.start + to.len());
+    let lines = |text: &str, from: usize, to: usize, mark: char| {
+        text.lines()
+            .enumerate()
+            .skip(from - 1)
+            .take(to + 1 - from)
+            .map(|(index, line)| format!("{mark} {:>5}  {line}\n", index + 1))
+            .collect::<String>()
+    };
+    let shown = format!(
+        "{shown_as}: lines {first}-{last_before} are now {first}-{last_after}\n{}{}",
+        lines(source, first, last_before, '-'),
+        lines(&edited, first, last_after, '+'),
+    );
+    (edited, shown)
+}
+
 /// The edited source, and what to print about it.
 fn edit(source: &str, request: &Request, shown_as: &str) -> Result<(String, String)> {
+    if request.text {
+        return edit_text(source, request, shown_as);
+    }
     let tokens = lex::tokens(source);
     let inside = request
         .within
@@ -132,29 +222,7 @@ fn edit(source: &str, request: &Request, shown_as: &str) -> Result<(String, Stri
     if lex::same_tokens(&source[range.clone()], &request.to) {
         return Err("--to is the same code as what --from matched. Nothing changed.".to_owned());
     }
-    let mut edited = String::with_capacity(source.len() + request.to.len());
-    edited.push_str(&source[..range.start]);
-    edited.push_str(&request.to);
-    edited.push_str(&source[range.end..]);
-
-    // The whole lines the change touches, before and after.
-    let first = lex::line_of(source, range.start);
-    let last_before = lex::line_of(source, range.end);
-    let last_after = lex::line_of(&edited, range.start + request.to.len());
-    let lines = |text: &str, from: usize, to: usize, mark: char| {
-        text.lines()
-            .enumerate()
-            .skip(from - 1)
-            .take(to + 1 - from)
-            .map(|(index, line)| format!("{mark} {:>5}  {line}\n", index + 1))
-            .collect::<String>()
-    };
-    let shown = format!(
-        "{shown_as}: lines {first}-{last_before} are now {first}-{last_after}\n{}{}",
-        lines(source, first, last_before, '-'),
-        lines(&edited, first, last_after, '+'),
-    );
-    Ok((edited, shown))
+    Ok(replaced(source, range, &request.to, shown_as))
 }
 
 /// `cargo xtask replace …`
@@ -260,6 +328,45 @@ fn budget(tier: Tier, os: Os) -> f64 {
         assert!(same.unwrap_err().contains("the same code"));
     }
 
+    const MARKDOWN: &str = "# Title\n\nSome text, and *more* text.\n\n- a list\n- a list\n";
+
+    fn text_request(from: &str, to: &str) -> Request {
+        Request {
+            text: true,
+            ..request(from, to)
+        }
+    }
+
+    #[test]
+    fn text_is_replaced_exactly_once_or_not_at_all() {
+        let (edited, shown) = edit(
+            MARKDOWN,
+            &text_request("*more* text", "**more** text"),
+            "a.md",
+        )
+        .unwrap();
+        assert_eq!(
+            edited,
+            "# Title\n\nSome text, and **more** text.\n\n- a list\n- a list\n"
+        );
+        assert_eq!(
+            shown,
+            "a.md: lines 3-3 are now 3-3\n-     3  Some text, and *more* text.\n+     3  Some text, \
+             and **more** text.\n"
+        );
+        // White space is text here: a match laid out otherwise is no match.
+        let wrapped = edit(MARKDOWN, &text_request("*more*\ntext", "x"), "a.md");
+        assert!(wrapped.unwrap_err().contains("is not in a.md"));
+        // Twice is refused, with the lines, and so is an overlapping pair.
+        let twice = edit(MARKDOWN, &text_request("- a list", "- one"), "a.md").unwrap_err();
+        assert!(twice.contains("2 times, at lines 5, 6"), "{twice}");
+        let overlapping = edit("aaa\n", &text_request("aa", "b"), "x.md").unwrap_err();
+        assert!(overlapping.contains("2 times"), "{overlapping}");
+        let same = edit(MARKDOWN, &text_request("# Title", "# Title"), "a.md").unwrap_err();
+        assert!(same.contains("the same text"), "{same}");
+        assert!(edit(MARKDOWN, &text_request("", "x"), "a.md").is_err());
+    }
+
     #[test]
     fn a_request_is_read() {
         let strings = |words: &[&str]| {
@@ -299,6 +406,10 @@ fn budget(tier: Tier, os: Os) -> f64 {
                 "a number from 1",
             ),
             (&["a.rs", "--from"], "needs a value"),
+            (
+                &["a.md", "--text", "--from", "x", "--to", "y", "--in", "f"],
+                "--in and --occurrence are for Rust",
+            ),
         ] {
             let error = Request::parse(&strings(words)).unwrap_err();
             assert!(error.contains(expected), "{words:?}: {error}");
