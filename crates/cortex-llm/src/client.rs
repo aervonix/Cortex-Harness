@@ -56,10 +56,10 @@ pub trait ModelClient: Send + Sync {
     /// debug-build check. `None` when the client cannot say: it is not a
     /// protocol, or the request cannot be built as it is (an image that is
     /// only a reference until the client loads it).
-    fn stable_prefix(&self, request: &ModelRequest) -> Option<Vec<u8>> {
-        let _ = request;
-        None
-    }
+    ///
+    /// No default: a client that wraps another forwards it, or the check
+    /// is silently off for the wrapped one.
+    fn stable_prefix(&self, request: &ModelRequest) -> Option<Vec<u8>>;
 }
 
 /// How much of a failed response's body is read for its error message.

@@ -295,6 +295,10 @@ impl ModelClient for Tying {
         drop(known);
         self.script.stream(request, cancel)
     }
+
+    fn stable_prefix(&self, request: &ModelRequest) -> Option<Vec<u8>> {
+        self.script.stable_prefix(request)
+    }
 }
 
 impl Connector for Tying {
