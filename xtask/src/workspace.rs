@@ -235,15 +235,31 @@ fn strings(value: &Value, key: &str) -> Result<Vec<String>> {
 ///
 /// Outside a git checkout (a copy of the tree made for a remote build, for
 /// example) it falls back to walking the directory, skipping `.git` and
-/// `target`.
+/// every `target` directory.
 ///
 /// Git is asked only when `root` is the top of a checkout. A directory
 /// inside one that git ignores (a copy of the tree under `target/`) is not a
 /// repository of its own: git would answer for the checkout around it, and
 /// say that the directory holds no file at all.
 pub(crate) fn repository_files(root: &Path) -> Result<Vec<String>> {
+    listed(root, true)
+}
+
+/// The files git tracks, relative to the root, with `/` separators: what a
+/// pull request holds, and what the repo rules scan. A scratch folder in a
+/// worktree, with a build of its own full of absolute paths, is not the
+/// repository's (it failed the rules with 3,963 findings once). A new file
+/// counts once it is added.
+///
+/// Outside a git checkout it is [`repository_files`]: there is nothing to
+/// tell tracked from untracked by.
+pub(crate) fn tracked_files(root: &Path) -> Result<Vec<String>> {
+    listed(root, false)
+}
+
+fn listed(root: &Path, untracked: bool) -> Result<Vec<String>> {
     let checkout = root.join(".git").exists();
-    let mut files = match checkout.then(|| git_files(root)).flatten() {
+    let mut files = match checkout.then(|| git_files(root, untracked)).flatten() {
         Some(files) => files,
         None => {
             let mut files = Vec::new();
@@ -257,15 +273,13 @@ pub(crate) fn repository_files(root: &Path) -> Result<Vec<String>> {
     Ok(files)
 }
 
-fn git_files(root: &Path) -> Option<Vec<String>> {
+fn git_files(root: &Path, untracked: bool) -> Option<Vec<String>> {
+    let mut arguments = vec!["ls-files", "-z", "--cached"];
+    if untracked {
+        arguments.extend(["--others", "--exclude-standard"]);
+    }
     let output = Command::new("git")
-        .args([
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-        ])
+        .args(arguments)
         .current_dir(root)
         .output()
         .ok()?;
@@ -295,7 +309,9 @@ fn walk(root: &Path, relative: &Path, files: &mut Vec<String>) -> Result<()> {
             .file_type()
             .map_err(|error| format!("could not read {}: {error}", path.display()))?;
         if file_type.is_dir() {
-            if relative.as_os_str().is_empty() && (name == ".git" || name == "target") {
+            // Any build directory, not only the top one: a scratch folder's
+            // build holds absolute paths, and is no file of the repository's.
+            if name == "target" || (relative.as_os_str().is_empty() && name == ".git") {
                 continue;
             }
             walk(root, &path, files)?;
@@ -376,21 +392,37 @@ mod tests {
         std::fs::write(outer.join("kept.txt"), "tracked").unwrap();
         std::fs::write(copy.join("src").join("lib.rs"), "// a copy").unwrap();
         std::fs::write(copy.join("README.md"), "# A copy").unwrap();
-        let initialised = std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&outer)
-            .status()
-            .unwrap();
-        assert!(initialised.success());
+        // A build of the copy's own, which a walk passes over.
+        std::fs::create_dir_all(copy.join("scratch").join("target")).unwrap();
+        std::fs::write(copy.join("scratch").join("target").join("built"), "built").unwrap();
+        let git = |arguments: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(arguments)
+                .current_dir(&outer)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {arguments:?}");
+        };
+        git(&["init", "--quiet"]);
+        git(&["add", ".gitignore"]);
+        // A scratch folder nobody added.
+        std::fs::create_dir_all(outer.join("scratch")).unwrap();
+        std::fs::write(outer.join("scratch").join("notes.txt"), "untracked").unwrap();
 
-        // The checkout itself: what git does not ignore.
+        // The checkout itself: what git does not ignore, and of it, what git
+        // tracks.
         assert_eq!(
             super::repository_files(&outer).unwrap(),
-            [".gitignore", "kept.txt"]
+            [".gitignore", "kept.txt", "scratch/notes.txt"]
         );
+        assert_eq!(super::tracked_files(&outer).unwrap(), [".gitignore"]);
         // The copy inside it. Git, asked there, lists nothing.
         assert_eq!(
             super::repository_files(&copy).unwrap(),
+            ["README.md", "src/lib.rs"]
+        );
+        assert_eq!(
+            super::tracked_files(&copy).unwrap(),
             ["README.md", "src/lib.rs"]
         );
 

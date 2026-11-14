@@ -115,7 +115,7 @@ jobs:
       # the clone has to be made writable to be removed.
       - name: combine, against real git (Windows)
         if: runner.os == 'Windows'
-        run: cargo test --locked -p xtask -- --ignored combine::
+        run: cargo test --locked -p xtask -- --ignored combine::tests::sys_
       - name: Keep the record
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
