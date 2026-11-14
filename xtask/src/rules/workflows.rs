@@ -137,7 +137,6 @@ pub(crate) fn check(file: &str, text: &str) -> Vec<Violation> {
 /// to the environment variable of the same name and nothing else.
 const OWNER_TERMS_LINE: &str = "OWNER_TERMS: ${{ secrets.OWNER_TERMS }}";
 
-/// Whether a line reads a secret, other than in [`OWNER_TERMS_LINE`].
 /// The value of a `key: value` line when it is unquoted and YAML cannot
 /// read it as one: it holds `: ` or ends with `:`. Found when a step's
 /// `run: cargo test … combine::` made the nightly workflow unreadable.
@@ -160,6 +159,7 @@ fn plain_value_that_is_not_one(line: &str) -> Option<&str> {
     (!quoted_or_block && (value.contains(": ") || value.ends_with(':'))).then_some(value)
 }
 
+/// Whether a line reads a secret, other than in [`OWNER_TERMS_LINE`].
 fn uses_a_secret_other_than_the_owners_terms(line: &str) -> bool {
     line.contains("secrets.") && line.trim() != OWNER_TERMS_LINE
 }
