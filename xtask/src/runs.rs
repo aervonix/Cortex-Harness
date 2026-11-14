@@ -65,8 +65,70 @@ fn gh(arguments: &[&str]) -> Result<String> {
     })
 }
 
-/// The id of the main branch's latest successful `ci` run.
-pub(crate) fn latest_main_run() -> Result<u64> {
+/// How many of the main branch's latest successful runs are looked at for
+/// one that kept the reports asked for.
+const MAIN_RUNS_LOOKED_AT: usize = 20;
+
+/// What became of a run's artifact of one name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kept {
+    /// It is there to download.
+    Yes,
+    /// The run made none: its tests did not run (a change of documentation
+    /// alone, a job that was cancelled or failed before the upload).
+    Never,
+    /// It was made and has expired.
+    Expired,
+}
+
+/// `name`'s fate among a run's artifacts, each a name and whether it has
+/// expired, as GitHub lists them.
+pub(crate) fn kept(artifacts: &[(String, bool)], name: &str) -> Kept {
+    match artifacts.iter().find(|(artifact, _)| artifact == name) {
+        None => Kept::Never,
+        Some((_, true)) => Kept::Expired,
+        Some((_, false)) => Kept::Yes,
+    }
+}
+
+/// A run's artifacts, as `name expired` lines from GitHub's API, read.
+pub(crate) fn parse_artifacts(listed: &str) -> Result<Vec<(String, bool)>> {
+    listed
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| match line.trim().rsplit_once(' ') {
+            Some((name, "true")) => Ok((name.to_owned(), true)),
+            Some((name, "false")) => Ok((name.to_owned(), false)),
+            _ => Err(format!("an artifact line that is not `name expired`: `{line}`")),
+        })
+        .collect()
+}
+
+/// A run's artifacts, asked of GitHub. A failure here is an error, never
+/// "no artifacts": the network or the sign-in is not the run.
+fn artifacts(run: u64) -> Result<Vec<(String, bool)>> {
+    parse_artifacts(&gh(&[
+        "api",
+        &format!("repos/{{owner}}/{{repo}}/actions/runs/{run}/artifacts?per_page=100"),
+        "--jq",
+        ".artifacts[] | \"\\(.name) \\(.expired)\"",
+    ])?)
+}
+
+/// The first of `runs` (newest first, each with its artifacts) that kept
+/// every artifact of `needs`.
+pub(crate) fn first_that_kept(runs: &[(u64, Vec<(String, bool)>)], needs: &[&str]) -> Option<u64> {
+    runs.iter()
+        .find(|(_, artifacts)| needs.iter().all(|name| kept(artifacts, name) == Kept::Yes))
+        .map(|(run, _)| *run)
+}
+
+/// The main branch's latest successful `ci` run that kept the reports of
+/// `needs`: a run of a documentation change alone is successful and keeps
+/// none, and is passed over. It is printed, so that a reader knows which
+/// run `main` was.
+pub(crate) fn latest_main_run(needs: &[&str]) -> Result<u64> {
+    let limit = MAIN_RUNS_LOOKED_AT.to_string();
     let listed = gh(&[
         "run",
         "list",
@@ -77,37 +139,78 @@ pub(crate) fn latest_main_run() -> Result<u64> {
         "--status",
         "success",
         "--limit",
-        "1",
+        &limit,
         "--json",
-        "databaseId",
+        "databaseId,headSha",
     ])?;
     let value: Value =
         serde_json::from_str(&listed).map_err(|error| format!("gh run list: {error}"))?;
-    value
-        .get(0)
-        .and_then(|run| run.get("databaseId"))
-        .and_then(Value::as_u64)
-        .ok_or_else(|| "the main branch has no successful run of the `ci` workflow".to_owned())
+    let listed: Vec<(u64, String)> = value
+        .as_array()
+        .map(|runs| {
+            runs.iter()
+                .filter_map(|run| {
+                    Some((
+                        run.get("databaseId")?.as_u64()?,
+                        run.get("headSha")?.as_str()?.chars().take(7).collect(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if listed.is_empty() {
+        return Err("the main branch has no successful run of the `ci` workflow".to_owned());
+    }
+    // One at a time, newest first: most of the time the first will do.
+    for (run, sha) in &listed {
+        let artifacts = artifacts(*run)?;
+        if first_that_kept(&[(*run, artifacts)], needs).is_some() {
+            println!(
+                "main: run {run} (at {sha}), the main branch's latest successful `ci` run that \
+                 kept {}",
+                needs.join(" and ")
+            );
+            return Ok(*run);
+        }
+    }
+    Err(format!(
+        "none of the main branch's last {} successful `ci` runs kept {}",
+        listed.len(),
+        needs.join(" and ")
+    ))
 }
 
-/// The run a source names, if it names one.
-pub(crate) fn run_of(source: &Source) -> Result<Option<u64>> {
+/// The run a source names, if it names one. `needs` is what a run of `main`
+/// must have kept.
+pub(crate) fn run_of(source: &Source, needs: &[&str]) -> Result<Option<u64>> {
     match source {
         Source::File(_) => Ok(None),
         Source::Run(id) => Ok(Some(*id)),
-        Source::Main => latest_main_run().map(Some),
+        Source::Main => latest_main_run(needs).map(Some),
     }
 }
 
 /// The JUnit report of a run's test job on `os`: downloaded once, into a
 /// directory of its own under `target/xtask-runs/`, and read from there
 /// afterwards. A run's artifacts do not change.
-pub(crate) fn junit_of(run: u64, os: Os) -> Result<PathBuf> {
+///
+/// `None` only when the run made no such report. An expired report, a
+/// download that fails, and a question GitHub does not answer are errors.
+pub(crate) fn junit_of(run: u64, os: Os) -> Result<Option<PathBuf>> {
     let name = artifact_name(os);
     let directory = download_root().join(run.to_string()).join(name);
     let report = directory.join("junit.xml");
     if report.is_file() {
-        return Ok(report);
+        return Ok(Some(report));
+    }
+    match kept(&artifacts(run)?, name) {
+        Kept::Yes => {}
+        Kept::Never => return Ok(None),
+        Kept::Expired => {
+            return Err(format!(
+                "run {run}'s `{name}` has expired: a run's reports are kept for 14 days"
+            ));
+        }
     }
     // A partial download from an earlier attempt is not trusted.
     if directory.exists() {
@@ -120,9 +223,10 @@ pub(crate) fn junit_of(run: u64, os: Os) -> Result<PathBuf> {
     let target = directory.to_string_lossy().into_owned();
     gh(&[
         "run", "download", &run_text, "--name", name, "--dir", &target,
-    ])?;
+    ])
+    .map_err(|error| format!("run {run}'s `{name}` is there and could not be fetched: {error}"))?;
     if report.is_file() {
-        Ok(report)
+        Ok(Some(report))
     } else {
         Err(format!(
             "run {run}'s artifact `{name}` has no junit.xml (see {})",
@@ -140,7 +244,7 @@ fn artifact_name(os: Os) -> &'static str {
 
 /// A report and its label, from wherever `source` says.
 pub(crate) fn report(source: &Source, os: Os) -> Result<(String, Vec<TestCase>)> {
-    match run_of(source)? {
+    match run_of(source, &[artifact_name(os)])? {
         None => {
             let Source::File(path) = source else {
                 unreachable!("only a file names no run")
@@ -152,7 +256,13 @@ pub(crate) fn report(source: &Source, os: Os) -> Result<(String, Vec<TestCase>)>
                 Source::Main => format!("run {run}, the main branch's latest successful"),
                 _ => format!("run {run}"),
             };
-            Ok((label, junit::read(&junit_of(run, os)?)?))
+            let report = junit_of(run, os)?.ok_or_else(|| {
+                format!(
+                    "run {run} kept no `{}`: its tests did not run",
+                    artifact_name(os)
+                )
+            })?;
+            Ok((label, junit::read(&report)?))
         }
     }
 }
@@ -263,7 +373,10 @@ pub(crate) fn ci_times(arguments: &[String]) -> Result<()> {
                 path.display()
             ));
         }
-        Some(source) => run_of(&source)?,
+        Some(source) => run_of(
+            &source,
+            &[artifact_name(Os::Linux), artifact_name(Os::Windows)],
+        )?,
     };
     let mut runs = Vec::new();
     for id in against.into_iter().chain([run]) {
@@ -271,9 +384,17 @@ pub(crate) fn ci_times(arguments: &[String]) -> Result<()> {
         let mut reports = Vec::new();
         for os in [Os::Linux, Os::Windows] {
             // A run whose tests did not run (a documentation change, a
-            // cancelled job) has no report for that OS.
-            let cases = junit_of(id, os).and_then(|path| junit::read(&path));
-            reports.push(cases.ok());
+            // cancelled job) has no report for that OS, and its column says
+            // so. Anything else that keeps a report from being read is an
+            // error: a table without the column would not say why.
+            let cases = match junit_of(id, os)? {
+                Some(path) => Some(junit::read(&path)?),
+                None => {
+                    println!("run {id} kept no `{}`: its tests did not run", artifact_name(os));
+                    None
+                }
+            };
+            reports.push(cases);
         }
         runs.push(Measured {
             info,
@@ -404,6 +525,49 @@ pub(crate) fn tables(runs: &[Measured]) -> String {
 /// of its own for each run and artifact, under the build directory.
 fn download_root() -> PathBuf {
     workspace::root().join("target").join("xtask-runs")
+}
+
+#[cfg(test)]
+mod artifact_tests {
+    use super::{Kept, first_that_kept, kept, parse_artifacts};
+
+    #[test]
+    fn a_report_is_absent_only_when_the_run_made_none() {
+        let artifacts = parse_artifacts("junit-linux false\njunit-windows true\n").unwrap();
+        assert_eq!(kept(&artifacts, "junit-linux"), Kept::Yes);
+        assert_eq!(kept(&artifacts, "junit-windows"), Kept::Expired);
+        assert_eq!(kept(&artifacts, "junit-other"), Kept::Never);
+        assert_eq!(parse_artifacts("").unwrap(), []);
+        assert!(parse_artifacts("junit-linux maybe\n").is_err());
+        // A name with a space in it keeps it.
+        assert_eq!(
+            parse_artifacts("a b false").unwrap(),
+            [("a b".to_owned(), false)]
+        );
+    }
+
+    #[test]
+    fn main_is_the_newest_run_that_kept_every_report_asked_for() {
+        let named = |names: &[(&str, bool)]| {
+            names
+                .iter()
+                .map(|(name, expired)| ((*name).to_owned(), *expired))
+                .collect::<Vec<_>>()
+        };
+        let runs = vec![
+            // A change of documentation alone: no report.
+            (30, named(&[])),
+            (29, named(&[("junit-linux", false)])),
+            (28, named(&[("junit-linux", false), ("junit-windows", true)])),
+            (27, named(&[("junit-linux", false), ("junit-windows", false)])),
+        ];
+        assert_eq!(first_that_kept(&runs, &["junit-linux"]), Some(29));
+        assert_eq!(
+            first_that_kept(&runs, &["junit-linux", "junit-windows"]),
+            Some(27)
+        );
+        assert_eq!(first_that_kept(&runs[..3], &["junit-windows"]), None);
+    }
 }
 
 #[cfg(test)]
