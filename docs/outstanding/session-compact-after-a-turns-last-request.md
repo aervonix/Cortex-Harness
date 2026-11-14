@@ -1,0 +1,3 @@
+| Item | Who | When |
+|---|---|---|
+| **`session/compact` during a turn's last request waits for the next turn.** A running session compacts at its next safe boundary ([07-sessions-and-context.md](../architecture/07-sessions-and-context.md), "Compaction", as built in step 15), and a turn whose last request is under way has none left: the compaction is held in the session's pending work until the next turn's first request, though `compact` answered with the running turn's id. To settle: at the end of a turn with a compaction pending, run a turn that only compacts, as an idle session does, and say so in `docs/protocol/`. | Step 23 (the TUI's `/compact`) or step 27 (the RPC server) | When `/compact` is offered during a turn |

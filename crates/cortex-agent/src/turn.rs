@@ -48,7 +48,7 @@ use crate::context::{Context, ContextParts, Pressure};
 use crate::events::{Emitter, EventSink};
 use crate::guard::{Repetition, RepetitionGuard};
 use crate::guarded::Guarded;
-use crate::ledger::Ledger;
+use crate::ledger::{Ledger, LimitReached};
 use crate::policy::Policy;
 use crate::round::{Report, Round, RoundEnv, Stage};
 use crate::session::{Inbox, Pending, Prompt, Queued, Running, SessionHandle, Shared};
@@ -149,6 +149,9 @@ pub struct Session {
     /// The epoch in which a summary in the background failed: no other is
     /// started in it.
     background_failed: Option<u64>,
+    /// Summaries given up after their request finished: counted at the next
+    /// boundary.
+    given_up: Vec<tokio::task::JoinHandle<epochs::Summarized>>,
     /// A compaction the user asked for is waiting.
     manual: bool,
     /// What it should keep in particular.
@@ -412,6 +415,7 @@ impl Session {
             usage_sent: None,
             background: None,
             background_failed: None,
+            given_up: Vec::new(),
             manual: false,
             manual_focus: None,
             pending_context: None,
@@ -505,6 +509,29 @@ impl Session {
         }
     }
 
+    /// A limit of the ledger refused a request: the turn ends with it.
+    async fn limit_reached(&mut self, turn: &mut Turn, reached: &LimitReached) -> Phase {
+        let message = reached.message();
+        self.notify(
+            turn,
+            Notice::Limit(LimitNotice {
+                message: message.clone(),
+                limit: reached.kind.clone(),
+                reached: true,
+            }),
+        );
+        if let Err(error) = self
+            .record_notice(turn, NoticeSource::Limit, message.clone())
+            .await
+        {
+            return Phase::Finishing(End::store(&error));
+        }
+        Phase::Finishing(End {
+            outcome: TurnOutcome::Limit,
+            error: Some(ErrorData::new(ErrorKind::Limit, reached.code(), message)),
+        })
+    }
+
     /// Reads the session again from its store: its items changed under the
     /// loop, or an append failed and memory must be brought back to what
     /// the log holds.
@@ -533,9 +560,15 @@ impl Session {
         // changed nothing keeps both.
         if changed {
             self.drop_background();
-            self.context.last_prefix = None;
         }
         let opened = self.store.open().await?;
+        // Nor is the request before the one the next must begin with when
+        // the log holds an entry otherwise than it was sent (masked by the
+        // secret filter, or stored as its projection): the history read
+        // again is not the one that request was built from.
+        if changed || opened.masked {
+            self.context.last_prefix = None;
+        }
         self.context.load(&opened);
         self.shared.lock().history = !opened.items.is_empty();
         let next = self.item_ids.peek().max(opened.last_item.saturating_add(1));
@@ -690,38 +723,24 @@ impl Session {
         if self.manual {
             return Phase::Compacting(prep);
         }
-        match self.pressure() {
+        let prepare_summary = match self.pressure() {
             Pressure::Compact if !prep.compacted => {
                 if !self.context.parts.settings.auto_compact {
                     return Phase::Finishing(self.compaction_off());
                 }
                 return Phase::Compacting(prep);
             }
-            Pressure::Compact | Pressure::Prepare => self.start_background(turn),
-            Pressure::Fine => {}
-        }
+            Pressure::Compact | Pressure::Prepare => true,
+            Pressure::Fine => false,
+        };
 
-        // Every request is charged to the ledger before it is sent.
+        // Every request is charged to the ledger before it is sent: this
+        // one first, then a summary prepared beside it.
         if let Err(reached) = self.ledger.take_request() {
-            let message = reached.message();
-            self.notify(
-                turn,
-                Notice::Limit(LimitNotice {
-                    message: message.clone(),
-                    limit: reached.kind.clone(),
-                    reached: true,
-                }),
-            );
-            if let Err(error) = self
-                .record_notice(turn, NoticeSource::Limit, message.clone())
-                .await
-            {
-                return Phase::Finishing(End::store(&error));
-            }
-            return Phase::Finishing(End {
-                outcome: TurnOutcome::Limit,
-                error: Some(ErrorData::new(ErrorKind::Limit, reached.code(), message)),
-            });
+            return self.limit_reached(turn, &reached).await;
+        }
+        if prepare_summary {
+            self.start_background(turn);
         }
 
         self.tell_speed();

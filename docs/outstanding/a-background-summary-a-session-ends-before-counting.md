@@ -1,3 +1,0 @@
-| Item | Who | When |
-|---|---|---|
-| **A summary that finished in the background after its turn ended is counted only at the session's next safe boundary.** Its usage (a `usage` record, the session's usage, the ledger) is taken when the loop next prepares a request ([07-sessions-and-context.md](../architecture/07-sessions-and-context.md), "In the background", as built in step 15). If the session is closed first, the tokens were spent and are in no record. To settle: count a finished summary when the session closes or its turn ends, under the turn that started it. | Step 16 (statistics and budgets) | With the per-day budget, which needs every spend |

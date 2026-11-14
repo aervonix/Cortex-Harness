@@ -1386,3 +1386,216 @@ fn a_nested_instruction_file_is_not_given_again_after_the_session_is_read_again(
     let nested = notice_texts(&rig);
     assert_eq!(nested.len(), 1, "{nested:#?}");
 }
+
+#[test]
+fn after_an_overflow_the_summary_request_is_cut_to_fit_what_the_provider_showed() {
+    let too_long =
+        Response::events([cortex_llm::ModelEvent::Error(crate::transitions::overflow())]);
+    let world = World::new(
+        "overflow_cut",
+        [
+            says("One."),
+            says("Two."),
+            says("Three."),
+            too_long,
+            says("A summary."),
+            says("Done."),
+        ],
+    );
+    let rig = Setup::new(&world).start(&world);
+    // The estimate stays below every threshold: only the provider knows
+    // the request is too long.
+    rig.window(4_000);
+    world.run(async {
+        for (turn, prompt) in ["first", "second", "third", "fourth"].iter().enumerate() {
+            rig.bulk(900);
+            rig.prompt(prompt);
+            rig.events.turns(turn + 1).await;
+        }
+    });
+    let requests = world.provider.requests();
+    assert_eq!(requests.len(), 6, "no summary before the overflow");
+    let summary: Vec<String> = requests[4].messages.iter().map(all_text).collect();
+    assert!(
+        summary.iter().any(|text| text.contains("is left out here")),
+        "{summary:#?}"
+    );
+    assert!(
+        !summary.iter().any(|text| text.contains("first")),
+        "the oldest turn was cut: {summary:#?}"
+    );
+    assert!(summary.iter().any(|text| text.contains("fourth")));
+    assert_eq!(rig.events.ends()[3].outcome, TurnOutcome::Completed);
+}
+
+#[test]
+fn a_background_summary_is_not_started_when_the_ledger_has_no_request_for_it() {
+    let world = World::new("background_no_request", [says("Done.")]);
+    let fast = ScriptedProvider::new([says("A summary.")]);
+    let mut setup = Setup::new(&world);
+    setup.utility = Some(RoleModel::new(Arc::new(fast.clone()), fixtures::model()));
+    setup.ledger = Some(
+        cortex_agent::Ledger::new(world.shared_clock()).with_turn_budget(
+            cortex_protocol::lease::Budget {
+                requests: Some(1),
+                ..cortex_protocol::lease::Budget::default()
+            },
+        ),
+    );
+    let rig = setup.start(&world);
+    // Past the threshold for a summary in the background, not the trigger.
+    rig.window(4_000);
+    rig.bulk(4_600);
+    world.run(async {
+        rig.prompt("go");
+        rig.events.turns(1).await;
+        for _ in 0..8 {
+            settle().await;
+        }
+    });
+    assert_eq!(world.provider.requests().len(), 1, "the turn's own request");
+    assert_eq!(fast.requests().len(), 0, "no request left for a summary");
+    assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Completed);
+}
+
+#[test]
+fn a_summary_given_up_after_it_finished_is_still_counted() {
+    let world = World::new("background_given_up", [says("First."), says("Second.")]);
+    let gate = Gate::new();
+    let fast = ScriptedProvider::new([
+        Response::new()
+            .wait(&gate)
+            .text("STALE")
+            .end(StopReason::End),
+        says("FRESH"),
+    ]);
+    let rig = with_fast(&world, &fast);
+    rig.window(4_000);
+    rig.bulk(4_600);
+    world.run(async {
+        rig.prompt("one");
+        rig.events.turns(1).await;
+        for _ in 0..8 {
+            settle().await;
+        }
+        assert_eq!(fast.requests().len(), 1);
+        // The summary finishes after its turn, and only then is the history
+        // changed under the loop: it is given up, and was paid for.
+        gate.open();
+        for _ in 0..8 {
+            settle().await;
+        }
+        let mut change = rig.handle.change_history().unwrap();
+        change.made();
+        drop(change);
+        rig.bulk(1_500);
+        rig.prompt("two");
+        rig.events.turns(2).await;
+    });
+    let counted = rig.store.out_of_band();
+    assert_eq!(
+        counted.len(),
+        2,
+        "the stale summary and the fresh one: {counted:#?}"
+    );
+    assert!(counted.iter().all(|(purpose, _)| purpose == "compaction"));
+}
+
+#[test]
+fn a_session_read_again_whose_log_holds_an_entry_masked_goes_on() {
+    let world = World::new("masked_reload", [says("First."), says("Second.")]);
+    let rig = Setup::new(&world).start(&world);
+    world.run(async {
+        rig.prompt("my key is abc123");
+        rig.events.turns(1).await;
+    });
+    // The log holds the prompt masked, as the secret filter would.
+    let prompt = rig
+        .store
+        .items()
+        .into_iter()
+        .find_map(|item| match item {
+            Item::UserMessage(user) => Some(user),
+            _ => None,
+        })
+        .unwrap();
+    rig.store.mask(Item::UserMessage(UserMessageItem {
+        parts: vec![Part::text("my key is [masked]")],
+        ..prompt
+    }));
+    // Read again with nothing changed, as after a store failure.
+    drop(rig.handle.change_history().unwrap());
+    world.run(async {
+        rig.prompt("again");
+        rig.events.turns(2).await;
+    });
+    let ends = rig.events.ends();
+    assert_eq!(
+        ends[1].outcome,
+        TurnOutcome::Completed,
+        "{:?}",
+        ends[1].error
+    );
+    let sent = all_text(&world.provider.requests()[1].messages[0]);
+    assert!(sent.contains("[masked]"), "{sent}");
+}
+
+#[test]
+fn a_summary_at_the_trigger_is_a_request_the_ledger_counts() {
+    let world = World::new("summary_ledger", [says("A summary."), says("Unreached.")]);
+    let mut setup = Setup::new(&world);
+    setup.ledger = Some(
+        cortex_agent::Ledger::new(world.shared_clock()).with_turn_budget(
+            cortex_protocol::lease::Budget {
+                requests: Some(1),
+                ..cortex_protocol::lease::Budget::default()
+            },
+        ),
+    );
+    let rig = setup.start(&world);
+    // Past the trigger from the first request.
+    rig.window(4_000);
+    rig.bulk(9_000);
+    world.run(async {
+        rig.prompt("go");
+        rig.events.turns(1).await;
+    });
+    assert_eq!(
+        world.provider.requests().len(),
+        1,
+        "the summary, then nothing"
+    );
+    assert_eq!(rig.store.summaries().len(), 1);
+    assert_eq!(rig.events.ends()[0].outcome, TurnOutcome::Limit);
+}
+
+#[test]
+fn the_context_record_compares_with_the_request_before_across_a_reload() {
+    let world = World::new("record_reload", [says("First."), says("Second.")]);
+    let rig = Setup::new(&world).start(&world);
+    world.run(async {
+        rig.prompt("one");
+        rig.events.turns(1).await;
+    });
+    drop(rig.handle.change_history().unwrap());
+    world.run(async {
+        rig.prompt("two");
+        rig.events.turns(2).await;
+    });
+    let differences: Vec<cortex_agent::PrefixDifference> = rig
+        .stats
+        .all()
+        .into_iter()
+        .filter_map(|event| match event {
+            cortex_agent::StatEvent::Context(context) => Some(context.difference),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        differences,
+        [
+            cortex_agent::PrefixDifference::First,
+            cortex_agent::PrefixDifference::Extends
+        ]
+    );
+}

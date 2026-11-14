@@ -91,6 +91,25 @@ impl Budget {
         });
     }
 
+    /// A request whose content was `sent_bytes` did not fit a window of
+    /// `window` tokens: it held more tokens to the byte than the ratio said.
+    /// The ratio is brought down to what that shows at most, and the count
+    /// is dropped, so that the same content is estimated at the window or
+    /// more. The true ratio may be lower still: what is cut to fit after an
+    /// overflow keeps a margin of its own.
+    pub(crate) fn overflowed(&mut self, sent_bytes: u64, window: u64) {
+        if window == 0 {
+            return;
+        }
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a ratio: the counts are far below 2^52"
+        )]
+        let shown = (sent_bytes as f64 / window as f64).clamp(1.0, 8.0);
+        self.ratio = Some(self.ratio().min(shown));
+        self.counted = None;
+    }
+
     /// A new epoch began: the provider's count is of the old one. The ratio
     /// stays.
     pub(crate) fn new_epoch(&mut self) {
@@ -128,6 +147,20 @@ pub(crate) fn pressure(estimate: u64, limit: u64, prepare_at: f64, compact_at: f
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_overflow_brings_the_ratio_down_to_what_it_shows() {
+        let mut budget = Budget::default();
+        // Measured at four bytes a token, so 600,000 bytes looked like
+        // 150,000 tokens, and the provider said they do not fit 200,000.
+        budget.counted(4_000, 1_000, 0, 4_000);
+        assert_eq!(budget.estimate(600_000), 1_000 + 149_000);
+        budget.overflowed(600_000, 200_000);
+        assert_eq!(budget.estimate(600_000), 200_000);
+        // A ratio already lower than what the overflow shows stays.
+        budget.overflowed(900_000, 200_000);
+        assert_eq!(budget.estimate(600_000), 200_000);
+    }
 
     #[test]
     fn the_limit_keeps_room_for_the_answer_and_a_margin() {

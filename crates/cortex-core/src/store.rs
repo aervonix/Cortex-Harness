@@ -230,6 +230,7 @@ impl Kept {
                         last_item,
                         epochs,
                         carried,
+                        masked: entries.iter().any(|entry| entry.redacted),
                     },
                     resumed.projected,
                 ))
@@ -241,6 +242,7 @@ impl Kept {
                     last_item: memory.last_item,
                     epochs: memory.epochs.clone(),
                     carried: memory.carried.clone(),
+                    masked: false,
                 },
                 0,
             )),
