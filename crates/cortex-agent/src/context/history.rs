@@ -19,7 +19,7 @@ use super::instructions::date_text;
 
 /// What every notice and every summary the model is sent begins with.
 ///
-/// A notice arrives in the user's role (decision 0033), so it says plainly
+/// A notice arrives in the user's role (decision 0034), so it says plainly
 /// that it is the harness speaking. The text is part of the cached prefix:
 /// it never changes.
 pub const NOTICE_LEAD: &str = "Notice from the harness (Cortex-Harness), not from the user.\n\n";

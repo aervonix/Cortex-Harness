@@ -1,4 +1,4 @@
-# 0033: A notice is a message in the user's role, saying it is the harness's
+# 0034: A notice is a message in the user's role, saying it is the harness's
 
 - **Status:** Accepted by the owner on 2026-11-14, in step 15: no new role in `cortex-protocol`.
 - **Date:** 2026-11-14

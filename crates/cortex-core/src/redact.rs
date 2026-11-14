@@ -366,4 +366,137 @@ mod tests {
         let message = message(r#"{"thinking":"ghp_a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"}"#);
         assert!(for_disk(&filter, &Item::AssistantMessage(message)).is_some());
     }
+
+    mod resumed_marks {
+        use cortex_protocol::Timestamp;
+        use cortex_protocol::item::{SummaryItem, UserMessageItem};
+        use cortex_session::EntryId;
+        use cortex_session::entry::{Epoch, PlanRecord};
+
+        use super::*;
+
+        fn entry(number: u32, body: Body, redacted: bool) -> Entry {
+            Entry {
+                id: EntryId::new(format!("e_{number:04}")),
+                parent: None,
+                ts: Timestamp::from("2026-11-14T00:00:00Z"),
+                turn: None,
+                redacted,
+                body,
+            }
+        }
+
+        fn user(number: u32, redacted: bool) -> Entry {
+            entry(
+                number,
+                Body::User(UserMessageItem {
+                    id: ItemId::new(format!("i_{number}")),
+                    parts: vec![Part::text("go")],
+                    delivery: None,
+                    created_at: None,
+                }),
+                redacted,
+            )
+        }
+
+        fn answer(number: u32) -> Entry {
+            let mut item = message(r#"{"type":"thinking","signature":"s"}"#);
+            item.id = ItemId::new(format!("i_{number}"));
+            entry(
+                number,
+                Body::Assistant {
+                    item,
+                    request_id: None,
+                },
+                false,
+            )
+        }
+
+        fn epoch(number: u32, reason: &str) -> Entry {
+            entry(
+                number,
+                Body::Epoch(Epoch {
+                    provider: ProviderId::new("anthropic"),
+                    protocol: "anthropic-messages".to_owned(),
+                    model: ModelId::new("claude-opus-5-5"),
+                    effort: None,
+                    system: "s".to_owned(),
+                    tools: Vec::new(),
+                    hash: Epoch::hash_of("s", &[]),
+                    reason: Some(reason.to_owned()),
+                    base: None,
+                    instructions: Vec::new(),
+                }),
+                false,
+            )
+        }
+
+        /// Which assistant messages keep what is replayed raw.
+        fn raw(entries: &[Entry]) -> Vec<bool> {
+            resumed(entries)
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::AssistantMessage(message) => Some(message.origin.is_some()),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        #[test]
+        fn a_summary_ends_the_mark_and_a_mark_after_it_begins_again() {
+            let summary = entry(
+                4,
+                Body::Summary {
+                    item: SummaryItem {
+                        id: ItemId::new("i_4"),
+                        text: "The summary.".to_owned(),
+                        covers_through: None,
+                        usage: None,
+                        created_at: None,
+                    },
+                    carried: Value::Null,
+                },
+                false,
+            );
+            let entries = [
+                user(1, true),
+                answer(2),
+                answer(3),
+                summary,
+                answer(5),
+                user(6, true),
+                answer(7),
+            ];
+            assert_eq!(raw(&entries), [false, false, true, false]);
+            assert_eq!(resumed(&entries).projected, 3);
+        }
+
+        #[test]
+        fn only_an_item_marks() {
+            let plan = entry(
+                1,
+                Body::Plan(PlanRecord {
+                    plan: cortex_protocol::Plan::default(),
+                }),
+                true,
+            );
+            assert_eq!(raw(&[plan, user(2, false), answer(3)]), [true]);
+        }
+
+        #[test]
+        fn a_change_of_model_carries_the_mark_and_another_epoch_ends_it() {
+            assert_eq!(
+                raw(&[user(1, true), epoch(2, "model"), answer(3)]),
+                [false]
+            );
+            for reason in ["start", "resume", "compaction"] {
+                assert_eq!(
+                    raw(&[user(1, true), epoch(2, reason), answer(3)]),
+                    [true],
+                    "{reason}"
+                );
+            }
+        }
+    }
 }

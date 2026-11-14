@@ -289,7 +289,9 @@ impl Context {
     pub(crate) fn load(&mut self, opened: &Opened) {
         self.generation += 1;
         self.unchecked = true;
-        self.budget = Budget::default();
+        // The count was of the history as it was; the ratio of bytes to
+        // tokens is still the model's.
+        self.budget.new_epoch();
         self.last_shape = None;
         self.last_prefix = None;
         self.epoch = opened.epochs.last().map(|(_, epoch)| epoch.clone());
@@ -466,15 +468,19 @@ impl Context {
             .as_ref()
             .is_some_and(|before| same_prefix(before, &epoch));
         match history {
-            Some(history) => self.history = history,
-            None if !keeps_prefix => self.history.project_all(),
+            Some(history) => {
+                // What the provider counted was the old history's.
+                self.history = history;
+                self.budget.new_epoch();
+            }
+            None if !keeps_prefix => {
+                self.history.project_all();
+                self.budget.new_epoch();
+            }
             None => {}
         }
         if epoch.reason != Some(EpochReason::Model) {
             self.given = Given::from_marks(&epoch.instructions);
-        }
-        if !keeps_prefix {
-            self.budget.new_epoch();
         }
         self.epoch = Some(epoch);
         self.epoch_number += 1;
