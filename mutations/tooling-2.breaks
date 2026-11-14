@@ -162,8 +162,8 @@ caught-by:
 rule: Each job builds in a directory of its own.
 file: xtask/src/mutate/drive.rs
 in: CargoRunner::new
-find: target: scratch.join(jobs::numbered("target", job)),
-replace: target: scratch.join("target"),
+find: target: scratch.join(jobs::numbered("target", job))
+replace: target: scratch.join("target")
 caught-by:
     mutate::drive::tests::each_job_has_a_build_directory_and_a_log_of_its_own
 
@@ -171,8 +171,8 @@ caught-by:
 rule: The watch gives a system test the 60 s nextest gives it.
 file: crates/cortex-testkit/src/watch.rs
 in: limit_of
-find: (_, true) => 60,
-replace: (_, true) => 10,
+find: (_, true) => 60
+replace: (_, true) => 10
 caught-by:
     watch::tests::the_limits_are_those_nextest_is_given
 

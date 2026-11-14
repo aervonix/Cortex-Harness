@@ -283,38 +283,33 @@ pub(crate) fn locate_in(
     find: &str,
     occurrence: Option<usize>,
 ) -> Result<Range<usize>, Missing> {
+    locate_with_items(source, all, anchor, find, occurrence).map(|(range, _)| range)
+}
+
+/// [`locate_in`], and the items the anchor names (the whole file without
+/// one), which the pre-flight counts: found once, for both.
+pub(crate) fn locate_with_items(
+    source: &str,
+    all: &[Token],
+    anchor: Option<&str>,
+    find: &str,
+    occurrence: Option<usize>,
+) -> Result<(Range<usize>, Vec<Range<usize>>), Missing> {
     let wanted = tokens(find);
     if wanted.is_empty() {
         return Err(Missing::NothingToFind);
     }
     let wanted: Vec<&str> = wanted.iter().map(|token| token.text(find)).collect();
 
-    let mut scopes: Vec<Range<usize>> = std::iter::once(0..all.len()).collect();
-    if let Some(anchor) = anchor {
-        let mut within = String::new();
-        for segment in anchor.split("::").map(str::trim) {
-            let mut inner = Vec::new();
-            for scope in &scopes {
-                inner.extend(items_named(source, all, scope.clone(), segment));
-            }
-            if inner.is_empty() {
-                return Err(Missing::NoSuchItem {
-                    segment: segment.to_owned(),
-                    within,
-                });
-            }
-            scopes = inner;
-            if !within.is_empty() {
-                within.push_str("::");
-            }
-            within.push_str(segment);
-        }
-    }
+    let scopes = match anchor {
+        Some(anchor) => items_of(source, all, anchor)?,
+        None => std::iter::once(0..all.len()).collect(),
+    };
 
     // The first token of each match. Scopes can overlap (an `impl` for a
     // type and a module of the same name), so a match is counted once.
     let mut matches: Vec<usize> = Vec::new();
-    for scope in scopes {
+    for scope in scopes.iter().cloned() {
         let Some(last_start) = scope.end.checked_sub(wanted.len()) else {
             continue;
         };
@@ -337,13 +332,13 @@ pub(crate) fn locate_in(
     match (matches.as_slice(), occurrence) {
         ([], _) => Err(Missing::NotFound),
         (found, Some(asked)) => match asked.checked_sub(1).and_then(|index| found.get(index)) {
-            Some(start) => Ok(range(*start)),
+            Some(start) => Ok((range(*start), scopes)),
             None => Err(Missing::NoSuchOccurrence {
                 asked,
                 found: found.len(),
             }),
         },
-        ([only], None) => Ok(range(*only)),
+        ([only], None) => Ok((range(*only), scopes)),
         (several, None) => Err(Missing::Ambiguous(
             several
                 .iter()
@@ -351,6 +346,119 @@ pub(crate) fn locate_in(
                 .collect(),
         )),
     }
+}
+
+/// The items an anchor names (`Round::spawn`), as token ranges: each
+/// segment looked for inside the items the segments before it named.
+/// Several when the name is not unique (two `impl` blocks with a `new`).
+pub(crate) fn items_of(
+    source: &str,
+    all: &[Token],
+    anchor: &str,
+) -> Result<Vec<Range<usize>>, Missing> {
+    let mut scopes: Vec<Range<usize>> = std::iter::once(0..all.len()).collect();
+    let mut within = String::new();
+    for segment in anchor.split("::").map(str::trim) {
+        let mut inner = Vec::new();
+        for scope in &scopes {
+            // Inside an item, not the item itself: `impl fmt::Debug for Env`
+            // answers to `fmt`, and `Env::fmt` means the function in it.
+            let inside = if within.is_empty() {
+                scope.clone()
+            } else {
+                scope.start + 1..scope.end
+            };
+            inner.extend(items_named(source, all, inside, segment));
+        }
+        if inner.is_empty() {
+            return Err(Missing::NoSuchItem {
+                segment: segment.to_owned(),
+                within,
+            });
+        }
+        // Scopes can overlap (an `impl` and a module of one name), and an
+        // item found through both is one item.
+        inner.sort_by_key(|range| (range.start, range.end));
+        inner.dedup();
+        scopes = inner;
+        if !within.is_empty() {
+            within.push_str("::");
+        }
+        within.push_str(segment);
+    }
+    Ok(scopes)
+}
+
+/// Whether the item that begins at token `start` has a `#[cfg(…)]` among
+/// the attributes before it: one of two items of a name, one for each
+/// system, of which a build has only one.
+pub(crate) fn under_cfg(source: &str, all: &[Token], start: usize) -> bool {
+    let text = |index: usize| all[index].text(source);
+    let mut at = start;
+    // Back over what may come between the attributes and the keyword.
+    while at > 0
+        && matches!(
+            text(at - 1),
+            "pub" | "crate" | "super" | "in" | "(" | ")" | "unsafe" | "async" | "const" | "extern"
+        )
+    {
+        at -= 1;
+    }
+    // Back over each attribute, `#[…]`.
+    while at > 0 && text(at - 1) == "]" {
+        let mut depth = 0usize;
+        let mut open = None;
+        for index in (0..at).rev() {
+            match text(index) {
+                "]" => depth += 1,
+                "[" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        open = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(open) = open.filter(|open| *open > 0 && text(open - 1) == "#") else {
+            return false;
+        };
+        if open + 1 < at && text(open + 1) == "cfg" {
+            return true;
+        }
+        at = open - 1;
+    }
+    false
+}
+
+/// The tokens of `source`, a trailing comma included: what [`same_tokens`]
+/// compares.
+pub(crate) fn code_tokens(source: &str) -> Vec<Token> {
+    lex(source, false)
+}
+
+/// [`tokens`], from the [`code_tokens`] of the same source: the commas that
+/// only trail taken out. The same as lexing `source` again, for less.
+pub(crate) fn without_layout_commas(source: &str, code: &[Token]) -> Vec<Token> {
+    code.iter()
+        .enumerate()
+        .filter(|(index, token)| {
+            token.text(source) != ","
+                || !code
+                    .get(index + 1)
+                    .is_some_and(|next| matches!(next.text(source), ")" | "]" | "}"))
+        })
+        .map(|(_, token)| *token)
+        .collect()
+}
+
+/// The text of each of [`code_tokens`].
+pub(crate) fn code_texts(source: &str) -> Vec<&str> {
+    lex(source, false)
+        .into_iter()
+        .map(|token| token.text(source))
+        .collect()
 }
 
 /// The operators of two characters. Each character is a token of its own,
@@ -498,6 +606,25 @@ mod tests {
             texts("/// Adds.\n//! Inner.\nfn add() {}"),
             ["fn", "add", "(", ")", "{", "}"]
         );
+    }
+
+    #[test]
+    fn taking_layout_commas_out_of_the_code_tokens_is_lexing_without_them() {
+        for source in [
+            "f(a, b,)",
+            "[1, 2,\n]; S { a, }",
+            "f(a, // last\n)",
+            "match x { 1 => a, 2 => b, }",
+            "fn f() { g(\"a,)\", ',', /* , ) */ x,) }",
+            include_str!("lex.rs"),
+        ] {
+            let code = super::code_tokens(source);
+            assert_eq!(
+                super::without_layout_commas(source, &code),
+                tokens(source),
+                "{source}"
+            );
+        }
     }
 
     #[test]

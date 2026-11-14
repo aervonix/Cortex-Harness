@@ -49,8 +49,8 @@ caught-by:
 rule: A test's directory is named by one plain name, so that making it new never removes another test's.
 file: crates/cortex-testkit/src/scratch.rs
 in: Scratch::under
-find: is_one_name(name),
-replace: true,
+find: is_one_name(name)
+replace: true
 caught-by:
     scratch::tests::a_name_that_is_not_one_name_is_refused_before_anything_is_removed
 
@@ -202,8 +202,8 @@ caught-by:
 rule: A step record's first line names the step its folder is for.
 file: xtask/src/rules/layout.rs
 in: step_record
-find: Some(step) => who == step,
-replace: Some(_) => true,
+find: Some(step) => who == step
+replace: Some(_) => true
 caught-by:
     rules::layout::tests::a_records_heading_names_its_own_step_in_the_form_the_others_have
 

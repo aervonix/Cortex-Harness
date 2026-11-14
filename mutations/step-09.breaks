@@ -127,8 +127,8 @@ caught-by:
 rule: The platform's data directory does not read CORTEX_DATA_DIR, which is the environment layer's session.data_dir and so held by a managed lock.
 file: crates/cortex-config/src/dirs.rs
 in: Dirs::from_env
-find: data, home,
-replace: data: env.absolute_path("CORTEX_DATA_DIR").or(data), home,
+find: data, home
+replace: data: env.absolute_path("CORTEX_DATA_DIR").or(data), home
 caught-by:
     loading::the_data_directory_variable_cannot_move_a_locked_data_directory
 
